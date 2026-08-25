@@ -1,0 +1,72 @@
+name: Aloud
+options:
+  bundleIdPrefix: com.davidxie
+  deploymentTarget: { iOS: "16.0" }
+  createIntermediateGroups: true
+packages:
+  SherpaOnnx:
+    url: https://github.com/k2-fsa/sherpa-onnx
+    from: 1.13.6
+targets:
+  Aloud:
+    type: application
+    platform: iOS
+    sources:
+      - path: Aloud
+        excludes:
+          - "Resources/Bookshelf/**"
+          - "Resources/KokoroAssets/**"
+      - path: Aloud/Resources/Bookshelf
+        type: folder
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/espeak-ng-data
+        type: folder
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/tokens.txt
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/lexicon-us-en.txt
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/lexicon-gb-en.txt
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/LICENSE-kokoro.txt
+        buildPhase: resources
+    dependencies:
+      - package: SherpaOnnx
+        product: sherpa-onnx
+    settings:
+      base:
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    info:
+      path: Aloud/Info.plist
+      properties:
+        UIBackgroundModes: [audio]                     # M3 uses it; harmless from day 1
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.adobe.pdf]
+          - CFBundleTypeName: Plain Text
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.plain-text]
+        LSSupportsOpeningDocumentsInPlace: false
+  AloudTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AloudTests]
+    dependencies: [{ target: Aloud }]
+  AloudUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [AloudUITests]
+    dependencies: [{ target: Aloud }]
+    settings:
+      base:
+        TEST_TARGET_NAME: Aloud
+schemes:
+  Aloud:
+    build: { targets: { Aloud: all } }
+    test: { targets: [AloudTests, AloudUITests] }
