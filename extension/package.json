@@ -1,0 +1,17 @@
+{
+  "name": "aloud-extension",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Aloud browser extension — read any web page aloud with the local Kokoro TTS backend.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.6.3"
+  }
+}

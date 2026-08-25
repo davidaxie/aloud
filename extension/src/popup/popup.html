@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Aloud</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+          <rect x="4" y="8.5" width="2.6" height="7" rx="1.3" />
+          <rect x="10.7" y="4.5" width="2.6" height="15" rx="1.3" />
+          <rect x="17.4" y="7" width="2.6" height="10" rx="1.3" />
+        </svg>
+      </span>
+      <span class="brand">Aloud</span>
+      <span class="status" id="status">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">Checking engine…</span>
+      </span>
+    </header>
+
+    <button class="primary" id="primary" type="button">Read this page</button>
+
+    <p class="hint" id="hint" hidden></p>
+
+    <section class="panel">
+      <div class="field">
+        <label for="voice">Voice</label>
+        <div class="select-wrap">
+          <select id="voice"></select>
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
+               stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="rate">Speed</label>
+        <div class="rate-row">
+          <input type="range" id="rate" min="0.5" max="3" step="0.05" />
+          <output class="rate-value" id="rate-value">1.0×</output>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel toggles">
+      <button class="toggle" id="t-autoScroll" type="button" role="switch">
+        <span class="toggle-text">
+          <span class="toggle-label">Follow along</span>
+          <span class="toggle-hint">Scroll the spoken sentence into view</span>
+        </span>
+        <span class="switch"><span class="knob"></span></span>
+      </button>
+
+      <button class="toggle" id="t-highlightWords" type="button" role="switch">
+        <span class="toggle-text">
+          <span class="toggle-label">Word highlight</span>
+          <span class="toggle-hint">Karaoke swipe across each word</span>
+        </span>
+        <span class="switch"><span class="knob"></span></span>
+      </button>
+
+      <button class="toggle" id="t-clickToJump" type="button" role="switch">
+        <span class="toggle-text">
+          <span class="toggle-label">Click to jump</span>
+          <span class="toggle-hint">Click any sentence to read from there</span>
+        </span>
+        <span class="switch"><span class="knob"></span></span>
+      </button>
+
+      <button class="toggle" id="t-skipSkippable" type="button" role="switch">
+        <span class="toggle-text">
+          <span class="toggle-label">Skip parentheticals</span>
+          <span class="toggle-hint">Don't read (asides) or [notes]</span>
+        </span>
+        <span class="switch"><span class="knob"></span></span>
+      </button>
+    </section>
+
+    <details class="advanced">
+      <summary>Engine</summary>
+      <label class="engine-label" for="backend">Local TTS server</label>
+      <input type="url" id="backend" spellcheck="false" placeholder="http://localhost:8000" />
+      <p class="engine-hint">
+        Start it with <code>cd backend &amp;&amp; .venv/bin/python run.py</code>, or just launch
+        <code>Aloud.app</code>.
+      </p>
+    </details>
+
+    <footer class="foot">
+      <span><kbd>Alt</kbd><kbd>A</kbd> play / pause</span>
+      <span><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd> sentence</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
