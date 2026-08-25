@@ -375,7 +375,7 @@ class PlayerImpl implements Player {
     // A newer play/seek/stop happened while we were synthesizing → abandon.
     if (token !== this.playToken) return
 
-    store().setBackendOnline(true)
+    store().setEngineState('ok')
     const audio = this.ensureAudio()
     // Tokenize the sentence now so the 'loadedmetadata' fired by the next line
     // has tokens to lay out. Also resets the highlight for the fresh sentence.
@@ -421,7 +421,7 @@ class PlayerImpl implements Player {
   private handleSynthError() {
     this.wantPlaying = false
     const s = store()
-    s.setBackendOnline(false)
+    s.setEngineState('offline')
     s.setError('Speech engine offline — is the backend running?')
     s.setStatus('error')
   }

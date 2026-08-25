@@ -7,7 +7,7 @@
 // Persisted to localStorage: theme, voiceId, rate, skipSkippable, autoScroll.
 // ─────────────────────────────────────────────────────────────────────────────
 import { create } from 'zustand'
-import type { Doc, PlayerStatus, Theme, Voice } from './types'
+import type { Doc, EngineState, PlayerStatus, Theme, Toast, Voice } from './types'
 
 const LS_KEY = 'aloud.prefs.v1'
 
@@ -55,8 +55,13 @@ function savePrefs(p: PersistedPrefs) {
 
 export interface AppState {
   // ── connection ──
-  backendOnline: boolean
-  setBackendOnline: (v: boolean) => void
+  /**
+   * Engine liveness. Replaces the old `backendOnline` boolean so the UI can tell
+   * "starting up" apart from "not there" — the review's P0-1 complaint was as
+   * much about the false "is the backend running?" message as about the failure.
+   */
+  engineState: EngineState
+  setEngineState: (s: EngineState) => void
 
   // ── voices ──
   voices: Voice[]
@@ -95,9 +100,35 @@ export interface AppState {
   currentWord: number // index into the CURRENT sentence's word tokens, -1 if none
   setCurrentWord: (i: number) => void
 
-  // ── errors ──
+  // ── buffering (driven by the player's scheduler) ──
+  /**
+   * Seconds of source audio already synthesized ahead of the playhead. Drives the
+   * secondary fill on the scrub bar (F2.7). Source seconds, not listening
+   * seconds — at 2x this depletes twice as fast.
+   */
+  bufferAheadSeconds: number
+  setBufferAheadSeconds: (s: number) => void
+
+  // ── skipped sentences ──
+  /**
+   * Sentences that failed synthesis after every retry. Playback steps over them
+   * rather than stopping (F1.5); the reader marks them inline. Cleared on load.
+   */
+  skippedSentences: number[]
+  markSkipped: (id: number) => void
+
+  // ── messaging ──
+  /**
+   * PERSISTENT banner. Reserved for states needing user action — realistically
+   * only "the engine is unreachable". A single sentence failing must never set
+   * this. Cleared automatically on the next successful synthesis (F4.1, F4.4).
+   */
   error: string | null
   setError: (e: string | null) => void
+  /** TRANSIENT message for recoverable problems (F4.3). */
+  toast: Toast | null
+  pushToast: (text: string) => void
+  dismissToast: () => void
 
   reset: () => void
 }
@@ -119,8 +150,8 @@ export const useStore = create<AppState>((set, get) => {
   }
 
   return {
-  backendOnline: false,
-  setBackendOnline: (v) => set({ backendOnline: v }),
+  engineState: 'unknown',
+  setEngineState: (s) => set({ engineState: s }),
 
   voices: [],
   setVoices: (v) => set({ voices: v }),
@@ -177,8 +208,21 @@ export const useStore = create<AppState>((set, get) => {
   currentWord: -1,
   setCurrentWord: (i) => set({ currentWord: i }),
 
+  bufferAheadSeconds: 0,
+  setBufferAheadSeconds: (s) => set({ bufferAheadSeconds: Math.max(0, s) }),
+
+  skippedSentences: [],
+  markSkipped: (id) =>
+    set((s) => (s.skippedSentences.includes(id) ? {} : { skippedSentences: [...s.skippedSentences, id] })),
+
   error: null,
   setError: (e) => set({ error: e }),
+
+  toast: null,
+  // The id makes a repeated message re-fire; the text alone would look unchanged
+  // to React and the toast would never re-appear.
+  pushToast: (text) => set((s) => ({ toast: { id: (s.toast?.id ?? 0) + 1, text } })),
+  dismissToast: () => set({ toast: null }),
 
   reset: () =>
     set({
@@ -188,7 +232,10 @@ export const useStore = create<AppState>((set, get) => {
       status: 'idle',
       currentSentence: -1,
       currentWord: -1,
+      bufferAheadSeconds: 0,
+      skippedSentences: [],
       error: null,
+      toast: null,
     }),
   }
 })

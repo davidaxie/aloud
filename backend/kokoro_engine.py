@@ -4,6 +4,13 @@ The model (~325 MB) and voice bank (~28 MB) are loaded exactly once, at import
 time, and reused for every request. Loading is expensive (a few seconds), so it
 must never happen per-request.
 
+``synthesize`` is serialized by a process-wide lock. The espeak-ng phonemizer
+that ``Kokoro.create`` calls keeps global state and corrupts concurrent callers
+("number of lines in input and output must be equal"). The HTTP layer already
+funnels everything through one worker thread (``synth_queue``); the lock makes
+that invariant a property of the engine, so scripts, smoke tests and any future
+caller cannot reintroduce the race by accident. Uncontended, it costs nothing.
+
 Public surface:
     synthesize(text, voice, speed) -> (samples: np.ndarray float32, sample_rate: int)
     list_voices() -> list[VoiceMeta]   # parsed metadata for every installed voice
@@ -16,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 
 import numpy as np
@@ -48,6 +56,9 @@ class KokoroEngine:
             raise FileNotFoundError(f"Kokoro model not found: {model_path}")
         if not os.path.exists(voices_path):
             raise FileNotFoundError(f"Kokoro voices not found: {voices_path}")
+
+        # Guards every create() call — see the module docstring.
+        self._lock = threading.Lock()
 
         t0 = time.time()
         self._kokoro = Kokoro(model_path, voices_path)
@@ -96,6 +107,7 @@ class KokoroEngine:
         - An unknown ``voice`` falls back to the default voice.
         - ``lang`` is derived from the voice id (e.g. a British voice uses
           en-gb) so pronunciation matches the voice.
+        - Concurrent callers are serialized; only one inference runs at a time.
 
         Returns ``(samples, sample_rate)`` where samples is a float32 waveform.
         Raises ``ValueError`` on empty text; propagates other errors to the
@@ -117,9 +129,10 @@ class KokoroEngine:
             voice = self.default_voice
 
         lang = lang_for_voice(voice)
-        samples, sample_rate = self._kokoro.create(
-            text, voice=voice, speed=clamped_speed, lang=lang
-        )
+        with self._lock:
+            samples, sample_rate = self._kokoro.create(
+                text, voice=voice, speed=clamped_speed, lang=lang
+            )
         return samples, sample_rate
 
 

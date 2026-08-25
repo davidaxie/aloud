@@ -4,10 +4,20 @@ A tiny local, fully-offline HTTP service that turns text into natural speech
 using the Kokoro neural TTS model. The Kokoro model is loaded exactly once as a
 module-level singleton (see ``kokoro_engine``) when this module is imported.
 
+Synthesis does NOT run in FastAPI's threadpool. Every request is handed to a
+single worker thread (see ``synth_queue``) because the phonemizer underneath
+Kokoro is not thread-safe; the handler blocks until that worker is done. Waiting
+requests are ordered ``now`` before ``prefetch``.
+
 Endpoints
-    GET  /health      -> engine status + voice count
+    GET  /health      -> engine status, warm flag, queue depth, voice count
     GET  /voices      -> full voice list + default voice
     POST /synthesize  -> raw WAV bytes (audio/wav)
+
+Environment variables:
+    ALOUD_QUEUE_MAX  Max WAITING prefetch requests before /synthesize answers
+                     429 + Retry-After. Default 8. `now` requests are never
+                     rejected for depth.
 """
 
 from __future__ import annotations
@@ -31,8 +41,38 @@ from pydantic import BaseModel
 
 # Importing the engine triggers the one-time model load and logs load time.
 from kokoro_engine import engine
+from synth_queue import (
+    PRIORITY_NOW,
+    PRIORITY_PREFETCH,
+    QueueFullError,
+    SynthQueue,
+    truncate_for_log,
+)
 
-app = FastAPI(title="Aloud TTS", version="1.0.0")
+app = FastAPI(title="Aloud TTS", version="1.1.0")
+
+
+def _queue_max() -> int:
+    """Read ALOUD_QUEUE_MAX, falling back to 8 on anything unparseable."""
+    raw = os.environ.get("ALOUD_QUEUE_MAX", "").strip()
+    if not raw:
+        return 8
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("Ignoring invalid ALOUD_QUEUE_MAX=%r; using 8", raw)
+        return 8
+
+
+# Started at import time, not on the ASGI startup event, so the ~4.1s warm-up
+# overlaps with the rest of uvicorn's boot instead of following it. Requests that
+# arrive meanwhile queue behind the warm-up job and /health reports "warming".
+synth_queue = SynthQueue(
+    engine.synthesize,
+    max_prefetch=_queue_max(),
+    warmup_voice=engine.default_voice,
+)
+synth_queue.start()
 
 # Permissive CORS — this is a localhost dev tool consumed by a local frontend.
 app.add_middleware(
@@ -50,16 +90,72 @@ class SynthesizeRequest(BaseModel):
     text: str
     voice: str = "af_heart"
     speed: float = 1.0
+    # Typed as a plain str, not a Literal: an unknown value from an older or
+    # third-party client must degrade to "now" (see _priority_of), never become
+    # a 422 that is not in the documented status table.
+    priority: str = PRIORITY_NOW
+
+
+def _priority_of(req: SynthesizeRequest) -> str:
+    """Map the request's priority to a queue class.
+
+    Anything that is not literally "prefetch" is treated as "now": guessing
+    wrong in that direction only costs queue position, while guessing wrong the
+    other way would park a sentence the listener is waiting on behind
+    speculative work.
+    """
+    return PRIORITY_PREFETCH if req.priority == PRIORITY_PREFETCH else PRIORITY_NOW
+
+
+def _error(
+    status: int,
+    message: str,
+    *,
+    retryable: bool,
+    req: SynthesizeRequest,
+    retry_after: int | None = None,
+) -> JSONResponse:
+    """Build an error response and log it at WARNING (A1.6, A1.7).
+
+    Every 4xx/5xx carries the truncated offending text and the voice, so a
+    report of "it skipped a sentence" can be reproduced from the log alone. The
+    ``retryable`` flag is what tells both clients whether to back off and try
+    again or to skip the sentence and keep playing.
+    """
+    logger.warning(
+        "%d %s | voice=%s speed=%.2f priority=%s text=%r",
+        status,
+        message,
+        req.voice,
+        req.speed,
+        _priority_of(req),
+        truncate_for_log(req.text),
+    )
+    headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+    return JSONResponse(
+        status_code=status,
+        content={"error": message, "retryable": retryable},
+        headers=headers,
+    )
 
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness/readiness probe with basic engine info."""
+    """Liveness/readiness probe with engine, warm-up and queue state.
+
+    ``status`` is "warming" until the startup inference completes and "ok"
+    after, so a client can tell "still starting" (transient, no error styling)
+    from "unreachable" (persistent banner). The three older fields are unchanged
+    because two shipped clients read them.
+    """
+    warm = synth_queue.warm
     return {
-        "status": "ok",
+        "status": "ok" if warm else "warming",
         "engine": "kokoro",
         "model_loaded": engine.model_loaded,
         "voice_count": engine.voice_count,
+        "warm": warm,
+        "queue_depth": synth_queue.queue_depth,
     }
 
 
@@ -76,24 +172,43 @@ def voices() -> dict:
 def synthesize(req: SynthesizeRequest) -> Response:
     """Synthesize speech and return a 16-bit PCM WAV.
 
-    - 400 (JSON ``{"error": ...}``) on empty/invalid text.
-    - 500 (JSON ``{"error": ...}``) on synthesis failure.
     - 200 with ``Content-Type: audio/wav`` and raw WAV bytes on success.
+    - 400 on empty/invalid text — **not** retryable, the client skips it.
+    - 429 + ``Retry-After: 1`` when the prefetch backlog is full.
+    - 500 on synthesis failure.
+    - 503 + ``Retry-After: 2`` when the model is not loaded.
+
+    Every error body carries ``retryable`` so the clients' retry policy is a
+    property of the response rather than a guess about the status code.
+
+    The call runs on the single synthesis worker; this handler's threadpool
+    thread parks until the worker is done.
     """
     # Validate text up front so we return a clean 400 rather than a 500.
     if not req.text or not req.text.strip():
-        return JSONResponse(status_code=400, content={"error": "text must be a non-empty string"})
+        return _error(400, "text must be a non-empty string", retryable=False, req=req)
+
+    if not engine.model_loaded:
+        return _error(503, "speech model is not loaded", retryable=True, req=req, retry_after=2)
 
     try:
-        samples, sample_rate = engine.synthesize(req.text, req.voice, req.speed)
+        samples, sample_rate = synth_queue.submit(
+            req.text, req.voice, req.speed, _priority_of(req)
+        )
+    except QueueFullError as exc:
+        # Shed speculative load honestly instead of queueing without bound. The
+        # client backs off and re-asks; the listener never notices.
+        return _error(429, str(exc), retryable=True, req=req, retry_after=1)
     except ValueError as exc:
         # Defensive: engine also guards against empty text.
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        return _error(400, str(exc), retryable=False, req=req)
     except Exception as exc:  # noqa: BLE001 — surface any synthesis failure as 500
         logger.exception("Synthesis failed")
-        return JSONResponse(status_code=500, content={"error": f"synthesis failed: {exc}"})
+        return _error(500, f"synthesis failed: {exc}", retryable=True, req=req)
 
-    # Encode the float32 waveform to WAV (PCM 16-bit) entirely in memory.
+    # Encode the float32 waveform to WAV (PCM 16-bit) entirely in memory. This
+    # runs on the request thread, off the worker, so encoding never delays the
+    # next sentence's inference.
     try:
         buf = io.BytesIO()
         sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")
@@ -101,7 +216,7 @@ def synthesize(req: SynthesizeRequest) -> Response:
         wav_bytes = buf.read()
     except Exception as exc:  # noqa: BLE001
         logger.exception("WAV encoding failed")
-        return JSONResponse(status_code=500, content={"error": f"encoding failed: {exc}"})
+        return _error(500, f"encoding failed: {exc}", retryable=True, req=req)
 
     return Response(content=wav_bytes, media_type="audio/wav")
 

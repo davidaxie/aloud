@@ -7,8 +7,22 @@ import { useStore } from '../store'
 import { CloseIcon } from './Icons'
 
 export function StatusBadge() {
-  const backendOnline = useStore((s) => s.backendOnline)
-  if (backendOnline) return null
+  const engineState = useStore((s) => s.engineState)
+  // `unknown` (not yet probed) stays silent so the banner never flashes during
+  // a normal startup where the first /health lands moments later.
+  if (engineState === 'ok' || engineState === 'unknown') return null
+
+  if (engineState === 'warming') {
+    return (
+      <div className="banner banner--warn" role="status">
+        <span className="banner__dot" aria-hidden />
+        <span className="banner__text">
+          <strong>Speech engine warming up.</strong> Audio will be ready in a
+          moment.
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div className="banner banner--warn" role="status">

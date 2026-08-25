@@ -4,6 +4,10 @@ Launches the FastAPI backend (which serves both the API and the built React UI)
 on a local loopback port in a background thread, waits for it to become healthy,
 then opens the reader in a native pywebview window on the main thread.
 
+Before starting anything it probes ``GET /health`` on the target port: if an
+Aloud backend is already serving there, the window attaches to it rather than
+starting a rival on the same socket.
+
 macOS requires the GUI toolkit to run on the main thread, so uvicorn runs in a
 worker thread and ``webview.start()`` owns the main thread. When the window is
 closed, the server is asked to shut down and the process exits cleanly.
@@ -44,17 +48,47 @@ logger = logging.getLogger("aloud.native")
 
 HOST = "127.0.0.1"
 HEALTH_TIMEOUT_SECS = 30.0
+DEFAULT_PORT = 8000
+PROBE_TIMEOUT_SECS = 1.0
 
 
-def _port_is_free(port: int) -> bool:
-    """Return True if ``port`` can be bound on the loopback interface."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((HOST, port))
+def _port_in_use(port: int) -> bool:
+    """True if anything is accepting connections on ``HOST:port``.
+
+    This is deliberately a CONNECT test rather than a bind test. Binding
+    ``127.0.0.1:8000`` with SO_REUSEADDR *succeeds* on macOS while another
+    process holds ``0.0.0.0:8000``, so the old check called a busy port free and
+    we started a second backend: two 325 MB model loads and requests routed
+    non-deterministically to one of them.
+    """
+    try:
+        with socket.create_connection((HOST, port), timeout=PROBE_TIMEOUT_SECS):
             return True
-        except OSError:
-            return False
+    except OSError:
+        return False
+
+
+def probe_backend(port: int) -> dict | None:
+    """Return the ``/health`` payload if an Aloud backend answers on ``port``.
+
+    None means "not ours": nothing listening, not HTTP, or some other service
+    that happens to own the port. Only a payload naming the kokoro engine counts,
+    so we never attach a window to an unrelated dev server.
+    """
+    if not _port_in_use(port):
+        return None
+    try:
+        with urllib.request.urlopen(
+            f"http://{HOST}:{port}/health", timeout=PROBE_TIMEOUT_SECS
+        ) as resp:
+            if resp.status != 200:
+                return None
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, ConnectionError, OSError, ValueError):
+        return None
+    if isinstance(payload, dict) and payload.get("engine") == "kokoro":
+        return payload
+    return None
 
 
 def _find_free_port() -> int:
@@ -64,20 +98,39 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def find_running_backend() -> int | None:
+    """Port of an Aloud backend that is already serving, or None.
+
+    Attaching to it beats starting a rival (F4.6): a second process means a
+    second model load and a coin flip over which one answers a given request.
+    """
+    env_port = os.environ.get("ALOUD_PORT")
+    try:
+        candidate = int(env_port) if env_port else DEFAULT_PORT
+    except ValueError:
+        candidate = DEFAULT_PORT
+    return candidate if probe_backend(candidate) is not None else None
+
+
 def choose_port() -> int:
-    """Pick the port to serve on: ALOUD_PORT, else 8000, else any free port."""
+    """Pick the port to SERVE on: ALOUD_PORT, else 8000 if truly unused, else any free port."""
     env_port = os.environ.get("ALOUD_PORT")
     if env_port:
         return int(env_port)
-    if _port_is_free(8000):
-        return 8000
+    if not _port_in_use(DEFAULT_PORT):
+        return DEFAULT_PORT
     port = _find_free_port()
-    logger.info("Port 8000 is busy; using free port %d instead", port)
+    logger.info("Port %d is already in use; using free port %d instead", DEFAULT_PORT, port)
     return port
 
 
 def _wait_for_health(base_url: str, timeout: float) -> bool:
-    """Poll ``<base_url>/health`` until it reports ok or ``timeout`` elapses."""
+    """Poll ``<base_url>/health`` until the backend answers or ``timeout`` elapses.
+
+    "warming" counts as up. The engine's first inference costs ~4s, and the UI
+    shows that as a transient notice — blocking here would trade a warm-up
+    message for four seconds of nothing at all.
+    """
     deadline = time.monotonic() + timeout
     health_url = f"{base_url}/health"
     while time.monotonic() < deadline:
@@ -85,7 +138,7 @@ def _wait_for_health(base_url: str, timeout: float) -> bool:
             with urllib.request.urlopen(health_url, timeout=2.0) as resp:
                 if resp.status == 200:
                     payload = json.loads(resp.read().decode("utf-8"))
-                    if payload.get("status") == "ok":
+                    if payload.get("status") in ("ok", "warming"):
                         return True
         except (urllib.error.URLError, ConnectionError, OSError, ValueError):
             pass  # Server not up yet — keep polling.
@@ -94,23 +147,40 @@ def _wait_for_health(base_url: str, timeout: float) -> bool:
 
 
 def main() -> int:
-    port = choose_port()
-    base_url = f"http://{HOST}:{port}"
+    server: uvicorn.Server | None = None
+    server_thread: threading.Thread | None = None
 
-    # Import the ASGI app here (triggers the one-time Kokoro model load) so any
-    # startup failure surfaces before we spawn threads or open a window.
-    try:
-        from app import app as asgi_app
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to import the Aloud backend app")
-        return 1
+    attach_port = find_running_backend()
+    if attach_port is not None:
+        # Someone (run.sh, another Aloud window) already owns this port. Point
+        # the window at them instead of racing for the same socket.
+        port = attach_port
+        base_url = f"http://{HOST}:{port}"
+        logger.info("Aloud backend already running at %s — attaching to it.", base_url)
+    else:
+        port = choose_port()
+        base_url = f"http://{HOST}:{port}"
 
-    config = uvicorn.Config(asgi_app, host=HOST, port=port, log_level="info")
-    server = uvicorn.Server(config)
+        # Import the ASGI app here (triggers the one-time Kokoro model load) so
+        # any startup failure surfaces before we spawn threads or open a window.
+        try:
+            from app import app as asgi_app
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to import the Aloud backend app")
+            return 1
 
-    # Run uvicorn in a daemon thread; the window (or headless wait) owns main.
-    server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
-    server_thread.start()
+        config = uvicorn.Config(asgi_app, host=HOST, port=port, log_level="info")
+        server = uvicorn.Server(config)
+
+        # Run uvicorn in a daemon thread; the window (or headless wait) owns main.
+        server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
+        server_thread.start()
+
+    def stop_server() -> None:
+        """Shut down the server we started. A no-op when we attached to another."""
+        if server is not None and server_thread is not None:
+            server.should_exit = True
+            server_thread.join(timeout=5.0)
 
     logger.info("Waiting for backend health at %s/health ...", base_url)
     if not _wait_for_health(base_url, HEALTH_TIMEOUT_SECS):
@@ -118,8 +188,7 @@ def main() -> int:
             "Backend did not become healthy within %.0fs — giving up.",
             HEALTH_TIMEOUT_SECS,
         )
-        server.should_exit = True
-        server_thread.join(timeout=5.0)
+        stop_server()
         return 1
 
     logger.info("Backend is healthy at %s/", base_url)
@@ -128,8 +197,7 @@ def main() -> int:
     if headless:
         # Smoke-test path: prove the server is up, print the URL, shut down.
         print(f"ALOUD_URL={base_url}/")
-        server.should_exit = True
-        server_thread.join(timeout=5.0)
+        stop_server()
         return 0
 
     # Open the native window on the MAIN thread (required on macOS).
@@ -146,8 +214,7 @@ def main() -> int:
         webview.start()
     finally:
         # Window closed (or start() raised): stop uvicorn and clean up.
-        server.should_exit = True
-        server_thread.join(timeout=5.0)
+        stop_server()
 
     return 0
 

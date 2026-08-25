@@ -23,16 +23,37 @@ Aloud/
 │   ├── voices.py         # voice metadata
 │   ├── models/           # kokoro-v1.0.onnx + voices-v1.0.bin (downloaded, git-ignored)
 │   └── .venv/            # Python 3.12 virtualenv (git-ignored)
-└── frontend/         # Vite + React + TypeScript reader
-    └── src/
-        ├── lib/pdf.ts        # PDF → sentences/paragraphs (pdf.js)
-        ├── lib/player.ts     # buffered audio playback engine
-        ├── lib/api.ts        # talks to the backend
-        ├── store.ts          # app state (zustand)
-        └── components/        # the reader UI
+├── frontend/         # Vite + React + TypeScript reader (PDFs)
+│   └── src/
+│       ├── lib/pdf.ts        # PDF → sentences/paragraphs (pdf.js)
+│       ├── lib/player.ts     # buffered audio playback engine
+│       ├── lib/api.ts        # talks to the backend
+│       ├── store.ts          # app state (zustand)
+│       └── components/       # the reader UI
+├── extension/        # Chrome extension — reads any web page aloud
+└── docs/             # PRD, execution PRD, and the pro-user review
 ```
 
-The frontend extracts text from the PDF in the browser, splits it into sentences, and asks the local backend to synthesize each one; audio plays back sentence-by-sentence with the active sentence highlighted.
+One backend, two clients. The **desktop reader** extracts text from a PDF in the browser, splits it into sentences, and asks the local backend to synthesize each one; audio plays sentence-by-sentence with the active sentence highlighted. The **extension** does the same for a live web page, without modifying it.
+
+## Read any web page — the extension
+
+`extension/` is a Manifest V3 Chrome extension that brings the same voice, the same reader-mode extraction and the same word-level highlight to anything you're reading in the browser.
+
+- **It doesn't touch the page.** Instead of wrapping sentences in `<span>`s — which breaks the site's CSS, its framework, and text selection — it builds a parallel offset index over the page's text nodes and paints highlights with the CSS Custom Highlight API.
+- **Reader-mode extraction.** A Readability-style scorer finds the article and skips the nav, ads, sidebars, comments, code blocks, footnote markers and citation lists.
+- **Click any sentence** to start reading from there. Selection reading and a right-click "Read selection aloud" are both supported.
+- **Minimal permissions.** `activeTab` only — the content script is injected when you ask for it, so installing Aloud doesn't grant it every site you visit.
+
+```bash
+cd extension
+npm install
+npm run build     # → extension/dist
+```
+
+Then load `extension/dist` at `chrome://extensions` → *Developer mode* → *Load unpacked*. Press <kbd>Alt</kbd>+<kbd>A</kbd> on any article, with the backend running.
+
+See [`extension/README.md`](./extension/README.md) for the full picture.
 
 ## Setup
 
@@ -96,6 +117,12 @@ This builds the frontend and produces **`Aloud.app`** at the repo root. Then:
 ## Privacy
 
 Everything runs on your machine. The only network access is the one-time voice-model download during setup. Your PDFs are never uploaded anywhere.
+
+## Where it's going
+
+- [`docs/UX-FEEDBACK.md`](./docs/UX-FEEDBACK.md) — a pro-user review of the current build, with measurements.
+- [`docs/PRD.md`](./docs/PRD.md) — the product plan it prompted: 1.1 Reliability, 1.5 The Library, 2.0 Mac Citizen.
+- [`docs/EXECUTION-PRD-1.1.md`](./docs/EXECUTION-PRD-1.1.md) — the file-level execution plan for release 1.1, including the frozen backend/client interface contract.
 
 ## Tech
 

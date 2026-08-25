@@ -89,10 +89,42 @@ export type PlayerStatus =
 
 export type Theme = 'light' | 'dark'
 
+/**
+ * Scheduling class for a synthesis request (backend contract v1.1).
+ *
+ * The backend serializes all synthesis behind a single worker, so a speculative
+ * prefetch queued a moment earlier would otherwise delay the sentence the user
+ * is actually waiting for. `now` jumps the queue; `prefetch` waits and is the
+ * only class subject to the queue bound.
+ */
+export type SynthesisPriority = 'now' | 'prefetch'
+
 /** Request body for POST /synthesize. */
 export interface SynthesizeRequest {
   text: string
   voice: string
   /** Playback rate multiplier, 0.5–2.0. Maps to Kokoro speed. */
   speed: number
+  /** Defaults to 'now' when omitted. */
+  priority?: SynthesisPriority
+}
+
+/**
+ * Liveness of the local speech engine.
+ *
+ * Distinguishing `warming` from `offline` matters: during warm-up the backend is
+ * healthy and about to work, and telling the user it is "offline" sends them to
+ * check a server that is fine (UX-FEEDBACK P0-1, F1.7).
+ */
+export type EngineState =
+  | 'unknown' // not probed yet
+  | 'ok' // model loaded and warm
+  | 'warming' // up, running its warm-up inference
+  | 'offline' // /health did not answer
+
+/** A transient, self-dismissing message. Recoverable problems use these. */
+export interface Toast {
+  /** Monotonic id; changing it re-triggers the display for a repeated message. */
+  id: number
+  text: string
 }

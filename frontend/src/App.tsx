@@ -25,7 +25,7 @@ export default function App() {
   const doc = useStore((s) => s.doc)
   const status = useStore((s) => s.status)
 
-  const setBackendOnline = useStore((s) => s.setBackendOnline)
+  const setEngineState = useStore((s) => s.setEngineState)
   const setVoices = useStore((s) => s.setVoices)
   const setVoiceId = useStore((s) => s.setVoiceId)
   const setDoc = useStore((s) => s.setDoc)
@@ -60,7 +60,7 @@ export default function App() {
     const check = async () => {
       const health = await getHealth() // never throws → { ok: false } when down
       if (cancelled) return
-      setBackendOnline(health.ok)
+      setEngineState(health.state)
       if (health.ok) {
         if (useStore.getState().voices.length === 0) await loadVoicesOnce()
         if (timer) {
@@ -72,7 +72,7 @@ export default function App() {
 
     check()
     timer = setInterval(() => {
-      if (useStore.getState().backendOnline) {
+      if (useStore.getState().engineState === 'ok') {
         if (timer) clearInterval(timer)
         timer = undefined
       } else {
@@ -84,7 +84,7 @@ export default function App() {
       cancelled = true
       if (timer) clearInterval(timer)
     }
-  }, [setBackendOnline, setVoices, setVoiceId])
+  }, [setEngineState, setVoices, setVoiceId])
 
   // ── PDF intake. ────────────────────────────────────────────────────────────
   const handleFile = useCallback(
