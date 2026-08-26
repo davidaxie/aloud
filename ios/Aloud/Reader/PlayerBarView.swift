@@ -62,7 +62,7 @@ struct PlayerBarView: View {
                     .onEnded { value in
                         let target = sentenceIndex(atX: value.location.x, width: width)
                         dragSentence = nil
-                        playback.seek(to: target, andPlay: isPlayingIntent)
+                        playback.seek(to: target, andPlay: playback.isActive)
                     }
             )
         }
@@ -225,9 +225,6 @@ struct PlayerBarView: View {
         return false
     }
 
-    /// Buffering counts as intent to play: scrubbing mid-buffer should keep going.
-    private var isPlayingIntent: Bool { isPlaying || isBuffering }
-
     private var liveFraction: Double {
         sentenceCount > 1
             ? Double(min(max(playback.currentSentence, 0), sentenceCount - 1))
@@ -294,7 +291,8 @@ struct PlayerBarView: View {
     private func step(_ delta: Int) {
         let target = min(max(playback.currentSentence + delta, 0), sentenceCount - 1)
         guard target != playback.currentSentence else { return }
-        playback.seek(to: target, andPlay: isPlayingIntent)
+        // Buffering counts as intent to play: stepping mid-buffer keeps going.
+        playback.seek(to: target, andPlay: playback.isActive)
     }
 
     private func sentenceIndex(atX x: CGFloat, width: CGFloat) -> Int {

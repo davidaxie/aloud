@@ -13,11 +13,10 @@ struct ReaderTextView: UIViewRepresentable {
     let fontSize: CGFloat
     let activeSentence: Int
     /// Token index (into `tokenizeSentence` of the active sentence) of the word
-    /// being spoken; -1 = none. Drives the color-only word tint.
+    /// being spoken; -1 = none. Drives the color-only word tint. The
+    /// word-highlight pref is folded in at the source (`ReaderScreen` passes
+    /// -1 while the pref is off), so this view has a single gate to honor.
     let activeWord: Int
-    /// Pref gate for the word tint (off by default: calm sentence pill only).
-    /// The tint is color-only — same font object, zero layout impact.
-    let wordHighlight: Bool
     let autoScroll: Bool
     /// True while audio is playing or buffering; drives the 6 s idle
     /// re-engage of auto-follow after a manual scroll.
@@ -60,6 +59,9 @@ struct ReaderTextView: UIViewRepresentable {
         if coordinator.builtHash != content.contentHash || coordinator.builtFontSize != fontSize {
             coordinator.rebuild(content: content, fontSize: fontSize)
             coordinator.setActiveSentence(activeSentence, scroll: false)
+            // Re-apply the word tint from CURRENT state — while paused no
+            // word tick arrives to restore it (mirrors rebuildForTraitChange).
+            coordinator.setActiveWord(activeWord)
             Task { @MainActor in coordinator.scrollToActiveSentence(force: true, animated: false) }
             return
         }
@@ -68,9 +70,8 @@ struct ReaderTextView: UIViewRepresentable {
             coordinator.setActiveSentence(activeSentence, scroll: autoScroll)
         }
 
-        let desiredWord = wordHighlight ? activeWord : -1
-        if coordinator.activeWordToken != desiredWord {
-            coordinator.setActiveWord(desiredWord)
+        if coordinator.activeWordToken != activeWord {
+            coordinator.setActiveWord(activeWord)
         }
 
         if coordinator.lastReturnTrigger != returnToPlayheadTrigger {
@@ -105,6 +106,17 @@ struct ReaderTextView: UIViewRepresentable {
         private var pendingInitialCenter = false
         /// Re-engages auto-follow 6 s after the user's last drag while playing.
         private var idleReturnTask: Task<Void, Never>?
+        /// Single source of truth for the manual-scroll grace: ordinary
+        /// auto-follow stays suppressed for this long after the user's last
+        /// touch, and the idle-return force fires at the same moment.
+        private static let idleReturnGrace: TimeInterval = 6
+        /// Cached bounding rect of the active sentence, so the per-frame
+        /// `updateScrolledAway` never forces TextKit layout. Invalidated on
+        /// sentence change, rebuild, and content-size change.
+        private var cachedActiveRect: CGRect?
+        /// Content height of the last layout pass; a jump means TextKit
+        /// swapped estimated line heights wholesale — re-verify centering.
+        private var lastContentHeight: CGFloat = 0
 
         // Word tint (color-only)
         private(set) var activeWordToken = -1
@@ -132,6 +144,7 @@ struct ReaderTextView: UIViewRepresentable {
             wordRangeCache = [:]
             activeWordRange = nil
             activeWordToken = -1
+            cachedActiveRect = nil
             pendingInitialCenter = true
         }
 
@@ -144,7 +157,7 @@ struct ReaderTextView: UIViewRepresentable {
             rebuild(content: parent.content, fontSize: parent.fontSize)
             pendingInitialCenter = false   // trait flip preserves the offset instead
             setActiveSentence(active, scroll: false)
-            setActiveWord(parent.wordHighlight ? parent.activeWord : -1)
+            setActiveWord(parent.activeWord)
             textView.setContentOffset(offset, animated: false)
         }
 
@@ -154,6 +167,7 @@ struct ReaderTextView: UIViewRepresentable {
             guard let textView else { return }
             if id != activeSentence {
                 setActiveWord(-1)   // never carry a word highlight across sentences
+                cachedActiveRect = nil
             }
             activeSentence = id
 
@@ -193,7 +207,6 @@ struct ReaderTextView: UIViewRepresentable {
                 in: textView.textStorage,
                 clearing: activeWordRange,
                 applying: newRange,
-                enabled: parent.wordHighlight,
                 bodyColor: UIColor(Theme.text),
                 accentColor: UIColor(Theme.accentStrong))
         }
@@ -235,9 +248,30 @@ struct ReaderTextView: UIViewRepresentable {
         /// region is actually laid out, which would otherwise strand the view
         /// a page off the playhead. Armed until a pass finds us centered;
         /// cancelled the moment the user drags.
+        ///
+        /// The same pass also watches content height: a jump means TextKit
+        /// swapped estimated line heights wholesale (accessibility snapshot,
+        /// deep layout resolving), which moves the content under a stationary
+        /// offset without any scroll callback. While actively following, that
+        /// re-arms this verify-until-centered pass instead of needing its own
+        /// correction path; either way the cached sentence rect is stale.
         func handleLayout() {
+            guard let textView else { return }
+            let height = textView.contentSize.height
+            if height != lastContentHeight {
+                cachedActiveRect = nil
+                if !pendingInitialCenter, lastContentHeight > 0,
+                   parent.isPlaying, parent.autoScroll, !parent.scrolledAway,
+                   Date() >= suppressAutoScrollUntil,
+                   !textView.isTracking, !textView.isDragging {
+                    pendingInitialCenter = true   // wholesale relayout mid-follow
+                }
+                lastContentHeight = height
+            }
+
             guard pendingInitialCenter, !isProgrammaticScroll,
-                  let textView, textView.bounds.height > 0,
+                  !textView.isTracking, !textView.isDragging,
+                  textView.bounds.height > 0,
                   let target = centeredTarget() else { return }
             guard abs(target.y - textView.contentOffset.y) > 1 else {
                 pendingInitialCenter = false   // geometry settled, centered
@@ -248,11 +282,13 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// Content offset that centers the active sentence under CURRENT
-        /// geometry; nil while its layout can't resolve yet.
+        /// geometry; nil while its layout can't resolve yet. Refreshes the
+        /// cached sentence rect as a side effect.
         private func centeredTarget() -> CGPoint? {
             guard let textView,
                   sentenceRanges.indices.contains(activeSentence),
                   let rect = boundingRect(for: sentenceRanges[activeSentence]) else { return nil }
+            cachedActiveRect = rect
             let visibleHeight = textView.bounds.height
                 - textView.adjustedContentInset.top - textView.adjustedContentInset.bottom
             var targetY = rect.midY - textView.adjustedContentInset.top - visibleHeight * 0.42
@@ -264,20 +300,24 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         func scrollToActiveSentence(force: Bool, animated: Bool) {
-            guard let textView, let target = centeredTarget() else { return }
+            guard let textView else { return }
+            // Never fight a finger that's on the text — force included (a
+            // play tap or idle return can land mid-drag via a second finger).
+            guard !textView.isTracking, !textView.isDragging else { return }
 
             if !force {
-                guard Date() >= suppressAutoScrollUntil,
-                      !textView.isTracking, !textView.isDragging else { return }
-            }
-
-            if force {
+                guard Date() >= suppressAutoScrollUntil else { return }
+            } else {
                 idleReturnTask?.cancel()
                 suppressAutoScrollUntil = .distantPast
-                // The target may rest on estimated layout (deep jump) —
-                // verify and correct on subsequent layout passes.
+                // Resolve estimated line heights up to the sentence so the
+                // target rests on CONFIRMED geometry (a deep jump would
+                // otherwise "settle" at a consistently-estimated offset),
+                // then keep verifying on subsequent layout passes.
+                ensureLayoutThroughActiveSentence()
                 pendingInitialCenter = true
             }
+            guard let target = centeredTarget() else { return }
             guard abs(target.y - textView.contentOffset.y) > 1 else {
                 updateScrolledAway()   // already centered: make sure no chip lingers
                 return
@@ -305,22 +345,24 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-            suppressAutoScrollUntil = Date().addingTimeInterval(2)
+            suppressAutoScrollUntil = Date().addingTimeInterval(Self.idleReturnGrace)
             scheduleIdleReturn()
         }
 
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            suppressAutoScrollUntil = Date().addingTimeInterval(2)
+            suppressAutoScrollUntil = Date().addingTimeInterval(Self.idleReturnGrace)
             scheduleIdleReturn()
         }
 
-        /// 6 s after the user's last touch, gently re-engage auto-follow —
-        /// but only while audio is playing and auto-scroll is on. The chip
-        /// remains for immediate manual return in the meantime.
+        /// `idleReturnGrace` seconds after the user's last touch, gently
+        /// re-engage auto-follow — but only while audio is playing and
+        /// auto-scroll is on. Ordinary per-sentence follow is suppressed for
+        /// the same window (one constant governs both), so the chip remains
+        /// for immediate manual return in the meantime.
         private func scheduleIdleReturn() {
             idleReturnTask?.cancel()
             idleReturnTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(Self.idleReturnGrace * 1_000_000_000))
                 guard let self, !Task.isCancelled else { return }
                 guard self.parent.isPlaying, self.parent.autoScroll else { return }
                 self.scrollToActiveSentence(force: true, animated: true)
@@ -332,10 +374,11 @@ struct ReaderTextView: UIViewRepresentable {
             updateScrolledAway()
         }
 
+        /// Runs on every scroll frame, so it must never force TextKit layout:
+        /// the sentence rect comes from the cache (measured at most once per
+        /// sentence/relayout) and the rest is bounds arithmetic.
         private func updateScrolledAway() {
-            guard let textView,
-                  sentenceRanges.indices.contains(activeSentence),
-                  let rect = boundingRect(for: sentenceRanges[activeSentence]) else { return }
+            guard let textView, let rect = activeSentenceRect() else { return }
             let visible = CGRect(x: 0, y: textView.contentOffset.y,
                                  width: textView.bounds.width, height: textView.bounds.height)
                 .inset(by: textView.adjustedContentInset)
@@ -394,6 +437,32 @@ struct ReaderTextView: UIViewRepresentable {
                 return fragmentStart + index
             }
             return nil
+        }
+
+        /// Cached bounding rect of the active sentence (see `cachedActiveRect`).
+        private func activeSentenceRect() -> CGRect? {
+            if let cachedActiveRect { return cachedActiveRect }
+            guard sentenceRanges.indices.contains(activeSentence),
+                  let rect = boundingRect(for: sentenceRanges[activeSentence]) else { return nil }
+            cachedActiveRect = rect
+            return rect
+        }
+
+        /// One-shot layout from the document start through the active
+        /// sentence's end, so its measured frame no longer floats on
+        /// estimated heights of everything above it. Called on force-centers
+        /// only (user actions / verify retries), never per scroll frame.
+        private func ensureLayoutThroughActiveSentence() {
+            guard let textView,
+                  let layoutManager = textView.textLayoutManager,
+                  let contentManager = layoutManager.textContentManager,
+                  sentenceRanges.indices.contains(activeSentence) else { return }
+            let range = sentenceRanges[activeSentence]
+            let start = layoutManager.documentRange.location
+            guard let end = contentManager.location(start, offsetBy: range.location + range.length),
+                  let textRange = NSTextRange(location: start, end: end) else { return }
+            layoutManager.ensureLayout(for: textRange)
+            cachedActiveRect = nil   // measurements may have shifted
         }
 
         private func boundingRect(for range: NSRange) -> CGRect? {
@@ -523,28 +592,27 @@ final class ReaderUITextView: UITextView {
 /// Pure `NSMutableAttributedString` logic so unit tests can pin the contract.
 enum ReaderWordHighlightStyle {
 
-    /// Clears the tint from `oldRange` (restoring `bodyColor`) and, when
-    /// `enabled`, tints `newRange` with `accentColor`. Returns the range now
-    /// tinted (nil when disabled or `newRange` is nil) for the caller to
-    /// remember as the next `oldRange`.
+    /// Clears the tint from `oldRange` (restoring `bodyColor`) and tints
+    /// `newRange` with `accentColor`. Returns the range now tinted (nil when
+    /// `newRange` is nil) for the caller to remember as the next `oldRange`.
+    /// The word-highlight pref is folded in upstream (`ReaderScreen` passes
+    /// no word while it's off), so there is no `enabled` gate here.
     @discardableResult
     static func apply(in storage: NSMutableAttributedString,
                       clearing oldRange: NSRange?,
                       applying newRange: NSRange?,
-                      enabled: Bool,
                       bodyColor: UIColor,
                       accentColor: UIColor) -> NSRange? {
-        let target = enabled ? newRange : nil
-        guard target != oldRange else { return target }
+        guard newRange != oldRange else { return newRange }
 
         storage.beginEditing()
         if let old = oldRange {
             storage.addAttribute(.foregroundColor, value: bodyColor, range: old)
         }
-        if let new = target {
+        if let new = newRange {
             storage.addAttribute(.foregroundColor, value: accentColor, range: new)
         }
         storage.endEditing()
-        return target
+        return newRange
     }
 }

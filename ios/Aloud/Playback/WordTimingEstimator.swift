@@ -22,10 +22,12 @@ enum WordTimingEstimator {
     /// Lay the clip's duration out over the sentence's tokens by weight.
     ///
     /// Whitespace tokens (weight 0) carry no window. When `skipBrackets` is
-    /// on, skippable (fully bracketed) tokens are omitted from BOTH the
-    /// weight total and the layout — they aren't in the spoken audio, so
-    /// giving them no window keeps every remaining window aligned and
-    /// ensures they can never be reported as the active word.
+    /// on, skippable tokens are omitted from BOTH the weight total and the
+    /// layout — the spoken-token set comes from
+    /// `SentenceSegmenter.isSpoken`, the same predicate `spokenText` uses
+    /// to build the synthesized string, so timing and audio can never
+    /// disagree. A fully skippable sentence synthesizes to empty text and
+    /// plays as a short silence; it gets no windows here (`total == 0`).
     ///
     /// Windows are contiguous, monotonically increasing, start at 0 and end
     /// exactly at `duration`. Returns `[]` for empty input or a
@@ -35,20 +37,12 @@ enum WordTimingEstimator {
                         skipBrackets: Bool) -> [WordWindow] {
         guard duration.isFinite, duration > 0 else { return [] }
 
-        // Mirror `SentenceSegmenter.spokenText`: when skipping would silence
-        // the whole sentence, the original is spoken in full — so time is
-        // laid over every weighted token again.
-        var effectiveSkip = skipBrackets
         func spoken(_ token: WordToken) -> Bool {
-            token.weight > 0 && !(effectiveSkip && token.isSkippable)
+            token.weight > 0 && SentenceSegmenter.isSpoken(token, skipBrackets: skipBrackets)
         }
 
         var total = 0.0
         for token in tokens where spoken(token) { total += token.weight }
-        if total == 0, skipBrackets {
-            effectiveSkip = false
-            for token in tokens where spoken(token) { total += token.weight }
-        }
         guard total > 0 else { return [] }
 
         var result: [WordWindow] = []

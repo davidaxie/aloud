@@ -128,7 +128,7 @@ final class SleepTimer: ObservableObject {
 
     private func sentenceChanged(_ sentence: Int) {
         guard option == .endOfChapter else { return }
-        let live = playback?.status == .playing || playback?.status == .buffering
+        let live = playback?.isActive == true
         if live {
             if sentence > chapterBoundary { fire() }
         } else {

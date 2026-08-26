@@ -159,6 +159,34 @@ final class SentenceSegmenterTests: XCTestCase {
                        "Result holds, done.")
     }
 
+    func testPunctuationGluedToCloserSurvivesSkip() {
+        // The span is removed at character-range granularity, so punctuation
+        // hugging the closer is kept — no "Result 2), holds." fragments.
+        XCTAssertEqual(SentenceSegmenter.spokenText("Result (see fig. 2), holds.", skipBrackets: true),
+                       "Result, holds.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("as predicted [12].", skipBrackets: true),
+                       "as predicted.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("He paused (quietly), then left.", skipBrackets: true),
+                       "He paused, then left.")
+    }
+
+    func testOrphanedLeadingCommaDroppedWithLeadingSpan() {
+        XCTAssertEqual(SentenceSegmenter.spokenText("(However), we left.", skipBrackets: true),
+                       "we left.")
+    }
+
+    func testGluedSpanStaysWhileFreeSpanDrops() {
+        // "(s)" is glued to a word character and must survive; "(draft)"
+        // stands free and is dropped.
+        XCTAssertEqual(SentenceSegmenter.spokenText("Save item(s) and (draft) notes.", skipBrackets: true),
+                       "Save item(s) and notes.")
+    }
+
+    func testTokenizationNonDestructiveWithGluedPunctuation() {
+        let text = "Result (see fig. 2), holds [12]. done"
+        XCTAssertEqual(SentenceSegmenter.tokenizeSentence(text).map(\.text).joined(), text)
+    }
+
     // MARK: - Special-case skipping
 
     func testCitationMarkersSkipped() {
@@ -178,10 +206,18 @@ final class SentenceSegmenterTests: XCTestCase {
     func testStandaloneFootnoteMarkersSkipped() {
         XCTAssertEqual(SentenceSegmenter.spokenText("The result † holds everywhere.", skipBrackets: true),
                        "The result holds everywhere.")
-        XCTAssertEqual(SentenceSegmenter.spokenText("A rule * with an exception.", skipBrackets: true),
-                       "A rule with an exception.")
         XCTAssertEqual(SentenceSegmenter.spokenText("Doubly noted †† here.", skipBrackets: true),
                        "Doubly noted here.")
+    }
+
+    func testStandaloneAsteriskStaysSpoken() {
+        // A free-standing "*" is ambiguous (multiplication, emphasis, scene
+        // breaks) so it is never treated as a footnote marker — only daggers.
+        XCTAssertEqual(SentenceSegmenter.spokenText("2 * 3 = 6", skipBrackets: true),
+                       "2 * 3 = 6")
+        XCTAssertEqual(SentenceSegmenter.spokenText("A rule * with an exception.", skipBrackets: true),
+                       "A rule * with an exception.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("† *", skipBrackets: true), "*")
     }
 
     func testGluedFootnoteMarkerStaysSpoken() {
@@ -190,15 +226,19 @@ final class SentenceSegmenterTests: XCTestCase {
                        "word† stays")
     }
 
-    func testFullSentenceParenthesesSpokenInFull() {
-        let text = "(An entire aside of a sentence.)"
-        XCTAssertEqual(SentenceSegmenter.spokenText(text, skipBrackets: true), text)
+    func testFullyBracketedSentenceSilenced() {
+        // A sentence skipping empties returns "" — the playback layer plays a
+        // short silence for it and advances, so the aside is never read aloud.
+        XCTAssertEqual(SentenceSegmenter.spokenText("(An entire aside of a sentence.)", skipBrackets: true),
+                       "")
     }
 
-    func testEmptyResultGuardSpeaksOriginal() {
-        XCTAssertEqual(SentenceSegmenter.spokenText("[12]", skipBrackets: true), "[12]")
-        XCTAssertEqual(SentenceSegmenter.spokenText("† *", skipBrackets: true), "† *")
-        XCTAssertEqual(SentenceSegmenter.spokenText("[1] (2) {3}", skipBrackets: true), "[1] (2) {3}")
+    func testCitationOnlySentencesSilenced() {
+        XCTAssertEqual(SentenceSegmenter.spokenText("[12]", skipBrackets: true), "")
+        XCTAssertEqual(SentenceSegmenter.spokenText("[Illustration: The White Rabbit]", skipBrackets: true),
+                       "")
+        XCTAssertEqual(SentenceSegmenter.spokenText("[1] (2) {3}", skipBrackets: true), "")
+        XCTAssertEqual(SentenceSegmenter.spokenText("† ‡", skipBrackets: true), "")
     }
 
     func testTokenizationNonDestructiveWithMarkers() {

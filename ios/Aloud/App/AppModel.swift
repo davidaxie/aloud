@@ -29,7 +29,11 @@ final class AppModel: ObservableObject {
     /// Color-only tint of the spoken word in the reader. OFF by default —
     /// the default experience is the calm sentence pill only.
     @Published var wordHighlight: Bool {
-        didSet { UserDefaults.standard.set(wordHighlight, forKey: PrefKey.wordHighlight) }
+        didSet {
+            UserDefaults.standard.set(wordHighlight, forKey: PrefKey.wordHighlight)
+            // The controller gates its 30 fps word-timing display link on this.
+            playback.wordHighlightEnabled = wordHighlight
+        }
     }
 
     private var cancellables: Set<AnyCancellable> = []
@@ -56,18 +60,17 @@ final class AppModel: ObservableObject {
         nowPlaying.configure(playback: playback, store: documentStore)
         autoScroll = defaults.object(forKey: PrefKey.autoScroll) as? Bool ?? true
         wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
+        playback.wordHighlightEnabled = wordHighlight   // didSet doesn't fire in init
 
-        #if DEBUG
-        // UI-test hook: start from a clean voice preference.
-        if ProcessInfo.processInfo.arguments.contains("-uitest-reset-voice-pref") {
+        // UI-test hook (no-op in Release): start from a clean voice preference.
+        if UITestHooks.resetVoicePref {
             defaults.removeObject(forKey: PrefKey.voiceID)
         }
-        #endif
 
         migratePreferences(defaults)
         restorePreferences(from: defaults)
         persistPreferenceChanges(to: defaults)
-        observeModelRemoval()
+        observeModelState()
         observeMemoryWarnings()
 
         // Persist progress even when playback continues outside the reader.
@@ -81,13 +84,11 @@ final class AppModel: ObservableObject {
         guard !didRunLaunchTasks else { return }
         didRunLaunchTasks = true
 
-        #if DEBUG
-        // UI-test hook: seed the library with the first bookshelf classic.
-        if ProcessInfo.processInfo.arguments.contains("-uitest-seed-first-classic"),
-           let first = bookshelf.first {
+        // UI-test hook (no-op in Release): seed the library with the first
+        // bookshelf classic.
+        if UITestHooks.seedFirstClassic, let first = bookshelf.first {
             _ = try? await documentStore.addClassic(first)
         }
-        #endif
     }
 
     /// Scene-phase hook (from RootView): a backgrounded, non-playing app
@@ -99,9 +100,12 @@ final class AppModel: ObservableObject {
 
     // MARK: - Model lifecycle
 
-    /// Model deleted (or download reverted) while a Kokoro voice is active →
-    /// drop back to the system default voice and free the engine.
-    private func observeModelRemoval() {
+    /// Tracks install-state transitions both ways. Model deleted (or download
+    /// reverted) while a Kokoro voice is active → drop back to the system
+    /// voice (a stand-in — the stored pref survives) and free the engine.
+    /// Model installed mid-session → re-engage the voice preference so the
+    /// neural default speaks without a relaunch.
+    private func observeModelState() {
         modelManager.$state
             .map { state -> Bool in
                 if case .installed = state { return true }
@@ -109,17 +113,34 @@ final class AppModel: ObservableObject {
             }
             .removeDuplicates()
             .dropFirst()
-            .filter { !$0 }
-            .sink { [weak self] _ in
+            .sink { [weak self] installed in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if self.playback.voice.engine == .kokoro {
-                        self.playback.voice = self.engine.defaultVoice
+                    if installed {
+                        self.handleModelInstalled()
+                    } else {
+                        if self.playback.voice.engine == .kokoro {
+                            self.playback.voice = self.engine.defaultVoice   // stand-in; pref kept
+                        }
+                        self.kokoroEngine.release()
                     }
-                    self.kokoroEngine.release()
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// The model just installed: re-apply the resolved preference — the
+    /// stored Kokoro pref the system voice was standing in for, an explicit
+    /// "system" choice (which stays put), or the neural default when nothing
+    /// was ever chosen. A retired Kokoro id's upgrade to the current default
+    /// becomes final now, so persist that resolution once.
+    private func handleModelInstalled() {
+        let defaults = UserDefaults.standard
+        let resolved = resolvedVoicePreference(from: defaults)
+        playback.voice = resolved
+        if let stored = defaults.string(forKey: PrefKey.voiceID), stored != resolved.id {
+            defaults.set(resolved.id, forKey: PrefKey.voiceID)
+        }
     }
 
     private func observeMemoryWarnings() {
@@ -145,20 +166,24 @@ final class AppModel: ObservableObject {
     }
 
     /// One-shot versioned migrations, guarded by `migratedV2`.
-    /// V2: skip-brackets became the default (existing installs flip to ON
-    /// once; anything the user chooses afterwards stands), and the voice
-    /// roster was curated to eight — a stored id outside the roster (a
-    /// retired Kokoro speaker, an old system voice) remaps to the new
-    /// default once.
+    /// V2: skip-brackets became the default — an install that had explicitly
+    /// turned it OFF flips to ON once (an unset value keeps following the
+    /// compiled-in default, so future default changes still flow), and the
+    /// system roster collapsed to the single stable "system" id — a stored
+    /// concrete AVSpeech identifier becomes "system" so the pref survives
+    /// installed-voice changes. Retired Kokoro ids are deliberately NOT
+    /// rewritten here: `resolveVoicePreference` maps them per launch, and the
+    /// upgrade to the current default only persists once a model install
+    /// makes it final (`handleModelInstalled`).
     private func migratePreferences(_ defaults: UserDefaults) {
         guard !defaults.bool(forKey: PrefKey.migratedV2) else { return }
-        defaults.set(true, forKey: PrefKey.skipBrackets)
-        let curated = kokoroEngine.voices + engine.voices
+        if defaults.object(forKey: PrefKey.skipBrackets) != nil {
+            defaults.set(true, forKey: PrefKey.skipBrackets)
+        }
         if let voiceID = defaults.string(forKey: PrefKey.voiceID),
-           !curated.contains(where: { $0.id == voiceID }) {
-            let preferred = modelManager.isInstalled
-                ? kokoroEngine.defaultVoice : engine.defaultVoice
-            defaults.set(preferred.id, forKey: PrefKey.voiceID)
+           !voiceID.hasPrefix(KokoroVoiceCatalog.voiceIDPrefix),
+           voiceID != AVSpeechEngine.systemVoiceID {
+            defaults.set(AVSpeechEngine.systemVoiceID, forKey: PrefKey.voiceID)
         }
         defaults.set(true, forKey: PrefKey.migratedV2)
     }
@@ -170,23 +195,39 @@ final class AppModel: ObservableObject {
         if let skip = defaults.object(forKey: PrefKey.skipBrackets) as? Bool {
             playback.skipBrackets = skip
         }
-        restoreVoice(from: defaults)
+        applyVoicePreference(resolvedVoicePreference(from: defaults))
     }
 
-    /// Restores the voice preference against the curated roster (stale ids
-    /// were already remapped by `migratePreferences`). Kokoro voices only
-    /// restore while the model is installed; a curated Kokoro pref without
-    /// the model keeps its stored id and the system voice silently stands in
-    /// (it restores itself when the model installs).
-    private func restoreVoice(from defaults: UserDefaults) {
-        let curated = kokoroEngine.voices + engine.voices
-        let preferredDefault = modelManager.isInstalled
-            ? kokoroEngine.defaultVoice : engine.defaultVoice
-        guard let voiceID = defaults.string(forKey: PrefKey.voiceID),
-              let voice = curated.first(where: { $0.id == voiceID }) else {
-            playback.voice = preferredDefault
-            return
-        }
+    // MARK: - Voice preference
+
+    /// Pure resolution of a stored voice id against the curated roster:
+    /// a curated id maps to its voice; a retired Kokoro speaker maps to the
+    /// neural default; any other id (a legacy concrete AVSpeech identifier)
+    /// maps to the stable system voice; nothing stored means the preferred
+    /// default for the device. Static so it's unit-testable.
+    nonisolated static func resolveVoicePreference(storedID: String?,
+                                                   curated: [TtsVoice],
+                                                   neuralDefault: TtsVoice,
+                                                   systemDefault: TtsVoice,
+                                                   modelInstalled: Bool) -> TtsVoice {
+        guard let storedID else { return modelInstalled ? neuralDefault : systemDefault }
+        if let voice = curated.first(where: { $0.id == storedID }) { return voice }
+        return storedID.hasPrefix(KokoroVoiceCatalog.voiceIDPrefix)
+            ? neuralDefault : systemDefault
+    }
+
+    private func resolvedVoicePreference(from defaults: UserDefaults) -> TtsVoice {
+        Self.resolveVoicePreference(storedID: defaults.string(forKey: PrefKey.voiceID),
+                                    curated: kokoroEngine.voices + engine.voices,
+                                    neuralDefault: kokoroEngine.defaultVoice,
+                                    systemDefault: engine.defaultVoice,
+                                    modelInstalled: modelManager.isInstalled)
+    }
+
+    /// Applies a resolved preference: Kokoro voices only engage while the
+    /// model is installed — otherwise the system voice silently stands in
+    /// and the stored pref survives (`handleModelInstalled` re-engages it).
+    private func applyVoicePreference(_ voice: TtsVoice) {
         if voice.engine == .kokoro, !modelManager.isInstalled {
             playback.voice = engine.defaultVoice   // stand-in; pref kept
         } else {
@@ -194,6 +235,10 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Rate and skip-brackets persist on every change; the voice persists
+    /// only through `voiceSelections` — deliberate picker choices — so
+    /// temporary fallbacks (the pre-install stand-in, neural-failure
+    /// degradation) never overwrite the stored preference.
     private func persistPreferenceChanges(to defaults: UserDefaults) {
         playback.$rate
             .dropFirst()
@@ -207,10 +252,8 @@ final class AppModel: ObservableObject {
             .sink { defaults.set($0, forKey: PrefKey.skipBrackets) }
             .store(in: &cancellables)
 
-        playback.$voice
-            .dropFirst()
+        playback.voiceSelections
             .map(\.id)
-            .removeDuplicates()
             .sink { defaults.set($0, forKey: PrefKey.voiceID) }
             .store(in: &cancellables)
     }

@@ -14,18 +14,25 @@ final class ScreenshotCaptureTests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// Host-side marker file the screenshot RUNNER writes immediately before
+    /// each capture invocation (fallback for when TEST_RUNNER_ env
+    /// passthrough is unreliable): its contents are the absolute shots
+    /// directory path. Per-invocation intent, not machine state — the test
+    /// consumes (deletes) it on read, and ignores markers older than
+    /// 30 minutes so a stale leftover can never silently convert a normal
+    /// test run into a screenshot run.
+    private static let markerPath = "/private/tmp/aloud-shots-request.txt"
+    private static let markerMaxAge: TimeInterval = 30 * 60
+
     func testCaptureScreens() throws {
-        // Opt-in via env var, or — since TEST_RUNNER_ env passthrough is
-        // unreliable — via a host-side marker file next to the shots
+        // Opt-in via env var (preferred: TEST_RUNNER_ALOUD_SHOTS_DIR on the
+        // xcodebuild invocation), or via the fresh host-side marker file
         // (the simulator runtime reads host Mac paths directly, same
-        // mechanism KokoroPlaybackUITest uses for the model directory):
-        // the marker file's contents are the absolute shots directory path.
-        let markerPath = "/private/tmp/aloud-shots-request.txt"
+        // mechanism KokoroPlaybackUITest uses for the model directory).
         let requested = ProcessInfo.processInfo.environment["ALOUD_SHOTS_DIR"]
-            ?? (try? String(contentsOfFile: markerPath, encoding: .utf8))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? Self.consumeMarker()
         guard let shotsDir = requested, !shotsDir.isEmpty else {
-            throw XCTSkip("ALOUD_SHOTS_DIR not set and no marker file — screenshot capture is opt-in")
+            throw XCTSkip("ALOUD_SHOTS_DIR not set and no fresh marker file — screenshot capture is opt-in")
         }
 
         XCUIDevice.shared.appearance = .light
@@ -172,6 +179,18 @@ final class ScreenshotCaptureTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// Read-and-delete the runner's marker file. Deleting even a stale
+    /// marker keeps the machine clean; only a fresh one opts in.
+    private static func consumeMarker() -> String? {
+        let fm = FileManager.default
+        guard let attributes = try? fm.attributesOfItem(atPath: markerPath),
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        defer { try? fm.removeItem(atPath: markerPath) }   // consume on read
+        guard Date().timeIntervalSince(modified) < markerMaxAge else { return nil }
+        return (try? String(contentsOfFile: markerPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func shot() -> Data {
         XCUIScreen.main.screenshot().pngRepresentation
     }
@@ -179,12 +198,5 @@ final class ScreenshotCaptureTests: XCTestCase {
     private func save(_ data: Data, to path: String) {
         XCTAssertNoThrow(try data.write(to: URL(fileURLWithPath: path)),
                          "Should write screenshot to \(path)")
-    }
-
-    private func waitForValue(_ expected: String, of element: XCUIElement,
-                              timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "value == %@", expected)
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 }

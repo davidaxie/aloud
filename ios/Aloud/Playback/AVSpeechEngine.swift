@@ -4,36 +4,79 @@ import Foundation
 /// System-voice engine. Synthesizes with `AVSpeechSynthesizer.write` into mono
 /// Float32 PCM so system and neural voices share one playback path.
 ///
-/// Exposes exactly one voice — "System voice", the best installed English
-/// voice — which exists purely as the fallback before the neural model is
-/// installed and on low-memory devices.
+/// Exposes exactly one voice — "System voice", with the stable id `system` —
+/// which exists purely as the fallback before the neural model is installed
+/// and on low-memory devices. The concrete AVSpeech voice behind it is
+/// resolved per synthesis (`bestSystemVoice`), so a persisted preference
+/// survives any change to the device's installed-voice set.
 final class AVSpeechEngine: TtsEngine {
+
+    /// Stable roster/preference id of the single "System voice" entry —
+    /// never a concrete `AVSpeechSynthesisVoice` identifier, which changes
+    /// whenever the user adds or removes voices in iOS Settings.
+    static let systemVoiceID = "system"
 
     let voices: [TtsVoice]
     let defaultVoice: TtsVoice
 
     init() {
-        // Best installed voice: English first, then premium > enhanced >
-        // default, then name — surfaced as the single "System voice" entry.
-        let best = AVSpeechSynthesisVoice.speechVoices()
-            .map(TtsVoice.init(systemVoice:))
-            .sorted { lhs, rhs in
-                let lhsEnglish = lhs.lang.hasPrefix("en")
-                let rhsEnglish = rhs.lang.hasPrefix("en")
-                if lhsEnglish != rhsEnglish { return lhsEnglish }
-                if lhs.quality != rhs.quality { return lhs.quality > rhs.quality }
-                return lhs.name < rhs.name
-            }
-            .first
         defaultVoice = TtsVoice(
-            id: best?.id ?? "com.apple.ttsbundle.siri_female_en-US_compact",
+            id: Self.systemVoiceID,
             name: "System voice",
-            lang: best?.lang ?? "en-US",
-            gender: best?.gender ?? "",
+            lang: "en-US",
+            gender: "",
             engine: .avSpeech,
-            quality: best?.quality ?? 1,
+            quality: 1,
             subtitle: "Built-in fallback")
         voices = [defaultVoice]
+    }
+
+    // MARK: - Best-voice resolution
+
+    /// A rankable installed voice — plain values so the ranking is unit-testable.
+    struct VoiceCandidate {
+        let name: String
+        let language: String
+        /// 3 premium, 2 enhanced, 1 default.
+        let quality: Int
+        /// The OS's own pick for the user's locale — tie-break within a tier.
+        var isLocaleDefault: Bool = false
+    }
+
+    /// Novelty/character voices Apple ships at `.default` quality (Albert
+    /// sorts first alphabetically on a stock device!). Never a sensible
+    /// reading voice, so they rank below every regular voice. The compact
+    /// Eloquence voices are robotic but legitimate — not listed here.
+    static let noveltyVoiceNames: Set<String> = [
+        "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos",
+        "Deranged", "Fred", "Good News", "Hysterical", "Jester", "Organ",
+        "Pipe Organ", "Superstar", "Trinoids", "Whisper", "Wobble", "Zarvox",
+    ]
+
+    /// Strict weak ordering for `min(by:)`: English first, then premium >
+    /// enhanced > default, then regular voices before novelty ones, then the
+    /// locale's own default voice, then name.
+    static func ranks(_ lhs: VoiceCandidate, above rhs: VoiceCandidate) -> Bool {
+        let lhsEnglish = lhs.language.hasPrefix("en")
+        let rhsEnglish = rhs.language.hasPrefix("en")
+        if lhsEnglish != rhsEnglish { return lhsEnglish }
+        if lhs.quality != rhs.quality { return lhs.quality > rhs.quality }
+        let lhsNovelty = noveltyVoiceNames.contains(lhs.name)
+        let rhsNovelty = noveltyVoiceNames.contains(rhs.name)
+        if lhsNovelty != rhsNovelty { return rhsNovelty }
+        if lhs.isLocaleDefault != rhs.isLocaleDefault { return lhs.isLocaleDefault }
+        return lhs.name < rhs.name
+    }
+
+    /// The best installed voice right now — resolved per synthesis call so it
+    /// tracks the live installed-voice set. Single pass; no sorted array
+    /// (only the winner is ever used).
+    static func bestSystemVoice() -> AVSpeechSynthesisVoice? {
+        let localeDefaultID = AVSpeechSynthesisVoice(language: "en-US")?.identifier
+        return AVSpeechSynthesisVoice.speechVoices().min { lhs, rhs in
+            ranks(VoiceCandidate(lhs, localeDefaultID: localeDefaultID),
+                  above: VoiceCandidate(rhs, localeDefaultID: localeDefaultID))
+        }
     }
 
     /// Always synthesizes at the default speech rate — playback rate handles speed.
@@ -44,7 +87,13 @@ final class AVSpeechEngine: TtsEngine {
 
         let utterance = AVSpeechUtterance(string: trimmed)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        utterance.voice = AVSpeechSynthesisVoice(identifier: voice.id)
+        // The stable "system" id resolves to the best installed voice at
+        // synthesis time; a concrete identifier (legacy pref) still resolves
+        // directly while that voice remains installed.
+        let concrete = voice.id == Self.systemVoiceID
+            ? nil : AVSpeechSynthesisVoice(identifier: voice.id)
+        utterance.voice = concrete
+            ?? Self.bestSystemVoice()
             ?? AVSpeechSynthesisVoice(language: voice.lang)
 
         let session = WriteSession()
@@ -165,25 +214,17 @@ private final class WriteSession: @unchecked Sendable {
 
 // MARK: - Mapping
 
-private extension TtsVoice {
-    init(systemVoice voice: AVSpeechSynthesisVoice) {
+private extension AVSpeechEngine.VoiceCandidate {
+    init(_ voice: AVSpeechSynthesisVoice, localeDefaultID: String?) {
         let quality: Int
         switch voice.quality {
         case .premium: quality = 3
         case .enhanced: quality = 2
         default: quality = 1
         }
-        let gender: String
-        switch voice.gender {
-        case .male: gender = "male"
-        case .female: gender = "female"
-        default: gender = ""
-        }
-        self.init(id: voice.identifier,
-                  name: voice.name,
-                  lang: voice.language,
-                  gender: gender,
-                  engine: .avSpeech,
-                  quality: quality)
+        self.init(name: voice.name,
+                  language: voice.language,
+                  quality: quality,
+                  isLocaleDefault: voice.identifier == localeDefaultID)
     }
 }

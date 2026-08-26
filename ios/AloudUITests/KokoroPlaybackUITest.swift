@@ -79,13 +79,4 @@ final class KokoroPlaybackUITest: XCTestCase {
         XCTAssertTrue(voiceChip.label.contains("Heart"),
                       "Voice should remain Kokoro Heart after advancing")
     }
-
-    // MARK: - Helpers
-
-    private func waitForValue(_ expected: String, of element: XCUIElement,
-                              timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "value == %@", expected)
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
-    }
 }

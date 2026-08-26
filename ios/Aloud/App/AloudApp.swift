@@ -6,15 +6,6 @@ struct AloudApp: App {
     @AppStorage(AppearancePreference.prefKey)
     private var appearanceRaw = AppearancePreference.system.rawValue
 
-    /// `-uitest-force-dark` / `-uitest-force-light` pin the scheme (testing
-    /// only); otherwise the system setting governs.
-    private static var forcedColorScheme: ColorScheme? {
-        let args = ProcessInfo.processInfo.arguments
-        if args.contains("-uitest-force-dark") { return .dark }
-        if args.contains("-uitest-force-light") { return .light }
-        return nil
-    }
-
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -23,8 +14,9 @@ struct AloudApp: App {
                 .environmentObject(model.playback)
                 .environmentObject(model.modelManager)
                 // simctl's appearance flip is unreliable on this runtime; UI
-                // tests and screenshot capture force a scheme explicitly.
-                .preferredColorScheme(Self.forcedColorScheme
+                // tests and screenshot capture force a scheme explicitly
+                // (DEBUG builds only — the hook is a no-op in Release).
+                .preferredColorScheme(UITestHooks.forcedColorScheme
                     ?? AppearancePreference(rawValue: appearanceRaw)?.colorScheme)
         }
     }

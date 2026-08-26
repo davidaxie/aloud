@@ -67,16 +67,15 @@ struct LibraryView: View {
                 .presentationDetents([.medium, .large])
         }
         .onReceive(store.$documents) { documents in
-            #if DEBUG
-            // Screenshot/debug hook: jump straight into the first document.
-            guard ProcessInfo.processInfo.arguments.contains("-uitest-open-first-doc"),
+            // Screenshot/debug hook (no-op in Release): jump straight into
+            // the first document.
+            guard UITestHooks.openFirstDoc,
                   !didAutoOpen, let first = documents.first else { return }
             didAutoOpen = true
             Task {   // let the NavigationStack attach before pushing
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 open(first)
             }
-            #endif
         }
         .onChange(of: importer.completed?.id) { _ in
             guard let document = importer.completed else { return }

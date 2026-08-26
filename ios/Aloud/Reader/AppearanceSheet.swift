@@ -159,18 +159,11 @@ struct AppearanceSheet: View {
     /// Color-only tint of the spoken word. Off by default — the calm
     /// sentence pill is the default experience.
     private var wordHighlightRow: some View {
-        Toggle(isOn: $model.wordHighlight) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Word highlight")
-                    .font(Theme.ui(15, weight: .medium))
-                    .foregroundStyle(Theme.text)
-                Text("Tint each word as it's spoken.")
-                    .font(Theme.ui(13))
-                    .foregroundStyle(Theme.textMuted)
-            }
-        }
-        .tint(Theme.accent)
-        .accessibilityIdentifier("appearance.wordHighlight")
+        PreferenceToggleRow(title: PreferenceCopy.wordHighlightTitle,
+                            subtitle: PreferenceCopy.wordHighlightSubtitle,
+                            titleFont: Theme.ui(15, weight: .medium),
+                            isOn: $model.wordHighlight)
+            .accessibilityIdentifier("appearance.wordHighlight")
     }
 
     // MARK: - Shared

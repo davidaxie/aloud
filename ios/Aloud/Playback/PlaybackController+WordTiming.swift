@@ -93,11 +93,14 @@ extension PlaybackController {
         wordTiming.onTick = { [weak self] in self?.wordTimingTick() }
     }
 
-    /// Hook from `status.didSet`: the link runs only while audio actually plays.
-    /// Pausing freezes the highlight on the last word (web behavior); seeks and
-    /// stops clear it via the `currentSentence`/`reset` paths.
+    /// Hook from `status.didSet` and `wordHighlightEnabled.didSet`: the link
+    /// runs only while audio actually plays AND the word tint is on — its sole
+    /// consumer. (Lock-screen elapsed time rides the once-per-sentence
+    /// `currentSentence` heartbeat, not this link.) Pausing freezes the
+    /// highlight on the last word (web behavior); seeks and stops clear it via
+    /// the `currentSentence`/`reset` paths.
     func wordTimingStatusChanged(_ status: PlayerStatus) {
-        if status == .playing {
+        if status == .playing, wordHighlightEnabled {
             wordTiming.startLink()
         } else {
             wordTiming.stopLink()
