@@ -23,7 +23,7 @@ enum KokoroEngineError: Error, LocalizedError {
 /// guarantees only one synthesize call is pending at a time.
 final class KokoroSherpaEngine: TtsEngine, @unchecked Sendable {
 
-    let voices: [TtsVoice] = KokoroVoiceCatalog.englishVoices
+    let voices: [TtsVoice] = KokoroVoiceCatalog.curatedVoices
     var defaultVoice: TtsVoice { KokoroVoiceCatalog.defaultVoice }
 
     private let modelDirectory: URL

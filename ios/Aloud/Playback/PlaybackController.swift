@@ -40,7 +40,7 @@ final class PlaybackController: ObservableObject {
             applyVoiceOrSkipChange()
         }
     }
-    @Published var skipBrackets: Bool = false {
+    @Published var skipBrackets: Bool = true {
         didSet {
             guard oldValue != skipBrackets else { return }
             applyVoiceOrSkipChange()

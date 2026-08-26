@@ -61,8 +61,10 @@
 		DABBFDDE725D832B7A1886C3 /* AudioSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A45FC867BCAE7384FCCC06A3 /* AudioSessionManager.swift */; };
 		DDF892BD2697E4D8254146F3 /* BookshelfCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064A43139B74F9791E04B5B0 /* BookshelfCatalog.swift */; };
 		DE254F1CAA7BEAF306867740 /* SentenceSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE3E38DEEAB2057CF544BC2 /* SentenceSegmenter.swift */; };
+		E07EA357A45E2B3B8329B8E3 /* KokoroVoiceCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E6EBAD922E90E02D2037B7 /* KokoroVoiceCatalogTests.swift */; };
 		E26CE8BDA96359AA49B29489 /* AloudTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8E1F7F91155058AE32F6431 /* AloudTheme.swift */; };
 		E62A9C84C70111ACBFD5D10E /* PDFTextExtractorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B768B8421C1EA80E200CE22 /* PDFTextExtractorTests.swift */; };
+		EF2463DEAE89FE5DEA248CE3 /* ReaderWordHighlightStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7973917F0A84FA083D5EBBF8 /* ReaderWordHighlightStyleTests.swift */; };
 		F109EC7AB18A97F3F509E6ED /* KokoroSherpaEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C34B970EF8C826F491F924 /* KokoroSherpaEngine.swift */; };
 		F9FB1E841CE0CB159DDEF9DD /* DocumentCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DFECC53616352F183D028A8 /* DocumentCardView.swift */; };
 		FC001BDBBC27D9EF0F56F6C3 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ABD5D433FC5655554DF0CCD /* LibraryView.swift */; };
@@ -119,6 +121,7 @@
 		73C082DDB9978061373A95AC /* AppearanceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSheet.swift; sourceTree = "<group>"; };
 		78B70AF3CA01F1F2ECAB47D0 /* SentenceSegmenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentenceSegmenterTests.swift; sourceTree = "<group>"; };
 		78C16E10BA77964A94422EA7 /* PlaybackController+WordTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlaybackController+WordTiming.swift"; sourceTree = "<group>"; };
+		7973917F0A84FA083D5EBBF8 /* ReaderWordHighlightStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWordHighlightStyleTests.swift; sourceTree = "<group>"; };
 		8374FE2FB5E381B68C4D0093 /* TtsEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TtsEngine.swift; sourceTree = "<group>"; };
 		856EA9EFAE5989FD75CD366D /* KokoroPlaybackUITest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroPlaybackUITest.swift; sourceTree = "<group>"; };
 		8ACDA6B62D25703FFBA62C70 /* NowPlayingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingManager.swift; sourceTree = "<group>"; };
@@ -135,6 +138,7 @@
 		AA15634441B905301ABE6BA6 /* lexicon-gb-en.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "lexicon-gb-en.txt"; sourceTree = "<group>"; };
 		B8E1F7F91155058AE32F6431 /* AloudTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AloudTheme.swift; sourceTree = "<group>"; };
 		CDE3E38DEEAB2057CF544BC2 /* SentenceSegmenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentenceSegmenter.swift; sourceTree = "<group>"; };
+		D2E6EBAD922E90E02D2037B7 /* KokoroVoiceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroVoiceCatalogTests.swift; sourceTree = "<group>"; };
 		D2EF19B871BD14FBA1EEED05 /* the-quiet-hour.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "the-quiet-hour.pdf"; sourceTree = "<group>"; };
 		D960A4A154305E76FF9D5016 /* DocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentStore.swift; sourceTree = "<group>"; };
 		D9799C09BDE8D2AA3E118276 /* TextNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextNormalizer.swift; sourceTree = "<group>"; };
@@ -305,7 +309,9 @@
 		9E1235B04B86939496DE37CC /* AloudTests */ = {
 			isa = PBXGroup;
 			children = (
+				D2E6EBAD922E90E02D2037B7 /* KokoroVoiceCatalogTests.swift */,
 				5B768B8421C1EA80E200CE22 /* PDFTextExtractorTests.swift */,
+				7973917F0A84FA083D5EBBF8 /* ReaderWordHighlightStyleTests.swift */,
 				78B70AF3CA01F1F2ECAB47D0 /* SentenceSegmenterTests.swift */,
 				03C4ED6C735A76C8DF3C93AE /* TextExtractorTests.swift */,
 				D9C99318C824F5D2DC2891EE /* TextNormalizerTests.swift */,
@@ -513,7 +519,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E07EA357A45E2B3B8329B8E3 /* KokoroVoiceCatalogTests.swift in Sources */,
 				E62A9C84C70111ACBFD5D10E /* PDFTextExtractorTests.swift in Sources */,
+				EF2463DEAE89FE5DEA248CE3 /* ReaderWordHighlightStyleTests.swift in Sources */,
 				7429271CE103536EBE6131AE /* SentenceSegmenterTests.swift in Sources */,
 				C7B8B4462BB04190FB79E824 /* TextExtractorTests.swift in Sources */,
 				93068D34EE8F4538CDB9966C /* TextNormalizerTests.swift in Sources */,

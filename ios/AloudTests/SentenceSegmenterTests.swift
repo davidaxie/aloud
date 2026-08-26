@@ -158,4 +158,57 @@ final class SentenceSegmenterTests: XCTestCase {
         XCTAssertEqual(SentenceSegmenter.spokenText("Result (see fig. 2) holds, done.", skipBrackets: true),
                        "Result holds, done.")
     }
+
+    // MARK: - Special-case skipping
+
+    func testCitationMarkersSkipped() {
+        XCTAssertEqual(SentenceSegmenter.spokenText("Gravity bends light [12] as predicted.", skipBrackets: true),
+                       "Gravity bends light as predicted.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("Results agree [3,4] with theory.", skipBrackets: true),
+                       "Results agree with theory.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("See the appendix [note 7] for details.", skipBrackets: true),
+                       "See the appendix for details.")
+    }
+
+    func testCurlyBracesSkipped() {
+        XCTAssertEqual(SentenceSegmenter.spokenText("Values {a, b, c} are shown.", skipBrackets: true),
+                       "Values are shown.")
+    }
+
+    func testStandaloneFootnoteMarkersSkipped() {
+        XCTAssertEqual(SentenceSegmenter.spokenText("The result † holds everywhere.", skipBrackets: true),
+                       "The result holds everywhere.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("A rule * with an exception.", skipBrackets: true),
+                       "A rule with an exception.")
+        XCTAssertEqual(SentenceSegmenter.spokenText("Doubly noted †† here.", skipBrackets: true),
+                       "Doubly noted here.")
+    }
+
+    func testGluedFootnoteMarkerStaysSpoken() {
+        // A dagger attached to a word is not "standing alone" — keep it.
+        XCTAssertEqual(SentenceSegmenter.spokenText("word† stays", skipBrackets: true),
+                       "word† stays")
+    }
+
+    func testFullSentenceParenthesesSpokenInFull() {
+        let text = "(An entire aside of a sentence.)"
+        XCTAssertEqual(SentenceSegmenter.spokenText(text, skipBrackets: true), text)
+    }
+
+    func testEmptyResultGuardSpeaksOriginal() {
+        XCTAssertEqual(SentenceSegmenter.spokenText("[12]", skipBrackets: true), "[12]")
+        XCTAssertEqual(SentenceSegmenter.spokenText("† *", skipBrackets: true), "† *")
+        XCTAssertEqual(SentenceSegmenter.spokenText("[1] (2) {3}", skipBrackets: true), "[1] (2) {3}")
+    }
+
+    func testTokenizationNonDestructiveWithMarkers() {
+        let text = "A claim † with [12] notes * end."
+        XCTAssertEqual(SentenceSegmenter.tokenizeSentence(text).map(\.text).joined(), text)
+    }
+
+    func testStandaloneMarkerTokenIsSkippable() {
+        let tokens = SentenceSegmenter.tokenizeSentence("Noted † indeed")
+        XCTAssertEqual(tokens.first { $0.text == "†" }?.isSkippable, true)
+        XCTAssertEqual(tokens.first { $0.text == "Noted" }?.isSkippable, false)
+    }
 }

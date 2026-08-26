@@ -47,6 +47,8 @@ enum ReaderTextSize {
 /// `ReaderTextView` rebuilds its attributed string when the size changes.
 struct AppearanceSheet: View {
 
+    @EnvironmentObject private var model: AppModel
+
     @AppStorage(ReaderTextSize.prefKey)
     private var textSizeStep = ReaderTextSize.defaultStep
 
@@ -68,6 +70,11 @@ struct AppearanceSheet: View {
             VStack(spacing: 14) {
                 sectionLabel("Appearance")
                 appearanceRow
+            }
+
+            VStack(spacing: 14) {
+                sectionLabel("Reading")
+                wordHighlightRow
             }
 
             Spacer(minLength: 0)
@@ -145,6 +152,25 @@ struct AppearanceSheet: View {
         .accessibilityLabel("\(preference.label) appearance")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("appearance.scheme.\(preference.rawValue)")
+    }
+
+    // MARK: - Reading
+
+    /// Color-only tint of the spoken word. Off by default — the calm
+    /// sentence pill is the default experience.
+    private var wordHighlightRow: some View {
+        Toggle(isOn: $model.wordHighlight) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Word highlight")
+                    .font(Theme.ui(15, weight: .medium))
+                    .foregroundStyle(Theme.text)
+                Text("Tint each word as it's spoken.")
+                    .font(Theme.ui(13))
+                    .foregroundStyle(Theme.textMuted)
+            }
+        }
+        .tint(Theme.accent)
+        .accessibilityIdentifier("appearance.wordHighlight")
     }
 
     // MARK: - Shared
