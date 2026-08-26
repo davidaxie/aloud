@@ -87,15 +87,13 @@ final class ModelManager: ObservableObject {
         let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                in: .userDomainMask)[0]
         var directory = support.appendingPathComponent("KokoroModel", isDirectory: true)
-        #if DEBUG
-        // UI-test hook: `-uitest-kokoro-model-path <dir>` points at a directory
-        // that already holds model.onnx + voices.bin (e.g. on the host Mac,
-        // which the simulator sandbox can read), so tests never download.
-        if let override = UserDefaults.standard.string(forKey: "uitest-kokoro-model-path"),
-           !override.isEmpty {
+        // UI-test hook (no-op in Release): `-uitest-kokoro-model-path <dir>`
+        // points at a directory that already holds model.onnx + voices.bin
+        // (e.g. on the host Mac, which the simulator sandbox can read), so
+        // tests never download.
+        if let override = UITestHooks.kokoroModelPath {
             directory = URL(fileURLWithPath: override, isDirectory: true)
         }
-        #endif
         installDirectory = directory
         wireCoordinator()
         detectExisting()

@@ -39,34 +39,15 @@ struct SettingsView: View {
             .listRowBackground(Theme.surface)
 
             Section {
-                Toggle(isOn: $playback.skipBrackets) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Skip text in [brackets]")
-                            .font(Theme.ui(16))
-                            .foregroundStyle(Theme.text)
-                        Text("Citations and asides aren't read aloud.")
-                            .font(Theme.ui(13))
-                            .foregroundStyle(Theme.textMuted)
-                    }
-                }
-                .tint(Theme.accent)
-                Toggle(isOn: $model.autoScroll) {
-                    Text("Auto-scroll")
-                        .font(Theme.ui(16))
-                        .foregroundStyle(Theme.text)
-                }
-                .tint(Theme.accent)
-                Toggle(isOn: $model.wordHighlight) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Word highlight")
-                            .font(Theme.ui(16))
-                            .foregroundStyle(Theme.text)
-                        Text("Tint each word as it's spoken.")
-                            .font(Theme.ui(13))
-                            .foregroundStyle(Theme.textMuted)
-                    }
-                }
-                .tint(Theme.accent)
+                PreferenceToggleRow(title: "Skip text in [brackets]",
+                                    subtitle: "Citations and asides aren't read aloud.",
+                                    isOn: $playback.skipBrackets)
+                PreferenceToggleRow(title: "Auto-scroll",
+                                    isOn: $model.autoScroll)
+                PreferenceToggleRow(title: PreferenceCopy.wordHighlightTitle,
+                                    subtitle: PreferenceCopy.wordHighlightSubtitle,
+                                    isOn: $model.wordHighlight)
+                    .accessibilityIdentifier("settings.wordHighlight")
             } header: {
                 sectionHeader("Reading")
             }

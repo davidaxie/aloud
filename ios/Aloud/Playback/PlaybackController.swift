@@ -40,6 +40,12 @@ final class PlaybackController: ObservableObject {
             applyVoiceOrSkipChange()
         }
     }
+    /// Deliberate voice choices only (picker taps, via `selectVoice`).
+    /// Programmatic changes — the pre-install system stand-in,
+    /// `fallBackToSystemVoice()` — set `voice` directly and never emit here,
+    /// so a temporary fallback can't overwrite the stored preference
+    /// (AppModel persists from this subject, not from `$voice`).
+    let voiceSelections = PassthroughSubject<TtsVoice, Never>()
     @Published var skipBrackets: Bool = true {
         didSet {
             guard oldValue != skipBrackets else { return }
@@ -51,6 +57,32 @@ final class PlaybackController: ObservableObject {
     @Published private(set) var document: LibraryDocument?
     /// True while the neural engine is loading its model ("Preparing voice…").
     @Published private(set) var isPreparingVoice = false
+    /// Bumped when the USER starts playback from a non-active state (play
+    /// button, lock-screen play, restart after the end) — never on internal
+    /// status flips, buffering blips, or interruption auto-resume. The reader
+    /// centers the playhead on these, honoring the Auto-scroll pref.
+    @Published private(set) var userPlayAction = 0
+
+    /// True while audio is playing or buffering — "playback is intended".
+    /// The single definition every surface (player bar, reader, sleep timer)
+    /// consults, so a future status case is classified once.
+    var isActive: Bool { status == .playing || status == .buffering }
+
+    /// Mirrored from the word-highlight pref (AppModel). The 30 fps karaoke
+    /// display link exists only to feed the reader's word tint, so it runs
+    /// only while this is on — the default-off configuration pays zero
+    /// per-frame cost. Word windows are still recorded at schedule time, so
+    /// flipping the pref on mid-sentence lights up immediately.
+    var wordHighlightEnabled = false {
+        didSet {
+            guard oldValue != wordHighlightEnabled else { return }
+            wordTimingStatusChanged(status)
+            if !wordHighlightEnabled {
+                wordTiming.lastPublished = (-1, -1)
+                updateCurrentWord(-1)
+            }
+        }
+    }
 
     private(set) var content: DocContent?
 
@@ -146,6 +178,7 @@ final class PlaybackController: ObservableObject {
             return
         }
         invalidateSchedule()
+        cache.removeAll()   // clips from the previous document can never replay
         self.document = document
         self.content = content
         skippedSentences = []
@@ -173,8 +206,12 @@ final class PlaybackController: ObservableObject {
 
     // MARK: - Transport
 
-    func play() {
+    /// `userInitiated` marks a deliberate start (button, remote command) as
+    /// opposed to programmatic resumes like interruption recovery; only the
+    /// former bumps `userPlayAction`.
+    func play(userInitiated: Bool = true) {
         guard let content, !content.sentences.isEmpty else { return }
+        if userInitiated, !isActive { userPlayAction &+= 1 }
         if status == .ended {
             startPlayback(at: 0)
             return
@@ -203,7 +240,7 @@ final class PlaybackController: ObservableObject {
     }
 
     func togglePlayPause() {
-        if status == .playing || status == .buffering {
+        if isActive {
             pause()
         } else {
             play()
@@ -217,7 +254,8 @@ final class PlaybackController: ObservableObject {
         let target = min(max(sentence, 0), content.sentences.count - 1)
         skippedSentences.remove(target)   // an explicit seek gives it another chance
 
-        if andPlay || status == .playing || status == .buffering {
+        if andPlay, !isActive { userPlayAction &+= 1 }   // e.g. restart after .ended
+        if andPlay || isActive {
             startPlayback(at: target)
         } else {
             invalidateSchedule()
@@ -270,9 +308,13 @@ final class PlaybackController: ObservableObject {
             let clip: SynthesizedAudio
             if skippedSentences.contains(next)
                 || spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Citation-only / aside-only sentences (spokenText == "" with
+                // skip-brackets on) ride this branch: a beat of silence whose
+                // completion callback advances to the next sentence.
                 clip = .silence(duration: Self.skippedClipDuration)
             } else {
-                let key = AudioClipCache.key(voice: voice, skipBrackets: skipBrackets, sentenceID: next)
+                let key = AudioClipCache.key(voice: voice, skipBrackets: skipBrackets,
+                                             contentHash: content.contentHash, sentenceID: next)
                 let priority: SynthesisPriority = next == currentSentence ? .now : .prefetch
                 do {
                     clip = try await synthesizeWithRetry(spoken, key: key, priority: priority, token: token)
@@ -358,9 +400,7 @@ final class PlaybackController: ObservableObject {
     }
 
     private func sentenceFinished(_ index: Int, token: UInt64) {
-        guard token == playToken,
-              status == .playing || status == .buffering,
-              let content else { return }
+        guard token == playToken, isActive, let content else { return }
 
         if index >= content.sentences.count - 1 {
             hasActiveSchedule = false
@@ -390,12 +430,24 @@ final class PlaybackController: ObservableObject {
 
     // MARK: - Voice / skip changes
 
+    /// A user's explicit voice pick: becomes the active voice and (via
+    /// `voiceSelections`) the persisted preference.
+    func selectVoice(_ newVoice: TtsVoice) {
+        voice = newVoice
+        voiceSelections.send(newVoice)
+    }
+
     /// The web app's `reloadCurrent`: purge mismatched clips, drop the queue,
     /// and re-synthesize from the current sentence keeping position and state.
     /// Switching to a cold Kokoro voice warms the engine first, surfacing
     /// "Preparing voice…", and degrades to the system voice on failure.
     private func applyVoiceOrSkipChange() {
-        cache.purge(keepingPrefix: AudioClipCache.keyPrefix(voice: voice, skipBrackets: skipBrackets))
+        if let content {
+            cache.purge(keepingPrefix: AudioClipCache.keyPrefix(
+                voice: voice, skipBrackets: skipBrackets, contentHash: content.contentHash))
+        } else {
+            cache.removeAll()
+        }
         Task { await scheduler.cancelPending() }
 
         guard content != nil, currentSentence >= 0 else { return }
@@ -412,7 +464,7 @@ final class PlaybackController: ObservableObject {
     /// Restart or re-cue at the current sentence with the active voice/skip.
     private func reloadCurrent() {
         guard content != nil, currentSentence >= 0 else { return }
-        if status == .playing || status == .buffering {
+        if isActive {
             startPlayback(at: currentSentence)
         } else {
             invalidateSchedule()
@@ -465,7 +517,17 @@ final class PlaybackController: ObservableObject {
     /// backgrounded while paused, or a memory warning while not playing.
     /// The next synthesis transparently re-warms.
     func releaseNeuralEngineIfIdle() {
-        guard status != .playing, status != .buffering else { return }
+        guard !isActive else { return }
+        kokoro?.release()
+    }
+
+    /// Picker/preview hook: a preview may have warmed the ~800 MB neural
+    /// engine just for its sample — give it back when the active voice isn't
+    /// neural. Playback with a non-neural voice never touches Kokoro (pending
+    /// neural work was cancelled on the switch), so this is safe even
+    /// mid-play; the next neural synthesis transparently re-warms.
+    func releaseNeuralEngineIfUnused() {
+        guard voice.engine != .kokoro else { return }
         kokoro?.release()
     }
 
@@ -478,7 +540,8 @@ final class PlaybackController: ObservableObject {
         for index in currentSentence...upper where !skippedSentences.contains(index) {
             let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skip)
             guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let key = AudioClipCache.key(voice: voice, skipBrackets: skip, sentenceID: index)
+            let key = AudioClipCache.key(voice: voice, skipBrackets: skip,
+                                         contentHash: content.contentHash, sentenceID: index)
             Task { await scheduler.prefetch(spoken, voice: voice, key: key) }
         }
     }
@@ -542,12 +605,14 @@ final class PlaybackController: ObservableObject {
     private func handleInterruption(_ event: AudioSessionManager.Interruption) {
         switch event {
         case .began:
-            if status == .playing || status == .buffering {
+            if isActive {
                 resumeAfterInterruption = true
                 pause()
             }
         case .ended(let shouldResume):
-            if resumeAfterInterruption && shouldResume { play() }
+            // Auto-resume is not a user action — no `userPlayAction` bump,
+            // so the reader never re-centers on interruption recovery.
+            if resumeAfterInterruption && shouldResume { play(userInitiated: false) }
             resumeAfterInterruption = false
         }
     }

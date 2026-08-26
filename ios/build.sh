@@ -3,12 +3,12 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-
-SIM_ID="73B6C851-3A20-4D4C-94F7-ED63D6740EB8"
-DEST="platform=iOS Simulator,id=$SIM_ID"
-BUNDLE_ID="com.davidxie.Aloud"
-DERIVED=".derived"
+# Toolchain + simulator constants live in xcenv.sh (shared with xcb.sh).
+source ./xcenv.sh
+SIM_ID="$XCB_SIM_ID"
+DEST="$XCB_DEST"
+BUNDLE_ID="$XCB_BUNDLE_ID"
+DERIVED="$XCB_DERIVED"
 
 RUN_TEST=0
 RUN_LAUNCH=0
@@ -33,13 +33,15 @@ done
 ./sync_bookshelf.sh
 /opt/homebrew/bin/xcodegen generate
 
-xcodebuild -project Aloud.xcodeproj -scheme Aloud \
+# Route through xcb.sh so every build/test gets the heartbeat and the
+# per-invocation full log.
+./xcb.sh -project Aloud.xcodeproj -scheme Aloud \
   -destination "$DEST" -configuration Debug \
   -derivedDataPath "$DERIVED" \
   CODE_SIGNING_ALLOWED=NO build
 
 if [[ "$RUN_TEST" -eq 1 ]]; then
-  xcodebuild -project Aloud.xcodeproj -scheme Aloud \
+  ./xcb.sh -project Aloud.xcodeproj -scheme Aloud \
     -destination "$DEST" \
     -derivedDataPath "$DERIVED" \
     CODE_SIGNING_ALLOWED=NO test

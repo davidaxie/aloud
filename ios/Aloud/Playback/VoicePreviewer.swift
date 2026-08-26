@@ -21,6 +21,13 @@ final class VoicePreviewer: ObservableObject {
 
     static let sampleText = "Aloud reads to you, naturally."
 
+    /// Fired when previewing goes idle on its own (sample finished or
+    /// failed) — the picker hooks this to give back the neural engine when
+    /// the active voice doesn't need it. Deliberately NOT fired by `stop()`:
+    /// stopping is part of starting the next preview, and releasing there
+    /// would thrash the ~800 MB warm-up while the user compares voices.
+    var onIdle: (() -> Void)?
+
     private let audioEngine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var attached = false
@@ -124,5 +131,6 @@ final class VoicePreviewer: ObservableObject {
         if audioEngine.isRunning { audioEngine.stop() }
         activeVoiceID = nil
         phase = nil
+        onIdle?()
     }
 }

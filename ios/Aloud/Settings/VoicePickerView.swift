@@ -35,7 +35,7 @@ struct VoicePickerView: View {
                 .listRowBackground(Theme.surface)
                 Section {
                     ForEach(model.engine.voices) { voice in
-                        systemFooterRow(voice)
+                        voiceRow(voice, footer: true)
                     }
                 }
                 .listRowBackground(Theme.surface)
@@ -66,38 +66,59 @@ struct VoicePickerView: View {
                     .foregroundStyle(Theme.text)
             }
         }
-        .onDisappear { previewer.stop() }
+        .onAppear {
+            // A preview may warm the ~800 MB neural engine just for its
+            // sample — give it back whenever previews go idle and the active
+            // voice doesn't need it.
+            previewer.onIdle = { [weak playback] in
+                playback?.releaseNeuralEngineIfUnused()
+            }
+        }
+        .onDisappear {
+            previewer.stop()
+            playback.releaseNeuralEngineIfUnused()
+        }
     }
 
     // MARK: - Rows
 
-    private func voiceRow(_ voice: TtsVoice) -> some View {
+    /// One row for both presentations. `footer: true` renders the subtle
+    /// "System voice" row under the neural roster — the fallback exists,
+    /// quietly, without competing with the curated eight (no subtitle,
+    /// origin, or preview button).
+    private func voiceRow(_ voice: TtsVoice, footer: Bool = false) -> some View {
         Button {
-            playback.voice = voice
-            if dismissesOnSelect {
-                previewer.stop()
-                dismiss()
-            }
+            select(voice)
         } label: {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
+                if footer {
                     Text(voice.name)
-                        .font(Theme.ui(16, weight: .medium))
-                        .foregroundStyle(Theme.text)
-                    Text(subtitle(for: voice))
-                        .font(Theme.ui(13))
+                        .font(Theme.ui(14))
                         .foregroundStyle(Theme.textMuted)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(voice.name)
+                            .font(Theme.ui(16, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                        Text(subtitle(for: voice))
+                            .font(Theme.ui(13))
+                            .foregroundStyle(Theme.textMuted)
+                    }
                 }
                 Spacer()
-                Text(origin(for: voice))
-                    .font(Theme.ui(12))
-                    .foregroundStyle(Theme.textFaint)
+                if !footer {
+                    Text(origin(for: voice))
+                        .font(Theme.ui(12))
+                        .foregroundStyle(Theme.textFaint)
+                }
                 if voice.id == playback.voice.id {
                     Image(systemName: "checkmark")
-                        .font(Theme.ui(14, weight: .semibold))
+                        .font(Theme.ui(footer ? 13 : 14, weight: .semibold))
                         .foregroundStyle(Theme.accent)
                 }
-                previewButton(voice)
+                if !footer {
+                    previewButton(voice)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -105,31 +126,14 @@ struct VoicePickerView: View {
         .accessibilityIdentifier("voice.\(voice.id)")
     }
 
-    /// The subtle "System voice" footer under the neural roster — the
-    /// fallback exists, quietly, without competing with the curated eight.
-    private func systemFooterRow(_ voice: TtsVoice) -> some View {
-        Button {
-            playback.voice = voice
-            if dismissesOnSelect {
-                previewer.stop()
-                dismiss()
-            }
-        } label: {
-            HStack(spacing: 12) {
-                Text(voice.name)
-                    .font(Theme.ui(14))
-                    .foregroundStyle(Theme.textMuted)
-                Spacer()
-                if voice.id == playback.voice.id {
-                    Image(systemName: "checkmark")
-                        .font(Theme.ui(13, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                }
-            }
-            .contentShape(Rectangle())
+    /// Selecting is identical for every row: the pick becomes the active
+    /// voice and the persisted preference; a sheet dismisses on selection.
+    private func select(_ voice: TtsVoice) {
+        playback.selectVoice(voice)
+        if dismissesOnSelect {
+            previewer.stop()
+            dismiss()
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("voice.\(voice.id)")
     }
 
     private func previewButton(_ voice: TtsVoice) -> some View {

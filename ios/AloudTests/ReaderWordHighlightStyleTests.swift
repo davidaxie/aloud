@@ -2,10 +2,11 @@ import UIKit
 import XCTest
 @testable import Aloud
 
-/// Pins the color-only contract of the reader's word tint: with the pref ON
-/// the active word differs from body text by `.foregroundColor` alone (the
-/// font is the very same object — zero layout impact); with the pref OFF the
-/// storage keeps exactly its baseline attributes (body run + sentence pill).
+/// Pins the color-only contract of the reader's word tint: the active word
+/// differs from body text by `.foregroundColor` alone (the font is the very
+/// same object — zero layout impact). The word-highlight pref is folded in
+/// upstream (`ReaderScreen` passes no word while it's off), so "pref off" is
+/// represented here by `applying: nil`.
 final class ReaderWordHighlightStyleTests: XCTestCase {
 
     private let bodyFont = UIFont(name: "Georgia", size: 19) ?? .systemFont(ofSize: 19)
@@ -32,14 +33,14 @@ final class ReaderWordHighlightStyleTests: XCTestCase {
         storage.attributes(at: location, effectiveRange: nil)
     }
 
-    // MARK: - Pref ON: color-only
+    // MARK: - Tinting
 
-    func testEnabledTintsOnlyColor_FontIsSameObjectAsBody() {
+    func testTintsOnlyColor_FontIsSameObjectAsBody() {
         let (storage, word) = makeStorage()
         let before = attributes(storage, at: word.location)
 
         let applied = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: nil, applying: word, enabled: true,
+            in: storage, clearing: nil, applying: word,
             bodyColor: bodyColor, accentColor: accentColor)
         XCTAssertEqual(applied, word)
 
@@ -68,10 +69,10 @@ final class ReaderWordHighlightStyleTests: XCTestCase {
         let next = (storage.string as NSString).range(of: "fox")
 
         _ = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: nil, applying: word, enabled: true,
+            in: storage, clearing: nil, applying: word,
             bodyColor: bodyColor, accentColor: accentColor)
         let applied = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: word, applying: next, enabled: true,
+            in: storage, clearing: word, applying: next,
             bodyColor: bodyColor, accentColor: accentColor)
         XCTAssertEqual(applied, next)
 
@@ -88,10 +89,10 @@ final class ReaderWordHighlightStyleTests: XCTestCase {
         let baseline = storage.copy() as! NSAttributedString
 
         _ = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: nil, applying: word, enabled: true,
+            in: storage, clearing: nil, applying: word,
             bodyColor: bodyColor, accentColor: accentColor)
         let applied = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: word, applying: nil, enabled: true,
+            in: storage, clearing: word, applying: nil,
             bodyColor: bodyColor, accentColor: accentColor)
 
         XCTAssertNil(applied)
@@ -99,14 +100,14 @@ final class ReaderWordHighlightStyleTests: XCTestCase {
                       "clearing the tint must restore the exact baseline attributes")
     }
 
-    // MARK: - Pref OFF: inert
+    // MARK: - Pref off (upstream folds the word to nil)
 
-    func testDisabledAppliesNothingBeyondSentenceBackground() {
-        let (storage, word) = makeStorage()
+    func testNoWordAppliesNothingBeyondSentenceBackground() {
+        let (storage, _) = makeStorage()
         let baseline = storage.copy() as! NSAttributedString
 
         let applied = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: nil, applying: word, enabled: false,
+            in: storage, clearing: nil, applying: nil,
             bodyColor: bodyColor, accentColor: accentColor)
 
         XCTAssertNil(applied, "no range may be tinted while the pref is off")
@@ -114,16 +115,17 @@ final class ReaderWordHighlightStyleTests: XCTestCase {
                       "with the pref off the storage keeps only body attributes + sentence bg")
     }
 
-    func testDisableWhileTintedClearsTheTint() {
+    func testPrefOffMidWordClearsTheTint() {
         let (storage, word) = makeStorage()
         let baseline = storage.copy() as! NSAttributedString
 
         _ = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: nil, applying: word, enabled: true,
+            in: storage, clearing: nil, applying: word,
             bodyColor: bodyColor, accentColor: accentColor)
-        // Pref flips off mid-word: the coordinator clears with enabled: false.
+        // Pref flips off mid-word: upstream folds the active word to nil and
+        // the coordinator clears with `applying: nil`.
         let applied = ReaderWordHighlightStyle.apply(
-            in: storage, clearing: word, applying: word, enabled: false,
+            in: storage, clearing: word, applying: nil,
             bodyColor: bodyColor, accentColor: accentColor)
 
         XCTAssertNil(applied)

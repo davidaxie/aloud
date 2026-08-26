@@ -22,7 +22,6 @@ struct ReaderScreen: View {
     @State private var scrolledAway = false
     @State private var returnTrigger = 0
     @State private var showAppearanceSheet = false
-    @State private var wasPlaying = false
 
     var body: some View {
         ZStack {
@@ -33,10 +32,10 @@ struct ReaderScreen: View {
                     content: content,
                     fontSize: ReaderTextSize.points(forStep: textSizeStep),
                     activeSentence: playback.currentSentence,
-                    activeWord: playback.currentWord,
-                    wordHighlight: model.wordHighlight,
+                    // The word-highlight pref is gated once, here at the source.
+                    activeWord: model.wordHighlight ? playback.currentWord : -1,
                     autoScroll: model.autoScroll,
-                    isPlaying: isPlaybackActive,
+                    isPlaying: playback.isActive,
                     returnToPlayheadTrigger: returnTrigger,
                     scrolledAway: $scrolledAway,
                     onTapSentence: tapSentence)
@@ -65,16 +64,15 @@ struct ReaderScreen: View {
             sleepTimer.attach(to: playback)
             await load()
         }
-        .onChange(of: playback.currentSentence) { sentence in
-            guard isLoaded else { return }
-            store.saveProgress(id: document.id, sentence: sentence, fraction: fraction(at: sentence))
-        }
-        .onChange(of: playback.status) { status in
-            // On play-start (idle/paused → playing), center the active
-            // sentence unconditionally so following starts from the playhead.
-            let active = status == .playing || status == .buffering
-            if active && !wasPlaying { returnTrigger += 1 }
-            wasPlaying = active
+        // Per-sentence progress persists through `PlaybackController.onProgress`
+        // (wired to `DocumentStore.saveProgress` in AppModel) — no duplicate
+        // save here; the reader only writes the final position on leave.
+        .onChange(of: playback.userPlayAction) { _ in
+            // A USER play from idle/paused/ended centers the playhead so
+            // following starts from it — honoring the Auto-scroll pref, and
+            // never firing on buffering blips or interruption auto-resume
+            // (those don't bump `userPlayAction`).
+            if model.autoScroll { returnTrigger += 1 }
         }
         .onDisappear {
             guard isLoaded else { return }
@@ -257,17 +255,14 @@ struct ReaderScreen: View {
             isLoaded = true
             store.noteOpened(id: document.id)
 
-            #if DEBUG
-            // UI-test hook: `-uitest-seek-text <substring>` cues the playhead
-            // at the first sentence containing the substring, so the
-            // screenshot rig can land on a known passage deterministically.
-            let args = ProcessInfo.processInfo.arguments
-            if let flag = args.firstIndex(of: "-uitest-seek-text"),
-               args.indices.contains(flag + 1),
-               let match = loaded.sentences.first(where: { $0.text.contains(args[flag + 1]) }) {
+            // UI-test hook (no-op in Release): `-uitest-seek-text <substring>`
+            // cues the playhead at the first sentence containing the
+            // substring, so the screenshot rig can land on a known passage
+            // deterministically.
+            if let needle = UITestHooks.seekText,
+               let match = loaded.sentences.first(where: { $0.text.contains(needle) }) {
                 playback.seek(to: match.id, andPlay: false)
             }
-            #endif
         } catch {
             loadFailed = true
         }
@@ -283,14 +278,7 @@ struct ReaderScreen: View {
         return Double(min(max(sentence, 0), count - 1)) / Double(count - 1)
     }
 
-    private var isPlaybackActive: Bool {
-        switch playback.status {
-        case .playing, .buffering: return true
-        default: return false
-        }
-    }
-
     private func tapSentence(_ id: Int) {
-        playback.seek(to: id, andPlay: isPlaybackActive)
+        playback.seek(to: id, andPlay: playback.isActive)
     }
 }

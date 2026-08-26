@@ -119,15 +119,38 @@ final class WordTimingEstimatorTests: XCTestCase {
         XCTAssertEqual(kept.last?.end ?? -1, 3.0, accuracy: accuracy)
     }
 
-    func testFullySkippableSentenceFallsBackToAllTokens() {
-        // spokenText speaks a fully bracketed sentence in full; the timing
-        // layout mirrors that fallback instead of returning no windows.
+    func testFullySkippableSentenceHasNoWindows() {
+        // spokenText returns "" for a fully bracketed sentence — playback
+        // schedules a short silence — so the layout mirrors that with no
+        // windows: no word ever lights up over the silence.
         let text = "(An entire aside.)"
-        let result = windows(text, duration: 2.0, skipBrackets: true)
-        XCTAssertEqual(result, windows(text, duration: 2.0, skipBrackets: false))
-        XCTAssertFalse(result.isEmpty)
-        XCTAssertEqual(result.first?.start ?? -1, 0, accuracy: accuracy)
-        XCTAssertEqual(result.last?.end ?? -1, 2.0, accuracy: accuracy)
+        XCTAssertTrue(windows(text, duration: 2.0, skipBrackets: true).isEmpty)
+        XCTAssertFalse(windows(text, duration: 2.0, skipBrackets: false).isEmpty)
+        XCTAssertTrue(windows("[12]", duration: 0.05, skipBrackets: true).isEmpty)
+    }
+
+    func testWindowsMatchSpokenTokensWithGluedPunctuation() {
+        // Punctuation hugging a bracket closer survives skipping as its own
+        // token; exactly the tokens present in the spoken audio get windows.
+        let text = "Result (see fig. 2), holds."
+        let tokens = SentenceSegmenter.tokenizeSentence(text)
+        let kept = windows(text, duration: 3.0, skipBrackets: true)
+        XCTAssertEqual(kept.map { tokens[$0.token].text }, ["Result", ",", "holds."])
+        for window in kept {
+            XCTAssertFalse(tokens[window.token].isSkippable)
+        }
+        XCTAssertEqual(kept.first?.start ?? -1, 0, accuracy: accuracy)
+        XCTAssertEqual(kept.last?.end ?? -1, 3.0, accuracy: accuracy)
+    }
+
+    func testStandaloneAsteriskKeepsWindowWhenSkipping() {
+        // "2 * 3" speaks the asterisk (not a footnote marker), so it keeps a
+        // timing window too.
+        let text = "2 * 3 = 6"
+        let tokens = SentenceSegmenter.tokenizeSentence(text)
+        let kept = windows(text, duration: 1.0, skipBrackets: true)
+        XCTAssertEqual(kept.count, windows(text, duration: 1.0, skipBrackets: false).count)
+        XCTAssertTrue(kept.contains { tokens[$0.token].text == "*" })
     }
 
     func testStandaloneDaggerCarriesNoWindowWhenSkipping() {

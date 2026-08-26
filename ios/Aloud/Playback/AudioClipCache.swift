@@ -1,7 +1,11 @@
 import Foundation
 
-/// In-memory LRU of synthesized clips, keyed `voice|skip|sentenceID`.
+/// In-memory LRU of synthesized clips, keyed `docHash|voice|skip|sentenceID`.
 /// Small by design: a dozen sentence clips cover the playback look-ahead.
+///
+/// The key carries document identity (a content-hash prefix): sentence
+/// indices repeat across books, and a clip synthesized for Book A must never
+/// play for Book B's sentence at the same index.
 final class AudioClipCache: @unchecked Sendable {
 
     private let lock = NSLock()
@@ -13,12 +17,16 @@ final class AudioClipCache: @unchecked Sendable {
         self.capacity = capacity
     }
 
-    static func key(voice: TtsVoice, skipBrackets: Bool, sentenceID: Int) -> String {
-        keyPrefix(voice: voice, skipBrackets: skipBrackets) + String(sentenceID)
+    static func key(voice: TtsVoice, skipBrackets: Bool,
+                    contentHash: String, sentenceID: Int) -> String {
+        keyPrefix(voice: voice, skipBrackets: skipBrackets, contentHash: contentHash)
+            + String(sentenceID)
     }
 
-    static func keyPrefix(voice: TtsVoice, skipBrackets: Bool) -> String {
-        "\(voice.id)|\(skipBrackets ? "s" : "f")|"
+    /// Everything but the sentence index — `purge(keepingPrefix:)` with this
+    /// drops clips for other documents, voices, or skip settings in one pass.
+    static func keyPrefix(voice: TtsVoice, skipBrackets: Bool, contentHash: String) -> String {
+        "\(contentHash.prefix(12))|\(voice.id)|\(skipBrackets ? "s" : "f")|"
     }
 
     func clip(forKey key: String) -> SynthesizedAudio? {

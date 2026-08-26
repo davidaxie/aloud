@@ -65,17 +65,4 @@ final class SmokeUITest: XCTestCase {
             "Restored sentence should equal \(savedSentence), got \(stringValue(of: restoredReadout))"
         )
     }
-
-    // MARK: - Helpers
-
-    private func stringValue(of element: XCUIElement) -> String {
-        (element.value as? String) ?? ""
-    }
-
-    private func waitForValue(_ expected: String, of element: XCUIElement,
-                              timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "value == %@", expected)
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
-    }
 }

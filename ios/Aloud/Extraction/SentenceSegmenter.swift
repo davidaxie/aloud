@@ -160,11 +160,24 @@ enum SentenceSegmenter {
 
     // MARK: - Word tokenization
 
+    // Hot-path regexes, built once. Regex literals construct a fresh Regex
+    // program on every evaluation, and these run per token (or per sentence)
+    // on the playback schedule chain.
+    private static let vowelRunRegex = #/[aeiouy]+/#
+    private static let trailingPunctRegex = #/[.,;:!?…—–-]+$/#
+    /// Standalone daggers are unspoken footnote markers. Asterisks are
+    /// deliberately NOT here: a free-standing "*" is ambiguous — it can be
+    /// multiplication ("2 * 3"), an emphasis marker, or a scene break
+    /// ("* * *") — so only the unambiguous marks are dropped.
+    private static let footnoteMarkerRegex = #/[†‡]+/#
+    private static let whitespaceRunRegex = #/\s+/#
+    private static let spaceBeforePunctRegex = #/\s+([,.;:!?…)\]}])/#
+
     /// Rough syllable estimate used to weight relative spoken duration.
     static func estimatedSyllables(_ word: String) -> Int {
         let s = word.lowercased().filter { ("a"..."z").contains($0) }
         guard !s.isEmpty else { return 0 }
-        var count = s.matches(of: #/[aeiouy]+/#).count
+        var count = s.matches(of: vowelRunRegex).count
         // Discount a silent final "e" but keep "-le" endings; never drop the
         // only vowel.
         if count > 1 && s.hasSuffix("e") && !s.hasSuffix("le") { count -= 1 }
@@ -173,7 +186,7 @@ enum SentenceSegmenter {
 
     /// Extra pause weight from trailing punctuation; multiple marks accumulate.
     private static func trailingPauseWeight(_ token: String) -> Double {
-        guard let match = token.firstMatch(of: #/[.,;:!?…—–-]+$/#) else { return 0 }
+        guard let match = token.firstMatch(of: trailingPunctRegex) else { return 0 }
         var extra = 0.0
         for ch in match.output {
             switch ch {
@@ -222,33 +235,64 @@ enum SentenceSegmenter {
         return inside
     }
 
-    /// Split a sentence into display tokens. Non-destructive: concatenating
-    /// every token's `text` reproduces the input verbatim. `isSkippable` is
-    /// true when the whole token lies inside a bracketed span, or when the
-    /// token is a standalone footnote marker (†, ‡, *).
-    static func tokenizeSentence(_ text: String) -> [WordToken] {
+    /// Per-character mask of the bracket spans that skipping REMOVES. A span
+    /// from `bracketMask` is removable only when it is not glued to a word
+    /// character (letter/digit) on either side: "item(s)" and
+    /// "word(aside)more" stay intact, while "Result (see fig. 2), holds."
+    /// drops the span but keeps the comma, and "as predicted [12]." drops
+    /// the citation but keeps the period.
+    static func skipMask(_ text: String) -> [Bool] {
         let chars = Array(text)
         let inside = bracketMask(text)
+        var mask = [Bool](repeating: false, count: chars.count)
+        var i = 0
+        while i < chars.count {
+            guard inside[i] else { i += 1; continue }
+            var j = i
+            while j < chars.count, inside[j] { j += 1 }
+            let gluedBefore = i > 0 && isWordCharacter(chars[i - 1])
+            let gluedAfter = j < chars.count && isWordCharacter(chars[j])
+            if !gluedBefore && !gluedAfter {
+                for k in i..<j { mask[k] = true }
+            }
+            i = j
+        }
+        return mask
+    }
+
+    private static func isWordCharacter(_ c: Character) -> Bool {
+        c.isLetter || c.isNumber
+    }
+
+    /// Split a sentence into display tokens. Non-destructive: concatenating
+    /// every token's `text` reproduces the input verbatim. Runs of
+    /// non-whitespace are additionally split where `skipMask` flips, so
+    /// punctuation glued to a bracket closer ("2),", "[12].") becomes its own
+    /// token and survives skipping. `isSkippable` marks removable bracket
+    /// spans and standalone dagger footnote markers.
+    static func tokenizeSentence(_ text: String) -> [WordToken] {
+        let key = text as NSString
+        if let hit = tokenCache.object(forKey: key) { return hit.tokens }
+
+        let chars = Array(text)
+        let mask = skipMask(text)
         var tokens: [WordToken] = []
         var i = 0
         while i < chars.count {
             let isSpace = chars[i].isWhitespace
+            let masked = mask[i]
             var j = i
-            while j < chars.count && chars[j].isWhitespace == isSpace { j += 1 }
+            while j < chars.count, chars[j].isWhitespace == isSpace, mask[j] == masked { j += 1 }
             let raw = String(chars[i..<j])
-
-            var skippable = true
-            for k in i..<j where !inside[k] {
-                skippable = false
-                break
-            }
+            var skippable = masked
 
             if isSpace {
                 tokens.append(WordToken(text: raw, isWord: false, weight: 0, isSkippable: skippable))
             } else {
-                // Inline reference markers standing alone ("†", "*", "‡", "**")
-                // are unspoken citations too.
-                if !skippable, raw.wholeMatch(of: #/[†‡*]+/#) != nil {
+                // Inline reference markers standing alone ("†", "‡", "††")
+                // are unspoken citations too (see `footnoteMarkerRegex` for
+                // why "*" is not one of them).
+                if !skippable, raw.wholeMatch(of: footnoteMarkerRegex) != nil {
                     skippable = true
                 }
                 let isWord = raw.unicodeScalars.contains {
@@ -263,26 +307,82 @@ enum SentenceSegmenter {
             }
             i = j
         }
+
+        // A clause mark orphaned at the sentence start by a dropped leading
+        // span ("(However), we left." → "we left.") is dropped with it.
+        if let first = tokens.firstIndex(where: { !$0.isSkippable && $0.weight > 0 }),
+           tokens[..<first].contains(where: \.isSkippable),
+           tokens[first].text.allSatisfy({ ",;:".contains($0) }) {
+            let t = tokens[first]
+            tokens[first] = WordToken(text: t.text, isWord: t.isWord,
+                                      weight: t.weight, isSkippable: true)
+        }
+
+        tokenCache.setObject(TokenBox(tokens), forKey: key)
         return tokens
     }
 
+    /// Single source of truth for whether a token is present in the audio
+    /// `spokenText` synthesizes. `WordTimingEstimator` consults the same
+    /// predicate, so word windows always describe the actual clip.
+    static func isSpoken(_ token: WordToken, skipBrackets: Bool) -> Bool {
+        !(skipBrackets && token.isSkippable)
+    }
+
     /// The text to actually synthesize. With `skipBrackets` off the input is
-    /// returned verbatim; with it on, bracketed tokens and standalone footnote
-    /// markers are dropped and the surviving whitespace tidied so no doubled
-    /// spaces or floating punctuation remain. A sentence that skipping would
-    /// silence entirely (e.g. one wrapped whole in parentheses) is spoken in
-    /// full instead.
+    /// returned verbatim; with it on, removable bracket spans and standalone
+    /// dagger markers are dropped and the survivors tidied: whitespace
+    /// collapsed, no space left before punctuation, no orphaned leading
+    /// comma. A sentence that skipping silences entirely (a bare citation
+    /// "[12]", an "[Illustration: …]" line, a whole-sentence aside) returns
+    /// "" — the playback layer schedules a short silence for it and moves
+    /// on, so it is never read aloud.
     static func spokenText(_ text: String, skipBrackets: Bool) -> String {
         guard skipBrackets else { return text }
+        let key = text as NSString
+        if let hit = spokenCache.object(forKey: key) { return hit as String }
+        let spoken = spokenText(tokens: tokenizeSentence(text), skipBrackets: true)
+        spokenCache.setObject(spoken as NSString, forKey: key)
+        return spoken
+    }
+
+    /// `spokenText` over pre-tokenized input (tokens must reproduce the
+    /// sentence verbatim when joined, as `tokenizeSentence` guarantees).
+    static func spokenText(tokens: [WordToken], skipBrackets: Bool) -> String {
+        guard skipBrackets else { return tokens.map(\.text).joined() }
         var out = ""
-        for token in tokenizeSentence(text) where !token.isSkippable {
+        for token in tokens where isSpoken(token, skipBrackets: true) {
             out += token.text
         }
-        let cleaned = out
-            .replacing(#/\s+/#, with: " ")
-            .replacing(#/\s+([,.;:!?…)\]}])/#) { String($0.output.1) }
+        return out
+            .replacing(whitespaceRunRegex, with: " ")
+            .replacing(spaceBeforePunctRegex) { String($0.output.1) }
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Never skip a sentence into silence: fall back to the original.
-        return cleaned.isEmpty ? text : cleaned
     }
+
+    // MARK: - Memoization
+
+    /// Tokenization output for one sentence, boxed for NSCache.
+    private final class TokenBox {
+        let tokens: [WordToken]
+        init(_ tokens: [WordToken]) { self.tokens = tokens }
+    }
+
+    /// One sentence is tokenized on several independent paths per playback
+    /// step — synthesis text (`topUpSchedule`/`cuePrefetch`), word-timing
+    /// windows, and the reader's word ranges — so both stages are memoized
+    /// behind small content-keyed caches. NSCache is thread-safe and sheds
+    /// under memory pressure; keying by the full text (not sentence index)
+    /// means stale entries are impossible across documents.
+    private static let tokenCache: NSCache<NSString, TokenBox> = {
+        let cache = NSCache<NSString, TokenBox>()
+        cache.countLimit = 256
+        return cache
+    }()
+
+    private static let spokenCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 256
+        return cache
+    }()
 }

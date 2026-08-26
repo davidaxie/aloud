@@ -1,18 +1,41 @@
 #!/usr/bin/env bash
-# xcodebuild wrapper: full log to /tmp/xcb-last.log, filtered progress to
-# stdout, heartbeat every 60 s so long phases are never silent.
+# xcodebuild wrapper: full log to a per-invocation mktemp file (path printed
+# up front; /tmp/xcb-last.log is a convenience symlink to the newest run, so
+# concurrent invocations from different worktrees never clobber each other's
+# logs), filtered progress to stdout, heartbeat every 60 s so long phases are
+# never silent.
+#
+# Sources xcenv.sh so DEVELOPER_DIR matches build.sh exactly, and injects
+# build.sh's canonical -destination / -derivedDataPath / CODE_SIGNING_ALLOWED
+# defaults into any project build that doesn't specify them — a hand-typed
+# invocation can't silently drift onto the wrong toolchain or device.
 set -o pipefail
+source "$(dirname "$0")/xcenv.sh"
+
+log=$(mktemp /tmp/xcb.XXXXXXXX)
+ln -sfn "$log" /tmp/xcb-last.log   # points at the newest run only
+echo "[xcb] full log: $log"
+
+args=("$@")
+if [[ " $* " == *" -project "* || " $* " == *" -workspace "* || " $* " == *" -scheme "* ]]; then
+  [[ " $* " == *" -destination "* ]]       || args+=(-destination "$XCB_DEST")
+  [[ " $* " == *" -derivedDataPath "* ]]   || args+=(-derivedDataPath "$XCB_DERIVED")
+  [[ " $* " == *"CODE_SIGNING_ALLOWED"* ]] || args+=(CODE_SIGNING_ALLOWED=NO)
+fi
 
 ( while true; do
     sleep 60
-    lines=$(wc -l < /tmp/xcb-last.log 2>/dev/null | tr -d ' ' || echo 0)
+    lines=$(wc -l < "$log" 2>/dev/null | tr -d ' ' || echo 0)
     echo "[xcb] still running $(date +%H:%M:%S) - ${lines} log lines"
   done ) &
 hb=$!
 trap 'kill $hb 2>/dev/null' EXIT
 
-xcodebuild "$@" 2>&1 | tee /tmp/xcb-last.log \
+xcodebuild "${args[@]}" 2>&1 | tee "$log" \
   | grep -E --line-buffered "error|failed|passed|SUCCEEDED|FAILED|Testing"
 status=${PIPESTATUS[0]}
 kill $hb 2>/dev/null
+if [[ $status -ne 0 ]]; then
+  echo "[xcb] xcodebuild exited $status — full log: $log"
+fi
 exit $status
