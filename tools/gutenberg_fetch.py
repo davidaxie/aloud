@@ -28,7 +28,21 @@ BOOKS_DIR = ROOT / "books"
 CATALOG_PATH = BOOKS_DIR / "catalog.json"
 
 USER_AGENT = "Aloud/1.0 (personal offline reading app; contact: local user)"
+
+
+def _mirror_dir(book_id: int) -> str:
+    """PG mirror path layout: id 2701 -> 2/7/0/2701, id 84 -> 8/84, id 7 -> 0/7."""
+    s = str(book_id)
+    if len(s) == 1:
+        return f"0/{s}"
+    return "/".join(s[:-1]) + f"/{s}"
+
+
+# The pglaf mirror is Project Gutenberg's own bulk-friendly host; the main
+# site rate-limits scripted access aggressively, so try the mirror first.
 URL_PATTERNS = [
+    "https://gutenberg.pglaf.org/{mdir}/{id}-0.txt",
+    "https://gutenberg.pglaf.org/{mdir}/{id}.txt",
     "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt",
     "https://www.gutenberg.org/files/{id}/{id}-0.txt",
     "https://www.gutenberg.org/files/{id}/{id}.txt",
@@ -51,16 +65,28 @@ def load_json(path: Path, default):
 
 def fetch_text(book_id: int) -> str | None:
     for pattern in URL_PATTERNS:
-        url = pattern.format(id=book_id)
+        url = pattern.format(id=book_id, mdir=_mirror_dir(book_id))
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=60) as res:
-                raw = res.read()
+            # Chunked read with a hard wall-clock deadline: a socket timeout
+            # alone never fires on a connection that trickles bytes forever.
+            deadline = time.monotonic() + 90
+            chunks: list[bytes] = []
+            with urllib.request.urlopen(req, timeout=30) as res:
+                while True:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"deadline exceeded for {url}")
+                    chunk = res.read(256 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            raw = b"".join(chunks)
             try:
                 return raw.decode("utf-8")
             except UnicodeDecodeError:
                 return raw.decode("latin-1")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as err:
+            print(f"    ({type(err).__name__} on {url})", flush=True)
             continue
     return None
 
@@ -106,7 +132,10 @@ def main() -> int:
         if raw is None:
             print(f"  ! all mirrors failed for #{book_id}, skipping this run")
             continue
-        if "Project Gutenberg" not in raw[:2000] or len(raw) < 10_000:
+        # Mirror files may start directly at the "*** START OF THE PROJECT
+        # GUTENBERG EBOOK ***" marker with no header preamble — match
+        # case-insensitively.
+        if "PROJECT GUTENBERG" not in raw[:4000].upper() or len(raw) < 10_000:
             print(f"  ! #{book_id} doesn't look like a Gutenberg text, skipping")
             continue
 
