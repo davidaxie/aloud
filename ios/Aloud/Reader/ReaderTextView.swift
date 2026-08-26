@@ -514,8 +514,9 @@ struct ReaderTextView: UIViewRepresentable {
                 .paragraphStyle: markStyle,
             ]
 
-            // Page indices may arrive 0- or 1-based; display starts at 1 either way.
-            let pageOffset = (content.sentences.first?.page ?? 1) == 0 ? 1 : 0
+            // Page indices may arrive 0- or 1-based; display starts at 1 either
+            // way — the shared rule every page-naming surface uses.
+            let pageOffset = content.pageOffset
             let showPageMarks = content.pageCount > 1
 
             let result = NSMutableAttributedString()

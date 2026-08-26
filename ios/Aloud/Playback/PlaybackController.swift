@@ -16,7 +16,14 @@ final class PlaybackController: ObservableObject {
     // MARK: - Published state
 
     @Published private(set) var status: PlayerStatus = .idle {
-        didSet { wordTimingStatusChanged(status) }   // M3 karaoke display link
+        didSet {
+            wordTimingStatusChanged(status)   // M3 karaoke display link
+            // Every transition out of active playback (pause, stop, error,
+            // interruption, route-change pause, end of book) anchors the
+            // resume-rewind clock.
+            let wasActive = oldValue == .playing || oldValue == .buffering
+            if wasActive, !isActive { stampResumeAnchor() }
+        }
     }
     @Published private(set) var currentSentence: Int = -1 {
         didSet {
@@ -29,10 +36,17 @@ final class PlaybackController: ObservableObject {
     @Published private(set) var currentWord: Int = -1
     @Published var rate: Double = 1.0 {
         didSet {
-            let clamped = min(max(rate, 0.5), 3.0)
+            let clamped = Self.clampedRate(rate)
             if clamped != rate { rate = clamped; return }
             timePitch.rate = Float(rate)
         }
+    }
+
+    /// The speed range the time-pitch unit is driven at. Static so the global
+    /// default (which is picked in Settings without a book loaded, and so never
+    /// passes through `rate`) is clamped by exactly the same rule.
+    nonisolated static func clampedRate(_ rate: Double) -> Double {
+        min(max(rate, 0.5), 3.0)
     }
     @Published var voice: TtsVoice {
         didSet {
@@ -40,6 +54,12 @@ final class PlaybackController: ObservableObject {
             applyVoiceOrSkipChange()
         }
     }
+    /// Deliberate speed choices only (preset chips and slider release, via
+    /// `selectRate`). Programmatic changes — launch restore, the per-book
+    /// apply on load, every intermediate step of a live slider drag — set
+    /// `rate` directly and never emit here, so an apply can't overwrite a
+    /// stored preference (AppModel persists from this subject, not `$rate`).
+    let rateSelections = PassthroughSubject<Double, Never>()
     /// Deliberate voice choices only (picker taps, via `selectVoice`).
     /// Programmatic changes — the pre-install system stand-in,
     /// `fallBackToSystemVoice()` — set `voice` directly and never emit here,
@@ -86,9 +106,23 @@ final class PlaybackController: ObservableObject {
 
     private(set) var content: DocContent?
 
+    /// Resume-rewind anchor: where and when playback last left an active
+    /// state. Production writes go through `stampResumeAnchor` /
+    /// `clearResumeAnchor`, which keep the persisted copy in step; the
+    /// property is internal — not private — only so unit tests can simulate
+    /// elapsed rest time.
+    var resumeAnchor: ResumeAnchor?
+
     /// Progress sink — wire to `DocumentStore.saveProgress` with a weak capture:
     /// `playback.onProgress = { [weak store] in store?.saveProgress(id: $0, sentence: $1, fraction: $2) }`
     var onProgress: ((_ documentID: UUID, _ sentence: Int, _ fraction: Double) -> Void)?
+
+    /// Fired by `load` for a newly loaded document — never on the
+    /// same-document reload no-op — once content and position are in place and
+    /// BEFORE any synthesis is cued, so the incoming book's first sentences
+    /// are synthesized under its own voice rather than the outgoing one's.
+    /// AppModel applies per-book playback preferences (rate, voice) from here.
+    var onDocumentLoaded: ((LibraryDocument) -> Void)?
 
     // MARK: - Dependencies & graph
 
@@ -98,6 +132,7 @@ final class PlaybackController: ObservableObject {
     private let scheduler: SynthesisScheduler
     private let cache: AudioClipCache
     private let audioSession: AudioSessionManager
+    private let anchorStore: ResumeAnchorStore
 
     private let audioEngine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -116,6 +151,9 @@ final class PlaybackController: ObservableObject {
     private var consecutiveFailures = 0
     private var resumeAfterInterruption = false
     private var toastTask: Task<Void, Never>?
+    /// True for the length of a document switch, so the `.paused` cue of the
+    /// INCOMING book can't be mistaken for the outgoing book's stop.
+    private var isSwitchingDocument = false
 
     private static let lookAhead = 2
     private static let synthesisAttempts = 3   // 1 try + 2 retries per sentence
@@ -128,13 +166,15 @@ final class PlaybackController: ObservableObject {
          defaultVoice: TtsVoice,
          scheduler: SynthesisScheduler,
          cache: AudioClipCache,
-         audioSession: AudioSessionManager) {
+         audioSession: AudioSessionManager,
+         anchorStore: ResumeAnchorStore = ResumeAnchorStore()) {
         self.engine = engine
         self.kokoro = kokoro
         self.fallbackVoice = defaultVoice
         self.scheduler = scheduler
         self.cache = cache
         self.audioSession = audioSession
+        self.anchorStore = anchorStore
         self.voice = defaultVoice
 
         audioEngine.attach(player)
@@ -177,6 +217,13 @@ final class PlaybackController: ObservableObject {
             self.document = document
             return
         }
+        // The outgoing book's rest starts now: anchor it while `self.document`
+        // still names it, and hold the stamp off for the rest of the switch so
+        // the incoming book can never be handed a stop that isn't its own.
+        if isActive { stampResumeAnchor() }
+        isSwitchingDocument = true
+        defer { isSwitchingDocument = false }
+
         invalidateSchedule()
         cache.removeAll()   // clips from the previous document can never replay
         self.document = document
@@ -191,17 +238,25 @@ final class PlaybackController: ObservableObject {
         } else {
             status = .paused
             currentSentence = min(max(document.progressSentence, 0), content.sentences.count - 1)
-            cuePrefetch()
         }
+        // Per-book voice and rate BEFORE anything is cued: prefetching under
+        // the outgoing voice only synthesizes clips the voice change purges.
+        onDocumentLoaded?(document)
+        restoreResumeAnchor(for: document)
+        if !content.sentences.isEmpty { cuePrefetch() }
     }
 
     func unload() {
+        // The book keeps the rest that starts here (on disk), so reopening it
+        // still rewinds; the in-memory slot belongs to no document now.
+        if isActive { stampResumeAnchor() }
         invalidateSchedule()
         document = nil
         content = nil
         skippedSentences = []
         currentSentence = -1
         status = .idle
+        resumeAnchor = nil
     }
 
     // MARK: - Transport
@@ -211,6 +266,16 @@ final class PlaybackController: ObservableObject {
     /// former bumps `userPlayAction`.
     func play(userInitiated: Bool = true) {
         guard let content, !content.sentences.isEmpty else { return }
+        // Resume rewind: a USER play after a real break backs up a couple of
+        // sentences to rebuild context. Routed through `seek` so the play
+        // token, cache, and `userPlayAction` stay coherent. Programmatic
+        // resumes (interruption end, route-change recovery) never rewind.
+        if userInitiated, let target = resumeRewindTarget() {
+            clearResumeAnchor()   // applied once — in this launch and the next
+            seek(to: target, andPlay: true)
+            showToast("Backed up a little")
+            return
+        }
         if userInitiated, !isActive { userPlayAction &+= 1 }
         if status == .ended {
             startPlayback(at: 0)
@@ -239,6 +304,17 @@ final class PlaybackController: ObservableObject {
         }
     }
 
+    /// Continue Listening autoplay: start speaking on arrival in the reader,
+    /// but only when this document isn't already speaking. Backing out to the
+    /// shelf leaves audio running by design, so a plain `play()` here would
+    /// fall through to `startPlayback(at: currentSentence)` — invalidating the
+    /// schedule and restarting the sentence mid-word. Continuing is the whole
+    /// promise of the card.
+    func startAutoplay() {
+        guard !isActive else { return }
+        play()
+    }
+
     func togglePlayPause() {
         if isActive {
             pause()
@@ -253,6 +329,10 @@ final class PlaybackController: ObservableObject {
         guard let content, !content.sentences.isEmpty else { return }
         let target = min(max(sentence, 0), content.sentences.count - 1)
         skippedSentences.remove(target)   // an explicit seek gives it another chance
+        // Tap-to-seek, scrub, chapter row, search match, remote skip: the user
+        // has just chosen where to start, and the resume rewind must never
+        // second-guess that choice by backing up from an older rest.
+        clearResumeAnchor()
 
         if andPlay, !isActive { userPlayAction &+= 1 }   // e.g. restart after .ended
         if andPlay || isActive {
@@ -267,6 +347,66 @@ final class PlaybackController: ObservableObject {
 
     func nextSentence() { seek(to: currentSentence + 1, andPlay: false) }
     func previousSentence() { seek(to: currentSentence - 1, andPlay: false) }
+
+    // MARK: - Resume rewind
+
+    /// Rewind distance for a user resume after `elapsed` seconds of rest:
+    /// under 5 minutes reads on from where it stopped; a longer break backs
+    /// up 2 sentences, and over 30 minutes 4. Pure for the unit-test table.
+    nonisolated static func resumeRewindSentences(elapsed: TimeInterval) -> Int {
+        if elapsed > 30 * 60 { return 4 }
+        if elapsed > 5 * 60 { return 2 }
+        return 0
+    }
+
+    /// The rewound resume target, or nil when no rewind applies: only from a
+    /// cued pause of the SAME document, only while the playhead still sits
+    /// where that pause left it, never when the position is within the first
+    /// two sentences, always clamped to the document start.
+    private func resumeRewindTarget() -> Int? {
+        guard status == .paused,
+              let anchor = resumeAnchor,
+              let document,
+              anchor.documentID == document.id,
+              currentSentence <= anchor.sentenceIndex,
+              currentSentence >= 2 else { return nil }
+        let rewind = Self.resumeRewindSentences(elapsed: anchor.elapsed())
+        guard rewind > 0 else { return nil }
+        return max(currentSentence - rewind, 0)
+    }
+
+    /// Anchors the rest that starts now — this document, this sentence, on the
+    /// monotonic clock — and mirrors it to disk, so the flagship break (pause
+    /// at night, iOS jettisons the app, resume in the morning) still rewinds.
+    /// Suppressed mid-switch: the anchor belongs to the book that was playing.
+    private func stampResumeAnchor() {
+        guard !isSwitchingDocument, let document, currentSentence >= 0 else { return }
+        let anchor = ResumeAnchor(documentID: document.id, sentenceIndex: currentSentence)
+        resumeAnchor = anchor
+        anchorStore.save(anchor)
+    }
+
+    /// Drops the anchor for good — a consumed rewind, or a navigation the
+    /// rewind must not second-guess. The persisted copy goes with it, so a
+    /// relaunch can't resurrect a rest the user already answered. Only the
+    /// loaded document's rest is ours to drop: an empty slot means the stored
+    /// anchor (if any) belongs to another book, which keeps it.
+    private func clearResumeAnchor() {
+        guard resumeAnchor != nil else { return }
+        resumeAnchor = nil
+        anchorStore.clear()
+    }
+
+    /// Hands the anchor slot to a freshly loaded document. The in-memory
+    /// anchor belongs to the book being left; the persisted one applies only
+    /// when the SAME book is reopened (a relaunch has only its wall clock to
+    /// go on). A stored anchor for another book is left where it is — that
+    /// book keeps its rest until something else stops.
+    private func restoreResumeAnchor(for document: LibraryDocument) {
+        resumeAnchor = nil
+        guard let stored = anchorStore.load(), stored.documentID == document.id else { return }
+        resumeAnchor = stored
+    }
 
     // MARK: - Playback core
 
@@ -428,10 +568,27 @@ final class PlaybackController: ObservableObject {
         status = .error
     }
 
-    // MARK: - Voice / skip changes
+    // MARK: - Speed / voice / skip changes
 
-    /// A user's explicit voice pick: becomes the active voice and (via
-    /// `voiceSelections`) the persisted preference.
+    /// A user's explicit speed pick FOR THE BOOK BEING READ: becomes the active
+    /// rate and (via `rateSelections`) the persisted preference. Emits even when
+    /// the value is unchanged — re-picking the speed a book inherited is exactly
+    /// how the user pins it against later changes to the global default.
+    ///
+    /// This is the reader's seam only. A pick made on the Settings screen means
+    /// the global default and goes through `AppModel.selectGlobalRate` instead:
+    /// `document` stays non-nil for the rest of the process once any book is
+    /// opened (nothing unloads it), so "a book is loaded" cannot stand in for
+    /// "the user is choosing for that book".
+    func selectRate(_ newRate: Double) {
+        rate = newRate
+        rateSelections.send(rate)   // post-clamp value
+    }
+
+    /// A user's explicit voice pick FOR THE BOOK BEING READ: becomes the active
+    /// voice and (via `voiceSelections`) the persisted preference. Settings'
+    /// default-voice pick goes through `AppModel.selectGlobalVoice` — see
+    /// `selectRate` for why the loaded document can't discriminate the two.
     func selectVoice(_ newVoice: TtsVoice) {
         voice = newVoice
         voiceSelections.send(newVoice)

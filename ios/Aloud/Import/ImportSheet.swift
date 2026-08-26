@@ -4,15 +4,32 @@ import UniformTypeIdentifiers
 /// Medium-detent "Add to Library" sheet: Files import, the bundled Classics
 /// Bookshelf, and ghost rows for what's coming next.
 struct ImportSheet: View {
+
+    /// Destinations reachable inside the sheet's own navigation stack.
+    /// `initialDestination` pre-navigates on presentation (the Library's
+    /// "Browse the Classics Bookshelf" entry); nil keeps the sheet at its root.
+    enum Destination: Hashable {
+        case bookshelf
+    }
+
     @ObservedObject var importer: DocumentImporter
     var onOpenDocument: (LibraryDocument) -> Void
 
     @EnvironmentObject private var store: DocumentStore
     @Environment(\.dismiss) private var dismiss
     @State private var showFilePicker = false
+    @State private var path: [Destination]
+
+    init(importer: DocumentImporter,
+         initialDestination: Destination? = nil,
+         onOpenDocument: @escaping (LibraryDocument) -> Void) {
+        self.importer = importer
+        self.onOpenDocument = onOpenDocument
+        _path = State(initialValue: initialDestination.map { [$0] } ?? [])
+    }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(spacing: 10) {
                     ImportRow(icon: "doc.fill",
@@ -20,9 +37,7 @@ struct ImportSheet: View {
                               subtitle: "PDF or plain text") {
                         showFilePicker = true
                     }
-                    NavigationLink {
-                        BookshelfView(onOpen: onOpenDocument)
-                    } label: {
+                    NavigationLink(value: Destination.bookshelf) {
                         ImportRowLabel(icon: "books.vertical.fill",
                                        title: "Classics Bookshelf",
                                        subtitle: "Bundled with Aloud, ready instantly")
@@ -41,6 +56,12 @@ struct ImportSheet: View {
                 .padding(.top, 8)
             }
             .background(Theme.bgTint.ignoresSafeArea())
+            .navigationDestination(for: Destination.self) { destination in
+                switch destination {
+                case .bookshelf:
+                    BookshelfView(onOpen: onOpenDocument)
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {

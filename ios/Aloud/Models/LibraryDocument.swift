@@ -21,6 +21,9 @@ struct LibraryDocument: Codable, Identifiable {
     let kind: DocKind
     var author: String?
     var wordCount: Int
+    /// Per-book playback memory (nil = follow the global default).
+    var preferredRate: Double?
+    var preferredVoiceID: String?
 
     init(id: UUID,
          title: String,
@@ -34,7 +37,9 @@ struct LibraryDocument: Codable, Identifiable {
          contentHash: String,
          kind: DocKind = .pdf,
          author: String? = nil,
-         wordCount: Int = 0) {
+         wordCount: Int = 0,
+         preferredRate: Double? = nil,
+         preferredVoiceID: String? = nil) {
         self.id = id
         self.title = title
         self.fileName = fileName
@@ -48,9 +53,12 @@ struct LibraryDocument: Codable, Identifiable {
         self.kind = kind
         self.author = author
         self.wordCount = wordCount
+        self.preferredRate = preferredRate
+        self.preferredVoiceID = preferredVoiceID
     }
 
-    // Forward-compatible decoding: kind/author/wordCount are late additions.
+    // Forward-compatible decoding: kind/author/wordCount and the per-book
+    // playback preferences are late additions.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -66,6 +74,8 @@ struct LibraryDocument: Codable, Identifiable {
         kind = try c.decodeIfPresent(DocKind.self, forKey: .kind) ?? .pdf
         author = try c.decodeIfPresent(String.self, forKey: .author)
         wordCount = try c.decodeIfPresent(Int.self, forKey: .wordCount) ?? 0
+        preferredRate = try c.decodeIfPresent(Double.self, forKey: .preferredRate)
+        preferredVoiceID = try c.decodeIfPresent(String.self, forKey: .preferredVoiceID)
     }
 }
 
@@ -79,6 +89,14 @@ extension LibraryDocument {
         Int((progressFraction.clamped01 * 100).rounded())
     }
 
+    /// The speed this book actually plays at: its own per-book pin, else the
+    /// current global default. The single per-book rate rule — the apply on
+    /// load and the shelf's time-left estimates both resolve through here, so
+    /// a card and the reader can never disagree.
+    func effectiveRate(globalDefault: Double) -> Double {
+        preferredRate ?? globalDefault
+    }
+
     /// Estimated total listening time at the given playback rate, or nil when unknown.
     func estimatedTotalSeconds(rate: Double = 1.0) -> TimeInterval? {
         guard wordCount > 0, rate > 0 else { return nil }
@@ -88,6 +106,22 @@ extension LibraryDocument {
     /// Estimated remaining listening time at the given playback rate, or nil when unknown.
     func estimatedSecondsRemaining(rate: Double = 1.0) -> TimeInterval? {
         estimatedTotalSeconds(rate: rate).map { $0 * (1 - progressFraction.clamped01) }
+    }
+
+    /// The shelf's status line — "43% · 1 hr 12 min left" — rendered by the
+    /// Continue Listening hero and the grid card from this ONE implementation,
+    /// so separator, suffix and rounding can never drift between the two cards
+    /// sitting on the same screen.
+    ///
+    /// `rate` is the rate the book will actually be spoken at (its per-book
+    /// preference, else the global default) — never a rate borrowed from
+    /// whatever was last loaded. `lead` overrides the default progress
+    /// percentage; the grid card passes a page count for PDFs.
+    func listeningSubtitle(rate: Double, lead: String? = nil) -> String {
+        let lead = lead ?? "\(progressPercent)%"
+        guard let remaining = estimatedSecondsRemaining(rate: rate) else { return lead }
+        if progressFraction >= 0.99 { return "\(lead) · Finished" }
+        return "\(lead) · \(ListeningEstimate.phrase(seconds: remaining)) left"
     }
 }
 

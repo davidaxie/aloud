@@ -57,10 +57,7 @@ struct AppearanceSheet: View {
 
     var body: some View {
         VStack(spacing: 26) {
-            Capsule()
-                .fill(Theme.lineStrong)
-                .frame(width: 36, height: 4)
-                .padding(.top, 10)
+            SheetGrabber()
 
             VStack(spacing: 14) {
                 sectionLabel("Text Size")
@@ -82,8 +79,7 @@ struct AppearanceSheet: View {
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity)
         .background(Theme.surface)
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.hidden)
+        .sheetChrome([.medium])
     }
 
     // MARK: - Text size

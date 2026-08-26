@@ -2,6 +2,12 @@ import SwiftUI
 
 /// Settings: default voice + speed, neural model management, reading behavior,
 /// and the privacy promise with version and licenses.
+///
+/// The Voice and Speed rows here are the GLOBAL defaults — what an unpinned
+/// book inherits — not the loaded book's current settings, which belong to the
+/// player bar. Both rows read `AppModel.globalVoice`/`globalRate` and both
+/// pickers are presented at `.global` scope, so what this screen shows is what
+/// a pick on it changes.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var playback: PlaybackController
@@ -12,14 +18,14 @@ struct SettingsView: View {
         List {
             Section {
                 NavigationLink {
-                    VoicePickerView()
+                    VoicePickerView(scope: .global)
                 } label: {
                     HStack {
                         Text("Voice")
                             .font(Theme.ui(16))
                             .foregroundStyle(Theme.text)
                         Spacer()
-                        Text(playback.voice.name)
+                        Text(model.globalVoice.name)
                             .font(Theme.ui(15))
                             .foregroundStyle(Theme.textMuted)
                     }
@@ -90,7 +96,7 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.text)
             }
         }
-        .sheet(isPresented: $showSpeedSheet) { SpeedSheet() }
+        .sheet(isPresented: $showSpeedSheet) { SpeedSheet(scope: .global) }
     }
 
     // MARK: Speed
@@ -104,7 +110,7 @@ struct SettingsView: View {
                     .font(Theme.ui(16))
                     .foregroundStyle(Theme.text)
                 Spacer()
-                Text(Self.rateLabel(playback.rate))
+                Text(Self.rateLabel(model.globalRate))
                     .font(Theme.ui(15, weight: .medium).monospacedDigit())
                     .foregroundStyle(Theme.accentStrong)
                 Image(systemName: "chevron.right")

@@ -8,9 +8,14 @@ import SwiftUI
 /// Selecting a voice mid-playback keeps position (PlaybackController
 /// re-synthesizes from the current sentence).
 ///
-/// Pushed from Settings as-is; presented from the player bar via
-/// `VoicePickerSheet` below.
+/// Pushed from Settings as-is (`.global` — the default voice every unpinned
+/// book follows); presented from the player bar via `VoicePickerSheet` below
+/// (`.book` — the voice of the book being read). The roster and the previews
+/// are identical either way; only where the checkmark reads from and where the
+/// pick is written differ.
 struct VoicePickerView: View {
+
+    var scope: PreferenceScope = .book
 
     @EnvironmentObject private var playback: PlaybackController
     @EnvironmentObject private var model: AppModel
@@ -111,7 +116,7 @@ struct VoicePickerView: View {
                         .font(Theme.ui(12))
                         .foregroundStyle(Theme.textFaint)
                 }
-                if voice.id == playback.voice.id {
+                if voice.id == selectedVoiceID {
                     Image(systemName: "checkmark")
                         .font(Theme.ui(footer ? 13 : 14, weight: .semibold))
                         .foregroundStyle(Theme.accent)
@@ -126,10 +131,22 @@ struct VoicePickerView: View {
         .accessibilityIdentifier("voice.\(voice.id)")
     }
 
-    /// Selecting is identical for every row: the pick becomes the active
-    /// voice and the persisted preference; a sheet dismisses on selection.
+    /// Which row wears the checkmark: the loaded book's active voice, or the
+    /// global default. In Settings these differ whenever the last book read
+    /// carries a pin of its own, or while a neural pick is standing in as the
+    /// system voice because the model isn't installed.
+    private var selectedVoiceID: String {
+        scope == .book ? playback.voice.id : model.globalVoice.id
+    }
+
+    /// Selecting is identical for every row apart from where the pick lands:
+    /// on the book being read, or on the default every unpinned book follows.
+    /// A sheet dismisses on selection.
     private func select(_ voice: TtsVoice) {
-        playback.selectVoice(voice)
+        switch scope {
+        case .book: playback.selectVoice(voice)
+        case .global: model.selectGlobalVoice(voice)
+        }
         if dismissesOnSelect {
             previewer.stop()
             dismiss()
@@ -200,7 +217,7 @@ struct VoicePickerView: View {
 struct VoicePickerSheet: View {
     var body: some View {
         NavigationStack {
-            VoicePickerView(dismissesOnSelect: true)
+            VoicePickerView(scope: .book, dismissesOnSelect: true)
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)

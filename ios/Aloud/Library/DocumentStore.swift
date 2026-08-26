@@ -50,7 +50,7 @@ final class DocumentStore: ObservableObject {
                 sentenceCount: content.sentences.count,
                 contentHash: content.contentHash,
                 kind: .pdf,
-                wordCount: Self.wordCount(of: content))
+                wordCount: content.wordCount)
             insert(document)
             return document
         } catch {
@@ -82,7 +82,7 @@ final class DocumentStore: ObservableObject {
                 contentHash: content.contentHash,
                 kind: .text,
                 author: author,
-                wordCount: Self.wordCount(of: content))
+                wordCount: content.wordCount)
             insert(document)
             return document
         } catch {
@@ -133,6 +133,26 @@ final class DocumentStore: ObservableObject {
         return content
     }
 
+    // MARK: - Continue listening
+
+    /// Pure selection: the most recently listened in-progress document.
+    /// A candidate has been opened (`lastOpenedAt != nil`), has started
+    /// (`progressFraction > 0`) and isn't finished (`< 0.99` — the same
+    /// threshold the shelf uses to label a book "Finished"). Ties and order
+    /// resolve by `lastOpenedAt` alone, never `addedAt`. Static and
+    /// nonisolated so it's unit-testable without a store.
+    nonisolated static func continueListeningCandidate(
+        in documents: [LibraryDocument]
+    ) -> LibraryDocument? {
+        documents
+            .filter {
+                $0.lastOpenedAt != nil
+                    && $0.progressFraction > 0
+                    && $0.progressFraction < 0.99
+            }
+            .max { ($0.lastOpenedAt ?? .distantPast) < ($1.lastOpenedAt ?? .distantPast) }
+    }
+
     // MARK: - Progress
 
     /// Updates in-memory progress immediately; disk write debounced 2 s
@@ -142,13 +162,23 @@ final class DocumentStore: ObservableObject {
         documents[index].progressSentence = sentence
         documents[index].progressFraction = fraction
         documents[index].lastOpenedAt = Date()
+        scheduleDebouncedSave()
+    }
 
-        pendingSave?.cancel()
-        pendingSave = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard !Task.isCancelled else { return }
-            self?.persistIndex()
-        }
+    // MARK: - Per-book playback memory
+
+    /// Updates only the provided per-book playback fields (nil = leave as-is)
+    /// on the document's record. In-memory immediately; the disk write is
+    /// debounced like progress (and flushed on app background).
+    func setPreferredPlayback(id: UUID, rate: Double? = nil, voiceID: String? = nil) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        var record = documents[index]
+        if let rate { record.preferredRate = rate }
+        if let voiceID { record.preferredVoiceID = voiceID }
+        guard record.preferredRate != documents[index].preferredRate
+                || record.preferredVoiceID != documents[index].preferredVoiceID else { return }
+        documents[index] = record
+        scheduleDebouncedSave()
     }
 
     /// Marks a document as opened (drives last-listened sort on the shelf).
@@ -178,6 +208,20 @@ final class DocumentStore: ObservableObject {
         documents[index].title = title
         persistIndex()
     }
+
+    #if DEBUG
+    /// Destructive: removes the whole on-disk library (documents, content
+    /// caches, index) and the thumbnail cache.
+    ///
+    /// Backing the `-uitest-reset-library` hook, and called explicitly from
+    /// the composition root before the store is built — constructing a store
+    /// never destroys data as a side effect, and every test hook stays
+    /// auditable in one place. Debug-only: no Release build can reach it.
+    static func wipeAllData() {
+        try? FileManager.default.removeItem(at: libraryDir)
+        try? FileManager.default.removeItem(at: thumbnailsDir)
+    }
+    #endif
 
     // MARK: - Paths
 
@@ -263,6 +307,18 @@ final class DocumentStore: ObservableObject {
         try? data.write(to: Self.indexURL, options: .atomic)
     }
 
+    /// Debounces the atomic index write 2 s behind high-frequency updates
+    /// (progress, per-book playback prefs); `flushIndex` forces it through
+    /// on app background.
+    private func scheduleDebouncedSave() {
+        pendingSave?.cancel()
+        pendingSave = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.persistIndex()
+        }
+    }
+
     private func flushIndex() {
         pendingSave?.cancel()
         pendingSave = nil
@@ -302,12 +358,6 @@ final class DocumentStore: ObservableObject {
         }.value
     }
 
-    private static func wordCount(of content: DocContent) -> Int {
-        content.sentences.reduce(0) {
-            $0 + $1.text.split(whereSeparator: \.isWhitespace).count
-        }
-    }
-
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -319,6 +369,36 @@ final class DocumentStore: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+}
+
+// MARK: - Shelf layout
+
+/// How the Library splits the shelf: the Continue Listening hero and the
+/// grid remainder (hero excluded, store order kept).
+///
+/// Both halves come out of ONE derivation so a body evaluation never selects
+/// the hero twice, and the view memoizes the result against `store.$documents`
+/// — LibraryView also re-renders at the playback publish cadence (a word tick
+/// several times a second), and the shelf must not be rescanned per tick.
+/// Value type, `nonisolated` by construction, so it's unit-testable without a
+/// store.
+struct ShelfLayout {
+    let hero: LibraryDocument?
+    let grid: [LibraryDocument]
+
+    /// The shelf before the store's first publish.
+    static let empty = ShelfLayout(hero: nil, grid: [])
+
+    init(for documents: [LibraryDocument]) {
+        let hero = DocumentStore.continueListeningCandidate(in: documents)
+        self.hero = hero
+        self.grid = hero.map { hero in documents.filter { $0.id != hero.id } } ?? documents
+    }
+
+    private init(hero: LibraryDocument?, grid: [LibraryDocument]) {
+        self.hero = hero
+        self.grid = grid
+    }
 }
 
 enum DocumentStoreError: LocalizedError {
