@@ -6,6 +6,11 @@ import SwiftUI
 struct ReaderScreen: View {
 
     let document: LibraryDocument
+    /// Start speaking on arrival — the Continue Listening hero's request,
+    /// carried by the push itself. Scoped to this screen: it cannot outlive
+    /// the navigation that set it, and every other entry point leaves it
+    /// `false` by construction.
+    var autoplay = false
 
     @EnvironmentObject private var store: DocumentStore
     @EnvironmentObject private var playback: PlaybackController
@@ -17,11 +22,17 @@ struct ReaderScreen: View {
     @StateObject private var sleepTimer = SleepTimer()
 
     @State private var content: DocContent?
+    /// Chapter list + page/chapter labels, derived once when the document
+    /// loads. Deriving inside a sheet's initializer would rerun a whole-book
+    /// scan on every body evaluation — word-highlight cadence during playback.
+    @State private var navigation: ReaderNavigation?
     @State private var loadFailed = false
     @State private var isLoaded = false
     @State private var scrolledAway = false
     @State private var returnTrigger = 0
     @State private var showAppearanceSheet = false
+    @State private var showChapterSheet = false
+    @State private var showSearchSheet = false
 
     var body: some View {
         ZStack {
@@ -60,6 +71,18 @@ struct ReaderScreen: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar { toolbarContent }
         .sheet(isPresented: $showAppearanceSheet) { AppearanceSheet() }
+        .sheet(isPresented: $showChapterSheet) {
+            if let navigation {
+                ChapterListSheet(chapters: navigation.chapters,
+                                 labels: navigation.labels,
+                                 kind: document.kind)
+            }
+        }
+        .sheet(isPresented: $showSearchSheet) {
+            if let content, let navigation {
+                SearchSheet(content: content, labels: navigation.labels)
+            }
+        }
         .task {
             sleepTimer.attach(to: playback)
             await load()
@@ -95,11 +118,26 @@ struct ReaderScreen: View {
             .accessibilityLabel("Back to Library")
         }
         ToolbarItem(placement: .principal) {
-            Text(liveDocument.title)
-                .font(Theme.serif(16, weight: .medium))
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            // The title is the chapter-drawer entry point: a subtle chevron
+            // signals it, and the whole 44pt-tall label is the hit area.
+            Button { showChapterSheet = true } label: {
+                HStack(spacing: 5) {
+                    Text(liveDocument.title)
+                        .font(Theme.serif(16, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Image(systemName: "chevron.down")
+                        .font(Theme.ui(9, weight: .semibold))
+                        .foregroundStyle(Theme.textMuted)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(content == nil)
+            .accessibilityLabel("Chapters")
+            .accessibilityIdentifier("reader.chapters")
         }
         ToolbarItem(placement: .navigationBarTrailing) {
             Button { showAppearanceSheet = true } label: {
@@ -117,6 +155,13 @@ struct ReaderScreen: View {
 
     private var overflowMenu: some View {
         Menu {
+            Button {
+                showSearchSheet = true
+            } label: {
+                Label("Search in Book", systemImage: "magnifyingglass")
+            }
+            .disabled(content == nil)
+            .accessibilityIdentifier("reader.search")
             Menu {
                 sleepOption(.off)
                 ForEach(SleepTimer.minuteChoices, id: \.self) { minutes in
@@ -245,9 +290,11 @@ struct ReaderScreen: View {
 
     private func load() async {
         guard content == nil else { return }
+
         do {
             let loaded = try await store.content(for: document)
             content = loaded
+            navigation = ReaderNavigation(content: loaded, kind: document.kind)
 
             // Reconciliation may have reset progress; load the live record so
             // the controller cues at the saved sentence.
@@ -262,6 +309,16 @@ struct ReaderScreen: View {
             if let needle = UITestHooks.seekText,
                let match = loaded.sentences.first(where: { $0.text.contains(needle) }) {
                 playback.seek(to: match.id, andPlay: false)
+            }
+
+            // Continue Listening autoplay: content is loaded and the saved
+            // position restored (playback.load cued it above) — start through
+            // the user-play path so `userPlayAction` bumps and the reader
+            // centers the playhead exactly as a tap on Play would. A book
+            // still speaking (backed out to the shelf, tapped again) is
+            // CONTINUED, never restarted — `startAutoplay` holds that line.
+            if autoplay {
+                playback.startAutoplay()
             }
         } catch {
             loadFailed = true

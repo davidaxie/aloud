@@ -2,6 +2,19 @@ import Combine
 import Foundation
 import UIKit
 
+/// What a speed or voice pick is FOR. The speed sheet and the voice picker are
+/// each presented from two places that mean different things by the same tap,
+/// and only the presenting screen knows which: the player bar is choosing for
+/// the book on screen, Settings is choosing the default every unpinned book
+/// follows. Nothing downstream can infer this — a book stays loaded in the
+/// controller long after the reader is gone — so the pick site declares it.
+enum PreferenceScope {
+    /// The player bar, inside the reader: pins the loaded book.
+    case book
+    /// The Settings screen: writes the global default.
+    case global
+}
+
 /// Composition root. Builds the object graph once, restores preferences,
 /// and persists them as they change.
 @MainActor
@@ -36,11 +49,35 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The global default speed: the baseline every book without a pin of its
+    /// own follows. Published so the shelf's time-left estimates track it —
+    /// `playback.rate` is the LOADED book's rate and says nothing about the
+    /// other cards.
+    @Published private(set) var globalRate: Double
+
+    /// The global default voice, resolved against the curated roster. Same
+    /// relationship to `playback.voice` as `globalRate` has to `playback.rate`:
+    /// the controller's voice belongs to the loaded book (which may be pinned
+    /// to something else, or standing in as system while the model is absent),
+    /// so Settings shows and edits THIS.
+    @Published private(set) var globalVoice: TtsVoice
+
     private var cancellables: Set<AnyCancellable> = []
     private var didRunLaunchTasks = false
 
     init() {
         let defaults = UserDefaults.standard
+
+        // UI-test hook (compiled out of Release): start from an empty shelf so
+        // leftover container state never leaks into a test run. Destructive,
+        // so it happens here at the composition root — before the store is
+        // built — next to the other launch-argument hooks, never as a side
+        // effect of constructing a store.
+        #if DEBUG
+        if UITestHooks.resetLibrary {
+            DocumentStore.wipeAllData()
+        }
+        #endif
 
         documentStore = DocumentStore()
         engine = AVSpeechEngine()
@@ -58,6 +95,9 @@ final class AppModel: ObservableObject {
                                       audioSession: audioSession)
         bookshelf = BookshelfCatalog.load(from: .main)
         nowPlaying.configure(playback: playback, store: documentStore)
+        globalRate = PlaybackController.clampedRate(
+            defaults.object(forKey: PrefKey.rate) as? Double ?? 1.0)
+        globalVoice = engine.defaultVoice   // provisional; restorePreferences resolves it
         autoScroll = defaults.object(forKey: PrefKey.autoScroll) as? Bool ?? true
         wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
         playback.wordHighlightEnabled = wordHighlight   // didSet doesn't fire in init
@@ -76,6 +116,12 @@ final class AppModel: ObservableObject {
         // Persist progress even when playback continues outside the reader.
         playback.onProgress = { [weak documentStore] id, sentence, fraction in
             documentStore?.saveProgress(id: id, sentence: sentence, fraction: fraction)
+        }
+
+        // Per-book playback memory: a freshly loaded document applies its
+        // stored rate/voice (else the global defaults).
+        playback.onDocumentLoaded = { [weak self] document in
+            self?.applyDocumentPreferences(document)
         }
     }
 
@@ -137,10 +183,15 @@ final class AppModel: ObservableObject {
     private func handleModelInstalled() {
         let defaults = UserDefaults.standard
         let resolved = resolvedVoicePreference(from: defaults)
-        playback.voice = resolved
+        globalVoice = resolved
         if let stored = defaults.string(forKey: PrefKey.voiceID), stored != resolved.id {
             defaults.set(resolved.id, forKey: PrefKey.voiceID)
         }
+        // The loaded book re-resolves through the same seam a Settings pick
+        // uses — its own Kokoro pick was standing in as system until now, and
+        // a book with no stored voice resolves to exactly `resolved` anyway,
+        // so there is no second precedence rule here.
+        reapplyPlaybackPreferences()
     }
 
     private func observeMemoryWarnings() {
@@ -189,13 +240,12 @@ final class AppModel: ObservableObject {
     }
 
     private func restorePreferences(from defaults: UserDefaults) {
-        if let rate = defaults.object(forKey: PrefKey.rate) as? Double {
-            playback.rate = rate
-        }
+        playback.rate = globalRate
         if let skip = defaults.object(forKey: PrefKey.skipBrackets) as? Bool {
             playback.skipBrackets = skip
         }
-        applyVoicePreference(resolvedVoicePreference(from: defaults))
+        globalVoice = resolvedVoicePreference(from: defaults)
+        applyVoicePreference(globalVoice)
     }
 
     // MARK: - Voice preference
@@ -235,15 +285,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Rate and skip-brackets persist on every change; the voice persists
-    /// only through `voiceSelections` — deliberate picker choices — so
-    /// temporary fallbacks (the pre-install stand-in, neural-failure
-    /// degradation) never overwrite the stored preference.
+    /// Speed and voice persist ONLY through the controller's deliberate-pick
+    /// seams — `rateSelections` (preset chips, slider release) and
+    /// `voiceSelections` (picker taps). Every programmatic write goes to
+    /// `rate`/`voice` directly and is structurally excluded: launch restore,
+    /// the per-book apply on load, the pre-install voice stand-in,
+    /// neural-failure degradation, and each intermediate step of a live
+    /// slider drag. So an apply — or a fallback — can never be written back
+    /// as a preference, and both channels are opt-in the same way.
+    ///
+    /// These two subjects carry the READER's picks only. Settings' picks mean
+    /// the global defaults and arrive through `selectGlobalRate` /
+    /// `selectGlobalVoice`; both intents meet again at `persistUserSelection`.
+    /// Skip-brackets has no per-book dimension and still persists on change.
     private func persistPreferenceChanges(to defaults: UserDefaults) {
-        playback.$rate
-            .dropFirst()
-            .removeDuplicates()
-            .sink { defaults.set($0, forKey: PrefKey.rate) }
+        playback.rateSelections
+            .sink { [weak self] rate in
+                self?.persistUserSelection(rate: rate, scope: .book)
+            }
             .store(in: &cancellables)
 
         playback.$skipBrackets
@@ -253,9 +312,141 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
 
         playback.voiceSelections
-            .map(\.id)
-            .sink { defaults.set($0, forKey: PrefKey.voiceID) }
+            .sink { [weak self] voice in
+                self?.persistUserSelection(voice: voice, scope: .book)
+            }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Per-book playback memory
+
+    /// The one write seam for a deliberate user pick: `pinTarget` decides
+    /// whether it lands on a book or on the global defaults, and this is the
+    /// only place that decision is acted on.
+    private func persistUserSelection(rate: Double? = nil,
+                                      voice: TtsVoice? = nil,
+                                      scope: PreferenceScope) {
+        if let id = Self.pinTarget(scope: scope,
+                                   loadedDocumentID: playback.document?.id,
+                                   in: documentStore.documents) {
+            documentStore.setPreferredPlayback(id: id, rate: rate, voiceID: voice?.id)
+        } else {
+            persistGlobalDefault(rate: rate, voice: voice)
+        }
+    }
+
+    // MARK: - Global defaults (the Settings screen's seam)
+
+    /// Settings' speed pick. Writes the default every unpinned book follows,
+    /// then re-resolves the loaded book against it: a book with a pin of its
+    /// own keeps that pin, an unpinned one follows the new default at once
+    /// instead of waiting for a reload.
+    func selectGlobalRate(_ rate: Double) {
+        persistUserSelection(rate: PlaybackController.clampedRate(rate), scope: .global)
+        reapplyPlaybackPreferences()
+    }
+
+    /// Settings' voice pick — the global-default twin of `selectGlobalRate`.
+    func selectGlobalVoice(_ voice: TtsVoice) {
+        persistUserSelection(voice: voice, scope: .global)
+        reapplyPlaybackPreferences()
+    }
+
+    /// The one place the global defaults are written, reached either by a
+    /// Settings pick or by a reader pick with no pinnable book to land on.
+    private func persistGlobalDefault(rate: Double? = nil, voice: TtsVoice? = nil) {
+        let defaults = UserDefaults.standard
+        if let rate {
+            defaults.set(rate, forKey: PrefKey.rate)
+            globalRate = rate
+        }
+        if let voice {
+            defaults.set(voice.id, forKey: PrefKey.voiceID)
+            globalVoice = voice
+        }
+    }
+
+    /// Re-resolves what the loaded book should be playing at, against the
+    /// CURRENT globals — used whenever a global shifts underneath it (a
+    /// Settings pick, a model install). Same precedence as a fresh load, and
+    /// through the same non-persisting seams, so nothing here is written back
+    /// as a preference.
+    private func reapplyPlaybackPreferences() {
+        if let id = playback.document?.id,
+           let record = documentStore.documents.first(where: { $0.id == id }) {
+            applyDocumentPreferences(record)
+        } else {
+            playback.rate = globalRate
+            applyVoicePreference(globalVoice)
+        }
+    }
+
+    /// Which record a pick pins to, or nil for "write the global default".
+    ///
+    /// A `.global` pick — made on the Settings screen — never pins, no matter
+    /// what is loaded. This is the whole rule: `playback.document` is set by
+    /// `load()` and cleared only by `unload()`, which nothing calls, so once
+    /// the user has opened a single book it stays non-nil for the rest of the
+    /// process. Inferring intent from it would quietly pin every later change
+    /// to the *defaults* onto the last book read, leaving the global voice and
+    /// speed unwritable forever after the first book.
+    ///
+    /// A `.book` pick pins the loaded document, but only while the library
+    /// still holds it: deleting the loaded book leaves it loaded in the
+    /// controller, and `setPreferredPlayback` drops a write for an id it can't
+    /// find — so a pick made after that delete falls through to the global
+    /// default rather than vanishing. Static so it's unit-testable.
+    nonisolated static func pinTarget(scope: PreferenceScope,
+                                      loadedDocumentID: UUID?,
+                                      in documents: [LibraryDocument]) -> UUID? {
+        guard scope == .book else { return nil }
+        guard let loadedDocumentID,
+              documents.contains(where: { $0.id == loadedDocumentID }) else { return nil }
+        return loadedDocumentID
+    }
+
+    /// Per-book voice: a stored per-book id engages only while it's still on
+    /// the curated roster (the eight Kokoro voices or the stable "system"
+    /// id). Anything else — a retired speaker, a legacy identifier, nothing
+    /// stored — falls back to the GLOBAL preference resolution, and the
+    /// caller must not persist that fallback. Static so it's unit-testable.
+    nonisolated static func resolvePlaybackVoice(documentVoiceID: String?,
+                                                 globalStoredID: String?,
+                                                 curated: [TtsVoice],
+                                                 neuralDefault: TtsVoice,
+                                                 systemDefault: TtsVoice,
+                                                 modelInstalled: Bool) -> TtsVoice {
+        if let documentVoiceID,
+           let voice = curated.first(where: { $0.id == documentVoiceID }) {
+            return voice
+        }
+        return resolveVoicePreference(storedID: globalStoredID,
+                                      curated: curated,
+                                      neuralDefault: neuralDefault,
+                                      systemDefault: systemDefault,
+                                      modelInstalled: modelInstalled)
+    }
+
+    /// Applies a just-loaded document's stored playback prefs — else the
+    /// global defaults, so a fresh book inherits the current baseline and a
+    /// book left at 2× never bleeds into the next one. Both values go in
+    /// through the non-persisting seams (`rate` and `voice` directly, never
+    /// `selectRate`/`selectVoice`), so the apply itself — and a retired
+    /// voice's fallback — can never be written into any record. No
+    /// re-entrancy guard is needed: persistence is opt-in on both channels.
+    private func applyDocumentPreferences(_ document: LibraryDocument) {
+        let defaults = UserDefaults.standard
+
+        playback.rate = document.effectiveRate(globalDefault: globalRate)
+
+        let voice = Self.resolvePlaybackVoice(
+            documentVoiceID: document.preferredVoiceID,
+            globalStoredID: defaults.string(forKey: PrefKey.voiceID),
+            curated: kokoroEngine.voices + engine.voices,
+            neuralDefault: kokoroEngine.defaultVoice,
+            systemDefault: engine.defaultVoice,
+            modelInstalled: modelManager.isInstalled)
+        applyVoicePreference(voice)
     }
 }
 

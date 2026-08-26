@@ -22,6 +22,12 @@ enum UITestHooks {
     /// Start from a clean (removed) voice preference — fresh-install default.
     static var resetVoicePref: Bool { arguments.contains("-uitest-reset-voice-pref") }
 
+    /// Wipe the on-disk library (documents, content caches, index, thumbnails)
+    /// before the store loads — leftover container state (e.g. listening
+    /// progress that materializes the Continue Listening hero) can never
+    /// leak into a test that assumes a fresh shelf.
+    static var resetLibrary: Bool { arguments.contains("-uitest-reset-library") }
+
     /// `-uitest-force-dark` / `-uitest-force-light` pin the color scheme
     /// (simctl's appearance flip is unreliable on this runtime).
     static var forcedColorScheme: ColorScheme? {
@@ -66,6 +72,7 @@ enum UITestHooks {
     static var seedFirstClassic: Bool { false }
     static var openFirstDoc: Bool { false }
     static var resetVoicePref: Bool { false }
+    static var resetLibrary: Bool { false }
     static var forcedColorScheme: ColorScheme? { nil }
     static var seekText: String? { nil }
     static var kokoroModelPath: String? { nil }

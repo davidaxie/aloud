@@ -40,6 +40,7 @@ final class ScreenshotCaptureTests: XCTestCase {
         app.launchArguments += [
             "-uitest-seed-first-classic",
             "-uitest-reset-voice-pref",   // fresh-install default: Michael
+            "-uitest-reset-library",      // fresh shelf: grid card, no leftover hero
         ]
         app.launch()
 
@@ -175,6 +176,67 @@ final class ScreenshotCaptureTests: XCTestCase {
         // as playback starts (later, accessibility snapshots force full text
         // layout and briefly shift content under the viewport).
         save(shot(), to: shotsDir + "/11-reader-skip-brackets.png")
+
+        // 12 — Library with the Continue Listening hero card. The deep-seeked
+        // position above created real progress, so leaving the reader
+        // materializes the hero above the grid.
+        playButton2.tap()
+        XCTAssertTrue(waitForValue("paused", of: playButton2, timeout: 10))
+        app2.buttons["Back to Library"].firstMatch.tap()
+        let hero = app2.buttons["library.continue"].firstMatch
+        XCTAssertTrue(hero.waitForExistence(timeout: 10),
+                      "Continue Listening hero should appear once progress exists")
+        sleep(2)   // cover art + layout settle
+        save(shot(), to: shotsDir + "/12-continue-card.png")
+
+        // 13 — Chapter drawer, opened from the reader title. Enter through the
+        // hero (autoplay), pause for a calm shot, then open the drawer.
+        hero.tap()
+        XCTAssertTrue(readerText2.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitForValue("playing", of: playButton2, timeout: 180),
+                      "Continue card must start playback on its own")
+        playButton2.tap()
+        XCTAssertTrue(waitForValue("paused", of: playButton2, timeout: 10))
+        let titleButton = app2.buttons["reader.chapters"].firstMatch
+        XCTAssertTrue(titleButton.waitForExistence(timeout: 5))
+        titleButton.tap()
+        let chapterRows = app2.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'chapters.row.'"))
+        XCTAssertTrue(chapterRows.firstMatch.waitForExistence(timeout: 10))
+        sleep(1)   // sheet presentation + unanimated scroll settle
+        save(shot(), to: shotsDir + "/13-chapter-drawer.png")
+
+        // Dismiss by tapping the backdrop ABOVE the medium-detent sheet: a
+        // mid-screen swipeDown lands inside the drawer's ScrollView, which
+        // `onAppear` has already scrolled away from the top, so the scroll view
+        // eats the gesture and the sheet stays up. Assert on the ROWS, not on
+        // `reader.text` — a non-fullscreen sheet leaves the reader in the
+        // hierarchy, so waiting for it passes with the drawer still covering
+        // the "…" button that step 14 taps next.
+        app2.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        XCTAssertTrue(waitForNonExistence(of: chapterRows.firstMatch, timeout: 10),
+                      "Chapter drawer must dismiss before the search step")
+        XCTAssertTrue(readerText2.waitForExistence(timeout: 10))
+
+        // 14 — Search in Book with live results ("Daisy" is all over the
+        // seeded Gatsby). Menu-row identifiers are flaky on UIKit-backed
+        // menus, so the label is the reliable query.
+        let moreButton2 = app2.buttons["reader.more"].firstMatch
+        XCTAssertTrue(moreButton2.waitForExistence(timeout: 5))
+        moreButton2.tap()
+        let searchItem = app2.buttons["Search in Book"].firstMatch
+        XCTAssertTrue(searchItem.waitForExistence(timeout: 5))
+        searchItem.tap()
+        let searchField = app2.textFields["search.field"].firstMatch
+        XCTAssertTrue(searchField.waitForExistence(timeout: 10))
+        sleep(1)   // presentation + auto-focus settle
+        searchField.tap()
+        app2.typeText("Daisy")
+        let matchCount = app2.staticTexts["search.count"].firstMatch
+        XCTAssertTrue(matchCount.waitForExistence(timeout: 10),
+                      "Debounced scan should surface a match count")
+        sleep(1)
+        save(shot(), to: shotsDir + "/14-search-sheet.png")
     }
 
     // MARK: - Helpers

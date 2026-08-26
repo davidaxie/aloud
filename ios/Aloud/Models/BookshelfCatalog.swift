@@ -13,7 +13,7 @@ struct BookshelfBook: Codable, Identifiable, Hashable {
 
     /// Whole-book listening estimate at 1.0× (165 wpm).
     var estimatedListeningMinutes: Int {
-        max(1, Int((Double(words) / LibraryDocument.spokenWordsPerMinute).rounded()))
+        ListeningEstimate.minutes(words: words)
     }
 
     private enum CodingKeys: String, CodingKey {

@@ -18,4 +18,14 @@ extension XCTestCase {
     func stringValue(of element: XCUIElement) -> String {
         (element.value as? String) ?? ""
     }
+
+    /// Wait until the element is gone. The positive counterpart is often not
+    /// a valid substitute: a sheet leaves the screen behind it in the
+    /// accessibility hierarchy, so "the reader is still there" says nothing
+    /// about whether the sheet closed.
+    func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate(format: "exists == false")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
 }

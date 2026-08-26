@@ -57,7 +57,13 @@ struct PlayerBarView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        dragSentence = sentenceIndex(atX: value.location.x, width: width)
+                        let target = sentenceIndex(atX: value.location.x, width: width)
+                        if dragSentence == nil {
+                            TransportHaptics.prepare()   // drag start: warm the engine
+                        } else if dragSentence != target {
+                            TransportHaptics.selectionChanged()   // preview moved a sentence
+                        }
+                        dragSentence = target
                     }
                     .onEnded { value in
                         let target = sentenceIndex(atX: value.location.x, width: width)
@@ -211,9 +217,10 @@ struct PlayerBarView: View {
 
     private var sentenceCount: Int { max(content.sentences.count, 1) }
 
-    private var pageOffset: Int {
-        (content.sentences.first?.page ?? 1) == 0 ? 1 : 0
-    }
+    /// Page display normalizes through the shared rule (0-based legacy caches
+    /// display from 1) so this readout, the reader's page marks, the chapter
+    /// drawer and search results all name the same page identically.
+    private var pageOffset: Int { content.pageOffset }
 
     private var isPlaying: Bool {
         if case .playing = playback.status { return true }
@@ -278,6 +285,7 @@ struct PlayerBarView: View {
     // MARK: - Actions
 
     private func togglePlayback() {
+        TransportHaptics.tap()
         switch playback.status {
         case .playing, .buffering:
             playback.pause()
@@ -291,6 +299,7 @@ struct PlayerBarView: View {
     private func step(_ delta: Int) {
         let target = min(max(playback.currentSentence + delta, 0), sentenceCount - 1)
         guard target != playback.currentSentence else { return }
+        TransportHaptics.tap()
         // Buffering counts as intent to play: stepping mid-buffer keeps going.
         playback.seek(to: target, andPlay: playback.isActive)
     }

@@ -25,6 +25,10 @@ final class KokoroPlaybackUITest: XCTestCase {
 
         let app = XCUIApplication()
         app.launchArguments += [
+            // A fresh library too, not just a fresh voice pref: per-book voice
+            // memory would otherwise reapply an earlier run's "Heart" pick to
+            // the seeded classic and this test would exercise the wrong engine.
+            "-uitest-reset-library",
             "-uitest-seed-first-classic",
             "-uitest-open-first-doc",
             "-uitest-reset-voice-pref",

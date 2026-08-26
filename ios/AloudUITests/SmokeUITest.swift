@@ -10,7 +10,11 @@ final class SmokeUITest: XCTestCase {
 
     func testSeededClassicPlaysAndRestoresPosition() {
         let app = XCUIApplication()
-        app.launchArguments += ["-uitest-seed-first-classic"]
+        // Reset wipes leftover container progress (which would otherwise
+        // surface the seeded classic as the Continue Listening hero instead
+        // of a grid card); it must NOT run again on the relaunch below,
+        // which asserts the saved position survives.
+        app.launchArguments += ["-uitest-seed-first-classic", "-uitest-reset-library"]
         app.launch()
 
         // Library shows the seeded classic card.
@@ -50,12 +54,19 @@ final class SmokeUITest: XCTestCase {
         XCUIDevice.shared.press(.home)
         XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
         app.terminate()
+        app.launchArguments.removeAll { $0 == "-uitest-reset-library" }
         app.launch()
 
         // Reopen the same document and verify the position was restored.
-        let cardAgain = app.buttons["library.card"].firstMatch
-        XCTAssertTrue(cardAgain.waitForExistence(timeout: 15))
-        cardAgain.tap()
+        // With progress saved, the document now fronts the shelf as the
+        // Continue Listening hero (it is excluded from the grid), so the
+        // hero is the re-entry point. Its tap autoplays, but the readout is
+        // sampled well inside the cold engine's warm-up, before the first
+        // sentence can complete and advance the playhead.
+        let hero = app.buttons["library.continue"].firstMatch
+        XCTAssertTrue(hero.waitForExistence(timeout: 15),
+                      "Saved progress should surface the Continue Listening hero")
+        hero.tap()
         XCTAssertTrue(app.textViews["reader.text"].firstMatch.waitForExistence(timeout: 15))
 
         let restoredReadout = app.descendants(matching: .any)["reader.sentence"].firstMatch
