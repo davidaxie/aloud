@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// The one voice picker: neural voices on top (or the model promo card when
-/// not yet installed), then system voices ranked premium > enhanced > default.
-/// Every row carries an inline preview button that speaks a sample in that
-/// voice via `VoicePreviewer` — never through the playback graph. Selecting a
-/// voice mid-playback keeps position (PlaybackController re-synthesizes from
-/// the current sentence).
+/// The one voice picker, curated: the eight neural voices under a single
+/// "Neural" header with a subtle "System voice" footer row — or, before the
+/// model is installed, the system voice plus the neural-download promo card.
+/// Every full row carries an inline preview button that speaks a sample in
+/// that voice via `VoicePreviewer` — never through the playback graph.
+/// Selecting a voice mid-playback keeps position (PlaybackController
+/// re-synthesizes from the current sentence).
 ///
 /// Pushed from Settings as-is; presented from the player bar via
 /// `VoicePickerSheet` below.
@@ -23,17 +24,29 @@ struct VoicePickerView: View {
 
     var body: some View {
         List {
-            if model.neuralVoiceOffered {
-                if modelManager.isInstalled {
-                    Section {
-                        ForEach(model.kokoroEngine.voices) { voice in
-                            voiceRow(voice)
-                        }
-                    } header: {
-                        sectionHeader("On this device — Neural")
+            if model.neuralVoiceOffered, modelManager.isInstalled {
+                Section {
+                    ForEach(model.kokoroEngine.voices) { voice in
+                        voiceRow(voice)
                     }
-                    .listRowBackground(Theme.surface)
-                } else {
+                } header: {
+                    sectionHeader("Neural")
+                }
+                .listRowBackground(Theme.surface)
+                Section {
+                    ForEach(model.engine.voices) { voice in
+                        systemFooterRow(voice)
+                    }
+                }
+                .listRowBackground(Theme.surface)
+            } else {
+                Section {
+                    ForEach(model.engine.voices) { voice in
+                        voiceRow(voice)
+                    }
+                }
+                .listRowBackground(Theme.surface)
+                if model.neuralVoiceOffered {
                     Section {
                         ModelDownloadView()
                             .listRowInsets(EdgeInsets())
@@ -41,14 +54,6 @@ struct VoicePickerView: View {
                     }
                 }
             }
-            Section {
-                ForEach(model.engine.voices) { voice in
-                    voiceRow(voice)
-                }
-            } header: {
-                sectionHeader("System voices")
-            }
-            .listRowBackground(Theme.surface)
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -84,20 +89,42 @@ struct VoicePickerView: View {
                         .foregroundStyle(Theme.textMuted)
                 }
                 Spacer()
-                if let badge = qualityBadge(for: voice) {
-                    Text(badge)
-                        .font(Theme.ui(11, weight: .semibold))
-                        .foregroundStyle(Theme.accentStrong)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Theme.accentSoft, in: Capsule())
-                }
+                Text(origin(for: voice))
+                    .font(Theme.ui(12))
+                    .foregroundStyle(Theme.textFaint)
                 if voice.id == playback.voice.id {
                     Image(systemName: "checkmark")
                         .font(Theme.ui(14, weight: .semibold))
                         .foregroundStyle(Theme.accent)
                 }
                 previewButton(voice)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("voice.\(voice.id)")
+    }
+
+    /// The subtle "System voice" footer under the neural roster — the
+    /// fallback exists, quietly, without competing with the curated eight.
+    private func systemFooterRow(_ voice: TtsVoice) -> some View {
+        Button {
+            playback.voice = voice
+            if dismissesOnSelect {
+                previewer.stop()
+                dismiss()
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Text(voice.name)
+                    .font(Theme.ui(14))
+                    .foregroundStyle(Theme.textMuted)
+                Spacer()
+                if voice.id == playback.voice.id {
+                    Image(systemName: "checkmark")
+                        .font(Theme.ui(13, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -151,19 +178,15 @@ struct VoicePickerView: View {
             .foregroundStyle(Theme.textFaint)
     }
 
-    /// "en-US" + "female" → "US · female".
+    /// The voice's character note, falling back to origin when it has none.
     private func subtitle(for voice: TtsVoice) -> String {
-        let region = voice.lang.split(separator: "-").last.map(String.init) ?? voice.lang
-        return voice.gender.isEmpty ? region : "\(region) · \(voice.gender)"
+        voice.subtitle.isEmpty ? origin(for: voice) : voice.subtitle
     }
 
-    private func qualityBadge(for voice: TtsVoice) -> String? {
-        switch voice.quality {
-        case 4...: return "Neural"
-        case 3: return "Premium"
-        case 2: return "Enhanced"
-        default: return nil
-        }
+    /// "en-US" + "female" → "US · female".
+    private func origin(for voice: TtsVoice) -> String {
+        let region = voice.lang.split(separator: "-").last.map(String.init) ?? voice.lang
+        return voice.gender.isEmpty ? region : "\(region) · \(voice.gender)"
     }
 }
 

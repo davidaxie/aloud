@@ -27,6 +27,7 @@ final class KokoroPlaybackUITest: XCTestCase {
         app.launchArguments += [
             "-uitest-seed-first-classic",
             "-uitest-open-first-doc",
+            "-uitest-reset-voice-pref",
             "-uitest-kokoro-model-path", Self.modelDirectory,
         ]
         app.launch()
@@ -35,9 +36,14 @@ final class KokoroPlaybackUITest: XCTestCase {
         let readerText = app.textViews["reader.text"].firstMatch
         XCTAssertTrue(readerText.waitForExistence(timeout: 20), "Reader should auto-open")
 
-        // Open the voice sheet and pick the neural "Heart" voice.
+        // With the model installed and no stored preference, the default
+        // voice is the deep neural narrator, Michael.
         let voiceChip = app.buttons["player.voice"].firstMatch
         XCTAssertTrue(voiceChip.waitForExistence(timeout: 10))
+        XCTAssertTrue(voiceChip.label.contains("Michael"),
+                      "Default voice with model installed should be Michael, got: \(voiceChip.label)")
+
+        // Open the voice sheet and pick the neural "Heart" voice.
         voiceChip.tap()
 
         let heartRow = app.buttons["voice.kokoro:af_heart"].firstMatch

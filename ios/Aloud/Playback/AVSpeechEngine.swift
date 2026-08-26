@@ -3,14 +3,19 @@ import Foundation
 
 /// System-voice engine. Synthesizes with `AVSpeechSynthesizer.write` into mono
 /// Float32 PCM so system and neural voices share one playback path.
+///
+/// Exposes exactly one voice — "System voice", the best installed English
+/// voice — which exists purely as the fallback before the neural model is
+/// installed and on low-memory devices.
 final class AVSpeechEngine: TtsEngine {
 
     let voices: [TtsVoice]
     let defaultVoice: TtsVoice
 
     init() {
-        // English first, then premium > enhanced > default, then name.
-        let ranked = AVSpeechSynthesisVoice.speechVoices()
+        // Best installed voice: English first, then premium > enhanced >
+        // default, then name — surfaced as the single "System voice" entry.
+        let best = AVSpeechSynthesisVoice.speechVoices()
             .map(TtsVoice.init(systemVoice:))
             .sorted { lhs, rhs in
                 let lhsEnglish = lhs.lang.hasPrefix("en")
@@ -19,14 +24,16 @@ final class AVSpeechEngine: TtsEngine {
                 if lhs.quality != rhs.quality { return lhs.quality > rhs.quality }
                 return lhs.name < rhs.name
             }
-        voices = ranked
-        defaultVoice = ranked.first ?? TtsVoice(
-            id: "com.apple.ttsbundle.siri_female_en-US_compact",
-            name: "System",
-            lang: "en-US",
-            gender: "female",
+            .first
+        defaultVoice = TtsVoice(
+            id: best?.id ?? "com.apple.ttsbundle.siri_female_en-US_compact",
+            name: "System voice",
+            lang: best?.lang ?? "en-US",
+            gender: best?.gender ?? "",
             engine: .avSpeech,
-            quality: 1)
+            quality: best?.quality ?? 1,
+            subtitle: "Built-in fallback")
+        voices = [defaultVoice]
     }
 
     /// Always synthesizes at the default speech rate — playback rate handles speed.

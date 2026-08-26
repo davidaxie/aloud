@@ -22,6 +22,7 @@ struct ReaderScreen: View {
     @State private var scrolledAway = false
     @State private var returnTrigger = 0
     @State private var showAppearanceSheet = false
+    @State private var wasPlaying = false
 
     var body: some View {
         ZStack {
@@ -33,7 +34,9 @@ struct ReaderScreen: View {
                     fontSize: ReaderTextSize.points(forStep: textSizeStep),
                     activeSentence: playback.currentSentence,
                     activeWord: playback.currentWord,
+                    wordHighlight: model.wordHighlight,
                     autoScroll: model.autoScroll,
+                    isPlaying: isPlaybackActive,
                     returnToPlayheadTrigger: returnTrigger,
                     scrolledAway: $scrolledAway,
                     onTapSentence: tapSentence)
@@ -65,6 +68,13 @@ struct ReaderScreen: View {
         .onChange(of: playback.currentSentence) { sentence in
             guard isLoaded else { return }
             store.saveProgress(id: document.id, sentence: sentence, fraction: fraction(at: sentence))
+        }
+        .onChange(of: playback.status) { status in
+            // On play-start (idle/paused → playing), center the active
+            // sentence unconditionally so following starts from the playhead.
+            let active = status == .playing || status == .buffering
+            if active && !wasPlaying { returnTrigger += 1 }
+            wasPlaying = active
         }
         .onDisappear {
             guard isLoaded else { return }
@@ -246,6 +256,18 @@ struct ReaderScreen: View {
             playback.load(document: liveDocument, content: loaded)
             isLoaded = true
             store.noteOpened(id: document.id)
+
+            #if DEBUG
+            // UI-test hook: `-uitest-seek-text <substring>` cues the playhead
+            // at the first sentence containing the substring, so the
+            // screenshot rig can land on a known passage deterministically.
+            let args = ProcessInfo.processInfo.arguments
+            if let flag = args.firstIndex(of: "-uitest-seek-text"),
+               args.indices.contains(flag + 1),
+               let match = loaded.sentences.first(where: { $0.text.contains(args[flag + 1]) }) {
+                playback.seek(to: match.id, andPlay: false)
+            }
+            #endif
         } catch {
             loadFailed = true
         }
@@ -261,12 +283,14 @@ struct ReaderScreen: View {
         return Double(min(max(sentence, 0), count - 1)) / Double(count - 1)
     }
 
-    private func tapSentence(_ id: Int) {
-        let playing: Bool
+    private var isPlaybackActive: Bool {
         switch playback.status {
-        case .playing, .buffering: playing = true
-        default: playing = false
+        case .playing, .buffering: return true
+        default: return false
         }
-        playback.seek(to: id, andPlay: playing)
+    }
+
+    private func tapSentence(_ id: Int) {
+        playback.seek(to: id, andPlay: isPlaybackActive)
     }
 }

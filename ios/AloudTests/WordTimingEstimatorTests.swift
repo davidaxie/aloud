@@ -119,6 +119,27 @@ final class WordTimingEstimatorTests: XCTestCase {
         XCTAssertEqual(kept.last?.end ?? -1, 3.0, accuracy: accuracy)
     }
 
+    func testFullySkippableSentenceFallsBackToAllTokens() {
+        // spokenText speaks a fully bracketed sentence in full; the timing
+        // layout mirrors that fallback instead of returning no windows.
+        let text = "(An entire aside.)"
+        let result = windows(text, duration: 2.0, skipBrackets: true)
+        XCTAssertEqual(result, windows(text, duration: 2.0, skipBrackets: false))
+        XCTAssertFalse(result.isEmpty)
+        XCTAssertEqual(result.first?.start ?? -1, 0, accuracy: accuracy)
+        XCTAssertEqual(result.last?.end ?? -1, 2.0, accuracy: accuracy)
+    }
+
+    func testStandaloneDaggerCarriesNoWindowWhenSkipping() {
+        let text = "Noted † indeed."
+        let tokens = SentenceSegmenter.tokenizeSentence(text)
+        let kept = windows(text, duration: 1.0, skipBrackets: true)
+        XCTAssertEqual(kept.count, 2)
+        for window in kept {
+            XCTAssertFalse(tokens[window.token].isSkippable)
+        }
+    }
+
     // MARK: - wordIndex(at:)
 
     func testWordIndexLookup() {

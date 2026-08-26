@@ -224,7 +224,8 @@ enum SentenceSegmenter {
 
     /// Split a sentence into display tokens. Non-destructive: concatenating
     /// every token's `text` reproduces the input verbatim. `isSkippable` is
-    /// true only when the whole token lies inside a bracketed span.
+    /// true when the whole token lies inside a bracketed span, or when the
+    /// token is a standalone footnote marker (†, ‡, *).
     static func tokenizeSentence(_ text: String) -> [WordToken] {
         let chars = Array(text)
         let inside = bracketMask(text)
@@ -245,6 +246,11 @@ enum SentenceSegmenter {
             if isSpace {
                 tokens.append(WordToken(text: raw, isWord: false, weight: 0, isSkippable: skippable))
             } else {
+                // Inline reference markers standing alone ("†", "*", "‡", "**")
+                // are unspoken citations too.
+                if !skippable, raw.wholeMatch(of: #/[†‡*]+/#) != nil {
+                    skippable = true
+                }
                 let isWord = raw.unicodeScalars.contains {
                     ("A"..."Z").contains(Character($0))
                         || ("a"..."z").contains(Character($0))
@@ -261,18 +267,22 @@ enum SentenceSegmenter {
     }
 
     /// The text to actually synthesize. With `skipBrackets` off the input is
-    /// returned verbatim; with it on, bracketed tokens are dropped and the
-    /// surviving whitespace tidied so no doubled spaces or floating punctuation
-    /// remain.
+    /// returned verbatim; with it on, bracketed tokens and standalone footnote
+    /// markers are dropped and the surviving whitespace tidied so no doubled
+    /// spaces or floating punctuation remain. A sentence that skipping would
+    /// silence entirely (e.g. one wrapped whole in parentheses) is spoken in
+    /// full instead.
     static func spokenText(_ text: String, skipBrackets: Bool) -> String {
         guard skipBrackets else { return text }
         var out = ""
         for token in tokenizeSentence(text) where !token.isSkippable {
             out += token.text
         }
-        return out
+        let cleaned = out
             .replacing(#/\s+/#, with: " ")
             .replacing(#/\s+([,.;:!?…)\]}])/#) { String($0.output.1) }
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Never skip a sentence into silence: fall back to the original.
+        return cleaned.isEmpty ? text : cleaned
     }
 }

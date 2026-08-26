@@ -35,12 +35,20 @@ enum WordTimingEstimator {
                         skipBrackets: Bool) -> [WordWindow] {
         guard duration.isFinite, duration > 0 else { return [] }
 
+        // Mirror `SentenceSegmenter.spokenText`: when skipping would silence
+        // the whole sentence, the original is spoken in full — so time is
+        // laid over every weighted token again.
+        var effectiveSkip = skipBrackets
         func spoken(_ token: WordToken) -> Bool {
-            token.weight > 0 && !(skipBrackets && token.isSkippable)
+            token.weight > 0 && !(effectiveSkip && token.isSkippable)
         }
 
         var total = 0.0
         for token in tokens where spoken(token) { total += token.weight }
+        if total == 0, skipBrackets {
+            effectiveSkip = false
+            for token in tokens where spoken(token) { total += token.weight }
+        }
         guard total > 0 else { return [] }
 
         var result: [WordWindow] = []

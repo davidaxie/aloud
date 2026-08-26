@@ -30,7 +30,10 @@ final class ScreenshotCaptureTests: XCTestCase {
 
         XCUIDevice.shared.appearance = .light
         let app = XCUIApplication()
-        app.launchArguments += ["-uitest-seed-first-classic"]
+        app.launchArguments += [
+            "-uitest-seed-first-classic",
+            "-uitest-reset-voice-pref",   // fresh-install default: Michael
+        ]
         app.launch()
 
         // 04 — Library with the seeded classic card.
@@ -39,14 +42,30 @@ final class ScreenshotCaptureTests: XCTestCase {
         sleep(2)   // let cover art and layout settle
         save(shot(), to: shotsDir + "/04-library-bronze.png")
 
-        // 05 — Reader, playing (sentence highlight + player bar).
+        // 05 — Reader, playing: the calm sentence pill ONLY (word highlight
+        // is off by default — no per-word emphasis anywhere in the shot).
         card.tap()
         let readerText = app.textViews["reader.text"].firstMatch
         XCTAssertTrue(readerText.waitForExistence(timeout: 15))
+
+        // Normalize leftover container state: pin the rate to 1× so every
+        // shot (player chip, speed sheet, time-left) is stable across runs.
+        let speedChipEarly = app.buttons["player.speed"].firstMatch
+        XCTAssertTrue(speedChipEarly.waitForExistence(timeout: 5))
+        if !speedChipEarly.label.contains("1×") {
+            speedChipEarly.tap()
+            let preset = app.buttons["1×"].firstMatch
+            XCTAssertTrue(preset.waitForExistence(timeout: 5))
+            preset.tap()
+            app.swipeDown(velocity: .fast)
+            XCTAssertTrue(readerText.waitForExistence(timeout: 10))
+        }
+
         let playButton = app.buttons["player.play"].firstMatch
         XCTAssertTrue(playButton.waitForExistence(timeout: 10))
         playButton.tap()
-        XCTAssertTrue(waitForValue("playing", of: playButton, timeout: 20))
+        // Default voice is neural Michael now — allow for engine warm-up.
+        XCTAssertTrue(waitForValue("playing", of: playButton, timeout: 180))
         sleep(2)
         // Make sure the highlighted sentence is on-screen (a restored
         // position can leave the auto-scroll mid-flight with the
@@ -58,23 +77,42 @@ final class ScreenshotCaptureTests: XCTestCase {
         }
         save(shot(), to: shotsDir + "/05-reader-bronze.png")
 
-        // 06 — Voice sheet with the neural section (proves detectExisting()
-        // flipped to .installed from the seeded container — no launch-arg
-        // model override in this test).
+        // 06 — Curated voice sheet (proves detectExisting() flipped to
+        // .installed from the seeded container — no launch-arg model override
+        // in this test): exactly 8 neural rows, one System-voice footer, and
+        // Michael as the fresh-install default.
         let voiceChip = app.buttons["player.voice"].firstMatch
         XCTAssertTrue(voiceChip.waitForExistence(timeout: 5))
+        XCTAssertTrue(voiceChip.label.contains("Michael"),
+                      "Fresh-install default voice should be Michael, got: \(voiceChip.label)")
         voiceChip.tap()
-        let heartRow = app.buttons["voice.kokoro:af_heart"].firstMatch
-        XCTAssertTrue(heartRow.waitForExistence(timeout: 10),
+        let michaelRow = app.buttons["voice.kokoro:am_michael"].firstMatch
+        XCTAssertTrue(michaelRow.waitForExistence(timeout: 10),
                       "Neural section must be present — seeded container should detect as installed")
         sleep(1)   // sheet animation settle
         save(shot(), to: shotsDir + "/06-voice-sheet.png")
+
+        // Expand to the large detent so the whole curated roster is in the
+        // hierarchy, then pin it: exactly 8 neural rows + 1 system footer row.
+        app.swipeUp()   // medium → large detent
+        sleep(1)
+        let neuralRows = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'voice.kokoro:'"))
+        XCTAssertEqual(neuralRows.count, 8,
+                       "Curated roster must be exactly 8 neural voices")
+        let systemRows = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH 'voice.' AND NOT (identifier BEGINSWITH 'voice.kokoro:') AND NOT (identifier BEGINSWITH 'voice.preview.')"))
+        XCTAssertEqual(systemRows.count, 1,
+                       "Exactly one System-voice footer row expected")
 
         // 07 (dark reader) is captured outside this test with
         // `xcrun simctl ui <udid> appearance dark` + a plain launch —
         // XCUIDevice.shared.appearance does not reliably restyle the app
         // on this runtime.
-        app.swipeDown(velocity: .fast)   // dismiss the sheet
+        app.swipeDown(velocity: .fast)   // large → medium (or straight out)
+        if michaelRow.exists {
+            app.swipeDown(velocity: .fast)   // medium → dismissed
+        }
         XCTAssertTrue(readerText.waitForExistence(timeout: 10))
 
         // 08 — Speed sheet (large slider + presets + live time-left).
@@ -104,6 +142,32 @@ final class ScreenshotCaptureTests: XCTestCase {
         moreButton.tap()
         sleep(1)
         save(shot(), to: shotsDir + "/10-sleep-menu.png")
+
+        // 11 — Skip-brackets demo: relaunch cued at a chapter-2 sentence with
+        // an embedded parenthetical aside ("Just as Tom and Myrtle (after the
+        // first drink …) reappeared, …") and play it. The aside stays visible
+        // and highlighted in the pill but is not spoken (skip is default-on).
+        app.terminate()
+        let app2 = XCUIApplication()
+        app2.launchArguments += [
+            "-uitest-seed-first-classic",
+            "-uitest-open-first-doc",
+            "-uitest-seek-text", "after the first drink",
+        ]
+        app2.launch()
+        let readerText2 = app2.textViews["reader.text"].firstMatch
+        XCTAssertTrue(readerText2.waitForExistence(timeout: 20),
+                      "Reader should auto-open on the seeded classic")
+        let playButton2 = app2.buttons["player.play"].firstMatch
+        XCTAssertTrue(playButton2.waitForExistence(timeout: 10))
+        sleep(2)   // let the deep-seek centering settle while cued
+        playButton2.tap()
+        XCTAssertTrue(waitForValue("playing", of: playButton2, timeout: 180),
+                      "Playback should start on the parenthetical sentence")
+        // Shoot immediately: the pill is on the parenthetical sentence right
+        // as playback starts (later, accessibility snapshots force full text
+        // layout and briefly shift content under the viewport).
+        save(shot(), to: shotsDir + "/11-reader-skip-brackets.png")
     }
 
     // MARK: - Helpers

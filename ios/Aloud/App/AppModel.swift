@@ -26,6 +26,12 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(autoScroll, forKey: PrefKey.autoScroll) }
     }
 
+    /// Color-only tint of the spoken word in the reader. OFF by default —
+    /// the default experience is the calm sentence pill only.
+    @Published var wordHighlight: Bool {
+        didSet { UserDefaults.standard.set(wordHighlight, forKey: PrefKey.wordHighlight) }
+    }
+
     private var cancellables: Set<AnyCancellable> = []
     private var didRunLaunchTasks = false
 
@@ -49,7 +55,16 @@ final class AppModel: ObservableObject {
         bookshelf = BookshelfCatalog.load(from: .main)
         nowPlaying.configure(playback: playback, store: documentStore)
         autoScroll = defaults.object(forKey: PrefKey.autoScroll) as? Bool ?? true
+        wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
 
+        #if DEBUG
+        // UI-test hook: start from a clean voice preference.
+        if ProcessInfo.processInfo.arguments.contains("-uitest-reset-voice-pref") {
+            defaults.removeObject(forKey: PrefKey.voiceID)
+        }
+        #endif
+
+        migratePreferences(defaults)
         restorePreferences(from: defaults)
         persistPreferenceChanges(to: defaults)
         observeModelRemoval()
@@ -125,6 +140,27 @@ final class AppModel: ObservableObject {
         static let rate = "aloud.prefs.v1.rate"
         static let skipBrackets = "aloud.prefs.v1.skipBrackets"
         static let autoScroll = "aloud.prefs.v1.autoScroll"
+        static let wordHighlight = "aloud.prefs.v1.wordHighlight"
+        static let migratedV2 = "aloud.prefs.migratedV2"
+    }
+
+    /// One-shot versioned migrations, guarded by `migratedV2`.
+    /// V2: skip-brackets became the default (existing installs flip to ON
+    /// once; anything the user chooses afterwards stands), and the voice
+    /// roster was curated to eight — a stored id outside the roster (a
+    /// retired Kokoro speaker, an old system voice) remaps to the new
+    /// default once.
+    private func migratePreferences(_ defaults: UserDefaults) {
+        guard !defaults.bool(forKey: PrefKey.migratedV2) else { return }
+        defaults.set(true, forKey: PrefKey.skipBrackets)
+        let curated = kokoroEngine.voices + engine.voices
+        if let voiceID = defaults.string(forKey: PrefKey.voiceID),
+           !curated.contains(where: { $0.id == voiceID }) {
+            let preferred = modelManager.isInstalled
+                ? kokoroEngine.defaultVoice : engine.defaultVoice
+            defaults.set(preferred.id, forKey: PrefKey.voiceID)
+        }
+        defaults.set(true, forKey: PrefKey.migratedV2)
     }
 
     private func restorePreferences(from defaults: UserDefaults) {
@@ -134,14 +170,27 @@ final class AppModel: ObservableObject {
         if let skip = defaults.object(forKey: PrefKey.skipBrackets) as? Bool {
             playback.skipBrackets = skip
         }
-        if let voiceID = defaults.string(forKey: PrefKey.voiceID) {
-            // Kokoro voices only restore while the model is installed;
-            // otherwise the system default silently stands in.
-            var candidates = engine.voices
-            if modelManager.isInstalled { candidates += kokoroEngine.voices }
-            if let voice = candidates.first(where: { $0.id == voiceID }) {
-                playback.voice = voice
-            }
+        restoreVoice(from: defaults)
+    }
+
+    /// Restores the voice preference against the curated roster (stale ids
+    /// were already remapped by `migratePreferences`). Kokoro voices only
+    /// restore while the model is installed; a curated Kokoro pref without
+    /// the model keeps its stored id and the system voice silently stands in
+    /// (it restores itself when the model installs).
+    private func restoreVoice(from defaults: UserDefaults) {
+        let curated = kokoroEngine.voices + engine.voices
+        let preferredDefault = modelManager.isInstalled
+            ? kokoroEngine.defaultVoice : engine.defaultVoice
+        guard let voiceID = defaults.string(forKey: PrefKey.voiceID),
+              let voice = curated.first(where: { $0.id == voiceID }) else {
+            playback.voice = preferredDefault
+            return
+        }
+        if voice.engine == .kokoro, !modelManager.isInstalled {
+            playback.voice = engine.defaultVoice   // stand-in; pref kept
+        } else {
+            playback.voice = voice
         }
     }
 

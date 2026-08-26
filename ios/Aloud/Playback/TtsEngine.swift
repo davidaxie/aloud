@@ -10,6 +10,8 @@ struct TtsVoice: Identifiable, Hashable, Sendable {
     let gender: String
     let engine: EngineKind
     let quality: Int
+    /// One-line character note for picker rows ("Deep, warm narrator").
+    var subtitle: String = ""
 }
 
 enum EngineKind: String, Codable, Sendable {

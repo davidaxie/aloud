@@ -5,8 +5,9 @@ import Foundation
 /// (https://k2-fsa.github.io/sherpa/onnx/tts/pretrained_models/kokoro.html).
 /// Anchors verified: af_heart=3, af_bella=2, af_nicole=6, am_adam=11, am_michael=16.
 ///
-/// Only the 28 English speakers (af_/am_ = US, bf_/bm_ = GB) surface as
-/// selectable `TtsVoice`s; the full map stays internal so a future language
+/// Only a curated eight of the English speakers (af_/am_ = US, bf_ = GB)
+/// surface as selectable `TtsVoice`s — the best-graded per the model card,
+/// led by the deep narrator. The full map stays internal so a future
 /// expansion is a table edit, not a redesign.
 enum KokoroVoiceCatalog {
 
@@ -14,29 +15,22 @@ enum KokoroVoiceCatalog {
     /// with AVSpeech identifiers in preferences or cache keys.
     static let voiceIDPrefix = "kokoro:"
 
-    static let defaultVoiceID = voiceIDPrefix + "af_heart"
+    static let defaultVoiceID = voiceIDPrefix + "am_michael"
 
-    /// The 28 English voices, flagship `af_heart` first, then by speaker name.
-    static let englishVoices: [TtsVoice] = {
-        let english = speakers.filter { isEnglish($0.name) }
-            .sorted { lhs, rhs in
-                if (lhs.name == "af_heart") != (rhs.name == "af_heart") {
-                    return lhs.name == "af_heart"
-                }
-                return lhs.name < rhs.name
-            }
-        return english.map { speaker in
-            TtsVoice(id: voiceIDPrefix + speaker.name,
-                     name: displayName(for: speaker.name),
-                     lang: speaker.name.hasPrefix("b") ? "en-GB" : "en-US",
-                     gender: speaker.name.dropFirst().hasPrefix("f") ? "female" : "male",
-                     engine: .kokoro,
-                     quality: 4)
-        }
-    }()
+    /// The curated eight, in display order. Michael leads as the default.
+    static let curatedVoices: [TtsVoice] = [
+        voice("am_michael", "Michael", subtitle: "Deep, warm narrator"),
+        voice("am_fenrir", "Fenrir", subtitle: "Strong, spirited"),
+        voice("am_puck", "Puck", subtitle: "Light, playful"),
+        voice("af_heart", "Heart", subtitle: "Bright, expressive"),
+        voice("af_bella", "Bella", subtitle: "Warm, smooth"),
+        voice("af_nicole", "Nicole", subtitle: "Soft, hushed"),
+        voice("af_sarah", "Sarah", subtitle: "Clear, friendly"),
+        voice("bf_emma", "Emma", subtitle: "Gentle, mellow"),
+    ]
 
     static var defaultVoice: TtsVoice {
-        englishVoices.first { $0.id == defaultVoiceID } ?? englishVoices[0]
+        curatedVoices.first { $0.id == defaultVoiceID } ?? curatedVoices[0]
     }
 
     /// Speaker id for a `TtsVoice.id`; nil for non-Kokoro or unknown ids.
@@ -113,14 +107,14 @@ enum KokoroVoiceCatalog {
     private static let sidByName: [String: Int] =
         Dictionary(uniqueKeysWithValues: speakers.map { ($0.name, $0.sid) })
 
-    private static func isEnglish(_ name: String) -> Bool {
-        name.hasPrefix("af_") || name.hasPrefix("am_")
-            || name.hasPrefix("bf_") || name.hasPrefix("bm_")
-    }
-
-    /// "af_heart" → "Heart".
-    private static func displayName(for speaker: String) -> String {
-        guard let underscore = speaker.firstIndex(of: "_") else { return speaker }
-        return String(speaker[speaker.index(after: underscore)...]).capitalized
+    private static func voice(_ speaker: String, _ name: String,
+                              subtitle: String) -> TtsVoice {
+        TtsVoice(id: voiceIDPrefix + speaker,
+                 name: name,
+                 lang: speaker.hasPrefix("b") ? "en-GB" : "en-US",
+                 gender: speaker.dropFirst().hasPrefix("f") ? "female" : "male",
+                 engine: .kokoro,
+                 quality: 4,
+                 subtitle: subtitle)
     }
 }
