@@ -28,7 +28,7 @@
 // longer matches the current one is a no-op. Combined with AbortController on the
 // fetch, this guarantees we never play audio for a superseded position.
 // ─────────────────────────────────────────────────────────────────────────────
-import { synthesize } from './api'
+import { synthesize, SynthesisError } from './api'
 import { spokenText, tokenizeSentence } from './chunker'
 import { useStore } from '../store'
 import type { Doc, WordToken } from '../types'
@@ -62,6 +62,12 @@ export interface Player {
 const MAX_CACHE = 30
 /** How many sentences ahead of the current one to prefetch concurrently. */
 const LOOKAHEAD = 2
+/** Cache marker for a sentence with nothing to say (no request is made). */
+const SILENT = 'silent:'
+/** Letters or digits in any script: anything else is not worth a request. */
+const HAS_SPEAKABLE = /[\p{L}\p{N}]/u
+/** Unreadable sentences in a row before playback gives up and reports it. */
+const MAX_CONSECUTIVE_SKIPS = 3
 
 /** Convenience accessor for the freshest store state on every call. */
 const store = () => useStore.getState()
@@ -97,6 +103,8 @@ class PlayerImpl implements Player {
   private wantPlaying = false
   /** Bumped whenever the active position changes; stale continuations check it. */
   private playToken = 0
+  /** Sentences skipped in a row because the backend couldn't read them. */
+  private consecutiveSkips = 0
 
   // ── word-level highlight (karaoke) ──────────────────────────────────────────
   /** Word tokens of the sentence whose audio is currently loaded on the element. */
@@ -269,7 +277,15 @@ class PlayerImpl implements Player {
     }
     // When skipping is on, synthesize only the non-skippable (spoken) text. Always
     // at speed 1.0 — playback rate is applied on the audio element, not baked in.
-    entry.promise = this.synth(entry, spokenText(sentence.text, skipSkippable), voiceId, 1)
+    const text = spokenText(sentence.text, skipSkippable)
+    if (!HAS_SPEAKABLE.test(text)) {
+      // Nothing to say (a fully bracketed aside, a rule line): never ask the
+      // backend — it answers 400 for empty text. playIndex steps past it.
+      entry.url = SILENT
+      entry.promise = Promise.resolve(SILENT)
+    } else {
+      entry.promise = this.synth(entry, text, voiceId, 1)
+    }
     this.cache.set(key, entry)
     this.evict()
     return entry
@@ -310,6 +326,7 @@ class PlayerImpl implements Player {
 
   /** Free an entry's resources: abort if in-flight, revoke its URL if resolved. */
   private dropResources(entry: CacheEntry) {
+    if (entry.url === SILENT) return
     if (entry.url) URL.revokeObjectURL(entry.url)
     else entry.controller.abort()
   }
@@ -368,6 +385,17 @@ class PlayerImpl implements Player {
     } catch (err) {
       // Superseded or intentionally aborted → silently stand down.
       if (token !== this.playToken || isAbortError(err)) return
+      // The backend answered but can't read THIS sentence (400, or retries
+      // spent on a non-transport error): skip it and keep playing, as the
+      // API contract says. Only a transport failure means the engine is down.
+      if (err instanceof SynthesisError && err.status !== null
+          && this.consecutiveSkips < MAX_CONSECUTIVE_SKIPS - 1) {
+        this.consecutiveSkips++
+        store().markSkipped(i)
+        store().pushToast('Skipped a sentence that couldn\u2019t be read')
+        this.advanceFrom(i)
+        return
+      }
       this.handleSynthError()
       return
     }
@@ -375,6 +403,13 @@ class PlayerImpl implements Player {
     // A newer play/seek/stop happened while we were synthesizing → abandon.
     if (token !== this.playToken) return
 
+    if (url === SILENT) {
+      // Intentionally silent sentence: step past it without playing audio.
+      this.advanceFrom(i)
+      return
+    }
+
+    this.consecutiveSkips = 0
     store().setEngineState('ok')
     const audio = this.ensureAudio()
     // Tokenize the sentence now so the 'loadedmetadata' fired by the next line
@@ -402,6 +437,15 @@ class PlayerImpl implements Player {
     if (token === this.playToken) this.startWordLoop()
   }
 
+  /** Move past sentence `i` without playing it (silent or skipped). */
+  private advanceFrom(i: number) {
+    if (!this.wantPlaying) {
+      store().setStatus('paused')
+      return
+    }
+    this.onEnded()
+  }
+
   /** Fired when a sentence finishes: auto-advance, or end the document. */
   private onEnded() {
     if (!this.wantPlaying) return
@@ -420,6 +464,7 @@ class PlayerImpl implements Player {
 
   private handleSynthError() {
     this.wantPlaying = false
+    this.consecutiveSkips = 0
     const s = store()
     s.setEngineState('offline')
     s.setError('Speech engine offline — is the backend running?')

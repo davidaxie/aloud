@@ -88,7 +88,16 @@ def build_voice_metadata(voice_ids: list[str]) -> list[VoiceMeta]:
     return [parse_voice(vid) for vid in sorted(voice_ids)]
 
 
+# Display tags that espeak-ng names differently. Clients key labels on the
+# display tag ("zh"), but phonemizer's espeak backend only accepts "cmn" for
+# Mandarin — passing "zh" failed every request for all 8 Chinese voices.
+_ESPEAK_LANG: dict[str, str] = {
+    "zh": "cmn",
+}
+
+
 def lang_for_voice(voice_id: str) -> str:
-    """Return the language tag that Kokoro's ``create()`` should use for a voice."""
+    """Return the espeak language tag that Kokoro's ``create()`` should use."""
     lang_char = voice_id[0] if voice_id else ""
-    return _LANG_BY_CHAR.get(lang_char, _DEFAULT_LANG)
+    display = _LANG_BY_CHAR.get(lang_char, _DEFAULT_LANG)
+    return _ESPEAK_LANG.get(display, display)
