@@ -1,8 +1,8 @@
 import XCTest
 
 /// Feature-wave smoke: the Library's Continue Listening hero card appears
-/// once listening progress exists and tapping it lands in the reader already
-/// playing; the chapter drawer opens from the reader title and tapping a
+/// once listening progress exists, and tapping it resumes the paused book
+/// where it left off; Contents opens from the chapter line and tapping a
 /// chapter seeks the playhead. Deterministic via the existing UITestHooks
 /// (seeded classic, id-equals-index sentence contract).
 final class ContinueAndChaptersUITest: XCTestCase {
@@ -11,32 +11,48 @@ final class ContinueAndChaptersUITest: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testContinueCardAutoplaysAndChapterDrawerSeeks() {
-        let app = XCUIApplication()
+    func testContinueCardAutoplaysAndChapterDrawerSeeks() throws {
         // A fresh shelf: without the reset, leftover container progress would
         // already surface the hero and hide the grid card this test starts from.
-        app.launchArguments += ["-uitest-seed-first-classic", "-uitest-reset-library"]
+        // allowAutoplay: the test asserts the hero's autoplay (still muted).
+        // The offer reset drops listening time banked by earlier runs: past
+        // 60 s the natural-voice offer takes the chapter line's place. The
+        // temp model dir keeps a seeded Kokoro model out, so the System voice
+        // reaches playing without a warm-up.
+        let app = XCUIApplication.aloud(["-uitest-seed-first-classic", "-uitest-reset-library",
+                                         "-uitest-reset-natural-voice-offer", "-uitest-temp-model-dir"],
+                                        allowAutoplay: true)
         app.launch()
 
-        // Open the seeded classic and create real listening progress.
+        // Open the seeded classic: the grid card starts it playing (R4).
         let card = app.buttons["library.card"].firstMatch
         XCTAssertTrue(card.waitForExistence(timeout: 15), "Seeded classic card should appear")
         card.tap()
         let readerText = app.textViews["reader.text"].firstMatch
         XCTAssertTrue(readerText.waitForExistence(timeout: 15), "Reader text should appear")
+        let playButton = app.buttons["player.play"].firstMatch
+        XCTAssertTrue(playButton.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: playButton, timeout: 60),
+                      "The grid card should start playback, got '\(stringValue(of: playButton))'")
 
-        let next = app.buttons["player.next"].firstMatch
-        XCTAssertTrue(next.waitForExistence(timeout: 10))
-        next.tap()
-        next.tap()
-        next.tap()
+        // Create real listening progress.
+        let forward = app.buttons["player.forward15"].firstMatch
+        XCTAssertTrue(forward.waitForExistence(timeout: 10))
+        forward.tap()
+        forward.tap()
+        forward.tap()
 
-        let sentenceReadout = app.descendants(matching: .any)["reader.sentence"].firstMatch
-        XCTAssertTrue(sentenceReadout.waitForExistence(timeout: 5))
-        XCTAssertNotEqual(stringValue(of: sentenceReadout), "0", "Position should have advanced")
+        // Pause before leaving. Nothing pauses on the way back to the
+        // Library, and a book still speaking makes the hero's autoplay a
+        // no-op, so the playing check below would pass without the card
+        // doing anything. Paused, the card itself has to resume the book.
+        playButton.tap()
+        XCTAssertTrue(waitForValue("paused", of: playButton, timeout: 10), "The book should pause")
+        let pausedSentence = try XCTUnwrap(waitForSentence(in: app, timeout: 5) { $0 > 0 },
+                                           "Position should have advanced")
 
         // Back to the Library: the hero card materializes from the progress.
-        app.buttons["Back to Library"].firstMatch.tap()
+        tapSystemBack(app)
         let hero = app.buttons["library.continue"].firstMatch
         XCTAssertTrue(hero.waitForExistence(timeout: 10),
                       "Continue Listening card should appear once progress exists")
@@ -58,24 +74,28 @@ final class ContinueAndChaptersUITest: XCTestCase {
         XCTAssertTrue(waitForNonExistence(of: rename, timeout: 10),
                       "Context menu should dismiss without renaming or deleting")
 
-        // Tapping the hero lands in the reader ALREADY playing (autoplay).
+        // Tapping the hero resumes the paused book without another tap.
         hero.tap()
         XCTAssertTrue(readerText.waitForExistence(timeout: 15), "Reader should reopen")
-        let playButton = app.buttons["player.play"].firstMatch
         XCTAssertTrue(playButton.waitForExistence(timeout: 10))
         XCTAssertTrue(waitForValue("playing", of: playButton, timeout: 180),
-                      "Continue card must start playback without another tap")
+                      "Continue card must resume playback without another tap")
 
         // Pause for a deterministic chapter-seek assertion.
         playButton.tap()
         XCTAssertTrue(waitForValue("paused", of: playButton, timeout: 10))
-        XCTAssertNotEqual(stringValue(of: sentenceReadout), "0",
-                          "Playhead should be past the document start before the chapter seek")
+        // It resumed where it paused, not from the start. The rest was far
+        // under the 5-minute resume-rewind threshold, and playing only moves
+        // forward. This also puts the playhead past sentence 0 before the
+        // chapter seek.
+        let resumedSentence = currentSentence(app) ?? -1
+        XCTAssertGreaterThanOrEqual(resumedSentence, pausedSentence,
+                                    "The Continue card should resume at sentence \(pausedSentence), not restart")
 
-        // Chapter drawer opens from the title…
-        let title = app.buttons["reader.chapters"].firstMatch
-        XCTAssertTrue(title.waitForExistence(timeout: 5))
-        title.tap()
+        // Contents opens from the chapter line…
+        let chapterLine = app.buttons["reader.chapterLine"].firstMatch
+        XCTAssertTrue(chapterLine.waitForExistence(timeout: 5))
+        chapterLine.tap()
         // Query the first chapter BY IDENTIFIER, not `firstMatch`: the rows
         // live in a LazyVStack that `onAppear` scrolls to the current chapter,
         // so `firstMatch` resolves to the first row that happens to be
@@ -85,14 +105,14 @@ final class ContinueAndChaptersUITest: XCTestCase {
         // than the fixture drift it is.
         let firstChapter = app.buttons["chapters.row.1"].firstMatch
         XCTAssertTrue(firstChapter.waitForExistence(timeout: 10),
-                      "Chapter drawer should list the book's first chapter")
+                      "Contents should list the book's first chapter")
 
         // …and tapping the FIRST chapter seeks to its start (sentence 0 by the
         // id-equals-index contract), dismissing the sheet.
         firstChapter.tap()
         XCTAssertTrue(readerText.waitForExistence(timeout: 10),
-                      "Drawer should dismiss back to the reader")
-        XCTAssertTrue(waitForValue("0", of: sentenceReadout, timeout: 10),
+                      "Contents should dismiss back to the reader")
+        XCTAssertTrue(waitForSentence(0, in: app, timeout: 10),
                       "Tapping the first chapter should cue its start sentence")
         XCTAssertTrue(waitForValue("paused", of: playButton, timeout: 5),
                       "A seek while paused must stay paused")

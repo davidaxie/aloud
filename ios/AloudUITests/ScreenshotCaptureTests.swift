@@ -1,11 +1,11 @@
 import XCTest
 
-/// Dev-only screenshot driver: walks library → reader → voice sheet → dark
-/// reader and writes PNGs to the host directory named by the ALOUD_SHOTS_DIR
+/// Dev-only screenshot driver: walks library → reader → Listening sheet →
+/// Aa sheet → sleep menu → Contents, and writes PNGs to the host directory named by the ALOUD_SHOTS_DIR
 /// test-runner environment variable. Skipped entirely when the variable is
 /// absent (i.e. in normal test runs).
 ///
-/// Launches WITHOUT the kokoro-model-path override so the voice sheet's
+/// Launches WITHOUT the kokoro-model-path override so the Listening sheet's
 /// neural section doubles as proof that ModelManager.detectExisting() finds
 /// the files seeded into the app container.
 final class ScreenshotCaptureTests: XCTestCase {
@@ -36,12 +36,11 @@ final class ScreenshotCaptureTests: XCTestCase {
         }
 
         XCUIDevice.shared.appearance = .light
-        let app = XCUIApplication()
-        app.launchArguments += [
+        let app = XCUIApplication.aloud([
             "-uitest-seed-first-classic",
-            "-uitest-reset-voice-pref",   // fresh-install default: Michael
+            "-uitest-reset-voice-pref",   // fresh-install default: Michael at 1×
             "-uitest-reset-library",      // fresh shelf: grid card, no leftover hero
-        ]
+        ])
         app.launch()
 
         // 04 — Library with the seeded classic card.
@@ -56,19 +55,7 @@ final class ScreenshotCaptureTests: XCTestCase {
         let readerText = app.textViews["reader.text"].firstMatch
         XCTAssertTrue(readerText.waitForExistence(timeout: 15))
 
-        // Normalize leftover container state: pin the rate to 1× so every
-        // shot (player chip, speed sheet, time-left) is stable across runs.
-        let speedChipEarly = app.buttons["player.speed"].firstMatch
-        XCTAssertTrue(speedChipEarly.waitForExistence(timeout: 5))
-        if !speedChipEarly.label.contains("1×") {
-            speedChipEarly.tap()
-            let preset = app.buttons["1×"].firstMatch
-            XCTAssertTrue(preset.waitForExistence(timeout: 5))
-            preset.tap()
-            app.swipeDown(velocity: .fast)
-            XCTAssertTrue(readerText.waitForExistence(timeout: 10))
-        }
-
+        // This launch doesn't autoplay, so start playback by hand.
         let playButton = app.buttons["player.play"].firstMatch
         XCTAssertTrue(playButton.waitForExistence(timeout: 10))
         playButton.tap()
@@ -76,62 +63,55 @@ final class ScreenshotCaptureTests: XCTestCase {
         XCTAssertTrue(waitForValue("playing", of: playButton, timeout: 180))
         sleep(2)
         // Make sure the highlighted sentence is on-screen (a restored
-        // position can leave the auto-scroll mid-flight with the
-        // "Return to playhead" chip showing).
-        let returnChip = app.buttons["Return to playhead"].firstMatch
-        if returnChip.exists {
-            returnChip.tap()
+        // position can leave the voice off screen with the Follow chip
+        // showing; its identifier carries the arrow's direction).
+        let followChip = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "reader.followVoice")).firstMatch
+        if followChip.exists {
+            followChip.tap()
             sleep(2)
         }
         save(shot(), to: shotsDir + "/05-reader-bronze.png")
 
-        // 06 — Curated voice sheet (proves detectExisting() flipped to
+        // 06 — Listening sheet's voices (proves detectExisting() flipped to
         // .installed from the seeded container — no launch-arg model override
-        // in this test): exactly 8 neural rows, one System-voice footer, and
-        // Michael as the fresh-install default.
-        let voiceChip = app.buttons["player.voice"].firstMatch
-        XCTAssertTrue(voiceChip.waitForExistence(timeout: 5))
-        XCTAssertTrue(voiceChip.label.contains("Michael"),
-                      "Fresh-install default voice should be Michael, got: \(voiceChip.label)")
-        voiceChip.tap()
+        // in this test): exactly 8 neural rows, one System row, and Michael as
+        // the fresh-install default.
+        let listeningChip = app.buttons["player.listening"].firstMatch
+        XCTAssertTrue(listeningChip.waitForExistence(timeout: 5))
+        XCTAssertTrue(listeningChip.label.contains("Michael"),
+                      "Fresh-install default voice should be Michael, got: \(listeningChip.label)")
+        listeningChip.tap()
         let michaelRow = app.buttons["voice.kokoro:am_michael"].firstMatch
         XCTAssertTrue(michaelRow.waitForExistence(timeout: 10),
                       "Neural section must be present — seeded container should detect as installed")
         sleep(1)   // sheet animation settle
         save(shot(), to: shotsDir + "/06-voice-sheet.png")
 
-        // Expand to the large detent so the whole curated roster is in the
-        // hierarchy, then pin it: exactly 8 neural rows + 1 system footer row.
-        app.swipeUp()   // medium → large detent
-        sleep(1)
+        // One scrolling detent holds the whole roster: exactly 8 neural rows
+        // + 1 System row.
         let neuralRows = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'voice.kokoro:'"))
         XCTAssertEqual(neuralRows.count, 8,
                        "Curated roster must be exactly 8 neural voices")
         let systemRows = app.buttons.matching(NSPredicate(
-            format: "identifier BEGINSWITH 'voice.' AND NOT (identifier BEGINSWITH 'voice.kokoro:') AND NOT (identifier BEGINSWITH 'voice.preview.')"))
+            format: "identifier BEGINSWITH 'voice.' AND NOT (identifier BEGINSWITH 'voice.kokoro:')"))
         XCTAssertEqual(systemRows.count, 1,
-                       "Exactly one System-voice footer row expected")
+                       "Exactly one System-voice row expected")
 
         // 07 (dark reader) is captured outside this test with
         // `xcrun simctl ui <udid> appearance dark` + a plain launch —
         // XCUIDevice.shared.appearance does not reliably restyle the app
         // on this runtime.
-        app.swipeDown(velocity: .fast)   // large → medium (or straight out)
-        if michaelRow.exists {
-            app.swipeDown(velocity: .fast)   // medium → dismissed
-        }
-        XCTAssertTrue(readerText.waitForExistence(timeout: 10))
+        dismissListeningSheet(app)
 
-        // 08 — Speed sheet (large slider + presets + live time-left).
-        let speedChip = app.buttons["player.speed"].firstMatch
-        XCTAssertTrue(speedChip.waitForExistence(timeout: 5))
-        speedChip.tap()
+        // 08 — The same Listening sheet, for its speed numeral, presets and
+        // slider.
+        listeningChip.tap()
         XCTAssertTrue(app.sliders.firstMatch.waitForExistence(timeout: 10))
         sleep(1)
         save(shot(), to: shotsDir + "/08-speed-sheet.png")
-        app.swipeDown(velocity: .fast)
-        XCTAssertTrue(readerText.waitForExistence(timeout: 10))
+        dismissListeningSheet(app)
 
         // 09 — Aa appearance sheet (text size + scheme).
         let aaButton = app.buttons["reader.appearance"].firstMatch
@@ -144,32 +124,32 @@ final class ScreenshotCaptureTests: XCTestCase {
         app.swipeDown(velocity: .fast)
         XCTAssertTrue(readerText.waitForExistence(timeout: 10))
 
-        // 10 — Sleep timer menu under "…".
-        let moreButton = app.buttons["reader.more"].firstMatch
-        XCTAssertTrue(moreButton.waitForExistence(timeout: 5))
-        moreButton.tap()
+        // 10 — The sleep chip's menu.
+        let sleepChip = app.buttons["player.sleep"].firstMatch
+        XCTAssertTrue(sleepChip.waitForExistence(timeout: 5))
+        sleepChip.tap()
         sleep(1)
         save(shot(), to: shotsDir + "/10-sleep-menu.png")
+        // Close the menu on the backdrop above it, without arming anything.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
 
         // 11 — Skip-brackets demo: relaunch cued at a chapter-2 sentence with
         // an embedded parenthetical aside ("Just as Tom and Myrtle (after the
-        // first drink …) reappeared, …") and play it. The aside stays visible
-        // and highlighted in the pill but is not spoken (skip is default-on).
+        // first drink …) reappeared, …"), which autoplays. The aside stays
+        // visible and highlighted in the pill but is not spoken (skip is
+        // default-on).
         app.terminate()
-        let app2 = XCUIApplication()
-        app2.launchArguments += [
+        let app2 = XCUIApplication.aloud([
             "-uitest-seed-first-classic",
             "-uitest-open-first-doc",
             "-uitest-seek-text", "after the first drink",
-        ]
+        ], allowAutoplay: true)
         app2.launch()
         let readerText2 = app2.textViews["reader.text"].firstMatch
         XCTAssertTrue(readerText2.waitForExistence(timeout: 20),
                       "Reader should auto-open on the seeded classic")
         let playButton2 = app2.buttons["player.play"].firstMatch
         XCTAssertTrue(playButton2.waitForExistence(timeout: 10))
-        sleep(2)   // let the deep-seek centering settle while cued
-        playButton2.tap()
         XCTAssertTrue(waitForValue("playing", of: playButton2, timeout: 180),
                       "Playback should start on the parenthetical sentence")
         // Shoot immediately: the pill is on the parenthetical sentence right
@@ -182,54 +162,35 @@ final class ScreenshotCaptureTests: XCTestCase {
         // materializes the hero above the grid.
         playButton2.tap()
         XCTAssertTrue(waitForValue("paused", of: playButton2, timeout: 10))
-        app2.buttons["Back to Library"].firstMatch.tap()
+        tapSystemBack(app2)
         let hero = app2.buttons["library.continue"].firstMatch
         XCTAssertTrue(hero.waitForExistence(timeout: 10),
                       "Continue Listening hero should appear once progress exists")
         sleep(2)   // cover art + layout settle
         save(shot(), to: shotsDir + "/12-continue-card.png")
 
-        // 13 — Chapter drawer, opened from the reader title. Enter through the
-        // hero (autoplay), pause for a calm shot, then open the drawer.
+        // 13 — Contents, opened from the chapter line. Enter through the hero
+        // (autoplay), pause for a calm shot, then open Contents.
         hero.tap()
         XCTAssertTrue(readerText2.waitForExistence(timeout: 15))
         XCTAssertTrue(waitForValue("playing", of: playButton2, timeout: 180),
                       "Continue card must start playback on its own")
         playButton2.tap()
         XCTAssertTrue(waitForValue("paused", of: playButton2, timeout: 10))
-        let titleButton = app2.buttons["reader.chapters"].firstMatch
-        XCTAssertTrue(titleButton.waitForExistence(timeout: 5))
-        titleButton.tap()
+        let chapterLine = app2.buttons["reader.chapterLine"].firstMatch
+        XCTAssertTrue(chapterLine.waitForExistence(timeout: 5))
+        chapterLine.tap()
         let chapterRows = app2.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'chapters.row.'"))
         XCTAssertTrue(chapterRows.firstMatch.waitForExistence(timeout: 10))
         sleep(1)   // sheet presentation + unanimated scroll settle
         save(shot(), to: shotsDir + "/13-chapter-drawer.png")
 
-        // Dismiss by tapping the backdrop ABOVE the medium-detent sheet: a
-        // mid-screen swipeDown lands inside the drawer's ScrollView, which
-        // `onAppear` has already scrolled away from the top, so the scroll view
-        // eats the gesture and the sheet stays up. Assert on the ROWS, not on
-        // `reader.text` — a non-fullscreen sheet leaves the reader in the
-        // hierarchy, so waiting for it passes with the drawer still covering
-        // the "…" button that step 14 taps next.
-        app2.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
-        XCTAssertTrue(waitForNonExistence(of: chapterRows.firstMatch, timeout: 10),
-                      "Chapter drawer must dismiss before the search step")
-        XCTAssertTrue(readerText2.waitForExistence(timeout: 10))
-
-        // 14 — Search in Book with live results ("Daisy" is all over the
-        // seeded Gatsby). Menu-row identifiers are flaky on UIKit-backed
-        // menus, so the label is the reliable query.
-        let moreButton2 = app2.buttons["reader.more"].firstMatch
-        XCTAssertTrue(moreButton2.waitForExistence(timeout: 5))
-        moreButton2.tap()
-        let searchItem = app2.buttons["Search in Book"].firstMatch
-        XCTAssertTrue(searchItem.waitForExistence(timeout: 5))
-        searchItem.tap()
+        // 14 — Search in the same Contents sheet, with live results ("Daisy"
+        // is all over the seeded Gatsby). The field is pinned above the
+        // chapters, so there is nothing to dismiss first.
         let searchField = app2.textFields["search.field"].firstMatch
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
-        sleep(1)   // presentation + auto-focus settle
         searchField.tap()
         app2.typeText("Daisy")
         let matchCount = app2.staticTexts["search.count"].firstMatch

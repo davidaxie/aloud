@@ -2,27 +2,13 @@ import Foundation
 import PDFKit
 
 /// Extraction failure taxonomy, shared by the PDF and plain-text extractors.
-enum ExtractionError: LocalizedError, Equatable {
+/// Carries no user-facing text: ImportFailure owns the copy (R10).
+enum ExtractionError: Error, Equatable {
     case invalidPDF
     case passwordProtected
     case emptyDocument
     case noReadableText
     case unreadableTextFile
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidPDF:
-            return "This file is not a valid PDF or is corrupted."
-        case .passwordProtected:
-            return "This PDF is password-protected. Please remove the password and try again."
-        case .emptyDocument:
-            return "The document has no readable pages."
-        case .noReadableText:
-            return "No readable text found. This may be a scanned document (images only)."
-        case .unreadableTextFile:
-            return "Could not read this text file."
-        }
-    }
 }
 
 /// A reconstructed paragraph plus the 1-based page it starts on.
@@ -149,20 +135,34 @@ struct PDFTextExtractor {
         if !buffer.isEmpty { paragraphs.append(buffer) }
 
         return paragraphs
-            .map(TextNormalizer.normalize)
+            .map { paragraph in
+                // normalize() deletes soft hyphens; keep a trailing one so the
+                // next page's opening can still rejoin "inter\u{AD}" + "national".
+                let normalized = TextNormalizer.normalize(paragraph)
+                return endsInSoftHyphen(paragraph) ? normalized + "\u{00AD}" : normalized
+            }
             .filter { !$0.isEmpty }
     }
 
     /// Append a wrapped line, de-hyphenating words broken across the break:
     /// "inter-" + "national" → "international". Only when a letter precedes the
-    /// (normal or soft) hyphen and the next line starts lowercase.
+    /// hyphen and the next line starts lowercase — ASCII for a normal hyphen
+    /// (as before), any script for a soft hyphen, which only ever marks a
+    /// break inside a word ("Schwarzwäl\u{AD}" + "der").
     static func appendLine(_ buffer: String, _ next: String) -> String {
         let nextTrim = next.replacing(#/^\s+/#, with: "")
-        if buffer.firstMatch(of: #/[A-Za-z][-\u{00AD}]$/#) != nil,
-           nextTrim.firstMatch(of: #/^[a-z]/#) != nil {
+        let hyphenated = buffer.firstMatch(of: #/[A-Za-z]-$/#) != nil
+            && nextTrim.firstMatch(of: #/^[a-z]/#) != nil
+        let softHyphenated = endsInSoftHyphen(buffer) && nextTrim.firstMatch(of: #/^\p{Ll}/#) != nil
+        if hyphenated || softHyphenated {
             return buffer.replacing(#/[-\u{00AD}]$/#, with: "") + nextTrim
         }
         return buffer.replacing(#/\s+$/#, with: "") + " " + nextTrim
+    }
+
+    /// A letter of any script, then a soft hyphen, at the very end.
+    static func endsInSoftHyphen(_ text: String) -> Bool {
+        text.firstMatch(of: #/\p{L}\u{00AD}$/#) != nil
     }
 
     private static func median(_ values: [CGFloat]) -> CGFloat {
@@ -234,7 +234,7 @@ struct PDFTextExtractor {
     /// Stitch a page's paragraphs onto the growing block list, merging the
     /// page's first paragraph onto the previous block when that block clearly
     /// runs on (no terminal punctuation) and this one continues it (starts
-    /// lowercase/digit, or the previous ended mid-hyphenation).
+    /// lowercase/digit, or the previous ended mid-hyphenation, normal or soft).
     static func appendPageParagraphs(_ blocks: inout [TextBlock],
                                      _ paragraphs: [String],
                                      page: Int) {
@@ -243,7 +243,8 @@ struct PDFTextExtractor {
                let previous = blocks.last,
                !looksFinished(previous.text),
                paragraph.firstMatch(of: #/^[a-z0-9]/#) != nil
-                   || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil {
+                   || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil
+                   || endsInSoftHyphen(previous.text) {
                 blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph),
                                                      page: previous.page)
             } else {

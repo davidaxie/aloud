@@ -30,6 +30,15 @@ protocol TtsEngine: AnyObject, Sendable {
     func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio
 }
 
+/// An engine with an expensive model load (Kokoro): playback warms it before
+/// the first sentence and frees it while idle. A protocol so tests can stand
+/// in a fake neural engine.
+protocol WarmableTtsEngine: TtsEngine {
+    var isWarm: Bool { get }
+    func warmUp() async throws
+    func release()
+}
+
 enum TtsError: Error {
     case emptyAudio
     case voiceUnavailable

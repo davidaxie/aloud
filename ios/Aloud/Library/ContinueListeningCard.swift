@@ -1,58 +1,277 @@
 import SwiftUI
 
-/// Full-width Continue Listening hero above the shelf grid: compact cover,
-/// serif title, a "43% · 1 hr 12 min left" line, and an accent play circle.
-/// Purely visual — the whole card is one button in LibraryView, which opens
-/// the reader and starts playback immediately.
-struct ContinueListeningCard: View {
-    let document: LibraryDocument
-    let rate: Double
+/// The Continue card's words (R11, R12f, R18), spoken and visible, kept
+/// apart from the view so each rule is unit-tested.
+enum ContinueListeningCopy {
+    /// Drawn uppercased: CONTINUE LISTENING.
+    static let eyebrow = "Continue listening"
 
-    var body: some View {
-        HStack(spacing: 16) {
-            DocumentCoverView(document: document, compact: true, showsProgress: false)
-                .frame(width: 64, height: 88)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(document.title)
-                    .font(Theme.serif(17, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Text(subtitle)
-                    .font(Theme.ui(13))
-                    .foregroundStyle(Theme.textMuted)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Decorative echo of AccentCircleButtonStyle — the card itself
-            // is the button, so this stays a plain 44pt accent circle.
-            Circle()
-                .fill(Theme.accent)
-                .frame(width: 44, height: 44)
-                .overlay(
-                    Image(systemName: "play.fill")
-                        .font(Theme.ui(16, weight: .semibold))
-                        .foregroundStyle(Theme.bg)
-                )
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .fill(Theme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .strokeBorder(Theme.line, lineWidth: 1)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Continue listening. \(document.title). \(subtitle)")
+    /// "Continue listening, The Great Gatsby, F. Scott Fitzgerald": the
+    /// eyebrow first, so the name starts with the visible text.
+    static func label(title: String, author: String?) -> String {
+        var parts = [eyebrow, title]
+        if let author, !author.isEmpty { parts.append(author) }
+        return parts.joined(separator: ", ")
     }
 
-    /// Shared with the grid card (`LibraryDocument.listeningSubtitle`) so the
-    /// hero and the card right below it always phrase the estimate identically.
-    private var subtitle: String {
-        document.listeningSubtitle(rate: rate)
+    /// A stopped reason outranks the natural-voice offer, which outranks the
+    /// estimate: the card mirrors the chapter line's precedence. The offer
+    /// reads the offer row's line, so after a failed space check the card
+    /// says so instead of advertising the download that just failed (R21).
+    static func subtitle(for document: LibraryDocument, rate: Double, stop: StopReason?,
+                         offersNaturalVoice: Bool, modelState: ModelManager.ModelState) -> String {
+        if let stop { return stop.text }
+        if offersNaturalVoice { return NaturalVoiceCopy.offerLine(modelState: modelState) }
+        return document.listeningSubtitle(rate: rate)
+    }
+
+    /// The same line as VoiceOver says it.
+    static func spokenSubtitle(for document: LibraryDocument, rate: Double, stop: StopReason?,
+                               offersNaturalVoice: Bool, modelState: ModelManager.ModelState) -> String {
+        if let stop { return stop.spokenText }
+        if offersNaturalVoice { return NaturalVoiceCopy.spoken(NaturalVoiceCopy.offerLine(modelState: modelState)) }
+        return document.spokenListeningSubtitle(rate: rate)
+    }
+
+    static func value(isSpeaking: Bool, spokenSubtitle: String) -> String {
+        isSpeaking ? "playing, \(spokenSubtitle)" : spokenSubtitle
+    }
+
+    /// The body opens the reader. One already speaking just opens; otherwise
+    /// the hint promises playback only when the reader will start it
+    /// (`PlaybackController.opensPlaying`): a Finished book opens paused at
+    /// its end, so, like its grid card, it promises nothing.
+    static func hint(isSpeaking: Bool, opensPlaying: Bool) -> String {
+        if isSpeaking { return "Opens the book" }
+        return opensPlaying ? "Resumes playing" : ""
+    }
+}
+
+/// The Continue Listening hero above the shelf grid, the one playback
+/// surface outside the reader (R18): the card body opens the reader, and its
+/// circle is a real 44pt button that plays and pauses in place. The circle
+/// floats over a placeholder in the card's accessory slot, so no button sits
+/// inside another and VoiceOver reaches each one on its own.
+struct ContinueListeningCard<Actions: View>: View {
+    private let document: LibraryDocument
+    private let rate: Double
+    private let playState: PlayButtonState
+    private let stop: StopReason?
+    private let offersNaturalVoice: Bool
+    private let modelState: ModelManager.ModelState
+    private let opensPlaying: Bool
+    private let onOpen: () -> Void
+    private let onTogglePlayback: () -> Void
+    private let actions: Actions
+
+    init(document: LibraryDocument, rate: Double, playState: PlayButtonState, stop: StopReason?,
+         offersNaturalVoice: Bool, modelState: ModelManager.ModelState, opensPlaying: Bool,
+         onOpen: @escaping () -> Void,
+         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
+        self.document = document
+        self.rate = rate
+        self.playState = playState
+        self.stop = stop
+        self.offersNaturalVoice = offersNaturalVoice
+        self.modelState = modelState
+        self.opensPlaying = opensPlaying
+        self.onOpen = onOpen
+        self.onTogglePlayback = onTogglePlayback
+        self.actions = actions()
+    }
+
+    private var isSpeaking: Bool { playState.glyph == .pause }
+
+    var body: some View {
+        Button(action: onOpen) {
+            ShelfHeroCard(eyebrow: ContinueListeningCopy.eyebrow, title: document.title,
+                          subtitle: ContinueListeningCopy.subtitle(for: document, rate: rate, stop: stop,
+                                                                   offersNaturalVoice: offersNaturalVoice,
+                                                                   modelState: modelState)) {
+                DocumentCoverView(document: document, showsProgress: false)
+            } accessory: {
+                Color.clear
+                    .frame(width: Theme.PlayCircle.compactDiameter, height: Theme.PlayCircle.compactDiameter)
+                    .anchorPreference(key: CircleSlotKey.self, value: .bounds) { $0 }
+            }
+        }
+        .buttonStyle(.plain)
+        // On the body alone: modifiers after the overlay would reach the circle too.
+        .accessibilityLabel(ContinueListeningCopy.label(title: document.title, author: document.author))
+        .accessibilityValue(ContinueListeningCopy.value(
+            isSpeaking: isSpeaking,
+            spokenSubtitle: ContinueListeningCopy.spokenSubtitle(for: document, rate: rate, stop: stop,
+                                                                 offersNaturalVoice: offersNaturalVoice,
+                                                                 modelState: modelState)))
+        .accessibilityHint(ContinueListeningCopy.hint(isSpeaking: isSpeaking, opensPlaying: opensPlaying))
+        .accessibilityActions { actions }
+        .accessibilityIdentifier("library.continue")
+        .overlayPreferenceValue(CircleSlotKey.self) { slot in
+            GeometryReader { proxy in
+                if let slot {
+                    let frame = proxy[slot]
+                    circle.position(x: frame.midX, y: frame.midY)
+                }
+            }
+        }
+        // The hero is lifted out of the grid, so it carries the management
+        // affordances its grid card would have given it.
+        .contextMenu { actions }
+    }
+
+    private var circle: some View {
+        Button(action: onTogglePlayback) {
+            PlayCircleFace(state: playState, diameter: Theme.PlayCircle.compactDiameter)
+                // The glyph scales with the text, capped where it fits the circle.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        }
+        .buttonStyle(AccentCircleButtonStyle(diameter: Theme.PlayCircle.compactDiameter))
+        .accessibilityLabel(playState.label)
+        .accessibilityValue(playState.value)
+        .accessibilityIdentifier("library.continue.play")
+        .accessibilityShowsLargeContentViewer {
+            Label(playState.label, systemImage: playState.glyph.rawValue)
+        }
+    }
+}
+
+/// Where the card's accessory slot sits, so the circle can be laid over it.
+private struct CircleSlotKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+// MARK: - Hero card shape
+
+/// The shelf's one hero shape (cover, an optional eyebrow, serif title over a
+/// subtitle, and a trailing accessory on a bordered surface), shared by the
+/// Continue Listening card and the empty Library's featured classic, so the
+/// first book a new listener taps looks like the card it becomes. The
+/// featured classic has no eyebrow.
+struct ShelfHeroCard<Cover: View, Accessory: View>: View {
+    private let eyebrow: String?
+    private let title: String
+    private let subtitle: String
+    private let cover: Cover
+    private let accessory: Accessory
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(eyebrow: String? = nil, title: String, subtitle: String,
+         @ViewBuilder cover: () -> Cover,
+         @ViewBuilder accessory: () -> Accessory) {
+        self.eyebrow = eyebrow
+        self.title = title
+        self.subtitle = subtitle
+        self.cover = cover()
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        content
+            .multilineTextAlignment(.leading)
+            .padding(Theme.Space.md)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                    .fill(Theme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                    .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth)
+            )
+    }
+
+    /// At the accessibility sizes the text gets the card's full width under
+    /// the cover row: beside a 64pt cover and the circle it had a word or
+    /// two per line.
+    @ViewBuilder
+    private var content: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                HStack(alignment: .top) {
+                    framedCover
+                    Spacer(minLength: Theme.Space.md)
+                    accessory
+                }
+                VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                    eyebrowText
+                    titleText
+                }
+                subtitleText
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(spacing: Theme.Space.md) {
+                framedCover
+                VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                    eyebrowText
+                    // fixedSize: inside a button label in a scroll view the
+                    // stack was offered one line's height, so "The Cask of
+                    // Amontillado" truncated despite its two-line limit.
+                    titleText.lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // Wraps at large text sizes instead of truncating the time left.
+                    // Three lines: the natural voice's space line needs them
+                    // from xLarge beside the cover and circle on a 375pt phone.
+                    subtitleText.lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                accessory
+            }
+        }
+    }
+
+    private var framedCover: some View {
+        cover
+            .frame(width: CoverGeometry.heroSize.width, height: CoverGeometry.heroSize.height)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var eyebrowText: some View {
+        if let eyebrow {
+            Text(eyebrow)
+                .font(Theme.font(.eyebrow))
+                .eyebrowTracking()
+                .textCase(.uppercase)
+                .foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var titleText: Text {
+        Text(title)
+            .font(Theme.font(.headline))
+            .foregroundStyle(Theme.text)
+    }
+
+    private var subtitleText: Text {
+        Text(subtitle)
+            .font(Theme.font(.footnote))
+            .foregroundStyle(Theme.textMuted)
+    }
+}
+
+// MARK: - Play glyph
+
+/// Decorative echo of AccentCircleButtonStyle for the featured classic: the
+/// card around it is the button, so this stays a plain 44pt accent circle.
+struct PlayCircleGlyph: View {
+    var body: some View {
+        Circle()
+            .fill(Theme.accent)
+            .frame(width: 44, height: 44)
+            .overlay(
+                Image(systemName: "play.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Theme.bg)
+                    // Scales with the text, capped where it fits the circle.
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+            )
+            .accessibilityHidden(true)
     }
 }

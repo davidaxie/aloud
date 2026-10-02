@@ -18,8 +18,11 @@ final class AVSpeechEngine: TtsEngine {
 
     let voices: [TtsVoice]
     let defaultVoice: TtsVoice
+    /// Zeroes the utterance volume (UI tests, hosted unit tests, previews).
+    let mutesOutput: Bool
 
-    init() {
+    init(mutesOutput: Bool = UITestHooks.muteAudio) {
+        self.mutesOutput = mutesOutput
         defaultVoice = TtsVoice(
             id: Self.systemVoiceID,
             name: "System voice",
@@ -87,6 +90,9 @@ final class AVSpeechEngine: TtsEngine {
 
         let utterance = AVSpeechUtterance(string: trimmed)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        // Belt and braces under the DEBUG mute: write() renders offline and
+        // never reaches a speaker; the PlaybackController mixer is the guarantee.
+        utterance.volume = mutesOutput ? 0 : 1
         // The stable "system" id resolves to the best installed voice at
         // synthesis time; a concrete identifier (legacy pref) still resolves
         // directly while that voice remains installed.

@@ -1,152 +1,222 @@
 import SwiftUI
 
-/// The bundled Classics Bookshelf. One tap copies a public-domain book into
-/// the library — instant and offline — after which the row offers Open.
+/// The bundled classics (R9), pushed full height on the Library's stack.
+/// Rows are the action: one tap adds the book if needed, opens it and plays
+/// it. Three shelves by listening length; the pinned search spans all three.
 struct BookshelfView: View {
-    var onOpen: (LibraryDocument) -> Void
-
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var store: DocumentStore
+    @EnvironmentObject private var importer: DocumentImporter
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    @State private var addingIDs: Set<Int> = []
-    @State private var justAddedIDs: Set<Int> = []
-    @State private var errorMessage: String?
+    @State private var query = ""
+    /// nil shows the shelves. Searched once per query change, never per body run.
+    @State private var results: [BookshelfBook]?
+    /// The classics already in the library. The store is read through the
+    /// model rather than observed: it republishes on every progress save,
+    /// even with this screen under the reader, and only this set matters.
+    @State private var libraryIDs: Set<Int> = []
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var noResultsMessage: String {
+        "No classics match \u{201C}\(trimmedQuery)\u{201D}"
+    }
 
     var body: some View {
-        List {
-            Section {
-                ForEach(model.bookshelf) { book in
-                    row(for: book)
-                        .listRowBackground(Theme.bg)
-                        .listRowSeparatorTint(Theme.line)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Color.clear.frame(height: 0).id("top")
+                    content
                 }
-            } header: {
-                Text("Classic literature, bundled with Aloud. All offline.")
-                    .font(Theme.ui(13))
-                    .foregroundStyle(Theme.textMuted)
-                    .textCase(nil)
-                    .padding(.bottom, 6)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 0, trailing: 4))
             }
+            .accessibilityIdentifier("bookshelf.list")
+            // Each keystroke reshapes the list; start it from the top.
+            .onChange(of: query) { proxy.scrollTo("top", anchor: .top) }
         }
-        .listStyle(.plain)
         .background(Theme.bg.ignoresSafeArea())
-        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.immediately)
+        .modifier(ShelfScrollEdge())
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: Text("Title or author"))
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+        .onChange(of: query, initial: true) {
+            let found = model.bookshelfIndex.search(query)
+            // Once, as the list empties; typing on into nothing stays quiet.
+            // Through the one announcement path, so a muted launch only logs it.
+            if found?.isEmpty == true, results?.isEmpty != true {
+                PlaybackController.postAnnouncement(noResultsMessage, muted: model.playback.isOutputMuted)
+            }
+            results = found
+        }
+        .onReceive(model.documentStore.$documents) { documents in
+            let ids = Set(documents.compactMap(\.gutenbergID))
+            if ids != libraryIDs { libraryIDs = ids }
+        }
+        .navigationTitle("Classics")
         .navigationBarTitleDisplayMode(.inline)
+        // The bar's system content (back chevron, title rendering) follows
+        // the app's scheme, not the phone's: under an in-app Dark override
+        // on a Light phone it otherwise drew dark-on-dark.
+        .toolbarColorScheme(colorScheme, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Text("Classics Bookshelf")
-                    .font(Theme.serif(17, weight: .semibold))
+                Text("Classics")
+                    .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
+                    .accessibilityAddTraits(.isHeader)
             }
         }
-        .alert("Couldn't add book", isPresented: .init(
-            get: { errorMessage != nil },
-            set: { if !$0 { errorMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(errorMessage ?? "")
-        }
-    }
-
-    // MARK: Row
-
-    private func row(for book: BookshelfBook) -> some View {
-        HStack(spacing: 14) {
-            miniCover(for: book)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(book.title)
-                    .font(Theme.serif(17, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(2)
-                Text(byline(for: book))
-                    .font(Theme.ui(13))
-                    .foregroundStyle(Theme.textMuted)
-                    .lineLimit(1)
-                Text("~\(ListeningEstimate.phrase(minutes: book.estimatedListeningMinutes))")
-                    .font(Theme.ui(12))
-                    .foregroundStyle(Theme.textFaint)
-            }
-            Spacer(minLength: 10)
-            trailingControl(for: book)
-        }
-        .padding(.vertical, 8)
-    }
-
-    private func miniCover(for book: BookshelfBook) -> some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-            .fill(Theme.accentSoft)
-            .frame(width: 44, height: 58)
-            .overlay(
-                Text(String(book.title.prefix(1)))
-                    .font(Theme.serif(22, weight: .semibold))
-                    .foregroundStyle(Theme.accentStrong)
-            )
-    }
-
-    private func byline(for book: BookshelfBook) -> String {
-        book.year.map { "\(book.author) · \(String($0))" } ?? book.author
     }
 
     @ViewBuilder
-    private func trailingControl(for book: BookshelfBook) -> some View {
-        if addingIDs.contains(book.id) {
-            ProgressView()
-                .tint(Theme.accent)
-                .frame(width: 56)
-        } else if justAddedIDs.contains(book.id) {
-            Image(systemName: "checkmark")
-                .font(Theme.ui(14, weight: .semibold))
-                .foregroundStyle(Theme.accent)
-                .frame(width: 56)
-                .transition(.opacity)
-        } else if let document = libraryDocument(for: book) {
-            capsuleButton("Open", filled: false) { onOpen(document) }
+    private var content: some View {
+        if let results {
+            if results.isEmpty {
+                Text(noResultsMessage)
+                    .font(Theme.font(.body))
+                    .foregroundStyle(Theme.textMuted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, Theme.Space.screenGutter)
+                    .padding(.top, Theme.Space.xxl)
+                    .accessibilityIdentifier("bookshelf.noResults")
+            } else {
+                ForEach(results) { row($0) }
+            }
         } else {
-            capsuleButton("Add", filled: true) { add(book) }
-        }
-    }
-
-    private func capsuleButton(_ label: String, filled: Bool,
-                               action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(Theme.ui(13, weight: .semibold))
-                .foregroundStyle(filled ? Theme.bg : Theme.accentStrong)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(Capsule().fill(filled ? Theme.accent : Theme.accentSoft))
-        }
-        .buttonStyle(.plain)
-        .frame(minWidth: 56)
-    }
-
-    // MARK: State
-
-    private func libraryDocument(for book: BookshelfBook) -> LibraryDocument? {
-        store.documents.first {
-            $0.kind == .text && $0.title == book.title && $0.author == book.author
-        }
-    }
-
-    private func add(_ book: BookshelfBook) {
-        addingIDs.insert(book.id)
-        Task {
-            do {
-                _ = try await store.addClassic(book)
-                addingIDs.remove(book.id)
-                withAnimation(.easeOut(duration: 0.2)) {
-                    _ = justAddedIDs.insert(book.id)
+            ForEach(model.bookshelfIndex.shelves) { shelf in
+                Section {
+                    ForEach(shelf.books) { row($0) }
+                } header: {
+                    header(shelf.section)
                 }
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                withAnimation(.easeOut(duration: 0.2)) {
-                    _ = justAddedIDs.remove(book.id)
-                }
-            } catch {
-                addingIDs.remove(book.id)
-                errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func header(_ section: BookshelfSection) -> some View {
+        Text(section.title)
+            .font(Theme.font(.eyebrow))
+            .eyebrowTracking()
+            .foregroundStyle(Theme.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Space.screenGutter)
+            .padding(.top, Theme.Space.lg)
+            .padding(.bottom, Theme.Space.xs)
+            // Pinned: rows scroll under it.
+            .background(Theme.bg)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
+    }
+
+    /// One VoiceOver element: a Button already merges its label's text.
+    private func row(_ book: BookshelfBook) -> some View {
+        let inLibrary = libraryIDs.contains(book.id)
+        let adding = importer.addingClassicID == book.id
+        let label = "\(book.title), by \(book.author), "
+            + ListeningEstimate.aboutPhrase(minutes: book.estimatedListeningMinutes)
+        return Button { listen(to: book) } label: {
+            BookshelfRow(book: book, inLibrary: inLibrary, adding: adding,
+                         stacked: dynamicTypeSize.isAccessibilitySize)
+        }
+        .buttonStyle(ShelfRowButtonStyle())
+        .accessibilityLabel(label)
+        .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
+        .accessibilityHint("Double-tap to listen")
+        .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
+    }
+
+    /// The only tap handler. The importer adds the book if needed (or finds
+    /// the copy already linked to it, renamed or not), then onAdded opens it
+    /// on top of this screen and the reader autoplays. The soft haptic (R20)
+    /// answers only a tap that will start a voice: the importer ignores taps
+    /// while it is busy, and the copy already on the shelf follows the same
+    /// rule as a grid card.
+    private func listen(to book: BookshelfBook) {
+        guard importer.addingClassicID == nil, importer.phase == .idle else { return }
+        let playback = model.playback
+        let startsPlaying = model.documentStore.document(forGutenbergID: book.gutenbergID)
+            .map { playback.opensPlaying($0) } ?? !playback.isAutoplaySuppressed
+        if startsPlaying { TransportHaptics.emit(.play) }
+        importer.addClassic(book)
+    }
+}
+
+// MARK: - Row
+
+/// Text only: the title, then the author and length; the status trails, or
+/// drops under the author at accessibility sizes, where a trailing column
+/// would squeeze the title.
+private struct BookshelfRow: View {
+    let book: BookshelfBook
+    let inLibrary: Bool
+    let adding: Bool
+    let stacked: Bool
+
+    var body: some View {
+        Group {
+            if stacked {
+                VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                    lines
+                    status
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: Theme.Space.sm) {
+                    VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                        lines
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    status
+                }
+            }
+        }
+        .padding(.horizontal, Theme.Space.screenGutter)
+        .padding(.vertical, Theme.Space.sm)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Theme.Stroke.hairlineColor)
+                .frame(height: Theme.Stroke.hairlineWidth)
+                .padding(.leading, Theme.Space.screenGutter)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var lines: some View {
+        Text(book.title)
+            .font(Theme.font(.headline))
+            .foregroundStyle(Theme.text)
+        Text("\(book.author) · \(ListeningEstimate.phrase(minutes: book.estimatedListeningMinutes))")
+            .font(Theme.font(.footnote))
+            .foregroundStyle(Theme.textMuted)
+    }
+
+    /// Words, not a spinner: it holds still under Reduce Motion and says
+    /// what the row's spoken value says.
+    @ViewBuilder
+    private var status: some View {
+        if adding || inLibrary {
+            Text(adding ? "Adding\u{2026}" : "In library")
+                .font(Theme.font(.subhead))
+                .foregroundStyle(Theme.textMuted)
+                .fixedSize()
+        }
+    }
+}
+
+/// Rows press to surface2; no scale, so the column of text stays still.
+private struct ShelfRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Theme.surface2 : Theme.bg)
+            .animation(.easeOut(duration: Theme.Motion.press), value: configuration.isPressed)
     }
 }

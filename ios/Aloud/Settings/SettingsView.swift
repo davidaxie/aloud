@@ -1,138 +1,119 @@
 import SwiftUI
 
-/// Settings: default voice + speed, neural model management, reading behavior,
-/// and the privacy promise with version and licenses.
-///
-/// The Voice and Speed rows here are the GLOBAL defaults — what an unpinned
-/// book inherits — not the loaded book's current settings, which belong to the
-/// player bar. Both rows read `AppModel.globalVoice`/`globalRate` and both
-/// pickers are presented at `.global` scope, so what this screen shows is what
-/// a pick on it changes.
+/// Settings (R21): three rows and a footer. "Voice & speed" pushes the
+/// Listening view the reader's chip presents, with the installed-model card;
+/// "Text & appearance" pushes the view the reader's Aa presents; then
+/// Licenses. Each preference has one home in those views, so this screen
+/// holds no toggle. The privacy line and the version close the list.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var playback: PlaybackController
-
-    @State private var showSpeedSheet = false
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         List {
             Section {
                 NavigationLink {
-                    VoicePickerView(scope: .global)
+                    ListeningSettingsPage()
                 } label: {
-                    HStack {
-                        Text("Voice")
-                            .font(Theme.ui(16))
-                            .foregroundStyle(Theme.text)
-                        Spacer()
-                        Text(model.globalVoice.name)
-                            .font(Theme.ui(15))
-                            .foregroundStyle(Theme.textMuted)
-                    }
+                    listeningRowLabel
                 }
-                .accessibilityIdentifier("settings.voice")
-                speedRow
-            } header: {
-                sectionHeader("Voice")
-            }
-            .listRowBackground(Theme.surface)
+                .accessibilityInputLabels([Text(ListeningCopy.title), Text("Voice"), Text("Speed")])
+                .accessibilityIdentifier("settings.listening")
 
-            Section {
-                ModelDownloadView(showsInstalledState: true, showsCard: false)
-            } header: {
-                sectionHeader("Neural voice model")
-            }
-            .listRowBackground(Theme.surface)
-
-            Section {
-                PreferenceToggleRow(title: "Skip text in [brackets]",
-                                    subtitle: "Citations and asides aren't read aloud.",
-                                    isOn: $playback.skipBrackets)
-                PreferenceToggleRow(title: "Auto-scroll",
-                                    isOn: $model.autoScroll)
-                PreferenceToggleRow(title: PreferenceCopy.wordHighlightTitle,
-                                    subtitle: PreferenceCopy.wordHighlightSubtitle,
-                                    isOn: $model.wordHighlight)
-                    .accessibilityIdentifier("settings.wordHighlight")
-            } header: {
-                sectionHeader("Reading")
-            }
-            .listRowBackground(Theme.surface)
-
-            Section {
-                Text("Everything stays on your device. Aloud works entirely offline.")
-                    .font(Theme.ui(14))
-                    .foregroundStyle(Theme.textMuted)
-                HStack {
-                    Text("Version")
-                        .font(Theme.ui(16))
-                        .foregroundStyle(Theme.text)
-                    Spacer()
-                    Text(Self.versionLabel)
-                        .font(Theme.ui(15))
-                        .foregroundStyle(Theme.textFaint)
+                NavigationLink {
+                    AppearanceSettingsPage()
+                } label: {
+                    rowTitle(AppearanceCopy.title)
                 }
+                .accessibilityInputLabels([Text(AppearanceCopy.title), Text("Appearance"),
+                                           Text("Text size"), Text("Dark mode")])
+                .accessibilityIdentifier("settings.appearance")
+
                 NavigationLink {
                     LicensesView()
                 } label: {
-                    Text("Licenses")
-                        .font(Theme.ui(16))
-                        .foregroundStyle(Theme.text)
+                    rowTitle("Licenses")
                 }
+                .accessibilityInputLabels([Text("Licenses")])
                 .accessibilityIdentifier("settings.licenses")
-            } header: {
-                sectionHeader("About")
+            } footer: {
+                footer
             }
             .listRowBackground(Theme.surface)
+            .listRowSeparatorTint(Theme.Stroke.hairlineColor)
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        .modifier(ShelfScrollEdge(ground: Theme.bgTint))
         .background(Theme.bgTint.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
+        // The bar's system content (back chevron, title rendering) follows
+        // the app's scheme, not the phone's: under an in-app Dark override
+        // on a Light phone the title otherwise drew dark-on-dark.
+        .toolbarColorScheme(colorScheme, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text("Settings")
-                    .font(Theme.serif(17, weight: .semibold))
+                    .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
             }
         }
-        .sheet(isPresented: $showSpeedSheet) { SpeedSheet(scope: .global) }
     }
 
-    // MARK: Speed
+    // MARK: Rows
 
-    private var speedRow: some View {
-        Button {
-            showSpeedSheet = true
-        } label: {
-            HStack {
-                Text("Speed")
-                    .font(Theme.ui(16))
-                    .foregroundStyle(Theme.text)
-                Spacer()
-                Text(Self.rateLabel(model.globalRate))
-                    .font(Theme.ui(15, weight: .medium).monospacedDigit())
-                    .foregroundStyle(Theme.accentStrong)
-                Image(systemName: "chevron.right")
-                    .font(Theme.ui(13, weight: .semibold))
-                    .foregroundStyle(Theme.textFaint)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("settings.speed")
-    }
-
-    private static func rateLabel(_ rate: Double) -> String {
-        rate.formatted(.number.precision(.fractionLength(0...2))) + "×"
-    }
-
-    // MARK: Bits
-
-    private func sectionHeader(_ title: String) -> some View {
+    private func rowTitle(_ title: String) -> some View {
         Text(title)
-            .font(Theme.ui(13, weight: .semibold))
-            .foregroundStyle(Theme.textFaint)
+            .font(Theme.font(.body))
+            .foregroundStyle(Theme.text)
+    }
+
+    /// "Voice & speed" with the app-wide "Michael · 1.25×" after it; at
+    /// accessibility sizes the value moves under the title instead of
+    /// squeezing it.
+    @ViewBuilder
+    private var listeningRowLabel: some View {
+        let title = rowTitle(ListeningCopy.title)
+        let value = Text(ListeningFormat.chipTitle(voice: playback.voice, rate: model.globalRate))
+            .font(Theme.font(.callout))
+            .monospacedDigit()
+            .foregroundStyle(Theme.textMuted)
+            .numericReadout(model.globalRate)
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                title
+                value
+            }
+        } else {
+            HStack {
+                title
+                Spacer()
+                value
+            }
+        }
+    }
+
+    // MARK: Footer
+
+    /// The one privacy line, in the serif aside, over the version: words,
+    /// not settings. `textCase(nil)` keeps the List from upper-casing them.
+    private var footer: some View {
+        VStack(spacing: Theme.Space.xs) {
+            Text(PrivacyCopy.line)
+                .font(Theme.font(.aside))
+                .foregroundStyle(Theme.textMuted)
+                .accessibilityIdentifier("settings.privacy")
+            Text("Version \(Self.versionLabel)")
+                .font(Theme.font(.footnote))
+                .foregroundStyle(Theme.textMuted)
+                .accessibilityIdentifier("settings.version")
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.top, Theme.Space.xl)
+        .textCase(nil)
     }
 
     private static var versionLabel: String {

@@ -23,7 +23,7 @@ final class VoicePreferenceTests: XCTestCase {
 
     func testSystemVoiceHasStableID() {
         XCTAssertEqual(AVSpeechEngine.systemVoiceID, "system")
-        let engine = AVSpeechEngine()
+        let engine = AVSpeechEngine(mutesOutput: true)
         XCTAssertEqual(engine.defaultVoice.id, "system",
                        "The roster row must never carry a concrete AVSpeech identifier")
         XCTAssertEqual(engine.voices.map(\.id), ["system"])
@@ -126,32 +126,61 @@ final class VoicePreferenceTests: XCTestCase {
 
     // MARK: - Non-persisting fallback seam
 
+    /// Instant silence: a pick re-speaks the current sentence (R8), and it
+    /// must never reach a real synthesizer or a speaker from a test.
+    private final class SilentEngine: TtsEngine, @unchecked Sendable {
+        let voices: [TtsVoice] = []
+        func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            .silence(duration: 0.05)
+        }
+    }
+
     /// Temporary fallbacks (the pre-install stand-in, neural-failure
     /// degradation) set `voice` directly; only `selectVoice` reaches the
-    /// `voiceSelections` subject AppModel persists the preference from.
+    /// `voiceSelections` subject AppModel persists the preference from, and
+    /// only when the voice actually changes.
     func testOnlyDeliberateSelectionsEmitForPersistence() {
-        let engine = AVSpeechEngine()
+        let engine = SilentEngine()
         let cache = AudioClipCache()
+        let standIn = TtsVoice(id: "test:standIn", name: "Stand-in", lang: "en-US",
+                               gender: "", engine: .avSpeech, quality: 1)
         let playback = PlaybackController(
             engine: engine,
-            defaultVoice: engine.defaultVoice,
+            defaultVoice: systemDefault,
             scheduler: SynthesisScheduler(engine: engine, cache: cache),
             cache: cache,
-            audioSession: AudioSessionManager())
+            audioSession: AudioSessionManager(),
+            anchorStore: ResumeAnchorStore(defaults: PlaybackTestRig.freshDefaults()),
+            stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()),
+            outputMuted: true)
+        // A loaded book, so a pick re-speaks a muted stub sentence rather than
+        // synthesizing the no-book sample line.
+        playback.load(
+            document: LibraryDocument(id: UUID(), title: "Two", fileName: "two.txt",
+                                      addedAt: Date(), pageCount: 1, sentenceCount: 2,
+                                      contentHash: "two-hash", kind: .text),
+            content: DocContent(title: "Two", pageCount: 1,
+                                sentences: [Sentence(id: 0, text: "One.", para: 0, page: 0),
+                                            Sentence(id: 1, text: "Two.", para: 0, page: 0)],
+                                paragraphs: [Paragraph(id: 0, sentenceIDs: 0..<2, page: 0)],
+                                contentHash: "two-hash"))
 
         var emitted: [String] = []
         let subscription = playback.voiceSelections.sink { emitted.append($0.id) }
         defer { subscription.cancel() }
 
         // Programmatic assignment — the fallback/stand-in path.
-        playback.voice = KokoroVoiceCatalog.defaultVoice
+        playback.voice = standIn
         XCTAssertEqual(emitted, [], "A programmatic voice change must not persist")
-        XCTAssertEqual(playback.voice.id, KokoroVoiceCatalog.defaultVoiceID,
-                       "...but it does become the active voice")
+        XCTAssertEqual(playback.voice.id, standIn.id, "...but it does become the active voice")
 
         // Deliberate pick — the picker path.
-        playback.selectVoice(engine.defaultVoice)
+        playback.selectVoice(systemDefault)
         XCTAssertEqual(emitted, ["system"])
         XCTAssertEqual(playback.voice.id, "system")
+
+        // Re-picking the selected voice writes nothing (R5).
+        playback.selectVoice(playback.voice)
+        XCTAssertEqual(emitted, ["system"])
     }
 }

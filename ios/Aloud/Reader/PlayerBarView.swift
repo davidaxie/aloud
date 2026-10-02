@@ -1,38 +1,99 @@
 import SwiftUI
 
-/// Bottom player chrome: sentence-granular scrub track with drag preview,
-/// percent + time-left readout, and the transport row (voice chip,
-/// back / play / forward, speed chip). All state flows through PlaybackController.
+/// Bottom player chrome, every frequent control in the thumb's reach (R6):
+/// the chapter line (the one message slot, which opens Contents), the scrub
+/// and one row of five controls — the voice · speed chip, back 15, Play,
+/// forward 15 and the sleep chip. From .xxLarge the chip takes a row of its
+/// own. All state flows through PlaybackController.
+///
+/// The scrub spans the current chapter (the whole document for PDFs and
+/// chapterless books) so a long book still scrubs at sentence precision
+/// (R17). Only a horizontal drag of at least 8pt seeks: a plain tap does
+/// nothing. The release is a `.scrub` jump, which offers Undo jump (R15).
+/// VoiceOver adjusts it by chapter or page row, else by a minute (R12c).
 struct PlayerBarView: View {
 
     let document: LibraryDocument
     let content: DocContent
+    let navigation: ReaderNavigation
 
     @EnvironmentObject private var playback: PlaybackController
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var naturalVoiceOffer: NaturalVoiceOffer
+    @EnvironmentObject private var modelManager: ModelManager
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var dragSentence: Int?
-    @State private var showVoiceSheet = false
-    @State private var showSpeedSheet = false
-    @State private var showPageReadout = false
+    /// The seek drag in progress, which the chapter line, the track fill and
+    /// the preview follow. Gesture state, so it lives exactly as long as the
+    /// touch: SwiftUI clears it when the drag ends and also when the system
+    /// cancels it (an alert, Siri, the app going inactive), which never
+    /// calls onEnded and left plain @State frozen on the drag target.
+    @GestureState private var drag: ScrubDrag?
+    /// The same frozen span for the release: `drag` is already reset when
+    /// onEnded runs, and the voice may have changed chapter mid-drag. One
+    /// instance for the view's life, written by drag frames, never drawn.
+    @State private var releaseSpan = ScrubReleaseSpan()
+    /// The scrub preview's measured width, so its centering and edge clamp
+    /// use the capsule's real size (it varies with the words and text size).
+    /// Seeded near a default-size preview so the first drag frame sits right.
+    @State private var previewWidth: CGFloat = 180
+    @State private var showListening = false
+    @State private var showContents = false
 
     var body: some View {
+        // Line, track and transport are each at least a 44pt-tall hit row,
+        // so the rows sit flush and only the bottom takes padding.
         VStack(spacing: 0) {
+            ReaderMessageLine(message: message,
+                              position: position,
+                              onOpenContents: { showContents = true },
+                              onRetry: togglePlayback,
+                              onBackFiveMinutes: backFiveMinutes)
+            // Inside the gutter, so a back swipe from the screen edge never
+            // lands on the drag gesture.
             scrubTrack
-            readoutRow
-                .padding(.horizontal, 20)
-                .padding(.top, 6)
-            transportRow
-                .padding(.horizontal, 20)
-                .padding(.top, 2)
-                .padding(.bottom, 10)
+                .padding(.horizontal, Theme.Space.screenGutter)
+            transport
+                .padding(.horizontal, Theme.Space.screenGutter)
+                .padding(.bottom, Theme.Space.xs)
         }
-        .background(.ultraThinMaterial)
+        // Always its ideal height. The reader's safeAreaInset places the bar
+        // with a finite height, which a VStack shares out least-flexible row
+        // first: with a wrapping chapter line (a book title at AX sizes) the
+        // transport was squeezed and the bar fell ~20pt short of its inset,
+        // so the paper stopped above the screen bottom.
+        .fixedSize(horizontal: false, vertical: true)
+        // Paper, not system material: the bar stays in the Bronze family in
+        // both modes (a material renders neutral gray over the warm page).
+        .background(Theme.surface, ignoresSafeAreaEdges: .bottom)
         .overlay(alignment: .top) {
-            Rectangle().fill(Theme.line).frame(height: 0.5)
+            Rectangle()
+                .fill(Theme.Stroke.hairlineColor)
+                .frame(height: Theme.Stroke.hairlineWidth)
         }
-        .sheet(isPresented: $showVoiceSheet) { VoicePickerSheet() }
-        .sheet(isPresented: $showSpeedSheet) { SpeedSheet() }
+        .sheet(isPresented: $showListening) { ListeningSheet() }
+        .sheet(isPresented: $showContents) {
+            ContentsSheet(content: content, navigation: navigation)
+        }
+    }
+
+    // MARK: - Chapter line
+
+    private var message: ReaderMessage? {
+        ReaderMessage.resolve(stop: playback.stopReason(for: document.id),
+                              notice: playback.notice,
+                              offerVisible: naturalVoiceOffer.isVisible,
+                              modelState: modelManager.state,
+                              isPreparingVoice: playback.isPreparingVoice)
+    }
+
+    /// Follows a scrub drag, so the line previews the target chapter and its
+    /// time left before the finger lifts.
+    private var position: ReaderPositionLine {
+        navigation.positionLine(at: drag?.target ?? playhead,
+                                rate: playback.rate,
+                                documentTitle: document.title,
+                                isFinished: drag == nil && playback.isAtEnd)
     }
 
     // MARK: - Scrub track
@@ -40,276 +101,296 @@ struct PlayerBarView: View {
     private var scrubTrack: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
+            let span = drag?.span ?? navigation.scrubSpan(at: playhead)
             ZStack(alignment: .leading) {
                 Capsule().fill(Theme.line)
                 Capsule()
                     .fill(Theme.accent)
-                    .frame(width: max(4, width * displayedFraction))
+                    .frame(width: max(4, width * navigation.scrubFraction(of: drag?.target ?? playhead,
+                                                                         in: span)))
             }
             .frame(height: 4)
             .frame(maxHeight: .infinity, alignment: .center)
             .overlay(alignment: .topLeading) {
-                if let sentence = dragSentence {
-                    dragPreview(for: sentence, width: width)
+                if let drag {
+                    dragPreview(for: drag, width: width)
+                        // Bottom edge on the row's top, ~20pt above the line:
+                        // a taller label grows upward, never over the track.
+                        .alignmentGuide(.top) { $0[.bottom] }
                 }
             }
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let target = sentenceIndex(atX: value.location.x, width: width)
-                        if dragSentence == nil {
-                            TransportHaptics.prepare()   // drag start: warm the engine
-                        } else if dragSentence != target {
-                            TransportHaptics.selectionChanged()   // preview moved a sentence
-                        }
-                        dragSentence = target
-                    }
-                    .onEnded { value in
-                        let target = sentenceIndex(atX: value.location.x, width: width)
-                        dragSentence = nil
-                        playback.seek(to: target, andPlay: playback.isActive)
-                    }
-            )
+            .gesture(scrubGesture(width: width))
         }
-        .frame(height: 30)
-        .accessibilityLabel("Progress")
-        .accessibilityValue("\(document.progressPercent) percent")
-    }
-
-    private func dragPreview(for sentence: Int, width: CGFloat) -> some View {
-        let page = content.sentences.indices.contains(sentence)
-            ? content.sentences[sentence].page + pageOffset : 1
-        var label = "Sentence \(sentence + 1) of \(sentenceCount)"
-        if content.pageCount > 1 { label += " · Page \(page)" }
-        return Text(label)
-            .font(Theme.ui(12, weight: .medium))
-            .monospacedDigit()
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(Theme.surface2, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.lineStrong, lineWidth: 0.5))
-            .fixedSize()
-            .offset(x: previewOffsetX(for: sentence, width: width), y: -36)
-            .transition(.opacity)
-    }
-
-    private func previewOffsetX(for sentence: Int, width: CGFloat) -> CGFloat {
-        let fraction = sentenceCount > 1
-            ? CGFloat(sentence) / CGFloat(sentenceCount - 1) : 0
-        return min(max(fraction * width - 90, 4), max(width - 184, 4))
-    }
-
-    // MARK: - Readout
-
-    private var readoutRow: some View {
-        HStack {
-            if playback.isPreparingVoice {
-                Text("Preparing voice…")
-                    .foregroundStyle(Theme.textMuted)
-            } else {
-                // Tap toggles percent ↔ "page 12 of 218" (multi-page docs).
-                Button { showPageReadout.toggle() } label: {
-                    Text(progressReadout)
-                        .font(Theme.ui(11, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.textFaint)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Progress readout")
-            }
-            Spacer()
-            if let remaining = timeRemaining {
-                Text(remaining)
+        // A full 44pt touch row around the 4pt line.
+        .frame(height: 44)
+        // One element of shapes: without this the label has nothing to land on.
+        .accessibilityElement()
+        .accessibilityLabel("Position")
+        // The playhead's spoken position, never a sentence index (R12e).
+        .accessibilityValue(navigation.positionLine(at: playhead,
+                                                    rate: playback.rate,
+                                                    documentTitle: document.title,
+                                                    isFinished: playback.isAtEnd)
+                                .accessibilityLabel)
+        // The scrub's own step (R12c): VoiceOver reads the new value.
+        .accessibilityAdjustableAction { direction in
+            if let target = navigation.adjustmentTarget(from: playhead,
+                                                        forward: direction == .increment,
+                                                        rate: playback.rate) {
+                playback.jump(to: target, origin: .scrub)
             }
         }
-        .font(Theme.ui(11, weight: .medium))
-        .monospacedDigit()
-        .foregroundStyle(Theme.textFaint)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("reader.sentence")
-        .accessibilityValue("\(max(playback.currentSentence, 0))")
+        .accessibilityIdentifier("player.scrub")
+    }
+
+    /// The span freezes on the first seek frame, so the track never rescales
+    /// under the finger. A drag that is not (or no longer) 8pt sideways shows
+    /// no preview and seeks nothing, so the preview always tells the truth.
+    private func scrubGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: ScrubGesture.minimumDistance)
+            .updating($drag) { value, state, _ in
+                state = ScrubDrag.next(after: state, translation: value.translation,
+                                       current: { navigation.scrubSpan(at: playhead) },
+                                       target: { scrubTarget(atX: value.location.x, width: width, in: $0) })
+                // The release's copy, from this same frame: gesture state
+                // restarts at nil on every drag (a cancelled one too), so a
+                // stale span can't outlive the drag that froze it.
+                releaseSpan.track(state)
+            }
+            // Only a lifted finger seeks; a cancelled drag just lets the line
+            // and the track fall back to the playhead.
+            .onEnded { value in
+                // The span the preview showed: reading the gesture state here
+                // fell back to wherever the playhead had moved.
+                guard let span = releaseSpan.release(translation: value.translation,
+                                                     current: { navigation.scrubSpan(at: playhead) }) else { return }
+                let target = scrubTarget(atX: value.location.x, width: width, in: span)
+                // One tick per seek, not one per sentence crossed.
+                TransportHaptics.emit(.scrubRelease)
+                playback.jump(to: target, origin: .scrub)
+            }
+    }
+
+    private func scrubTarget(atX x: CGFloat, width: CGFloat, in span: ClosedRange<Int>) -> Int {
+        navigation.sentence(atFraction: ScrubGesture.fraction(atX: x, width: width), in: span)
+    }
+
+    /// The target's first words and its time into the span: never a
+    /// sentence number.
+    private func dragPreview(for drag: ScrubDrag, width: CGFloat) -> some View {
+        let sentence = content.sentences.indices.contains(drag.target)
+            ? content.sentences[drag.target].text : ""
+        let seconds = navigation.secondsIntoSpan(of: drag.target, in: drag.span, rate: playback.rate)
+        return HStack(spacing: Theme.Space.xxs) {
+            Text(ScrubPreview.words(of: sentence))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text("\u{00B7} " + ListeningEstimate.clock(seconds: seconds))
+                .monospacedDigit()
+                .fixedSize()
+        }
+        .font(Theme.font(.caption))
+        .foregroundStyle(Theme.text)
+        .padding(.horizontal, Theme.Space.sm)
+        .padding(.vertical, Theme.Space.xs)
+        .background(Theme.surface2, in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.Stroke.hairlineColor,
+                                        lineWidth: Theme.Stroke.hairlineWidth))
+        // A one-line floating label: past xxxLarge it would only truncate
+        // further, so its growth stops there.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { measured in
+            previewWidth = measured
+        }
+        // Never wider than the track less an inset at either end: the words
+        // truncate first. Leading, so the capsule's edge is the frame's.
+        .frame(maxWidth: max(width - 2 * Theme.Space.xxs, 0), alignment: .leading)
+        .offset(x: previewOffsetX(fraction: navigation.scrubFraction(of: drag.target, in: drag.span),
+                                  width: width))
+        .transition(.opacity)
+    }
+
+    /// Centers the preview on the target's place along the track, clamped
+    /// so its real width stays inside the bar with a small inset at either
+    /// end.
+    private func previewOffsetX(fraction: Double, width: CGFloat) -> CGFloat {
+        let inset = Theme.Space.xxs
+        let maxX = max(width - previewWidth - inset, inset)
+        return min(max(CGFloat(fraction) * width - previewWidth / 2, inset), maxX)
     }
 
     // MARK: - Transport
 
-    private var transportRow: some View {
-        HStack(spacing: 0) {
-            chip(icon: "waveform", label: voiceShortName) { showVoiceSheet = true }
-                .accessibilityLabel("Voice, \(playback.voice.name)")
-                .accessibilityIdentifier("player.voice")
-            Spacer()
+    /// Five controls in one row fit through .xLarge; past that the chip's
+    /// text would squeeze the transport, so it moves to a row of its own.
+    private var stacksTransport: Bool { dynamicTypeSize >= .xxLarge }
 
-            Button { step(-1) } label: {
-                Image(systemName: "backward.fill")
-                    .font(Theme.ui(19, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 44, height: 44)
+    /// VoiceOver order in both layouts: chip, back, play, forward, sleep.
+    @ViewBuilder
+    private var transport: some View {
+        if stacksTransport {
+            VStack(spacing: Theme.Space.xs) {
+                HStack {
+                    listeningChip
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 0) {
+                    transportCluster
+                    Spacer(minLength: Theme.Space.xs)
+                    SleepChip()
+                }
             }
-            .accessibilityLabel("Previous sentence")
-            .accessibilityIdentifier("player.previous")
-
-            playButton
-                .padding(.horizontal, 14)
-
-            Button { step(1) } label: {
-                Image(systemName: "forward.fill")
-                    .font(Theme.ui(19, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 44, height: 44)
+        } else {
+            HStack(spacing: 0) {
+                listeningChip
+                Spacer(minLength: Theme.Space.xs)
+                transportCluster
+                Spacer(minLength: Theme.Space.xs)
+                SleepChip()
             }
-            .accessibilityLabel("Next sentence")
-            .accessibilityIdentifier("player.next")
-
-            Spacer()
-            chip(label: rateLabel) { showSpeedSheet = true }
-                .accessibilityLabel("Speed, \(rateLabel)")
-                .accessibilityIdentifier("player.speed")
         }
+    }
+
+    private var transportCluster: some View {
+        HStack(spacing: 0) {
+            back15
+            playButton
+            forward15
+        }
+        .fixedSize()
+    }
+
+    /// Names lead with the visible text, so Voice Control matches it; the
+    /// input labels add the words people say for it.
+    private var listeningChip: some View {
+        let voiceName = ListeningFormat.shortName(playback.voice)
+        return Button { showListening = true } label: {
+            Text(ListeningFormat.chipTitle(voice: playback.voice, rate: playback.rate))
+                .monospacedDigit()
+                .numericReadout(playback.rate)
+                .readerChip()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(voiceName), \(ListeningFormat.rate(playback.rate)), voice and speed")
+        .accessibilityHint("Opens voice and speed")
+        .accessibilityInputLabels([Text(voiceName), Text("Voice"), Text("Speed")])
+        .accessibilityIdentifier("player.listening")
+    }
+
+    private var back15: some View {
+        skipButton(seconds: -PlaybackController.skipInterval, systemImage: "gobackward.15",
+                   label: "Back 15 seconds", inputLabel: "Back 15",
+                   identifier: "player.back15")
+    }
+
+    private var forward15: some View {
+        skipButton(seconds: PlaybackController.skipInterval, systemImage: "goforward.15",
+                   label: "Forward 15 seconds", inputLabel: "Forward 15",
+                   identifier: "player.forward15")
+    }
+
+    private func skipButton(seconds: TimeInterval, systemImage: String, label: String,
+                            inputLabel: String, identifier: String) -> some View {
+        Button { skip(seconds) } label: {
+            Image(systemName: systemImage)
+                .font(.title2.weight(.medium))
+                .foregroundStyle(Theme.text)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        // The glyph scales inside a fixed 44pt target, so growth stops at
+        // xxxLarge.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .accessibilityLabel(label)
+        .accessibilityInputLabels([Text(inputLabel)])
+        .accessibilityIdentifier(identifier)
     }
 
     private var playButton: some View {
-        Button(action: togglePlayback) {
-            ZStack {
-                if isBuffering {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(Theme.bg)
-                } else {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(Theme.ui(22, weight: .bold))
-                        .foregroundStyle(Theme.bg)
-                        .offset(x: isPlaying ? 0 : 1.5)
-                }
-            }
+        let state = PlayButtonState(status: playback.status,
+                                    isPreparingVoice: playback.isPreparingVoice,
+                                    reduceMotion: reduceMotion)
+        return Button(action: togglePlayback) {
+            PlayCircleFace(state: state)
+                // The glyph scales inside the fixed 54pt circle.
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         }
-        .buttonStyle(AccentCircleButtonStyle(diameter: 54))
-        .accessibilityLabel(isPlaying ? "Pause" : "Play")
+        .buttonStyle(AccentCircleButtonStyle(diameter: Theme.PlayCircle.diameter))
+        .accessibilityLabel(state.label)
+        .accessibilityValue(state.value)
         .accessibilityIdentifier("player.play")
-        .accessibilityValue(isPlaying ? "playing" : (isBuffering ? "buffering" : "paused"))
-    }
-
-    private func chip(icon: String? = nil, label: String,
-                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if let icon {
-                    Image(systemName: icon)
-                        .font(Theme.ui(12, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                }
-                Text(label)
-                    .font(Theme.ui(13, weight: .semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .foregroundStyle(Theme.text)
-            }
-            .padding(.horizontal, 13)
-            .frame(height: 34)
-            .background(Theme.surface2, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
-        }
-        .frame(minWidth: 44, minHeight: 44)
     }
 
     // MARK: - State helpers
 
-    private var sentenceCount: Int { max(content.sentences.count, 1) }
-
-    /// Page display normalizes through the shared rule (0-based legacy caches
-    /// display from 1) so this readout, the reader's page marks, the chapter
-    /// drawer and search results all name the same page identically.
-    private var pageOffset: Int { content.pageOffset }
-
-    private var isPlaying: Bool {
-        if case .playing = playback.status { return true }
-        return false
-    }
-
-    private var isBuffering: Bool {
-        if case .buffering = playback.status { return true }
-        return false
-    }
-
-    private var liveFraction: Double {
-        sentenceCount > 1
-            ? Double(min(max(playback.currentSentence, 0), sentenceCount - 1))
-                / Double(sentenceCount - 1)
-            : 1
-    }
-
-    private var displayedFraction: Double {
-        guard let sentence = dragSentence, sentenceCount > 1 else { return liveFraction }
-        return Double(sentence) / Double(sentenceCount - 1)
-    }
-
-    private var displayedPercent: Int {
-        Int((displayedFraction * 100).rounded())
-    }
-
-    /// Percent by default; page-of-pages after a tap (multi-page docs only).
-    private var progressReadout: String {
-        if showPageReadout, content.pageCount > 1 {
-            let sentence = dragSentence ?? max(playback.currentSentence, 0)
-            let page = content.sentences.indices.contains(sentence)
-                ? content.sentences[sentence].page + pageOffset : 1
-            return "page \(page) of \(content.pageCount)"
-        }
-        return "\(displayedPercent)%"
-    }
-
-    private var timeRemaining: String? {
-        guard document.wordCount > 0, playback.rate > 0 else { return nil }
-        let total = Double(document.wordCount)
-            / (LibraryDocument.spokenWordsPerMinute * playback.rate) * 60
-        return Self.timeLeftLabel(seconds: total * (1 - displayedFraction))
-    }
-
-    private var voiceShortName: String {
-        playback.voice.name.components(separatedBy: " ").first ?? playback.voice.name
-    }
-
-    private var rateLabel: String {
-        let value = (playback.rate * 100).rounded() / 100
-        return value.formatted(.number.precision(.fractionLength(0...2))) + "×"
-    }
-
-    static func timeLeftLabel(seconds: TimeInterval) -> String {
-        let minutes = Int((seconds / 60).rounded())
-        if minutes < 1 { return "Under a min left" }
-        if minutes < 60 { return "\(minutes) min left" }
-        return "\(minutes / 60) h \(minutes % 60) min left"
-    }
+    /// The sentence being read, or the first before anything has loaded.
+    private var playhead: Int { max(playback.currentSentence, 0) }
 
     // MARK: - Actions
 
+    /// Play, pause, and the retry line's tap. Play from `.ended` restarts the
+    /// book and from `.error` the failed sentence, both inside `play()`.
     private func togglePlayback() {
-        TransportHaptics.tap()
-        switch playback.status {
-        case .playing, .buffering:
-            playback.pause()
-        case .ended:
-            playback.seek(to: 0, andPlay: true)
-        default:
-            playback.play()
-        }
+        TransportHaptics.emitToggle(isActive: playback.isActive)
+        playback.togglePlayPause()
     }
 
-    private func step(_ delta: Int) {
-        let target = min(max(playback.currentSentence + delta, 0), sentenceCount - 1)
-        guard target != playback.currentSentence else { return }
-        TransportHaptics.tap()
-        // Buffering counts as intent to play: stepping mid-buffer keeps going.
-        playback.seek(to: target, andPlay: playback.isActive)
+    /// Keeps play/pause: a skip while paused moves the cue, never starts
+    /// audio. No haptic: skips aren't in R20's vocabulary (TransportHaptics).
+    private func skip(_ seconds: TimeInterval) {
+        playback.skip(seconds: seconds)
     }
 
-    private func sentenceIndex(atX x: CGFloat, width: CGFloat) -> Int {
-        guard width > 0 else { return 0 }
-        let fraction = min(max(x / width, 0), 1)
-        return Int((fraction * Double(sentenceCount - 1)).rounded())
+    /// A sleep stop's Back 5 min: a user-started play, so it ticks like one.
+    private func backFiveMinutes() {
+        TransportHaptics.emit(.play)
+        playback.backFiveMinutes()
     }
 }
 
-// The voice picker sheet lives in Settings/VoicePickerView.swift
-// (`VoicePickerSheet`); the speed sheet in Settings/SpeedSheet.swift.
+// MARK: - Reader chip
+
+/// The player bar's chip look, shared by the voice · speed chip and the sleep
+/// chip: a capsule below accessibility sizes, a rounded rectangle that wraps
+/// to two lines at them. `isOn` (an armed timer) is accentStrong on
+/// accentSoft. The visible chip is about 34pt; the hit area is the full 44.
+struct ReaderChipStyle: ViewModifier {
+
+    var isOn = false
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .footnote) private var height: CGFloat = 34
+
+    func body(content: Content) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            chip(content, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous),
+                 isAccessibilitySize: true)
+        } else {
+            chip(content, in: Capsule(), isAccessibilitySize: false)
+        }
+    }
+
+    private func chip<S: InsettableShape>(_ content: Content, in shape: S,
+                                          isAccessibilitySize: Bool) -> some View {
+        content
+            .font(Theme.font(.subhead))
+            .lineLimit(isAccessibilitySize ? 2 : 1)
+            .minimumScaleFactor(0.75)
+            .foregroundStyle(isOn ? Theme.accentStrong : Theme.text)
+            .padding(.horizontal, Theme.Space.xs)
+            .padding(.vertical, isAccessibilitySize ? Theme.Space.xxs : .zero)
+            .frame(minWidth: height, minHeight: height)
+            .background(isOn ? Theme.accentSoft : Theme.surface2, in: shape)
+            .overlay(shape.strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+    }
+}
+
+extension View {
+    /// The player bar's chip look; `isOn` marks an armed state.
+    func readerChip(isOn: Bool = false) -> some View {
+        modifier(ReaderChipStyle(isOn: isOn))
+    }
+}

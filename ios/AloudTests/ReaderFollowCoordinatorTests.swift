@@ -1,0 +1,621 @@
+import XCTest
+import SwiftUI
+import UIKit
+@testable import Aloud
+
+/// R15 tap-to-play and R16 calm follow on a real reading column: a 390×800
+/// `ReaderUITextView` and its coordinator, with no window, no controller and
+/// no audio. Drags are simulated through the scroll-view delegate calls.
+/// The tap's haptic is checked on a muted `PlaybackTestRig`.
+@MainActor
+final class ReaderFollowCoordinatorTests: XCTestCase {
+
+    private final class Taps {
+        var sentences: [Int] = []
+    }
+
+    private final class Arrow {
+        var direction: ReaderFollowDirection?
+    }
+
+    /// `count` one-line sentences, one paragraph each: a short line fits
+    /// the 342pt measure at 19pt, so every advance moves down one line.
+    /// From `chapterAt` on they sit on page 2: a text book's second chapter.
+    private func lines(_ count: Int, chapterAt: Int? = nil) -> DocContent {
+        let page = { (id: Int) in chapterAt.map { id >= $0 ? 2 : 1 } ?? 1 }
+        let sentences = (0..<count).map { Sentence(id: $0, text: "Line \($0) is short.", para: $0, page: page($0)) }
+        let paragraphs = (0..<count).map { Paragraph(id: $0, sentenceIDs: $0..<($0 + 1), page: page($0)) }
+        return DocContent(title: "Lines", pageCount: chapterAt == nil ? 1 : 2, sentences: sentences,
+                          paragraphs: paragraphs, contentHash: "follow-\(count)-\(chapterAt ?? 0)")
+    }
+
+    private func makeColumn(count: Int = 160, chapterAt: Int? = nil, obscuredBottom: CGFloat = 0,
+                            reduceMotion: Bool = false, taps: Taps = Taps(), arrow: Arrow = Arrow())
+        throws -> (coordinator: ReaderTextView.Coordinator, textView: ReaderUITextView) {
+        let content = lines(count, chapterAt: chapterAt)
+        // A chaptered text book gets the Chapters rotor.
+        let navigation = chapterAt.map { _ in ReaderNavigation(content: content, kind: .text) }
+        let parent = ReaderTextView(content: content, isChapterBook: chapterAt != nil, navigation: navigation,
+                                    fontSize: 19, activeSentence: 0, activeWord: -1,
+                                    obscuredBottom: obscuredBottom,
+                                    voiceOffscreen: Binding(get: { arrow.direction },
+                                                            set: { arrow.direction = $0 }),
+                                    textUnderTopBar: .constant(false),
+                                    onTapSentence: { taps.sentences.append($0) })
+        let coordinator = ReaderTextView.Coordinator(parent: parent)
+        let textView = ReaderUITextView(usingTextLayoutManager: true)
+        textView.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        coordinator.install(on: textView)
+        coordinator.reduceMotion = { reduceMotion }
+        coordinator.rebuild(content: content, fontSize: 19)
+        textView.layoutIfNeeded()
+        coordinator.setActiveSentence(0, scroll: false)
+        textView.layoutIfNeeded()
+        guard textView.contentSize.height > 2 * textView.bounds.height else {
+            throw XCTSkip("This host doesn't lay out a text view outside a window")
+        }
+        return (coordinator, textView)
+    }
+
+    /// Measured from the layout as it stands, never the cached rect: the
+    /// cache would only replay the numbers the scroll was aimed with.
+    private func isInBand(_ coordinator: ReaderTextView.Coordinator) -> Bool {
+        guard let rect = coordinator.measureActiveSentenceRect(), let viewport = coordinator.viewport() else { return false }
+        return FollowBand.contains(rect, in: viewport)
+    }
+
+    /// Lets the main-actor hops that publish the binding run.
+    private func settle() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+
+    /// The layout passes the run loop runs after a scroll, which finish a
+    /// placement still being verified on fresh geometry.
+    private func settleLayout(_ textView: UITextView) {
+        for _ in 0..<3 {
+            textView.setNeedsLayout()
+            textView.layoutIfNeeded()
+        }
+    }
+
+    /// Layout passes as the run loop runs them: only when something asked
+    /// for one. Unlike `settleLayout`, never forces a pass, so a placement
+    /// that stops asking is left where it is.
+    private func runLayoutPasses(_ textView: UITextView) {
+        for _ in 0..<6 { textView.layoutIfNeeded() }
+    }
+
+    /// A drag on the scroll indicator that ends deep in a long book, in
+    /// text TextKit has so far laid out only at estimated heights.
+    private func dragIndicator(_ coordinator: ReaderTextView.Coordinator, _ textView: UITextView, to y: CGFloat) {
+        coordinator.scrollViewWillBeginDragging(textView)
+        textView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+        runLayoutPasses(textView)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+    }
+
+    /// A tap at `fraction` of the visible height, then what `updateUIView`
+    /// does with the jump it starts: the tapped sentence becomes the
+    /// playhead's. Returns the tapped sentence and its frame before
+    /// following resumes.
+    private func tap(at fraction: CGFloat, _ coordinator: ReaderTextView.Coordinator, _ textView: UITextView,
+                     _ taps: Taps) throws -> (id: Int, frame: CGRect) {
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        coordinator.handleTap(at: CGPoint(x: textView.textContainerInset.left + 8,
+                                          y: viewport.minY + fraction * viewport.height), isDecelerating: false)
+        let id = try XCTUnwrap(taps.sentences.last)
+        coordinator.setActiveSentence(id, scroll: false)
+        return (id, try XCTUnwrap(coordinator.measureActiveSentenceRect()))
+    }
+
+    /// The first line of the first screen, in the text view's coordinates.
+    private func firstLine(_ textView: UITextView) -> CGPoint {
+        CGPoint(x: textView.textContainerInset.left + 8, y: textView.textContainerInset.top + 8)
+    }
+
+    /// Sentence 0's frame and the line pitch, measured on the first screen
+    /// (laid out for real), from which any line's real frame follows.
+    private func lineGeometry(_ coordinator: ReaderTextView.Coordinator) throws -> (first: CGRect, pitch: CGFloat) {
+        coordinator.setActiveSentence(1, scroll: false)
+        let second = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        coordinator.setActiveSentence(0, scroll: false)
+        let first = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        let pitch = second.minY - first.minY
+        XCTAssertGreaterThan(pitch, 0)
+        return (first, pitch)
+    }
+
+    /// Sentence `id`'s frame where it is laid out now. It becomes the
+    /// playhead's, which moves nothing while the column isn't following.
+    private func frame(ofSentence id: Int, _ coordinator: ReaderTextView.Coordinator) throws -> CGRect {
+        coordinator.setActiveSentence(id, scroll: false)
+        return try XCTUnwrap(coordinator.measureActiveSentenceRect())
+    }
+
+    private func step(_ rotor: UIAccessibilityCustomRotor,
+                      _ direction: UIAccessibilityCustomRotor.Direction = .next)
+        -> UIAccessibilityCustomRotorItemResult? {
+        let predicate = UIAccessibilityCustomRotorSearchPredicate()
+        predicate.searchDirection = direction
+        return rotor.itemSearchBlock(predicate)
+    }
+
+    // MARK: - Tap (R15)
+
+    func testATapOnMovingTextOnlyStopsItAndAStillTapPlays() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+
+        coordinator.handleTap(at: firstLine(textView), isDecelerating: true)
+        XCTAssertEqual(taps.sentences, [], "a tap on decelerating text only stops the scroll")
+
+        coordinator.handleTap(at: firstLine(textView), isDecelerating: false)
+        XCTAssertEqual(taps.sentences, [0], "a tap on still text plays from the tapped sentence")
+    }
+
+    /// Play (or the Follow chip) while a flick still coasts takes the
+    /// scroll back. The coast is over, so the next tap on still text plays
+    /// instead of being read as stopping a scroll.
+    func testFollowingDuringAFlickEndsItSoTheNextStillTapPlays() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        coordinator.scrollViewWillBeginDragging(textView)
+        textView.setContentOffset(CGPoint(x: 0, y: 3_000), animated: false)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: true)
+        XCTAssertEqual(coordinator.voiceOffscreen, .up)
+
+        coordinator.resumeFollowing()
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertEqual(textView.contentOffset.y, 0, accuracy: 0.5, "back on the voice")
+
+        coordinator.touchLanded()
+        coordinator.tapEnded(at: firstLine(textView))
+        XCTAssertEqual(taps.sentences, [0], "a tap on still text plays (R15)")
+    }
+
+    /// A touch that stops a glide short is the reader taking the scroll:
+    /// with the voice still off screen, the Follow chip comes back.
+    func testATouchThatStopsAGlideShortBringsBackTheFollowChip() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        coordinator.scrollViewWillBeginDragging(textView)
+        _ = try XCTUnwrap((1..<160).first { sentence in
+            coordinator.setActiveSentence(sentence, scroll: true)
+            return coordinator.voiceOffscreen == .down
+        }, "a sentence just below the first screen")
+
+        coordinator.resumeFollowing()   // the Follow chip
+        XCTAssertTrue(coordinator.isGliding, "within one viewport the voice glides")
+        // The touch lands as the glide sets off, before the text has moved
+        // on screen. A view outside a window has no presentation layer to
+        // read that from, so put the offset back by hand.
+        textView.contentOffset = .zero
+
+        coordinator.touchLanded()
+        XCTAssertFalse(coordinator.isGliding)
+        XCTAssertFalse(coordinator.isFollowing, "the glide stopped with the voice off screen")
+        XCTAssertEqual(coordinator.voiceOffscreen, .down, "the Follow chip offers the way back")
+
+        coordinator.tapEnded(at: firstLine(textView))
+        XCTAssertEqual(taps.sentences, [], "a tap on moving text only stops it")
+        XCTAssertFalse(coordinator.isFollowing)
+        XCTAssertEqual(coordinator.voiceOffscreen, .down)
+    }
+
+    /// The play haptic answers a tap that starts the book. A voice
+    /// audition is active, but it is a sample over the listener's pause
+    /// (R8): a tap over it starts the book, so it ticks. A tap while the
+    /// book reads on doesn't.
+    func testATapOverAnAuditionStartsTheBookWithThePlayHaptic() {
+        let haptics = TransportHaptics.shared
+        defer { haptics.resetLog() }
+
+        let paused = PlaybackTestRig(sentences: 40)
+        paused.loadDefault(at: 10)
+        haptics.resetLog()
+        ReaderScreen.playFromSentence(12, on: paused.controller)
+        XCTAssertEqual(haptics.log, [.play], "a tap on a paused book starts it")
+        XCTAssertTrue(paused.controller.isActive)
+
+        haptics.resetLog()
+        ReaderScreen.playFromSentence(20, on: paused.controller)
+        XCTAssertEqual(haptics.log, [], "the book was already reading")
+        XCTAssertEqual(paused.controller.currentSentence, 20)
+
+        let auditioning = PlaybackTestRig(sentences: 40)
+        auditioning.loadDefault(at: 10)
+        auditioning.controller.selectVoice(PlaybackTestRig.voiceB)
+        XCTAssertTrue(auditioning.controller.isActive, "the audition speaks")
+        let plays = auditioning.controller.userPlayAction
+        haptics.resetLog()
+        ReaderScreen.playFromSentence(12, on: auditioning.controller)
+        XCTAssertEqual(haptics.log, [.play], "the tap started the book over the sample")
+        XCTAssertEqual(auditioning.controller.userPlayAction, plays + 1)
+        XCTAssertEqual(auditioning.controller.currentSentence, 12)
+    }
+
+    // MARK: - Calm follow (R16)
+
+    /// Play within a moment of letting go of a pull past the top: following
+    /// stops the bounce, and must not leave bare paper above the first line
+    /// (stopped mid-bounce, UIKit skips its spring back into range).
+    func testFollowingDuringABouncePinsTheTextBackInRange() throws {
+        let (coordinator, textView) = try makeColumn()
+        let first = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        // Pulled down far enough that the voice sits on the landing line.
+        let pulled = first.minY - (viewport.minY + FollowBand.landing * viewport.height)
+        XCTAssertLessThan(pulled, -textView.adjustedContentInset.top - 50, "past the top")
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        textView.setContentOffset(CGPoint(x: 0, y: pulled), animated: false)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: true)
+        XCTAssertTrue(isInBand(coordinator), "following has nothing to scroll")
+
+        coordinator.isCoasting = { _ in true }   // springing back
+        coordinator.resumeFollowing()
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertEqual(textView.contentOffset.y, -textView.adjustedContentInset.top, accuracy: 0.5,
+                       "at rest on the first line, no bare paper above it")
+    }
+
+    func testAfterTheUserScrollsTheTextNeverFollowsByItself() throws {
+        let (coordinator, textView) = try makeColumn()
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+        XCTAssertTrue(coordinator.isFollowing, "a drag that ends with the voice in view follows again")
+
+        // Away from the voice, then a long stretch of playback.
+        coordinator.scrollViewWillBeginDragging(textView)
+        textView.setContentOffset(CGPoint(x: 0, y: 3_000), animated: false)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+        XCTAssertFalse(coordinator.isFollowing)
+        let scrolls = coordinator.programmaticScrollCount
+        let offset = textView.contentOffset
+        for sentence in 1...100 {
+            coordinator.setActiveSentence(sentence, scroll: true)
+        }
+        settle()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "no idle re-follow, ever")
+        XCTAssertEqual(textView.contentOffset, offset)
+        XCTAssertFalse(coordinator.isFollowing)
+    }
+
+    func testResumingScrollsOnlyWhenTheVoiceIsOutsideTheBand() throws {
+        let (coordinator, textView) = try makeColumn()
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(80, scroll: true)
+        XCTAssertFalse(coordinator.isFollowing)
+        XCTAssertFalse(isInBand(coordinator), "sentence 80 is far below the first screen")
+
+        let scrolls = coordinator.programmaticScrollCount
+        coordinator.resumeFollowing()
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1)
+        // As in the app, the layout passes after the jump finish verifying it.
+        settleLayout(textView)
+        XCTAssertTrue(isInBand(coordinator), "the voice lands in the band")
+        XCTAssertNil(coordinator.voiceOffscreen)
+
+        let offset = textView.contentOffset
+        coordinator.resumeFollowing()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "a sentence already in the band stays put")
+        XCTAssertEqual(textView.contentOffset, offset)
+    }
+
+    /// Drawing a far sentence's highlight lays it out alone at TextKit's
+    /// ESTIMATED height. A jump must aim at its real frame: on uniform
+    /// lines, exactly 80 line pitches below sentence 0.
+    func testADeepJumpAimsAtTheSentencesRealFrame() throws {
+        let (coordinator, textView) = try makeColumn()
+        let (first, pitch) = try lineGeometry(coordinator)
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(80, scroll: true)
+        coordinator.resumeFollowing()
+
+        // No layout pass yet: the jump itself must already be right.
+        let landed = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertEqual(landed.minY, first.minY + 80 * pitch, accuracy: 1, "its real frame, not the estimate")
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                       "on the landing line")
+    }
+
+    /// Playback read on while the reader looked elsewhere: each highlight
+    /// laid its sentence out alone at an estimate, right after the one
+    /// before. The fragment above the target is then already placed too,
+    /// and a layout pass that stops at the target leaves it where it was.
+    func testADeepJumpAfterPlaybackReadOnOffScreenAimsAtTheRealFrame() throws {
+        let (coordinator, textView) = try makeColumn()
+        let (first, pitch) = try lineGeometry(coordinator)
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        for sentence in 76...80 { coordinator.setActiveSentence(sentence, scroll: true) }
+        XCTAssertFalse(coordinator.isFollowing)
+        coordinator.resumeFollowing()
+
+        let landed = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertEqual(landed.minY, first.minY + 80 * pitch, accuracy: 1, "its real frame, not the estimate")
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                       "on the landing line")
+    }
+
+    /// A Contents pick deep into a long book. The layout pass that confirms
+    /// the sentence's frame grows the text by thousands of points (real
+    /// line heights replacing estimates), but UIKit refreshes contentSize
+    /// only later: a landing clamped to it stopped about 5,000 pt short,
+    /// and the next layout pass took the clamped offset for placed.
+    func testADeepJumpIntoTheTailOfALongBookLandsOnTheLandingLineAndStays() throws {
+        let (coordinator, textView) = try makeColumn(count: 1_200)
+        let (first, pitch) = try lineGeometry(coordinator)
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(1_100, scroll: true)
+        coordinator.resumeFollowing()
+
+        var landed = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertEqual(landed.minY, first.minY + 1_100 * pitch, accuracy: 1, "its real frame")
+        var viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                       "the jump itself lands on the landing line")
+
+        runLayoutPasses(textView)
+        landed = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                       "and stays there")
+        XCTAssertNil(coordinator.voiceOffscreen)
+    }
+
+    /// The last sentence lands on the landing line, or as near as the real
+    /// end of the text lets it: not at the end of the estimated text,
+    /// thousands of points above it.
+    func testAJumpToTheLastSentenceRestsAtTheRealEndOfTheText() throws {
+        let (coordinator, textView) = try makeColumn(count: 1_200)
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(1_199, scroll: true)
+        coordinator.resumeFollowing()
+        runLayoutPasses(textView)
+
+        XCTAssertTrue(isInBand(coordinator), "the last sentence is in the band")
+        let rect = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let onLandingLine = textView.contentOffset.y + rect.minY - (viewport.minY + FollowBand.landing * viewport.height)
+        // contentSize has caught up with the text by now.
+        let end = textView.contentSize.height + textView.adjustedContentInset.bottom - textView.bounds.height
+        XCTAssertEqual(textView.contentOffset.y, min(onLandingLine, end), accuracy: 1,
+                       "on the landing line, or at rest at the real end of the text")
+    }
+
+    /// A jump without motion keeps checking its landing past the text
+    /// view's own layout pass: UIKit lays out the lines newly on screen and
+    /// refreshes the content size only after it, which can still move the
+    /// landing. A change then, without a drag, is put back as part of the
+    /// same jump, not as another follow scroll.
+    func testADeepJumpKeepsCheckingItsLandingAfterTheTextViewsOwnPass() throws {
+        let (coordinator, textView) = try makeColumn()
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(80, scroll: true)
+        coordinator.resumeFollowing()
+        let placed = textView.contentOffset
+        let scrolls = coordinator.programmaticScrollCount
+        coordinator.handleLayout()   // the text view's own pass, finding it placed
+
+        // What UIKit's own layout does next moves the text under it.
+        textView.setContentOffset(CGPoint(x: 0, y: placed.y + 400), animated: false)
+        runLayoutPasses(textView)
+        XCTAssertEqual(textView.contentOffset.y, placed.y, accuracy: 1, "back on the landing line")
+        XCTAssertTrue(isInBand(coordinator))
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "a correction of the jump, uncounted")
+    }
+
+    // MARK: - Taps in text not laid out yet (R15, R16)
+
+    /// Dragged by the scroll indicator deep into a long book, a tap on a
+    /// line in the band plays it where it is. Laying the book out from its
+    /// start under a still offset moved the line from TextKit's estimate
+    /// to its real y, and it jumped to the landing line.
+    func testATapInTextNotLaidOutYetLeavesTheTappedLineWhereItIs() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(count: 600, taps: taps)
+        let (first, pitch) = try lineGeometry(coordinator)
+        dragIndicator(coordinator, textView, to: 12_000)
+        XCTAssertFalse(coordinator.isFollowing)
+
+        let tapped = try tap(at: 0.5, coordinator, textView, taps)
+        XCTAssertTrue(isInBand(coordinator))
+        XCTAssertGreaterThan(abs(first.minY + CGFloat(tapped.id) * pitch - tapped.frame.minY), 100,
+                             "TextKit laid this text out at estimated heights")
+        let onScreen = tapped.frame.minY - textView.contentOffset.y
+        let scrolls = coordinator.programmaticScrollCount
+
+        coordinator.resumeFollowing()
+        runLayoutPasses(textView)
+        let after = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertEqual(after.minY - textView.contentOffset.y, onScreen, accuracy: 0.5,
+                       "the tapped line stays where the reader saw it")
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "a sentence already in the band stays put")
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertNil(coordinator.voiceOffscreen)
+    }
+
+    /// The same, for a line tapped below the band: it glides up to the
+    /// landing line from where it is drawn. Laying the book out first put
+    /// it thousands of points away, so the glide became a jump.
+    func testATapBelowTheBandInTextNotLaidOutYetGlidesFromWhereItIsDrawn() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(count: 600, taps: taps)
+        dragIndicator(coordinator, textView, to: 12_000)
+
+        let tapped = try tap(at: 0.8, coordinator, textView, taps)
+        XCTAssertFalse(isInBand(coordinator), "below the band, still on screen")
+
+        coordinator.resumeFollowing()
+        XCTAssertTrue(coordinator.isGliding, "within one screen the line glides")
+        // Outside a window the glide's end is already the model offset.
+        let landed = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertEqual(landed.minY, tapped.frame.minY, accuracy: 0.5, "measured where it is drawn")
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                       "the glide ends on the landing line")
+    }
+
+    // MARK: - VoiceOver rotor reveal (R12a)
+
+    /// A Chapters rotor step to a far chapter is placed like a deep jump:
+    /// its first sentence lands on its real frame, and later layout passes
+    /// keep checking the landing until it holds in the band.
+    func testARotorStepToAFarChapterLandsOnTheRealFrameAndHolds() throws {
+        let (coordinator, textView) = try makeColumn(chapterAt: 80)
+        try withExtendedLifetime(coordinator) {   // the rotors hold it weakly
+            let (first, pitch) = try lineGeometry(coordinator)
+            let chapters = try XCTUnwrap(textView.accessibilityCustomRotors?.first { $0.name == "Chapters" })
+            XCTAssertNotNil(step(chapters))
+            XCTAssertEqual(coordinator.accessibilitySentence, 0, "the chapter holding the playhead")
+            XCTAssertNotNil(step(chapters))
+            XCTAssertEqual(coordinator.accessibilitySentence, 80)
+            XCTAssertFalse(coordinator.isFollowing, "browsing stops following")
+
+            // No layout pass yet: the reveal itself must already be right.
+            let landed = try frame(ofSentence: 80, coordinator)
+            XCTAssertEqual(landed.minY, first.minY + 80 * pitch, accuracy: 1, "its real frame, not the estimate")
+            let viewport = try XCTUnwrap(coordinator.viewport())
+            XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                           "on the landing line")
+
+            // The text moves under the stop without a drag (VoiceOver's own
+            // scroll into view, insets settling): the next passes re-place it.
+            let placed = textView.contentOffset
+            textView.setContentOffset(CGPoint(x: 0, y: placed.y + 400), animated: false)
+            XCTAssertFalse(isInBand(coordinator))
+            settleLayout(textView)
+            XCTAssertTrue(isInBand(coordinator), "the stop holds in the band")
+            XCTAssertEqual(textView.contentOffset.y, placed.y, accuracy: 1)
+        }
+    }
+
+    /// The same deep into a long book. The landing was clamped to a content
+    /// size UIKit hadn't refreshed yet, the check then took the clamped
+    /// offset for placed, and the stop stayed about 5,000 pt below the
+    /// screen.
+    func testARotorStepDeepIntoALongBookLandsOnScreenAndStays() throws {
+        let (coordinator, textView) = try makeColumn(count: 1_200, chapterAt: 1_100)
+        try withExtendedLifetime(coordinator) {
+            let (first, pitch) = try lineGeometry(coordinator)
+            let chapters = try XCTUnwrap(textView.accessibilityCustomRotors?.first { $0.name == "Chapters" })
+            XCTAssertNotNil(step(chapters))
+            XCTAssertNotNil(step(chapters))
+            XCTAssertEqual(coordinator.accessibilitySentence, 1_100)
+
+            var landed = try frame(ofSentence: 1_100, coordinator)
+            XCTAssertEqual(landed.minY, first.minY + 1_100 * pitch, accuracy: 1, "its real frame")
+            var viewport = try XCTUnwrap(coordinator.viewport())
+            XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                           "on the landing line")
+
+            runLayoutPasses(textView)
+            landed = try frame(ofSentence: 1_100, coordinator)
+            viewport = try XCTUnwrap(coordinator.viewport())
+            XCTAssertEqual(landed.minY, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
+                           "and it stays there")
+        }
+    }
+
+    /// A drag ends a rotor stop's landing check: the column never fights
+    /// the reader's own scroll.
+    func testADragEndsARotorStopsLandingCheck() throws {
+        let (coordinator, textView) = try makeColumn(chapterAt: 80)
+        try withExtendedLifetime(coordinator) {
+            let chapters = try XCTUnwrap(textView.accessibilityCustomRotors?.first { $0.name == "Chapters" })
+            XCTAssertNotNil(step(chapters))
+            XCTAssertNotNil(step(chapters))
+            XCTAssertGreaterThan(textView.contentOffset.y, 1_000, "revealed the far chapter")
+
+            coordinator.scrollViewWillBeginDragging(textView)
+            textView.setContentOffset(CGPoint(x: 0, y: 500), animated: false)
+            coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+            settleLayout(textView)
+            XCTAssertEqual(textView.contentOffset.y, 500, accuracy: 0.5, "left where the reader put it")
+        }
+    }
+
+    /// The landing check ends after a bounded number of layout passes, so
+    /// the column never fights an offset that keeps moving.
+    func testALandingCheckEndsAfterABoundedNumberOfPasses() throws {
+        let (coordinator, textView) = try makeColumn(chapterAt: 80)
+        try withExtendedLifetime(coordinator) {
+            let chapters = try XCTUnwrap(textView.accessibilityCustomRotors?.first { $0.name == "Chapters" })
+            XCTAssertNotNil(step(chapters))
+            XCTAssertNotNil(step(chapters))
+            let placed = textView.contentOffset
+            for _ in 0..<40 {
+                textView.setContentOffset(CGPoint(x: 0, y: placed.y + 400), animated: false)
+                textView.layoutIfNeeded()
+            }
+            textView.setContentOffset(CGPoint(x: 0, y: placed.y + 400), animated: false)
+            runLayoutPasses(textView)
+            XCTAssertEqual(textView.contentOffset.y, placed.y + 400, accuracy: 0.5, "the check has ended")
+        }
+    }
+
+    func testOneLineSentencesUnderReduceMotionStayWithinTheBudget() throws {
+        let (coordinator, _) = try makeColumn(reduceMotion: true)
+        let scrolls = coordinator.programmaticScrollCount
+        for sentence in 0..<100 {
+            coordinator.setActiveSentence(sentence, scroll: true)
+            let rect = try XCTUnwrap(coordinator.activeSentenceRect())
+            let viewport = try XCTUnwrap(coordinator.viewport())
+            XCTAssertNil(FollowBand.direction(of: rect, in: viewport), "sentence \(sentence) stays on screen")
+        }
+        let measured = coordinator.programmaticScrollCount - scrolls
+        print("ReaderFollowCoordinatorTests: \(measured) follow scrolls per 100 one-line sentences")
+        XCTAssertLessThanOrEqual(measured, 15, "the PRD's budget; the old follow scrolled ~100 times")
+        XCTAssertGreaterThan(measured, 0, "100 lines don't fit one screen")
+    }
+
+    func testAUserScrollThatEndsWithTheVoiceInViewFollowsAgain() throws {
+        let arrow = Arrow()
+        let (coordinator, textView) = try makeColumn(arrow: arrow)
+        coordinator.setActiveSentence(5, scroll: true)
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        textView.setContentOffset(CGPoint(x: 0, y: 3_000), animated: false)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+        XCTAssertFalse(coordinator.isFollowing, "the voice is off screen")
+        XCTAssertEqual(coordinator.voiceOffscreen, .up, "the arrow points toward the voice")
+        settle()
+        XCTAssertEqual(arrow.direction, .up, "the Follow chip's binding hears it")
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        textView.setContentOffset(.zero, animated: false)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: true)
+        XCTAssertFalse(coordinator.isFollowing, "still decelerating")
+        coordinator.scrollViewDidEndDecelerating(textView)
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertNil(coordinator.voiceOffscreen)
+        settle()
+        XCTAssertNil(arrow.direction)
+    }
+
+    func testTheArrowPointsDownWhenTheVoiceIsBelow() throws {
+        let (coordinator, textView) = try makeColumn()
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(120, scroll: true)
+        XCTAssertEqual(coordinator.voiceOffscreen, .down)
+    }
+
+    func testAVoiceOverScrollStopsFollowing() throws {
+        let (coordinator, textView) = try makeColumn()
+        XCTAssertTrue(coordinator.isFollowing)
+        _ = textView.accessibilityScroll(.down)
+        XCTAssertFalse(coordinator.isFollowing)
+    }
+
+    func testTheBandSitsAboveThePlayerBar() throws {
+        let (coordinator, _) = try makeColumn(obscuredBottom: 300)
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(viewport.height, 800 - 300, accuracy: 0.5)
+    }
+}

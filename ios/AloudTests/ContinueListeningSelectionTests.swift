@@ -62,15 +62,25 @@ final class ContinueListeningSelectionTests: XCTestCase {
     }
 
     func testFinishedDocumentsAreExcluded() {
-        // 0.99 is the shelf's "Finished" threshold; both it and 1.0 are out.
+        // The shelf's one Finished rule: 0.99 of an hour-long book (9,900
+        // words) leaves 36 s, so it and 1.0 are both out.
         let nearlyDone = doc(progress: 0.99, lastOpened: date(0))
         let done = doc(progress: 1.0, lastOpened: date(100))
+        XCTAssertTrue(nearlyDone.isFinished)
         XCTAssertNil(DocumentStore.continueListeningCandidate(in: [nearlyDone, done]))
     }
 
     func testJustUnderFinishedThresholdStillQualifies() {
         let almost = doc(progress: 0.989, lastOpened: date(0))
         XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [almost])?.id, almost.id)
+    }
+
+    /// Past 0.99 with 20 minutes still to go (333,333 words), a long book is
+    /// in progress: it is the Continue card, which reads its time left.
+    func testALongBookPastTheThresholdWithMinutesLeftQualifies() {
+        let longBook = doc(progress: 0.99, lastOpened: date(0), wordCount: 333_333)
+        XCTAssertFalse(longBook.isFinished)
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [longBook])?.id, longBook.id)
     }
 
     func testExcludedDocumentsNeverOutrankAQualifyingOne() {
@@ -85,6 +95,40 @@ final class ContinueListeningSelectionTests: XCTestCase {
 
     func testEmptyLibraryYieldsNil() {
         XCTAssertNil(DocumentStore.continueListeningCandidate(in: []))
+    }
+
+    // MARK: - The loaded book (R18)
+
+    func testLoadedBookIsTheHeroEvenAtZeroPercent() {
+        let loaded = doc(title: "Loaded", progress: 0, lastOpened: date(0))
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [loaded], loadedID: loaded.id)?.id,
+                       loaded.id)
+    }
+
+    func testLoadedBookBeatsAMoreRecentInProgressBook() {
+        let recent = doc(title: "Recent", progress: 0.6, lastOpened: date(500))
+        let loaded = doc(title: "Loaded", progress: 0.1, lastOpened: date(10))
+        let picked = DocumentStore.continueListeningCandidate(in: [recent, loaded], loadedID: loaded.id)
+        XCTAssertEqual(picked?.id, loaded.id, "the card is where the loaded book plays")
+    }
+
+    func testLoadedFinishedBookIsTheHero() {
+        let finished = doc(title: "Finished", progress: 1.0, lastOpened: date(0))
+        let other = doc(title: "Other", progress: 0.3, lastOpened: date(100))
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [other, finished],
+                                                                loadedID: finished.id)?.id,
+                       finished.id)
+    }
+
+    func testUnknownLoadedIDFallsBackToTheUsualRule() {
+        let inProgress = doc(title: "In progress", progress: 0.3, lastOpened: date(10))
+        let fresh = doc(title: "Fresh", progress: 0, lastOpened: date(100))
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [fresh, inProgress],
+                                                                loadedID: UUID())?.id,
+                       inProgress.id)
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [fresh, inProgress],
+                                                                loadedID: nil)?.id,
+                       inProgress.id)
     }
 
     // MARK: - Shelf layout (hero + grid, derived once)
@@ -119,6 +163,17 @@ final class ContinueListeningSelectionTests: XCTestCase {
                        "The store's last-listened-first order survives the split")
     }
 
+    func testShelfLayoutLiftsTheLoadedHeroOutOfTheGrid() {
+        let first = doc(title: "First", progress: 0.5, lastOpened: date(300))
+        let loaded = doc(title: "Loaded", progress: 0, lastOpened: date(200))
+        let third = doc(title: "Third", progress: 0, lastOpened: date(100))
+
+        let shelf = ShelfLayout(for: [first, loaded, third], loadedID: loaded.id)
+        XCTAssertEqual(shelf.hero?.id, loaded.id)
+        XCTAssertEqual(shelf.grid.map(\.id), [first.id, third.id],
+                       "the loaded hero is shown once, and the in-progress book returns to the grid")
+    }
+
     func testEmptyShelfLayoutHasNoHeroAndNoGrid() {
         XCTAssertNil(ShelfLayout.empty.hero)
         XCTAssertTrue(ShelfLayout.empty.grid.isEmpty)
@@ -128,34 +183,32 @@ final class ContinueListeningSelectionTests: XCTestCase {
 
     // MARK: - Shelf subtitle (one implementation for hero and grid card)
 
-    func testSubtitlePairsProgressWithTimeLeft() {
+    func testSubtitleReadsTheTimeLeft() {
         // 9,900 words at 165 wpm = 60 min whole; half read leaves 30.
         let book = doc(progress: 0.5, lastOpened: date(0))
-        XCTAssertEqual(book.listeningSubtitle(rate: 1.0), "50% · 30 min left")
+        XCTAssertEqual(book.listeningSubtitle(rate: 1.0), "30 min left")
     }
 
     func testSubtitleScalesWithTheRateItIsGiven() {
-        // The rate is the book's effective (per-book) rate, not a global one:
-        // the same book at 2× must read as half the time left.
+        // The rate is the app-wide speed: the same book at 2× must read as
+        // half the time left.
         let book = doc(progress: 0.5, lastOpened: date(0))
-        XCTAssertEqual(book.listeningSubtitle(rate: 2.0), "50% · 15 min left")
+        XCTAssertEqual(book.listeningSubtitle(rate: 2.0), "15 min left")
     }
 
-    func testSubtitleLeadOverrideKeepsTheSameEstimateFormatting() {
-        // The grid card's PDF lead is the only difference between the two
-        // cards; separator, suffix and rounding come from the shared helper.
+    func testAPDFSubtitleReadsLikeABook() {
+        // No page-count lead (R25): the hero and the grid card read one line.
         let pdf = doc(progress: 0.5, lastOpened: date(0), kind: .pdf, pageCount: 12)
-        XCTAssertEqual(pdf.listeningSubtitle(rate: 1.0, lead: "12 pages"),
-                       "12 pages · 30 min left")
+        XCTAssertEqual(pdf.listeningSubtitle(rate: 1.0), "30 min left")
     }
 
-    func testSubtitleWithoutAWordCountShowsTheLeadAlone() {
+    func testSubtitleWithoutAWordCountIsEmpty() {
         let unknown = doc(progress: 0.5, lastOpened: date(0), wordCount: 0)
-        XCTAssertEqual(unknown.listeningSubtitle(rate: 1.0), "50%")
+        XCTAssertEqual(unknown.listeningSubtitle(rate: 1.0), "")
     }
 
     func testFinishedBookReadsFinishedInsteadOfTimeLeft() {
         let done = doc(progress: 1.0, lastOpened: date(0))
-        XCTAssertEqual(done.listeningSubtitle(rate: 1.0), "100% · Finished")
+        XCTAssertEqual(done.listeningSubtitle(rate: 1.0), "Finished")
     }
 }

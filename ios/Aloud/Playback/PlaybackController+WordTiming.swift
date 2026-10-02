@@ -9,7 +9,9 @@ import QuartzCore
 ///
 /// Timeline model: clips are scheduled gaplessly on one `AVAudioPlayerNode`,
 /// so each clip's start is the running sum of previously scheduled clip
-/// durations since the last `player.stop()`. `playerTime(forNodeTime:)`
+/// durations since the last `player.stop()`, plus any stretch the queue ran
+/// dry while the node kept playing (`appendScheduled`; a clip queued while
+/// the node is paused starts where it will resume). `playerTime(forNodeTime:)`
 /// counts SOURCE frames consumed by the node — the time-pitch unit pulls
 /// frames faster at higher rates — so the position read each frame is already
 /// in 1× media seconds and windows never need re-deriving on speed changes.
@@ -33,13 +35,22 @@ final class WordKaraokeState: NSObject {
     private var scheduledSeconds: TimeInterval = 0
     private var displayLink: CADisplayLink?
 
+    /// The playhead a paused node stopped at, where it resumes: set by
+    /// `PlaybackController.pauseNode`, cleared on resume and by `reset`.
+    var pausedPlayhead: TimeInterval?
+
     func clip(for sentence: Int) -> Clip? { clips[sentence] }
 
-    /// Record a clip at the current end of the gapless schedule. Must be
-    /// called in scheduling order (it is: `scheduleClip` is the only caller).
-    func appendScheduled(sentence: Int, duration: TimeInterval, windows: [WordWindow]) {
-        clips[sentence] = Clip(start: scheduledSeconds, duration: duration, windows: windows)
-        scheduledSeconds += duration
+    /// Record a clip at the current end of the gapless schedule, or at
+    /// `playhead` when that is later: a queue that ran dry (synthesis slower
+    /// than speech) leaves the node playing silence, so the clip starts where
+    /// the playhead has got to, and every later clip lines up behind it. Must
+    /// be called in scheduling order (it is: `scheduleClip` is the only caller).
+    func appendScheduled(sentence: Int, duration: TimeInterval, windows: [WordWindow],
+                         playhead: TimeInterval? = nil) {
+        let start = max(scheduledSeconds, playhead ?? 0)
+        clips[sentence] = Clip(start: start, duration: duration, windows: windows)
+        scheduledSeconds = start + duration
     }
 
     /// Drop entries the playhead has moved past (look-behind of 1 sentence).
@@ -55,6 +66,7 @@ final class WordKaraokeState: NSObject {
     func reset() {
         clips.removeAll()
         scheduledSeconds = 0
+        pausedPlayhead = nil
         lastPublished = (-1, -1)
         stopLink()
     }
@@ -108,7 +120,8 @@ extension PlaybackController {
     }
 
     /// Hook from `scheduleClip`, right after a buffer is handed to the player:
-    /// records the clip's slot in the gapless timeline and lays its word
+    /// records the clip's slot in the timeline (gapless, unless the queue ran
+    /// dry first: then at `schedulingPlayhead`) and lays its word
     /// windows out over the clip's exact duration. Silence / skipped sentences
     /// get an empty window list so no word ever lights up for them.
     func wordTimingRecordScheduled(sentence: Int,
@@ -124,7 +137,12 @@ extension PlaybackController {
                 duration: duration,
                 skipBrackets: skipBrackets)
         }
-        wordTiming.appendScheduled(sentence: sentence, duration: duration, windows: windows)
+        // Playing, inside a pause's ramp (the node still runs) or paused (it
+        // resumes where it stopped), a clip after a dry stretch starts at
+        // the node's playhead, so Back's 3 s rule (R14), the sleep landing
+        // (R19) and the word tint read what was really heard.
+        wordTiming.appendScheduled(sentence: sentence, duration: duration, windows: windows,
+                                   playhead: schedulingPlayhead)
     }
 
     /// Display-link body: playhead media time − clip start → word index,

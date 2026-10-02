@@ -3,239 +3,325 @@ import Foundation
 import MediaPlayer
 import UIKit
 
-/// Lock-screen / Control Center integration: mirrors `PlaybackController`
-/// state into `MPNowPlayingInfoCenter` and routes `MPRemoteCommandCenter`
-/// transport commands back into it.
+/// Lock screen, Control Center and Dynamic Island (R23): tells the system
+/// the truth about what is playing, and routes its transport back.
 ///
-/// Time is reported on a 1× (165 wpm) timeline: duration is the whole-doc
-/// estimate at 1×, elapsed is proportional to the sentence index, and
-/// `playbackRate` carries the actual speed (0 while not playing) so the
-/// system extrapolates between our once-per-sentence updates.
+/// - What it says is a `NowPlayingSnapshot`: the author as artist ("Aloud"
+///   when there is none), the chapter as album (none for PDFs and
+///   chapterless text), and a timeline over the in-app scrub span whose
+///   (duration - elapsed) / rate is the in-app time left.
+/// - Pushes are coalesced to one per main-actor turn, from the loaded
+///   book, status, sentence and rate, plus the library (a rename
+///   republishes the title). An unchanged snapshot is not pushed again.
+/// - ReaderNavigation is built off the main actor once per content hash;
+///   until it lands the push carries only title, artist, rate and art.
+/// - The art is the one cover (`NowPlayingArtwork`), keyed by id, title and
+///   author: a new book clears the old art at once, a rename keeps it until
+///   the new render lands, and a progress change renders nothing.
+/// - Skips are R14's one skip (`perform`). The lock-screen scrubber is on,
+///   and lands on the nearest sentence start: the current sentence
+///   restarts or re-cues (at the end of the book it stays the end, R24),
+///   any other is a scrub jump that keeps play or pause and offers Undo
+///   jump. No haptic: nothing was touched in the app.
+/// - It is the app's only writer of the system's now-playing info, and its
+///   deinit removes only its own command targets.
 @MainActor
 final class NowPlayingManager {
 
+    typealias Publish = @MainActor ([String: Any]?) -> Void
+    typealias ArtworkRenderer = @MainActor (LibraryDocument) async -> MPMediaItemArtwork?
+
+    /// The last push; nil when nothing is loaded.
+    private(set) var snapshot: NowPlayingSnapshot?
+
+    private let publish: Publish
+    private let renderArtwork: ArtworkRenderer
     private weak var playback: PlaybackController?
+    /// The store's records, so a rename reaches the title before the
+    /// controller's copy of the document hears of it.
+    private var library: [LibraryDocument] = []
     private var cancellables: Set<AnyCancellable> = []
     private var commandTargets: [(command: MPRemoteCommand, token: Any)] = []
-    private var artworkTask: Task<Void, Never>?
-    private var info: [String: Any] = [:]
     private var configured = false
+    private var refreshScheduled = false
 
-    private static let skipInterval: TimeInterval = 15
+    /// One slot, keyed by content hash and kind, like SleepTimer's.
+    private var navigation: (hash: String, kind: DocKind, value: ReaderNavigation)?
+    private var buildingHash: String?
 
+    private struct ArtworkKey: Equatable {
+        let id: UUID
+        let title: String
+        let author: String?
+    }
+    private var artwork: MPMediaItemArtwork?
+    private var artworkKey: ArtworkKey?
+    private var artworkTask: Task<Void, Never>?
+
+    init(publish: @escaping Publish = NowPlayingManager.publishToInfoCenter,
+         renderArtwork: @escaping ArtworkRenderer = NowPlayingArtwork.artwork(for:)) {
+        self.publish = publish
+        self.renderArtwork = renderArtwork
+    }
+
+    /// The app's wiring, once: observe the controller and the library, then
+    /// take the system's transport commands.
     func configure(playback: PlaybackController, store: DocumentStore) {
         guard !configured else { return }
         configured = true
-        self.playback = playback
-        _ = store   // reserved: metadata lookups beyond the loaded document
-
+        observe(playback: playback, documents: store.$documents.eraseToAnyPublisher())
         registerCommands()
+    }
 
-        // @Published emits on willSet, so hop to the next main-actor turn and
-        // read the controller's settled state instead of the emitted value.
+    /// Mirrors `playback` (and `documents`, for renames) into pushes. Tests
+    /// call this directly, never `configure`, so no system command target
+    /// is ever added.
+    func observe(playback: PlaybackController,
+                 documents: AnyPublisher<[LibraryDocument], Never> = Empty().eraseToAnyPublisher()) {
+        self.playback = playback
+        cancellables = []
+        // @Published emits on willSet: each source only schedules a refresh,
+        // which reads the controller's settled state a turn later.
         playback.$document
-            .map { $0?.id }
-            .removeDuplicates()
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in self?.rebuildForCurrentDocument() }
-            }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
-
         playback.$status
             .removeDuplicates()
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in self?.refreshPlaybackState() }
-            }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
-
-        // Fires at most once per sentence — our only elapsed-time heartbeat.
         playback.$currentSentence
             .removeDuplicates()
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in self?.refreshPlaybackState() }
-            }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
-
         playback.$rate
             .removeDuplicates()
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in self?.refreshPlaybackState() }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
+            .store(in: &cancellables)
+        documents
+            .sink { [weak self] documents in
+                self?.library = documents
+                self?.setNeedsRefresh()
             }
             .store(in: &cancellables)
     }
 
     deinit {
+        // Only our own targets; the info center is left alone (it may
+        // already describe whatever replaced us).
         for target in commandTargets {
             target.command.removeTarget(target.token)
         }
         artworkTask?.cancel()
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     // MARK: - Remote commands
 
+    /// Every transport a lock screen, Control Center or headphone button can
+    /// send. Skips are R14's one skip unit; next/previous track are the same
+    /// 15 s skips, so every surface lands on the same sentence.
+    enum RemoteTransportCommand: CaseIterable, Sendable {
+        case play, pause, togglePlayPause, skipForward, skipBackward, nextTrack, previousTrack
+    }
+
+    /// Runs `command` on `playback`. Returns the landed sentence for a skip,
+    /// nil otherwise.
+    @discardableResult
+    static func perform(_ command: RemoteTransportCommand, on playback: PlaybackController) -> Int? {
+        switch command {
+        case .play:
+            // A car or headset sends Play on connect, often mid-sentence:
+            // play() from .playing would cut and restart the sentence and
+            // cancel a sleep timer's fade. A voice sample isn't the book
+            // playing, so Play over one still continues it as the book.
+            if !playback.isListenerPlaying { playback.play() }
+            return nil
+        case .pause:
+            playback.pause()
+            return nil
+        case .togglePlayPause:
+            playback.togglePlayPause()
+            return nil
+        case .skipForward, .nextTrack:
+            return playback.skip(seconds: PlaybackController.skipInterval)
+        case .skipBackward, .previousTrack:
+            return playback.skip(seconds: -PlaybackController.skipInterval)
+        }
+    }
+
+    /// A system transport command, then a push at once: a skip can land on
+    /// the sentence already showing (a restart), which no source reports.
+    func handle(_ command: RemoteTransportCommand) {
+        guard let playback else { return }
+        Self.perform(command, on: playback)
+        refresh(force: true)
+    }
+
+    /// A lock-screen scrub to `position` (1x seconds into the published
+    /// span), landed on the nearest sentence start. Returns the landed
+    /// sentence, or nil with no book or before the timeline exists.
+    @discardableResult
+    func changePlaybackPosition(to position: TimeInterval) -> Int? {
+        guard let playback,
+              let span = snapshot?.span, snapshot?.duration != nil,
+              let content = playback.content,
+              let navigation, navigation.hash == content.contentHash else { return nil }
+        let target = NowPlayingSnapshot.sentence(atElapsed: position, in: span, navigation: navigation.value)
+        if target == max(playback.currentSentence, 0) {
+            // At the end (R24) the last sentence is already where the book
+            // stopped: a re-cue would leave the end with no Undo back, and
+            // the next Play would finish it, and announce it, a second time.
+            // The republish below snaps the scrubber back to the end.
+            if !playback.isAtEnd {
+                // Back to the start of the sentence already cued or playing.
+                playback.seek(to: target, andPlay: false)
+            }
+        } else {
+            // Keeps play or pause, offers Undo jump, and the reader follows.
+            playback.jump(to: target, origin: .scrub)
+        }
+        refresh(force: true)
+        return playback.currentSentence
+    }
+
+    /// The app's only write of the system's now-playing info.
+    static func publishToInfoCenter(_ info: [String: Any]?) {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
     private func registerCommands() {
         let center = MPRemoteCommandCenter.shared()
 
-        addHandler(center.playCommand) { $0.play() }
-        addHandler(center.pauseCommand) { $0.pause() }
-        addHandler(center.togglePlayPauseCommand) { $0.togglePlayPause() }
-        addHandler(center.nextTrackCommand) { $0.nextSentence() }
-        addHandler(center.previousTrackCommand) { $0.previousSentence() }
-
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
-        addHandler(center.skipForwardCommand) { playback in
-            playback.seek(to: playback.currentSentence + Self.sentenceStep(for: playback),
-                          andPlay: false)
+        let commands: [(MPRemoteCommand, RemoteTransportCommand)] = [
+            (center.playCommand, .play),
+            (center.pauseCommand, .pause),
+            (center.togglePlayPauseCommand, .togglePlayPause),
+            (center.skipForwardCommand, .skipForward),
+            (center.skipBackwardCommand, .skipBackward),
+            (center.nextTrackCommand, .nextTrack),
+            (center.previousTrackCommand, .previousTrack),
+        ]
+        // The same 15 s skip as the in-app buttons (R14).
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: PlaybackController.skipInterval)]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: PlaybackController.skipInterval)]
+        for (command, transport) in commands {
+            addHandler(command) { $0.handle(transport) }
         }
-        addHandler(center.skipBackwardCommand) { playback in
-            playback.seek(to: playback.currentSentence - Self.sentenceStep(for: playback),
-                          andPlay: false)
-        }
 
-        // Sentence-granular playback has no continuous scrubber.
-        center.changePlaybackPositionCommand.isEnabled = false
+        // R23: the scrubber, landing on the nearest sentence start.
+        center.changePlaybackPositionCommand.isEnabled = true
+        let token = center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            let position = event.positionTime
+            Task { @MainActor [weak self] in
+                self?.changePlaybackPosition(to: position)
+            }
+            return .success
+        }
+        commandTargets.append((center.changePlaybackPositionCommand, token))
     }
 
     private func addHandler(_ command: MPRemoteCommand,
-                            _ action: @escaping @MainActor (PlaybackController) -> Void) {
+                            _ action: @escaping @MainActor (NowPlayingManager) -> Void) {
         let token = command.addTarget { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let playback = self?.playback else { return }
-                action(playback)
+                guard let self else { return }
+                action(self)
             }
             return .success
         }
         commandTargets.append((command, token))
     }
 
-    /// How many sentences ≈ 15 s of listening at the current rate (min 1).
-    private static func sentenceStep(for playback: PlaybackController) -> Int {
-        guard let document = playback.document,
-              let content = playback.content,
-              !content.sentences.isEmpty,
-              let total = document.estimatedTotalSeconds(rate: playback.rate),
-              total > 0 else { return 1 }
-        let perSentence = total / Double(content.sentences.count)
-        guard perSentence > 0 else { return 1 }
-        return max(1, Int((skipInterval / perSentence).rounded(.up)))
+    // MARK: - Pushing
+
+    /// One push per main-actor turn, however many sources fired in it.
+    private func setNeedsRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
     }
 
-    // MARK: - Now-playing info
-
-    private func rebuildForCurrentDocument() {
-        artworkTask?.cancel()
-        guard let playback, let document = playback.document else {
-            info = [:]
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    private func refresh(force: Bool = false) {
+        guard let playback, let loaded = playback.document else {
+            if snapshot != nil {
+                snapshot = nil
+                artwork = nil
+                artworkKey = nil
+                artworkTask?.cancel()
+                artworkTask = nil
+                navigation = nil
+                buildingHash = nil
+                publish(nil)
+            }
             return
         }
-
-        info = [
-            MPMediaItemPropertyTitle: document.title,
-            MPMediaItemPropertyArtist: "Aloud",
-            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
-        ]
-        applyTimeAndRate(playback: playback, document: document)
-        push()
-        loadArtwork(for: document)
+        // The store's record is the live one: it carries a rename first.
+        let live = library.first { $0.id == loaded.id } ?? loaded
+        updateArtworkIfNeeded(live)
+        let next = NowPlayingSnapshot(title: live.title,
+                                      author: live.author,
+                                      navigation: navigationIfReady(),
+                                      sentence: playback.currentSentence,
+                                      status: playback.status,
+                                      rate: playback.rate,
+                                      sentenceElapsed: playback.currentSentenceElapsed)
+        guard force || next != snapshot else { return }
+        snapshot = next
+        var info = next.nowPlayingInfo
+        if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
+        publish(info)
     }
 
-    private func refreshPlaybackState() {
-        guard let playback, let document = playback.document else { return }
-        applyTimeAndRate(playback: playback, document: document)
-        push()
-    }
+    // MARK: - Navigation
 
-    private func applyTimeAndRate(playback: PlaybackController, document: LibraryDocument) {
-        info[MPNowPlayingInfoPropertyPlaybackRate] =
-            playback.status == .playing ? playback.rate : 0.0
-
-        guard let duration = document.estimatedTotalSeconds(rate: 1.0),
-              duration > 0,
-              let content = playback.content,
-              !content.sentences.isEmpty else {
-            info[MPMediaItemPropertyPlaybackDuration] = nil
-            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = nil
-            return
+    /// The loaded book's navigation when it is built; otherwise starts the
+    /// build (once per hash) and returns nil.
+    private func navigationIfReady() -> ReaderNavigation? {
+        guard let playback, let document = playback.document, let content = playback.content else { return nil }
+        if let navigation, navigation.hash == content.contentHash, navigation.kind == document.kind {
+            return navigation.value
         }
-        let fraction: Double
-        if playback.status == .ended {
-            fraction = 1.0
-        } else {
-            let index = Double(max(playback.currentSentence, 0))
-            fraction = min(index / Double(content.sentences.count), 1.0)
+        guard buildingHash != content.contentHash else { return nil }
+        let hash = content.contentHash
+        let kind = document.kind
+        buildingHash = hash
+        // A pass over every word: off the main actor, while the reader opens
+        // (and builds its own).
+        Task.detached(priority: .utility) { [weak self] in
+            let built = ReaderNavigation(content: content, kind: kind)
+            await self?.adopt(built, hash: hash, kind: kind)
         }
-        info[MPMediaItemPropertyPlaybackDuration] = duration
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = duration * fraction
+        return nil
     }
 
-    private func push() {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info.isEmpty ? nil : info
+    private func adopt(_ built: ReaderNavigation, hash: String, kind: DocKind) {
+        if buildingHash == hash { buildingHash = nil }
+        // A build for a book that has since been replaced is dropped.
+        guard let playback, playback.content?.contentHash == hash, playback.document?.kind == kind else { return }
+        navigation = (hash, kind, built)
+        refresh(force: true)
     }
 
     // MARK: - Artwork
 
-    private func loadArtwork(for document: LibraryDocument) {
-        artworkTask = Task { [weak self] in
-            var image: UIImage?
-            if document.kind == .pdf {
-                image = await ThumbnailProvider.shared.thumbnail(for: document)
-            }
-            guard let self, !Task.isCancelled,
-                  self.playback?.document?.id == document.id else { return }
-            let cover = image ?? Self.typographicCover(title: document.title)
-            let artwork = MPMediaItemArtwork(boundsSize: cover.size) { _ in cover }
-            self.info[MPMediaItemPropertyArtwork] = artwork
-            self.push()
-        }
-    }
-
-    /// Cover for text documents (and PDFs without a thumbnail): the document
-    /// title set in the reading serif on warm paper, with a single accent rule.
-    /// Rendered against the light palette so it reads like the app's sepia page.
-    private static func typographicCover(title: String) -> UIImage {
-        let side: CGFloat = 600
-        let inset: CGFloat = 64
-        let light = UITraitCollection(userInterfaceStyle: .light)
-        let background = UIColor(Theme.bgTint).resolvedColor(with: light)
-        let textColor = UIColor(Theme.text).resolvedColor(with: light)
-        let mutedColor = UIColor(Theme.textMuted).resolvedColor(with: light)
-        let accentColor = UIColor(Theme.accent).resolvedColor(with: light)
-
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
-        return renderer.image { context in
-            background.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: side, height: side))
-
-            accentColor.setFill()
-            context.fill(CGRect(x: inset, y: 108, width: 84, height: 6))
-
-            let titleFont = UIFont(name: Theme.serifFamilyName, size: 54)
-                ?? UIFont.systemFont(ofSize: 54, weight: .semibold)
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingTail
-            let titleRect = CGRect(x: inset, y: 150,
-                                   width: side - inset * 2, height: 330)
-            (title as NSString).draw(
-                with: titleRect,
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                attributes: [
-                    .font: titleFont,
-                    .foregroundColor: textColor,
-                    .paragraphStyle: paragraph,
-                ],
-                context: nil)
-
-            let footer = "ALOUD" as NSString
-            footer.draw(
-                at: CGPoint(x: inset, y: side - inset - 22),
-                withAttributes: [
-                    .font: UIFont.systemFont(ofSize: 19, weight: .semibold),
-                    .foregroundColor: mutedColor,
-                    .kern: 5.5,
-                ])
+    private func updateArtworkIfNeeded(_ live: LibraryDocument) {
+        let key = ArtworkKey(id: live.id, title: live.title, author: live.author)
+        guard key != artworkKey else { return }
+        // Another book's art never shows under this one; a rename keeps the
+        // old art until the new render lands.
+        if artworkKey?.id != key.id { artwork = nil }
+        artworkKey = key
+        artworkTask?.cancel()
+        let render = renderArtwork
+        artworkTask = Task { @MainActor [weak self] in
+            let rendered = await render(live)
+            guard let self, !Task.isCancelled, self.artworkKey == key else { return }
+            self.artwork = rendered
+            self.refresh(force: true)
         }
     }
 }

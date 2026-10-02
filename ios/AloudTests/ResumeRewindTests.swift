@@ -105,7 +105,11 @@ final class ResumeRewindTests: XCTestCase {
                                   scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                   cache: cache,
                                   audioSession: AudioSessionManager(),
-                                  anchorStore: store)
+                                  anchorStore: store,
+                                  // A fresh stop slot per controller: a "launch" here never
+                                  // inherits the last one's live session.
+                                  stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()),
+                                  outputMuted: true)
     }
 
     private func makeContent(count: Int, contentHash: String = "test-hash") -> DocContent {
@@ -184,14 +188,14 @@ final class ResumeRewindTests: XCTestCase {
         let rig = restingRig(at: 5, elapsed: 60)
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 5)
-        XCTAssertNil(rig.controller.toast)
+        XCTAssertNil(rig.controller.notice)
     }
 
-    func testMediumBreakRewindsTwoWithToast() {
+    func testMediumBreakRewindsTwoWithNotice() {
         let rig = restingRig(at: 5, elapsed: 6 * 60)
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 3)
-        XCTAssertEqual(rig.controller.toast, "Backed up a little")
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 2))
         XCTAssertEqual(rig.controller.userPlayAction, 1, "the rewound start is ONE user play")
         XCTAssertNil(rig.controller.resumeAnchor, "a consumed anchor never rewinds twice")
         XCTAssertNil(rig.store.load(), "and it can't be resurrected by a relaunch")
@@ -201,13 +205,14 @@ final class ResumeRewindTests: XCTestCase {
         let rig = restingRig(at: 6, elapsed: 45 * 60)
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 2)
-        XCTAssertEqual(rig.controller.toast, "Backed up a little")
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 4))
     }
 
     func testRewindClampsToDocumentStart() {
         let rig = restingRig(at: 2, elapsed: 45 * 60)
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 0, "2 − 4 clamps to 0, never negative")
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 2), "the notice names the real distance")
     }
 
     func testNoRewindWithinFirstTwoSentences() {
@@ -216,7 +221,7 @@ final class ResumeRewindTests: XCTestCase {
             rig.controller.play()
             XCTAssertEqual(rig.controller.currentSentence, sentence,
                            "sentence \(sentence) skips the rewind entirely")
-            XCTAssertNil(rig.controller.toast)
+            XCTAssertNil(rig.controller.notice)
         }
     }
 
@@ -224,7 +229,7 @@ final class ResumeRewindTests: XCTestCase {
         let rig = restingRig(at: 5, elapsed: 45 * 60)
         rig.controller.play(userInitiated: false)   // interruption end / route recovery
         XCTAssertEqual(rig.controller.currentSentence, 5)
-        XCTAssertNil(rig.controller.toast)
+        XCTAssertNil(rig.controller.notice)
         XCTAssertEqual(rig.controller.userPlayAction, 0)
     }
 
@@ -237,7 +242,7 @@ final class ResumeRewindTests: XCTestCase {
               on: rig)
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 5)
-        XCTAssertNil(rig.controller.toast)
+        XCTAssertNil(rig.controller.notice)
     }
 
     // MARK: - Clock changes
@@ -253,7 +258,7 @@ final class ResumeRewindTests: XCTestCase {
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 5,
                        "30 seconds of rest is 30 seconds, whatever the clock says")
-        XCTAssertNil(rig.controller.toast)
+        XCTAssertNil(rig.controller.notice)
     }
 
     func testBackwardClockJumpNeverRewinds() {
@@ -268,7 +273,7 @@ final class ResumeRewindTests: XCTestCase {
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 5,
                        "a negative gap resumes in place — it never rewinds")
-        XCTAssertNil(rig.controller.toast)
+        XCTAssertNil(rig.controller.notice)
     }
 
     // MARK: - Explicit navigation
@@ -284,7 +289,7 @@ final class ResumeRewindTests: XCTestCase {
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, 7,
                        "an explicit choice of position is never second-guessed")
-        XCTAssertNil(rig.controller.toast)
+        XCTAssertNil(rig.controller.notice)
     }
 
     func testAnotherBooksStoredRestSurvivesASeekHere() {
@@ -326,7 +331,7 @@ final class ResumeRewindTests: XCTestCase {
 
         controller.play()   // first ever play on B, after reading silently
         XCTAssertEqual(controller.currentSentence, 5, "no phantom rewind in a book that never played")
-        XCTAssertNil(controller.toast)
+        XCTAssertNil(controller.notice)
     }
 
     func testReturningToTheBookThatWasPlayingRewinds() throws {
@@ -352,7 +357,7 @@ final class ResumeRewindTests: XCTestCase {
         XCTAssertEqual(controller.resumeAnchor?.documentID, bookA.id)
         controller.play()
         XCTAssertEqual(controller.currentSentence, 1, "5 − 4: A resumes with its context rebuilt")
-        XCTAssertEqual(controller.toast, "Backed up a little")
+        XCTAssertEqual(controller.notice, .backedUp(sentences: 4))
     }
 
     // MARK: - Across app launches
@@ -373,7 +378,7 @@ final class ResumeRewindTests: XCTestCase {
 
         morning.play()   // the Continue Listening hero's autoplay
         XCTAssertEqual(morning.currentSentence, 2, "6 − 4 after an overnight break")
-        XCTAssertEqual(morning.toast, "Backed up a little")
+        XCTAssertEqual(morning.notice, .backedUp(sentences: 4))
         XCTAssertNil(store.load(), "a consumed anchor never rewinds again")
 
         // A later launch of the same book resumes exactly where it was left.
@@ -382,7 +387,7 @@ final class ResumeRewindTests: XCTestCase {
         XCTAssertNil(later.resumeAnchor)
         later.play()
         XCTAssertEqual(later.currentSentence, 6)
-        XCTAssertNil(later.toast)
+        XCTAssertNil(later.notice)
     }
 
     func testCrossLaunchAnchorNeverAppliesToAnotherBook() {
@@ -400,7 +405,7 @@ final class ResumeRewindTests: XCTestCase {
         XCTAssertNil(controller.resumeAnchor, "another book's rest is not this book's")
         controller.play()
         XCTAssertEqual(controller.currentSentence, 6)
-        XCTAssertNil(controller.toast)
+        XCTAssertNil(controller.notice)
         XCTAssertEqual(store.load()?.documentID, stopped.id,
                        "and the book it belongs to keeps it")
     }

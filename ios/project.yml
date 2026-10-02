@@ -1,7 +1,7 @@
 name: Aloud
 options:
   bundleIdPrefix: com.davidxie
-  deploymentTarget: { iOS: "16.0" }
+  deploymentTarget: { iOS: "17.0" }   # PRD phase 1: iOS 17 (drops only iPhone 8/8 Plus/X, which cannot run the neural voice)
   createIntermediateGroups: true
 packages:
   SherpaOnnx:
@@ -33,9 +33,9 @@ targets:
     dependencies:
       - package: SherpaOnnx
         product: sherpa-onnx
+      - sdk: AppIntents.framework
     settings:
       base:
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
@@ -53,6 +53,11 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes: [public.plain-text]
         LSSupportsOpeningDocumentsInPlace: false
+        # First frame = Theme.bg in both appearances (PRD R3), not system white/black.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        # The thumb owns the loop: iPhone runs in portrait only (PRD principle 3).
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
   AloudTests:
     type: bundle.unit-test
     platform: iOS

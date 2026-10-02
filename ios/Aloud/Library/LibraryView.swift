@@ -1,114 +1,104 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// The shelf. Root screen: adaptive grid of document cards sorted
-/// last-listened-first, import entry points, and navigation into the reader.
+/// The shelf. Root screen: the Continue Listening hero over an adaptive grid
+/// of document cards sorted last-listened-first, or the featured classic
+/// when there are no books. The nav bar's + menu adds a book (R10). Every
+/// card opens through the router, and the reader starts it speaking (R4);
+/// the hero's circle plays and pauses in place (R18).
+///
+/// The screen never observes the PlaybackController, which publishes every
+/// sentence: only the hero (`ContinueHero`) does. Actions read
+/// `model.playback` when they run.
 struct LibraryView: View {
     @EnvironmentObject private var store: DocumentStore
     @EnvironmentObject private var model: AppModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var router: LibraryRouter
+    @EnvironmentObject private var importer: DocumentImporter
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
 
-    @StateObject private var importer = DocumentImporter()
-
-    /// Import-sheet presentation: nil = closed, otherwise which screen the
-    /// sheet opens on. One optional value instead of a Bool paired with a
-    /// destination, so a stale destination is unrepresentable.
-    enum ImportPresentation: String, Identifiable {
-        case root, bookshelf
-
-        var id: String { rawValue }
-
-        var destination: ImportSheet.Destination? {
-            self == .bookshelf ? .bookshelf : nil
-        }
-    }
-
-    @State private var importPresentation: ImportPresentation?
-    @State private var pushedDocument: LibraryDocument?
-    /// Rides the push alongside `pushedDocument`: the Continue Listening
-    /// hero's request to start speaking on arrival. Every other entry point
-    /// goes through `open(_:)` with the default `false`, so the request can
-    /// never leak into the next document.
-    @State private var pushedAutoplay = false
-    @State private var isReaderPresented = false
-
-    /// Hero + grid split, memoized against the store's publishes — the split
-    /// scans the whole library, so it runs once per documents change and
-    /// never per body re-run.
+    /// Hero + grid split, memoized against the store's and the loaded book's
+    /// publishes. The split scans the whole library, so it runs once per
+    /// change and never per body re-run.
     @State private var shelf = ShelfLayout.empty
+    /// The book the controller holds: always the hero, at any progress (R18).
+    @State private var loadedID: UUID?
+    /// The hero circle's load-and-play, when the book isn't loaded yet. The
+    /// app's one instance, shared with the Continue listening shortcut, so
+    /// the card shows the shortcut's load. Not observed here: only the hero
+    /// redraws for it.
+    private var continuePlayback: ContinuePlayback { model.continuePlayback }
 
+    // Whether the picker, Rename alert or Delete dialog is up lives on the
+    // router (`rootPresentation`), so Open-in can close it; only what they
+    // act on stays here.
     @State private var renameTarget: LibraryDocument?
     @State private var renameText = ""
-    @State private var isRenaming = false
     @State private var deleteTarget: LibraryDocument?
-    @State private var isConfirmingDelete = false
 
-    @State private var didAutoOpen = false
-
-    private let columns = [GridItem(.flexible(), spacing: 15),
-                           GridItem(.flexible(), spacing: 15)]
+    /// Two columns; one at the accessibility text sizes (AX1+), where a
+    /// half-width card can't hold a legible title.
+    private var columns: [GridItem] {
+        let count = dynamicTypeSize.isAccessibilitySize ? 1 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: Theme.Space.md), count: count)
+    }
 
     var body: some View {
         Group {
             if store.documents.isEmpty {
-                emptyState
+                EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker })
             } else {
                 grid
             }
         }
+        // R12b: magic tap plays or pauses the hero from anywhere on the shelf.
+        .accessibilityAction(.magicTap) { magicTap() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg.ignoresSafeArea())
-        .overlay(alignment: .bottomTrailing) { addButton }
-        .overlay { importOverlay }
         .navigationBarTitleDisplayMode(.inline)
+        // The bar's system content follows the app's scheme, not the
+        // phone's: under an in-app Dark override on a Light phone it
+        // otherwise drew dark-on-dark.
+        .toolbarColorScheme(colorScheme, for: .navigationBar)
         .toolbar {
+            // The bar's items live outside the Group above, so each carries
+            // the magic tap too.
             ToolbarItem(placement: .navigationBarLeading) {
                 Text("Aloud")
-                    .font(Theme.serif(22, weight: .semibold))
+                    .font(Theme.font(.title))
                     .foregroundStyle(Theme.text)
                     .fixedSize()
                     .accessibilityAddTraits(.isHeader)
+                    .accessibilityAction(.magicTap) { magicTap() }
             }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                NavigationLink {
-                    SettingsView()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(Theme.ui(16, weight: .medium))
-                        .foregroundStyle(Theme.textMuted)
+            // + sits rightmost, and only once there is a book: the empty
+            // Library's own links are the way in until then.
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                settingsButton
+                if !store.documents.isEmpty {
+                    addMenu
                 }
-                .accessibilityLabel("Settings")
             }
         }
-        .navigationDestination(isPresented: $isReaderPresented) {
-            if let pushedDocument {
-                ReaderScreen(document: pushedDocument, autoplay: pushedAutoplay)
-            }
-        }
-        .sheet(item: $importPresentation) { presentation in
-            ImportSheet(importer: importer,
-                        initialDestination: presentation.destination,
-                        onOpenDocument: openFromBookshelf)
-                .presentationDetents([.medium, .large])
+        .fileImporter(isPresented: presented(.filePicker),
+                      allowedContentTypes: [.pdf, .plainText]) { result in
+            // The picker is gone once it reports. Clear its flag now rather
+            // than whenever SwiftUI does: a failure alert waits on it.
+            router.dismissRootPresentation(.filePicker)
+            importer.handlePick(result)
         }
         .onReceive(store.$documents) { documents in
-            shelf = ShelfLayout(for: documents)
-
-            // Screenshot/debug hook (no-op in Release): jump straight into
-            // the first document.
-            guard UITestHooks.openFirstDoc,
-                  !didAutoOpen, let first = documents.first else { return }
-            didAutoOpen = true
-            Task {   // let the NavigationStack attach before pushing
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                open(first)
-            }
+            shelf = ShelfLayout(for: documents, loadedID: loadedID)
         }
-        .onChange(of: importer.completed?.id) { _ in
-            guard let document = importer.completed else { return }
-            importer.acknowledgeCompletion()
-            open(document)
+        // The plain publisher, like the store's, deduplicated here: only a
+        // change of book reshapes the shelf.
+        .onReceive(model.playback.$document) { document in
+            guard document?.id != loadedID else { return }
+            loadedID = document?.id
+            shelf = ShelfLayout(for: store.documents, loadedID: loadedID)
         }
-        .alert("Rename", isPresented: $isRenaming) {
+        .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)
             Button("Save") {
                 if let target = renameTarget { store.rename(target, to: renameText) }
@@ -118,203 +108,313 @@ struct LibraryView: View {
         }
         .confirmationDialog(
             "Delete \u{201C}\(deleteTarget?.title ?? "")\u{201D}?",
-            isPresented: $isConfirmingDelete,
+            isPresented: presented(.deleteConfirmation),
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let target = deleteTarget { store.delete(target) }
+                if let target = deleteTarget { model.deleteDocument(target) }
                 deleteTarget = nil
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
             Text("This removes the document and its listening progress.")
         }
-        .alert("Couldn't import", isPresented: .init(
-            get: { if case .failed = importer.phase { return true } else { return false } },
-            set: { if !$0 { importer.dismissFailure() } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            if case .failed(let message) = importer.phase { Text(message) }
+    }
+
+    /// One root modal's flag, read from and written to the router.
+    private func presented(_ presentation: LibraryRouter.RootPresentation) -> Binding<Bool> {
+        Binding(get: { router.rootPresentation == presentation },
+                set: { shown in
+                    if shown {
+                        router.rootPresentation = presentation
+                    } else {
+                        router.dismissRootPresentation(presentation)
+                    }
+                })
+    }
+
+    // MARK: Chrome
+
+    private var settingsButton: some View {
+        Button {
+            router.showSettings()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(Theme.font(.body).weight(.medium))
+                .foregroundStyle(Theme.textMuted)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("library.settings")
+        .accessibilityShowsLargeContentViewer()
+        .accessibilityAction(.magicTap) { magicTap() }
+    }
+
+    /// R10: adding a book is one native menu. Drawn in Theme.text, not
+    /// filled: the shelf's one accent fill belongs to the Continue card.
+    private var addMenu: some View {
+        Menu {
+            ForEach(LibraryAddMenuItem.allCases, id: \.self) { item in
+                Button {
+                    choose(item)
+                } label: {
+                    Label(item.title, systemImage: item.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(Theme.font(.body).weight(.semibold))
+                .foregroundStyle(Theme.text)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Add")
+        .accessibilityInputLabels([Text("Add"), Text("Plus")])
+        .accessibilityShowsLargeContentViewer { Label("Add", systemImage: "plus") }
+        .accessibilityIdentifier("library.add")
+        .accessibilityAction(.magicTap) { magicTap() }
+    }
+
+    private func choose(_ item: LibraryAddMenuItem) {
+        switch item {
+        case .classics: router.showBookshelf()
+        case .files: router.rootPresentation = .filePicker
         }
     }
 
     // MARK: Grid
 
-    /// Every card's time-left estimate runs at THAT book's effective speed —
-    /// its own per-book pin, else the global default. The controller's live
-    /// rate belongs to whichever book was last loaded and would put the shelf
-    /// at odds with the reader.
-    private func estimateRate(for document: LibraryDocument) -> Double {
-        document.effectiveRate(globalDefault: model.globalRate)
-    }
-
     private var grid: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(spacing: Theme.Space.xl) {
                 if let hero = shelf.hero {
-                    continueCard(for: hero)
+                    // Every estimate runs at the one app-wide speed (R7).
+                    ContinueHero(document: hero,
+                                 rate: model.globalRate,
+                                 playback: model.playback,
+                                 continuePlayback: continuePlayback,
+                                 onOpen: { open(hero) },
+                                 onTogglePlayback: { toggleFromTap(hero) }) {
+                        documentActions(for: hero)
+                    }
                 }
                 documentGrid
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 96)
+            .padding(.horizontal, Theme.Space.screenGutter)
+            .padding(.top, Theme.Space.sm)
+            .padding(.bottom, Theme.Space.xl)
         }
-    }
-
-    private func continueCard(for document: LibraryDocument) -> some View {
-        Button {
-            open(document, autoplay: true)
-        } label: {
-            ContinueListeningCard(document: document, rate: estimateRate(for: document))
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("library.continue")
-        // The hero is lifted OUT of the grid, so it carries the same
-        // management affordances its grid card would have given it.
-        .contextMenu { documentActions(for: document) }
+        .modifier(ShelfScrollEdge())
     }
 
     private var documentGrid: some View {
-        LazyVGrid(columns: columns, spacing: 20) {
+        LazyVGrid(columns: columns, spacing: Theme.Space.lg) {
             ForEach(shelf.grid) { document in
                 Button {
                     open(document)
                 } label: {
-                    DocumentCardView(document: document, rate: estimateRate(for: document))
+                    DocumentCardView(document: document, rate: model.globalRate)
                 }
                 .buttonStyle(.plain)
+                // A Finished book opens paused at its end, so it promises nothing.
+                .accessibilityHint(document.isFinished ? "" : "Opens and starts reading aloud")
                 .accessibilityIdentifier("library.card")
+                .accessibilityActions { documentActions(for: document) }
                 .contextMenu { documentActions(for: document) }
             }
         }
     }
 
-    /// Rename / Delete: ONE implementation, attached to every surface that
-    /// stands in for a document — grid card and Continue Listening hero
-    /// alike — so no book can be shown without a way to manage it.
+    // MARK: Playback
+
+    /// A grid card or the hero's body: the reader takes over, and the soft
+    /// haptic answers a tap that will start the voice (R20).
+    private func open(_ document: LibraryDocument) {
+        if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }
+        router.open(document)
+    }
+
+    /// The hero's circle and magic tap. The haptic follows the glyph the
+    /// card shows: a book loading for the circle already shows Pause.
+    private func toggleFromTap(_ document: LibraryDocument) {
+        let playback = model.playback
+        let status = ContinuePlayback.effectiveStatus(documentID: document.id,
+                                                      loadedID: playback.document?.id,
+                                                      status: playback.status,
+                                                      pendingID: continuePlayback.pendingDocumentID)
+        TransportHaptics.emitToggle(isActive: status == .playing || status == .buffering)
+        toggleContinue(document)
+    }
+
+    /// Plays or pauses `document` without opening it. A book the controller
+    /// doesn't hold yet is loaded first; if it can't be, the reader opens
+    /// and says why.
+    private func toggleContinue(_ document: LibraryDocument) {
+        let store = store
+        let router = router
+        continuePlayback.toggle(
+            document, playback: model.playback,
+            loader: { try await store.liveContent(for: document) },
+            onLoaded: { store.noteOpened(id: $0) },
+            onFailure: { router.open(document) })
+    }
+
+    /// R12b. Nothing to do on an empty shelf.
+    private func magicTap() {
+        guard let hero = shelf.hero else { return }
+        toggleFromTap(hero)
+    }
+
+    // MARK: Management
+
+    /// Rename, Mark as finished and Delete: ONE implementation, attached as
+    /// the context menu and the VoiceOver actions of every surface that
+    /// stands in for a document (R12g), grid card and hero alike, so no book
+    /// can be shown without a way to manage it.
     @ViewBuilder
     private func documentActions(for document: LibraryDocument) -> some View {
-        Button {
+        ForEach(DocumentAction.available(for: document), id: \.self) { action in
+            Button(role: action.role) {
+                perform(action, on: document)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        }
+    }
+
+    private func perform(_ action: DocumentAction, on document: LibraryDocument) {
+        switch action {
+        case .rename:
             renameTarget = document
             renameText = document.title
-            isRenaming = true
-        } label: {
-            Label("Rename", systemImage: "pencil")
-        }
-        Button(role: .destructive) {
+            router.rootPresentation = .rename
+        case .markFinished:
+            // The player and any Continue load let go first, so no later
+            // progress write or Play undoes it.
+            continuePlayback.letGo(of: document.id, playback: model.playback)
+            store.markFinished(id: document.id)
+            PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
+        case .delete:
             deleteTarget = document
-            isConfirmingDelete = true
-        } label: {
-            Label("Delete", systemImage: "trash")
+            router.rootPresentation = .deleteConfirmation
+        }
+    }
+}
+
+// MARK: - Continue hero
+
+/// The Continue card wired to playback. The one view on the shelf that
+/// observes the controller, so a sentence change redraws the hero alone.
+private struct ContinueHero<Actions: View>: View {
+    let document: LibraryDocument
+    let rate: Double
+    @ObservedObject var playback: PlaybackController
+    @ObservedObject var continuePlayback: ContinuePlayback
+    let onOpen: () -> Void
+    let onTogglePlayback: () -> Void
+    private let actions: Actions
+
+    @EnvironmentObject private var naturalVoiceOffer: NaturalVoiceOffer
+    // Observed for the offer's line: the offer stays visible through a
+    // failed space check, so its isVisible alone never redraws the card.
+    @EnvironmentObject private var modelManager: ModelManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(document: LibraryDocument, rate: Double, playback: PlaybackController,
+         continuePlayback: ContinuePlayback, onOpen: @escaping () -> Void,
+         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
+        self.document = document
+        self.rate = rate
+        self.playback = playback
+        self.continuePlayback = continuePlayback
+        self.onOpen = onOpen
+        self.onTogglePlayback = onTogglePlayback
+        self.actions = actions()
+    }
+
+    var body: some View {
+        let loaded = playback.document?.id == document.id
+        let status = ContinuePlayback.effectiveStatus(documentID: document.id,
+                                                      loadedID: playback.document?.id,
+                                                      status: playback.status,
+                                                      pendingID: continuePlayback.pendingDocumentID)
+        ContinueListeningCard(document: document,
+                              rate: rate,
+                              playState: PlayButtonState(status: status,
+                                                         isPreparingVoice: loaded && playback.isPreparingVoice,
+                                                         reduceMotion: reduceMotion),
+                              stop: playback.stopReason(for: document.id),
+                              offersNaturalVoice: naturalVoiceOffer.isVisible,
+                              modelState: modelManager.state,
+                              opensPlaying: playback.opensPlaying(document),
+                              onOpen: onOpen,
+                              onTogglePlayback: onTogglePlayback) {
+            actions
+        }
+    }
+}
+
+// MARK: - Add menu
+
+/// The + menu's items, in order (R10). Exactly two: the bundled classics
+/// and the Files picker.
+enum LibraryAddMenuItem: CaseIterable {
+    case classics, files
+
+    var title: String { self == .classics ? "Classics" : "From Files\u{2026}" }
+    var systemImage: String { self == .classics ? "books.vertical" : "folder" }
+}
+
+// MARK: - Document actions
+
+/// What a card's context menu and VoiceOver actions offer (R12g), in order.
+enum DocumentAction: CaseIterable {
+    case rename, markFinished, delete
+
+    var title: String {
+        switch self {
+        case .rename: return "Rename"
+        case .markFinished: return "Mark as finished"
+        case .delete: return "Delete"
         }
     }
 
-    // MARK: Empty state
-
-    private var emptyState: some View {
-        VStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous)
-                .fill(Theme.accentSoft)
-                .frame(width: 92, height: 92)
-                .overlay(
-                    Text("A")
-                        .font(Theme.serif(44, weight: .semibold))
-                        .foregroundStyle(Theme.accentStrong)
-                )
-                .padding(.bottom, 28)
-            Text("Add something to read")
-                .font(Theme.serif(24, weight: .semibold))
-                .foregroundStyle(Theme.text)
-                .padding(.bottom, 8)
-            Text("Everything stays on your device.")
-                .font(Theme.ui(15))
-                .foregroundStyle(Theme.textMuted)
-                .padding(.bottom, 32)
-            Button {
-                importPresentation = .root
-            } label: {
-                Text("Import")
-                    .font(Theme.ui(16, weight: .semibold))
-                    .foregroundStyle(Theme.bg)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 12)
-            }
-            .buttonStyle(AccentCapsuleButtonStyle())
-            Button {
-                importPresentation = .bookshelf
-            } label: {
-                Text("Browse the Classics Bookshelf")
-                    .font(Theme.ui(15, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-            }
-            .accessibilityIdentifier("library.browseClassics")
-            .padding(.top, 12)
-            Text(classicsCaption)
-                .font(Theme.ui(12))
-                .foregroundStyle(Theme.textFaint)
-                .padding(.top, 4)
-        }
-        .padding(.bottom, 40)
-    }
-
-    /// Counted from the shipped catalog, never a literal — the bookshelf is
-    /// grown by a scheduled Gutenberg top-up, and the app's first screen must
-    /// not promise a stale number.
-    private var classicsCaption: String {
-        let count = model.bookshelf.count
-        guard count > 0 else { return "Classics bookshelf · everything offline" }
-        return "\(count) classic\(count == 1 ? "" : "s") included · everything offline"
-    }
-
-    // MARK: Chrome
-
-    private var addButton: some View {
-        Button {
-            importPresentation = .root
-        } label: {
-            Image(systemName: "plus")
-                .font(Theme.ui(22, weight: .semibold))
-                .foregroundStyle(Theme.bg)
-        }
-        .buttonStyle(AccentCircleButtonStyle(diameter: 54))
-        .shadow(color: Theme.text.opacity(0.18), radius: 12, y: 4)
-        .padding(.trailing, 20)
-        .padding(.bottom, 24)
-        .accessibilityLabel("Add a document")
-    }
-
-    @ViewBuilder
-    private var importOverlay: some View {
-        if case .importing(let fileName, let progress) = importer.phase {
-            ImportProgressOverlay(fileName: fileName, progress: progress)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: progress)
+    var systemImage: String {
+        switch self {
+        case .rename: return "pencil"
+        case .markFinished: return "checkmark.circle"
+        case .delete: return "trash"
         }
     }
 
-    // MARK: Navigation
+    var role: ButtonRole? { self == .delete ? .destructive : nil }
 
-    /// `autoplay` is the Continue Listening hero's request to start speaking
-    /// on arrival. It travels as a ReaderScreen parameter rather than shared
-    /// app state, so every other entry point (grid card, bookshelf, importer,
-    /// UI-test hook) clears it by construction.
-    private func open(_ document: LibraryDocument, autoplay: Bool = false) {
-        store.noteOpened(id: document.id)
-        pushedDocument = document
-        pushedAutoplay = autoplay
-        isReaderPresented = true
+    /// A Finished book has nothing left to mark.
+    static func available(for document: LibraryDocument) -> [DocumentAction] {
+        allCases.filter { $0 != .markFinished || !document.isFinished }
     }
+}
 
-    /// Bookshelf "Open" lives inside the import sheet; let the sheet settle
-    /// before pushing the reader.
-    private func openFromBookshelf(_ document: LibraryDocument) {
-        importPresentation = nil
-        Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            open(document)
+// MARK: - Scroll edge
+
+/// iOS 26 softens the scroll edge under the nav bar into a fade that reads as
+/// a gradient on the flat paper ground. An opaque bar in the screen's own
+/// ground gives the same clean cut. Not `scrollEdgeEffectStyle(.hard)`: a
+/// hard scroll pocket claims the shared bar's glass, and once this screen is
+/// pushed under another its offscreen pocket reads the backdrop as white and
+/// turns every glass button light, even in dark mode. Earlier systems keep
+/// their plain bar.
+struct ShelfScrollEdge: ViewModifier {
+    var ground: Color = Theme.bg
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .toolbarBackground(ground, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
         }
     }
 }

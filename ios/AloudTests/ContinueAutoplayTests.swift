@@ -26,7 +26,10 @@ final class ContinueAutoplayTests: XCTestCase {
                                   defaultVoice: voice,
                                   scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                   cache: cache,
-                                  audioSession: AudioSessionManager())
+                                  audioSession: AudioSessionManager(),
+                                  anchorStore: ResumeAnchorStore(defaults: PlaybackTestRig.freshDefaults()),
+                                  stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()),
+                                  outputMuted: true)
     }
 
     private func makeContent(hash: String = "test-hash") -> DocContent {

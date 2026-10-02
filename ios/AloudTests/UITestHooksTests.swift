@@ -2,7 +2,8 @@ import SwiftUI
 import XCTest
 @testable import Aloud
 
-/// Pins the centralized `-uitest-*` launch-argument parsing (UITestHooks).
+/// Pins the centralized `-uitest-*` launch-argument parsing (UITestHooks),
+/// including the mute and autoplay rules that keep every test silent.
 /// The hooks themselves only exist in DEBUG builds — which is exactly the
 /// configuration tests run in — and Release gets no-op accessors, so the
 /// gate is structural rather than per-call-site `#if DEBUG` discipline.
@@ -43,5 +44,167 @@ final class UITestHooksTests: XCTestCase {
 
     func testSeekTextAbsentIsNil() {
         XCTAssertNil(UITestHooks.seekText(in: ["app"]))
+    }
+
+    // MARK: - muteAudio
+
+    private func mute(_ arguments: [String],
+                      environment: [String: String] = [:],
+                      xcTestLoaded: Bool = false) -> Bool {
+        UITestHooks.muteAudio(in: arguments, environment: environment, xcTestLoaded: xcTestLoaded)
+    }
+
+    func testEveryUITestArgumentMutes() {
+        XCTAssertTrue(mute(["-uitest-mute"]))
+        XCTAssertTrue(mute(["app", "-uitest-seed-first-classic"]))
+        XCTAssertTrue(mute(["-uitest-force-dark"]))
+    }
+
+    func testTestHostsPreviewsAndTheEnvironmentSwitchMute() {
+        XCTAssertTrue(mute(["app"], xcTestLoaded: true))
+        XCTAssertTrue(mute(["app"], environment: ["XCTestConfigurationFilePath": "/x"]))
+        XCTAssertTrue(mute(["app"], environment: ["XCODE_RUNNING_FOR_PREVIEWS": "1"]))
+        XCTAssertTrue(mute(["app"], environment: ["ALOUD_MUTE": "1"]))
+    }
+
+    func testOrdinaryLaunchIsNotMuted() {
+        XCTAssertFalse(mute(["app", "-UIPreferredContentSizeCategoryName", "X"]))
+    }
+
+    // MARK: - suppressAutoplay
+
+    func testUITestLaunchSuppressesAutoplay() {
+        XCTAssertTrue(UITestHooks.suppressAutoplay(in: ["app", "-uitest-open-first-doc"]))
+    }
+
+    func testAllowAutoplayLiftsSuppressionButNeverUnmutes() {
+        let arguments = ["-uitest-mute", "-uitest-allow-autoplay"]
+        XCTAssertFalse(UITestHooks.suppressAutoplay(in: arguments))
+        XCTAssertTrue(mute(arguments), "no flag un-mutes")
+    }
+
+    func testOrdinaryLaunchDoesNotSuppressAutoplay() {
+        XCTAssertFalse(UITestHooks.suppressAutoplay(in: ["app"]))
+    }
+
+    // MARK: - seedClassicCount
+
+    func testSeedClassicCount() {
+        XCTAssertEqual(UITestHooks.seedClassicCount(in: ["-uitest-seed-classics", "2"]), 2)
+        XCTAssertEqual(UITestHooks.seedClassicCount(in: ["-uitest-seed-first-classic"]), 1)
+        XCTAssertEqual(UITestHooks.seedClassicCount(in: ["-uitest-seed-classics"]), 0)
+        XCTAssertEqual(UITestHooks.seedClassicCount(in: ["-uitest-seed-classics", "x"]), 0)
+    }
+
+    // MARK: - value(after:) / values(after:)
+
+    func testValuesAfterCollectsEveryOccurrence() {
+        XCTAssertEqual(
+            UITestHooks.values(after: "-uitest-seed-classic",
+                               in: ["-uitest-seed-classic", "1063", "-uitest-seed-classic", "84"]),
+            ["1063", "84"])
+    }
+
+    func testValueAfterTrailingFlagIsNil() {
+        XCTAssertNil(UITestHooks.value(after: "-uitest-open-fixture", in: ["app", "-uitest-open-fixture"]))
+    }
+
+    func testFixtureKindParsing() {
+        let value = UITestHooks.value(after: "-uitest-open-fixture",
+                                      in: ["-uitest-open-fixture", "pdf-blank"])
+        XCTAssertEqual(value.flatMap(UITestFixtureKind.init(rawValue:)), .pdfBlank)
+        XCTAssertNil(UITestFixtureKind(rawValue: "nope"))
+    }
+
+    // MARK: - Phase 3 hooks
+
+    func testEveryFaultKindParses() {
+        let expected: [String: UITestFaultKind] = [
+            "route": .route,
+            "interruption": .interruption,
+            "interruption-resume": .interruptionResume,
+            "synthesis": .synthesis,
+            "skip": .skip,
+            "warmup": .warmup,
+            "thermal-serious": .thermalSerious,
+            "thermal-critical": .thermalCritical,
+        ]
+        XCTAssertEqual(expected.count, UITestFaultKind.allCases.count)
+        for (raw, kind) in expected {
+            XCTAssertEqual(UITestHooks.fault(in: ["app", "-uitest-fault", raw]), kind, raw)
+        }
+    }
+
+    func testUnknownFaultIsNil() {
+        XCTAssertNil(UITestHooks.fault(in: ["-uitest-fault", "nope"]))
+        XCTAssertNil(UITestHooks.fault(in: ["-uitest-fault", "interruptionResume"]), "raw values only")
+    }
+
+    func testTrailingFaultFlagIsNil() {
+        XCTAssertNil(UITestHooks.fault(in: ["app", "-uitest-fault"]))
+    }
+
+    func testFaultAfterIsNotItselfAFault() {
+        XCTAssertNil(UITestHooks.fault(in: ["-uitest-fault-after", "route"]))
+    }
+
+    func testFaultAfterSeconds() {
+        XCTAssertEqual(UITestHooks.faultAfterSeconds(in: ["app"]), 2, "default")
+        XCTAssertEqual(UITestHooks.faultAfterSeconds(in: ["-uitest-fault-after", "0.5"]), 0.5)
+        XCTAssertEqual(UITestHooks.faultAfterSeconds(in: ["-uitest-fault-after", "soon"]), 2)
+        XCTAssertEqual(UITestHooks.faultAfterSeconds(in: ["-uitest-fault-after"]), 2)
+    }
+
+    func testEveryPhase3HookMutesAndSuppressesAutoplay() {
+        let flags = ["-uitest-fault", "-uitest-fault-after", "-uitest-sleep-one-minute",
+                     "-uitest-seed-live-session", "-uitest-haptic-log", "-uitest-low-disk",
+                     "-uitest-damaged-model"]
+        for flag in flags {
+            XCTAssertTrue(mute(["app", flag]), flag)
+            XCTAssertTrue(UITestHooks.suppressAutoplay(in: ["app", flag]), flag)
+        }
+    }
+
+    // MARK: - Phase 4 shortcut hook (R26)
+
+    func testShortcutHookParses() {
+        XCTAssertEqual(UITestHooks.shortcut(in: ["app", "-uitest-shortcut", "continue"]), .continueListening)
+        XCTAssertEqual(UITestHooks.shortcut(in: ["-uitest-shortcut", "sleep-30"]), .sleep(.thirty))
+        XCTAssertEqual(UITestHooks.shortcut(in: ["-uitest-shortcut", "sleep-chapter"]), .sleep(.endOfChapter))
+        XCTAssertEqual(UITestHooks.shortcut(in: ["-uitest-shortcut", "sleep-off"]), .sleep(.off))
+    }
+
+    func testUnknownShortcutsAreNil() {
+        XCTAssertNil(UITestHooks.shortcut(in: ["-uitest-shortcut", "sleep-7"]), "not a menu option")
+        XCTAssertNil(UITestHooks.shortcut(in: ["-uitest-shortcut", "sleep-thirty"]), "raw values only")
+        XCTAssertNil(UITestHooks.shortcut(in: ["-uitest-shortcut", "resume"]))
+        XCTAssertNil(UITestHooks.shortcut(in: ["app", "-uitest-shortcut"]), "flag last")
+        XCTAssertNil(UITestHooks.shortcut(in: ["app", "continue"]), "flag absent")
+    }
+
+    /// The shortcut hook is a `-uitest-` launch like any other: muted, with
+    /// autoplay off (the shortcut's own Play still runs, as the system's would).
+    func testShortcutHookMutesAndSuppressesAutoplay() {
+        let arguments = ["app", "-uitest-shortcut", "continue"]
+        XCTAssertTrue(mute(arguments))
+        XCTAssertTrue(UITestHooks.suppressAutoplay(in: arguments))
+    }
+
+    // MARK: - This process
+
+    /// The unit-test host loads XCTest, so every sound it could make is muted.
+    func testThisTestHostIsMuted() {
+        XCTAssertTrue(UITestHooks.muteAudio)
+    }
+
+    /// Hosted unit tests are muted but not autoplay-suppressed, so the
+    /// autoplay policy tests exercise the real gate.
+    func testThisTestHostDoesNotSuppressAutoplay() {
+        XCTAssertFalse(UITestHooks.suppressAutoplay)
+    }
+
+    /// The unit-test host runs no shortcut at launch.
+    func testThisTestHostRunsNoShortcut() {
+        XCTAssertNil(UITestHooks.shortcut)
     }
 }

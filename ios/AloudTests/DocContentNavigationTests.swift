@@ -1,8 +1,9 @@
 import XCTest
 @testable import Aloud
 
-/// Derived chapters (chapter drawer) and Search in Book matching over
-/// synthetic `DocContent` — no extraction pipeline involved.
+/// Derived chapters and word sums (Contents, the chapter line) and Contents
+/// search matching over synthetic `DocContent` — no extraction pipeline
+/// involved.
 final class DocContentNavigationTests: XCTestCase {
 
     /// Builds a DocContent from (text, page) pairs with sequential sentence ids,
@@ -18,17 +19,85 @@ final class DocContentNavigationTests: XCTestCase {
                           contentHash: "test-hash")
     }
 
-    // MARK: - Derived chapters
+    // MARK: - Fixtures
 
-    func testChaptersDerivedFromPageGroups() {
-        let content = makeContent([
+    private var twoChapters: DocContent {
+        makeContent([
             ("CHAPTER I.", 1),
             ("It was the best of times in the village.", 1),
             ("Everyone said so.", 1),
             ("CHAPTER II", 2),
             ("It was the worst of times by the river.", 2),
         ])
-        let chapters = content.derivedChapters
+    }
+
+    private var singlePage: DocContent {
+        makeContent([
+            ("Just one plain paragraph.", 1),
+            ("Nothing chapter-like at all.", 1),
+        ])
+    }
+
+    private var pdfPages: DocContent {
+        makeContent([
+            ("First page opening sentence.", 1),
+            ("First page second sentence.", 1),
+            ("Second page text here.", 2),
+            ("Third page text here.", 3),
+        ])
+    }
+
+    private var counted: DocContent {
+        makeContent([
+            ("One two three.", 1),          // 3 words
+            ("Four five six seven.", 1),    // 4 words
+            ("Eight.", 2),                  // 1 word
+        ])
+    }
+
+    private var moby: DocContent {
+        makeContent([
+            ("Call me Ishmael.", 1),
+            ("Some years ago — never mind how long precisely.", 1),
+            ("The White Whale swam before him.", 2),
+            ("A whale of a tale about a whale.", 2),
+        ])
+    }
+
+    private var accented: DocContent {
+        makeContent([
+            ("They met at the café on the corner.", 1),
+            ("A naive plan, he thought.", 1),
+        ])
+    }
+
+    private var allFixtures: [DocContent] {
+        [twoChapters, singlePage, makeContent([]), pdfPages, counted, moby, accented]
+    }
+
+    // MARK: - Navigation index
+
+    /// One pass yields the chapters and the prefix word sums the chapter
+    /// line's time-left subtracts.
+    func testNavigationIndexMatchesChaptersAndSumsWords() {
+        for content in allFixtures {
+            let index = content.navigationIndex()
+            XCTAssertEqual(index.chapters, content.derivedChapters)
+            XCTAssertEqual(index.wordsBefore.count, content.sentences.count + 1)
+            XCTAssertEqual(index.wordsBefore.first, 0)
+            XCTAssertEqual(index.wordsBefore.last, content.wordCount)
+            for (offset, sentence) in content.sentences.enumerated() {
+                XCTAssertEqual(index.wordsBefore[offset + 1] - index.wordsBefore[offset],
+                               sentence.wordCount)
+            }
+            XCTAssertEqual(index.wordsBefore, index.wordsBefore.sorted(), "monotonic")
+        }
+    }
+
+    // MARK: - Derived chapters
+
+    func testChaptersDerivedFromPageGroups() {
+        let chapters = twoChapters.derivedChapters
 
         XCTAssertEqual(chapters.count, 2)
 
@@ -45,11 +114,7 @@ final class DocContentNavigationTests: XCTestCase {
     }
 
     func testSinglePageBookIsOneChapter() {
-        let content = makeContent([
-            ("Just one plain paragraph.", 1),
-            ("Nothing chapter-like at all.", 1),
-        ])
-        let chapters = content.derivedChapters
+        let chapters = singlePage.derivedChapters
         XCTAssertEqual(chapters.count, 1)
         XCTAssertEqual(chapters[0].startSentence, 0)
         XCTAssertEqual(chapters[0].sentenceCount, 2)
@@ -63,25 +128,14 @@ final class DocContentNavigationTests: XCTestCase {
     /// PDF fallback: pages carry no headings, but the same grouping yields one
     /// entry per page with correct seek targets — the sheet renders "Page N".
     func testPDFStylePagesEachBecomeAChapter() {
-        let content = makeContent([
-            ("First page opening sentence.", 1),
-            ("First page second sentence.", 1),
-            ("Second page text here.", 2),
-            ("Third page text here.", 3),
-        ])
-        let chapters = content.derivedChapters
+        let chapters = pdfPages.derivedChapters
         XCTAssertEqual(chapters.map(\.page), [1, 2, 3])
         XCTAssertEqual(chapters.map(\.startSentence), [0, 2, 3])
         XCTAssertEqual(chapters.map(\.sentenceCount), [2, 1, 1])
     }
 
     func testChapterWordCountSumsGroupWords() {
-        let content = makeContent([
-            ("One two three.", 1),          // 3 words
-            ("Four five six seven.", 1),    // 4 words
-            ("Eight.", 2),                  // 1 word
-        ])
-        let chapters = content.derivedChapters
+        let chapters = counted.derivedChapters
         XCTAssertEqual(chapters[0].wordCount, 7)
         XCTAssertEqual(chapters[1].wordCount, 1)
     }
@@ -89,11 +143,7 @@ final class DocContentNavigationTests: XCTestCase {
     /// Chapter word counts and the whole-book count come from one rule, so the
     /// drawer's chapter minutes still sum to the book's estimate.
     func testDocumentWordCountSumsTheSameRuleAsChapters() {
-        let content = makeContent([
-            ("One two three.", 1),          // 3 words
-            ("Four five six seven.", 1),    // 4 words
-            ("Eight.", 2),                  // 1 word
-        ])
+        let content = counted
         XCTAssertEqual(content.wordCount, 8)
         XCTAssertEqual(content.derivedChapters.reduce(0) { $0 + $1.wordCount }, content.wordCount)
     }
@@ -182,15 +232,6 @@ final class DocContentNavigationTests: XCTestCase {
 
     // MARK: - Search matching
 
-    private var moby: DocContent {
-        makeContent([
-            ("Call me Ishmael.", 1),
-            ("Some years ago — never mind how long precisely.", 1),
-            ("The White Whale swam before him.", 2),
-            ("A whale of a tale about a whale.", 2),
-        ])
-    }
-
     func testSearchIsCaseInsensitive() {
         let matches = moby.matches(of: "WHALE")
         XCTAssertEqual(matches.map(\.sentenceID), [2, 3])
@@ -199,10 +240,7 @@ final class DocContentNavigationTests: XCTestCase {
     }
 
     func testSearchIsDiacriticInsensitive() {
-        let content = makeContent([
-            ("They met at the café on the corner.", 1),
-            ("A naive plan, he thought.", 1),
-        ])
+        let content = accented
         // Plain query finds the accented text…
         XCTAssertEqual(content.matches(of: "cafe").map(\.sentenceID), [0])
         // …and an accented query finds plain text.

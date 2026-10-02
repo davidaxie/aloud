@@ -12,13 +12,16 @@ actor ExtractionPipeline {
     init() {}
 
     /// Extract a PDF into a fully-chunked `DocContent`. Progress runs 0…1,
-    /// dominated by per-page parsing.
+    /// dominated by per-page parsing. `fallbackTitle` names a PDF without
+    /// Title metadata — pass the picked file's name, because the library copy
+    /// at `pdfURL` is named by UUID.
     func extract(pdfURL: URL,
+                 fallbackTitle: String? = nil,
                  progress: (@Sendable (Double) -> Void)?) async throws -> DocContent {
         let output = try pdfExtractor.extract(url: pdfURL) { fraction in
             progress?(fraction * 0.9)
         }
-        let rawTitle = output.title ?? pdfURL.deletingPathExtension().lastPathComponent
+        let rawTitle = output.title ?? fallbackTitle ?? Self.fileTitle(of: pdfURL)
         let normalizedTitle = TextNormalizer.normalize(rawTitle)
         let title = normalizedTitle.isEmpty ? "Untitled" : normalizedTitle
 
@@ -42,6 +45,13 @@ actor ExtractionPipeline {
                                             blocks: output.blocks)
         progress?(1.0)
         return content
+    }
+
+    /// The file name without its extension, unless that is a UUID (the
+    /// library copy's name), which is never a title: "" becomes "Untitled".
+    static func fileTitle(of url: URL) -> String {
+        let stem = url.deletingPathExtension().lastPathComponent
+        return UUID(uuidString: stem) == nil ? stem : ""
     }
 
     // MARK: - Assembly

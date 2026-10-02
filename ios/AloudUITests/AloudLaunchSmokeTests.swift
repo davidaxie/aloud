@@ -5,8 +5,7 @@ import XCTest
 final class AloudLaunchSmokeTests: XCTestCase {
 
     func testLaunchesWithSeededClassic() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-uitest-seed-first-classic"]
+        let app = XCUIApplication.aloud(["-uitest-seed-first-classic"])
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
     }

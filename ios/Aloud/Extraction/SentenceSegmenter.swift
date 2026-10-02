@@ -29,73 +29,317 @@ enum SentenceSegmenter {
         "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
         // Org / bibliographic
         "inc", "ltd", "co", "corp", "dept", "univ", "assn", "bros",
-        "no", "nos", "vol", "pp", "fig", "figs", "eq", "ref", "ed", "eds", "repr",
+        "ref", "ed", "eds", "repr",
+    ]
+
+    // Numbering abbreviations ("No. 5", "Vol. II", "pp. 23"). They hold a
+    // sentence together only when a number follows: "No." is also a whole
+    // reply ('"No." "So much the worse."') and "fig" a word.
+    private static let numberingAbbreviations: Set<String> = [
+        "no", "nos", "vol", "pp", "fig", "figs", "eq",
     ]
 
     // MARK: - Sentence splitting
 
     /// Split a paragraph into trimmed, non-empty sentences. Uses NLTokenizer,
     /// then repairs boundaries that fell on abbreviations, initials,
-    /// initialisms, or bare list markers.
+    /// initialisms, or bare list markers, inside a bracketed span, or before
+    /// a fragment of closing punctuation.
     static func splitIntoSentences(_ text: String) -> [String] {
         let normalized = text
-            .replacing(#/\s+/#, with: " ")
+            .replacing(whitespaceRunRegex, with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return [] }
 
         let raw = rawSplit(normalized)
+        let lastClosers = lastCloserOffsets(in: normalized)
 
         var merged: [String] = []
         var i = 0
         while i < raw.count {
-            var piece = raw[i]
-            while i < raw.count - 1 && endsWithAbbreviation(piece) {
-                i += 1
-                // Preserve a single space across the undone boundary.
-                piece = piece.replacing(#/\s+$/#, with: "")
-                    + " "
-                    + raw[i].replacing(#/^\s+/#, with: "")
+            let start = raw[i].lowerBound
+            while i < raw.count - 1 {
+                let next = normalized[raw[i + 1]]
+                if endsWithAbbreviation(normalized[start..<raw[i].upperBound], before: next)
+                    || isClosingFragment(next) {
+                    i += 1
+                } else if let closer = bracketCloser(in: normalized, from: start,
+                                                     through: i, segments: raw,
+                                                     lastClosers: lastClosers) {
+                    i = closer
+                } else {
+                    break
+                }
             }
-            let cleaned = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Slicing the paragraph (rather than re-joining pieces) keeps the
+            // text across an undone boundary exactly as written: "_word._"
+            // must not gain a space before its closing underscore.
+            let cleaned = normalized[start..<raw[i].upperBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if !cleaned.isEmpty { merged.append(cleaned) }
             i += 1
         }
         return merged
     }
 
-    private static func rawSplit(_ text: String) -> [String] {
-        let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = text
-        var out: [String] = []
-        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let segment = String(text[range])
-            if !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                out.append(segment)
+    /// One tokenizer for every paragraph: allocating an NLTokenizer per call
+    /// dominated the time to add a large book. NLTokenizer is not
+    /// thread-safe, so its use is serialized.
+    private static let sentenceTokenizer = NLTokenizer(unit: .sentence)
+    private static let sentenceTokenizerLock = NSLock()
+
+    /// NLTokenizer's sentence ranges in `text`, whitespace-only ones dropped.
+    private static func rawSplit(_ text: String) -> [Range<String.Index>] {
+        var out: [Range<String.Index>] = []
+        do {
+            sentenceTokenizerLock.lock()
+            defer { sentenceTokenizerLock.unlock() }
+            let tokenizer = sentenceTokenizer
+            tokenizer.string = text
+            tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+                out.append(range)
+                return true
             }
-            return true
         }
-        return out.isEmpty ? [text] : out
+        if out.count > 1 {
+            for j in 1..<out.count {
+                if let boundary = gluedTailEnd(after: out[j - 1], in: out[j], of: text) {
+                    out[j - 1] = out[j - 1].lowerBound..<boundary
+                    out[j] = boundary..<out[j].upperBound
+                }
+            }
+        }
+        out.removeAll { !text[$0].contains(where: { !$0.isWhitespace }) }
+        return out.isEmpty ? [text.startIndex..<text.endIndex] : out
     }
 
-    /// Should the boundary at the end of `seg` be merged into the next segment?
-    private static func endsWithAbbreviation(_ seg: String) -> Bool {
-        let trimmed = seg.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Where the boundary between two NLTokenizer segments belongs when it
+    /// fell inside a word, or nil to leave it. Marks glued to a sentence end
+    /// belong to that sentence: NLTokenizer cuts "_Hush._ She slept." after
+    /// the period (leaving "_ She slept."), and "Somerville.[344] This" inside
+    /// the footnote reference (leaving "344] This").
+    private static func gluedTailEnd(after previous: Range<String.Index>,
+                                     in segment: Range<String.Index>,
+                                     of text: String) -> String.Index? {
+        guard previous.upperBound == segment.lowerBound,
+              let last = text[previous].last, !last.isWhitespace else { return nil }
+        var end = segment.lowerBound
+
+        // A bracket opened in the sentence's last word and closed within the
+        // next segment's first word.
+        let lastWord = text[previous].split(whereSeparator: \.isWhitespace).last ?? ""
+        var unclosed: [Character] = []
+        for character in lastWord {
+            if let closer = closerFor[character] {
+                unclosed.append(closer)
+            } else if character == unclosed.last {
+                unclosed.removeLast()
+            }
+        }
+        var closedBracket = false
+        if let closer = unclosed.last {
+            var cursor = segment.lowerBound
+            while cursor < segment.upperBound, !text[cursor].isWhitespace {
+                let character = text[cursor]
+                cursor = text.index(after: cursor)
+                if character == closer {
+                    end = cursor
+                    closedBracket = true
+                    break
+                }
+            }
+        }
+
+        // Then any closing marks ("_", "_]", "\"", ".").
+        while end < segment.upperBound, closingFragmentCharacters.contains(text[end]) {
+            end = text.index(after: end)
+        }
+        guard end > segment.lowerBound else { return nil }
+        // A bare run of marks must end the word: the "'" of "'Tis" stays put.
+        if !closedBracket, end < segment.upperBound, !text[end].isWhitespace { return nil }
+        return end
+    }
+
+    private static let closerFor: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
+
+    /// Should the boundary between `piece` and the segment `next` be undone?
+    private static func endsWithAbbreviation(_ piece: Substring, before next: Substring) -> Bool {
+        let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
         // Bare list / enumeration marker like "1." or "2)" left dangling.
-        if trimmed.wholeMatch(of: #/\(?\d+[.)]/#) != nil { return true }
+        if trimmed.wholeMatch(of: listMarkerRegex) != nil { return true }
 
         guard let last = trimmed.split(whereSeparator: \.isWhitespace).last else { return false }
         let lastToken = String(last)
-        // Single initial ("J.") or initialism ("U.S.", "e.g.", "a.m.").
-        if lastToken.wholeMatch(of: #/[A-Za-z]\./#) != nil { return true }
-        if lastToken.wholeMatch(of: #/(?:[A-Za-z]\.){2,}/#) != nil { return true }
+        // Single initial ("J.") or initialism ("U.S.", "e.g.", "a.m."). A
+        // bare "I." is the pronoun ending a sentence ("So did I."), never an
+        // initial.
+        if lastToken.wholeMatch(of: singleInitialRegex) != nil { return lastToken != "I." }
+        if lastToken.wholeMatch(of: initialismRegex) != nil { return true }
 
-        // Known abbreviation word (strip trailing dot, ignore edge punctuation).
+        // Known abbreviation word (strip trailing dot, ignore edge punctuation,
+        // Gutenberg's italic underscores included: "_etc._").
         let bare = lastToken
-            .replacing(#/[.,;:!?)"'\]]+$/#, with: "")
-            .replacing(#/^[("'\[]+/#, with: "")
+            .replacing(trailingEdgePunctRegex, with: "")
+            .replacing(leadingEdgePunctRegex, with: "")
             .lowercased()
+        if numberingAbbreviations.contains(bare) {
+            return startsWithNumber(next, loneIIsPronoun: bare == "no" || bare == "nos")
+        }
         return abbreviations.contains(bare)
     }
+
+    /// Does `segment` open with a number, arabic ("5", "23-27") or roman
+    /// ("II", "xiv")? After "No." a lone "I" is usually the pronoun
+    /// ('"No." I shook my head') and counts as a numeral only with
+    /// punctuation ("No. I,"); after "Vol.", "pp.", "Fig." or "Eq." it is
+    /// always the numeral ("Vol. I By Mary J. Holmes").
+    private static func startsWithNumber(_ segment: Substring, loneIIsPronoun: Bool) -> Bool {
+        guard let token = segment.split(whereSeparator: \.isWhitespace).first,
+              let first = token.first else { return false }
+        if first.isNumber { return true }
+        let letters = token.prefix(while: \.isLetter)
+        guard !letters.isEmpty,
+              letters.allSatisfy({ "IVXLCDM".contains($0) })
+                || letters.allSatisfy({ "ivxlcdm".contains($0) }) else { return false }
+        if loneIIsPronoun, letters == "I" || letters == "i" {
+            guard let after = token.dropFirst().first else { return false }
+            return ".,;:)".contains(after)
+        }
+        return true
+    }
+
+    /// Characters that can trail a sentence end: closing brackets and quotes,
+    /// Gutenberg's italic underscore, stray terminal punctuation, and
+    /// superscript-digit footnote markers. NLTokenizer cuts "childhood.¹ It
+    /// was" before the "¹", which would open the next sentence (and be read
+    /// "one it was").
+    private static let closingFragmentCharacters: Set<Character> = [
+        "_", ")", "]", "}", "\"", "'", ".", "!", "?", ",", ";", ":",
+        "\u{00B9}", "\u{00B2}", "\u{00B3}", "\u{2070}", "\u{2074}", "\u{2075}",
+        "\u{2076}", "\u{2077}", "\u{2078}", "\u{2079}",
+    ]
+
+    /// A segment of nothing but closing punctuation ("_", "_]", ")", "\"")
+    /// that NLTokenizer cut off the sentence it ends ("_Hush._" splits after
+    /// the period). Left alone it becomes a sentence of its own.
+    private static func isClosingFragment(_ segment: Substring) -> Bool {
+        var sawMark = false
+        for character in segment where !character.isWhitespace {
+            guard closingFragmentCharacters.contains(character) else { return false }
+            sawMark = true
+        }
+        return sawMark
+    }
+
+    /// If the piece from `start` through `segments[i]` leaves a bracket open
+    /// and a later segment closes it, that segment's index. NLTokenizer
+    /// ignores brackets, so "[Illustration: The ship. It sank.]" would split
+    /// into two pieces with a dangling bracket each, which skip-brackets
+    /// (deciding per sentence) could not drop. Openers with no closer of
+    /// their type later in the paragraph are ignored, as in `bracketMask`.
+    ///
+    /// Lengths count from the piece's own start, not from the opener. A
+    /// merge that keeps the piece within the soft-split length is made. One
+    /// that makes it longer is made only when soft-splitting the merged
+    /// piece would still keep the whole bracketed span in one chunk (a
+    /// short "(p. 810)" in a long sentence): otherwise the span is cut
+    /// anyway, and the merge would only trade a natural sentence boundary
+    /// for a clause cut. A piece is never grown past `longestBracketPiece`,
+    /// which also bounds each call's scan.
+    private static func bracketCloser(in text: String,
+                                      from start: String.Index,
+                                      through i: Int,
+                                      segments: [Range<String.Index>],
+                                      lastClosers: [Int]) -> Int? {
+        // Brackets are ASCII, so scanning UTF-8 bytes is exact; lengths are
+        // UTF-8 too, which only makes the length caps stricter.
+        let base = text.utf8
+        func utf8Offset(_ index: String.Index) -> Int {
+            base.distance(from: base.startIndex, to: index)
+        }
+        /// End of the piece if it ran through `segments[j]`, trailing space
+        /// excluded (pieces are trimmed).
+        func pieceEnd(through j: Int) -> String.Index {
+            var end = segments[j].upperBound
+            while end > start, text[text.index(before: end)].isWhitespace {
+                end = text.index(before: end)
+            }
+            return end
+        }
+        let pieceStart = utf8Offset(start)
+        guard utf8Offset(pieceEnd(through: i)) - pieceStart <= longestBracketPiece else { return nil }
+
+        var depth = [0, 0, 0]
+        var openedAt = [0, 0, 0]   // where each type's outermost span began
+        var offset = pieceStart
+        func consume(_ byte: UInt8) {
+            if let k = bracketOpeners.firstIndex(of: byte) {
+                if depth[k] == 0 { openedAt[k] = offset }
+                depth[k] += 1
+            } else if let k = bracketClosers.firstIndex(of: byte), depth[k] > 0 {
+                depth[k] -= 1
+            }
+            offset += 1
+        }
+        for byte in text[start..<segments[i].upperBound].utf8 { consume(byte) }
+        guard depth.contains(where: { $0 > 0 }) else { return nil }
+
+        // `offset` is now where the rest of the paragraph begins.
+        let tracked = (0..<3).filter { depth[$0] > 0 && lastClosers[$0] >= offset }
+        guard let spanStart = tracked.map({ openedAt[$0] }).min() else { return nil }
+
+        for j in (i + 1)..<segments.count {
+            let end = pieceEnd(through: j)
+            let length = utf8Offset(end) - pieceStart
+            if length > longestBracketPiece { return nil }
+            offset = utf8Offset(segments[j].lowerBound)
+            for byte in text[segments[j]].utf8 {
+                consume(byte)
+                // A span longer than one chunk is cut by soft-splitting anyway.
+                if offset - spanStart > maxSentenceLength { return nil }
+                guard tracked.allSatisfy({ depth[$0] == 0 }) else { continue }
+                if length <= maxSentenceLength { return j }
+                let span = base.index(base.startIndex, offsetBy: spanStart)
+                    ..< base.index(base.startIndex, offsetBy: offset)
+                let chunks = softSplitLongSentence(String(text[start..<end]))
+                return chunks.contains { $0.contains(text[span]) } ? j : nil
+            }
+        }
+        return nil
+    }
+
+    /// The longest piece (UTF-8 bytes) a bracket merge may build.
+    private static let longestBracketPiece = 4 * maxSentenceLength
+
+    private static let bracketOpeners: [UInt8] = [UInt8(ascii: "("), UInt8(ascii: "["), UInt8(ascii: "{")]
+    private static let bracketClosers: [UInt8] = [UInt8(ascii: ")"), UInt8(ascii: "]"), UInt8(ascii: "}")]
+
+    /// UTF-8 offset of the last ")", "]" and "}" in `text` (-1 when there is
+    /// none), in `bracketClosers` order. Found once per paragraph, so
+    /// `bracketCloser` never rescans the rest of the paragraph at each
+    /// boundary (which made one huge paragraph quadratic).
+    private static func lastCloserOffsets(in text: String) -> [Int] {
+        var last = [-1, -1, -1]
+        var offset = 0
+        for byte in text.utf8 {
+            switch byte {
+            case UInt8(ascii: ")"): last[0] = offset
+            case UInt8(ascii: "]"): last[1] = offset
+            case UInt8(ascii: "}"): last[2] = offset
+            default: break
+            }
+            offset += 1
+        }
+        return last
+    }
+
+    // Built once: a regex literal rebuilds its program on every evaluation,
+    // and these run per paragraph or per boundary.
+    private static let listMarkerRegex = #/\(?\d+[.)]/#
+    private static let singleInitialRegex = #/[A-Za-z]\./#
+    private static let initialismRegex = #/(?:[A-Za-z]\.){2,}/#
+    private static let trailingEdgePunctRegex = #/[.,;:!?)"'\]_]+$/#
+    private static let leadingEdgePunctRegex = #/^[("'\[_]+/#
 
     // MARK: - Soft split
 
@@ -168,7 +412,8 @@ enum SentenceSegmenter {
     /// Standalone daggers are unspoken footnote markers. Asterisks are
     /// deliberately NOT here: a free-standing "*" is ambiguous — it can be
     /// multiplication ("2 * 3"), an emphasis marker, or a scene break
-    /// ("* * *") — so only the unambiguous marks are dropped.
+    /// ("* * *") — so only the unambiguous marks are dropped. A sentence
+    /// that is nothing but a scene break is silenced by `isSeparatorRow`.
     private static let footnoteMarkerRegex = #/[†‡]+/#
     private static let whitespaceRunRegex = #/\s+/#
     private static let spaceBeforePunctRegex = #/\s+([,.;:!?…)\]}])/#
@@ -269,13 +514,15 @@ enum SentenceSegmenter {
     /// non-whitespace are additionally split where `skipMask` flips, so
     /// punctuation glued to a bracket closer ("2),", "[12].") becomes its own
     /// token and survives skipping. `isSkippable` marks removable bracket
-    /// spans and standalone dagger footnote markers.
+    /// spans and standalone dagger footnote markers. A separator row's
+    /// tokens weigh nothing: it plays as silence, so no word is timed or lit.
     static func tokenizeSentence(_ text: String) -> [WordToken] {
         let key = text as NSString
         if let hit = tokenCache.object(forKey: key) { return hit.tokens }
 
         let chars = Array(text)
         let mask = skipMask(text)
+        let silentRow = isSeparatorRow(text)
         var tokens: [WordToken] = []
         var i = 0
         while i < chars.count {
@@ -302,7 +549,7 @@ enum SentenceSegmenter {
                 }
                 tokens.append(WordToken(text: raw,
                                         isWord: isWord,
-                                        weight: tokenWeight(raw),
+                                        weight: silentRow ? 0 : tokenWeight(raw),
                                         isSkippable: skippable))
             }
             i = j
@@ -329,6 +576,21 @@ enum SentenceSegmenter {
         !(skipBrackets && token.isSkippable)
     }
 
+    /// A scene break or rule: no letters or digits, and every other
+    /// character one repeated glyph ("* * * * *", "*****", "-----",
+    /// "• • •"). Kokoro's espeak fallback reads such symbols by name
+    /// ("asterisk asterisk asterisk"), so the row is shown but never spoken.
+    /// Mixed marks ("† *") are not a row.
+    static func isSeparatorRow<S: StringProtocol>(_ text: S) -> Bool {
+        var glyph: Character?
+        for character in text where !character.isWhitespace {
+            if character.isLetter || character.isNumber { return false }
+            if let seen = glyph, seen != character { return false }
+            glyph = character
+        }
+        return glyph != nil
+    }
+
     /// The text to actually synthesize. With `skipBrackets` off the input is
     /// returned verbatim; with it on, removable bracket spans and standalone
     /// dagger markers are dropped and the survivors tidied: whitespace
@@ -336,8 +598,11 @@ enum SentenceSegmenter {
     /// comma. A sentence that skipping silences entirely (a bare citation
     /// "[12]", an "[Illustration: …]" line, a whole-sentence aside) returns
     /// "" — the playback layer schedules a short silence for it and moves
-    /// on, so it is never read aloud.
+    /// on, so it is never read aloud. A separator row returns "" either way.
     static func spokenText(_ text: String, skipBrackets: Bool) -> String {
+        // Decided at playback, not extraction, so scene breaks in books
+        // already on the shelf go quiet without shifting a sentence index.
+        if isSeparatorRow(text) { return "" }
         guard skipBrackets else { return text }
         let key = text as NSString
         if let hit = spokenCache.object(forKey: key) { return hit as String }
@@ -349,7 +614,9 @@ enum SentenceSegmenter {
     /// `spokenText` over pre-tokenized input (tokens must reproduce the
     /// sentence verbatim when joined, as `tokenizeSentence` guarantees).
     static func spokenText(tokens: [WordToken], skipBrackets: Bool) -> String {
-        guard skipBrackets else { return tokens.map(\.text).joined() }
+        let verbatim = tokens.map(\.text).joined()
+        if isSeparatorRow(verbatim) { return "" }
+        guard skipBrackets else { return verbatim }
         var out = ""
         for token in tokens where isSpoken(token, skipBrackets: true) {
             out += token.text

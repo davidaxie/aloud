@@ -71,21 +71,41 @@ struct DerivedChapter: Identifiable, Equatable {
     }
 }
 
+/// Everything the reader's navigation needs from one pass over the text: the
+/// chapters and the running word total the chapter line's time-left reads.
+struct NavigationIndex {
+    let chapters: [DerivedChapter]
+    /// Words before each sentence: `wordsBefore[0] == 0` and
+    /// `wordsBefore[i + 1] == wordsBefore[i] + sentences[i].wordCount`, so
+    /// `count == sentences.count + 1` and any span's words are one subtraction.
+    let wordsBefore: [Int]
+}
+
 extension DocContent {
 
     /// Chapters derived from the extractor's page grouping, in reading order.
     /// Sentences are grouped by contiguous `page` runs; each group's first
     /// sentence is the heading. A book with no detected chapters is a single
     /// chapter; an empty document has none.
-    var derivedChapters: [DerivedChapter] {
+    var derivedChapters: [DerivedChapter] { navigationIndex().chapters }
+
+    /// The chapters plus prefix word sums, in one O(total-words) pass: each
+    /// sentence is split once, for its chapter's count and the running total.
+    func navigationIndex() -> NavigationIndex {
         var chapters: [DerivedChapter] = []
+        var wordsBefore: [Int] = [0]
+        wordsBefore.reserveCapacity(sentences.count + 1)
+        var total = 0
         var start = 0
         while start < sentences.count {
             let page = sentences[start].page
             var end = start
             var words = 0
             while end < sentences.count, sentences[end].page == page {
-                words += sentences[end].wordCount
+                let count = sentences[end].wordCount
+                words += count
+                total += count
+                wordsBefore.append(total)
                 end += 1
             }
             chapters.append(DerivedChapter(
@@ -96,7 +116,7 @@ extension DocContent {
                 wordCount: words))
             start = end
         }
-        return chapters
+        return NavigationIndex(chapters: chapters, wordsBefore: wordsBefore)
     }
 
     /// Display cleanup for a heading sentence: internal whitespace collapsed,
@@ -139,7 +159,7 @@ extension DocContent {
 
 // MARK: - Search
 
-/// One Search-in-Book hit: the sentence, its page (chapter context), and the
+/// One Contents search hit: the sentence, its page (chapter context), and the
 /// first matched range within `text` (which is the sentence's own text, so
 /// the range stays valid for emphasis rendering).
 struct SentenceMatch: Identifiable, Equatable {
@@ -156,27 +176,34 @@ struct SentenceMatch: Identifiable, Equatable {
 
 extension DocContent {
 
-    /// Case- and diacritic-insensitive comparison used by Search in Book.
+    /// Case- and diacritic-insensitive comparison used by Contents search.
     static let searchOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
 
     /// Linear scan over all sentences, in reading order. At most one match per
     /// sentence — the first occurrence. Whitespace-only queries match nothing;
-    /// the query is trimmed before matching.
+    /// the query is trimmed and folded to the stored text's punctuation
+    /// (`searchNeedles(for:)`) before matching.
     ///
     /// The scan is not instant at book scale: a no-hit query over a 500k-word
-    /// classic costs hundreds of milliseconds, so Search in Book runs it off
+    /// classic costs hundreds of milliseconds, so Contents search runs it off
     /// the main thread and abandons it when the next keystroke supersedes it.
     /// `isCancelled` is polled per sentence and defaults to the enclosing
     /// task's cancellation; a cancelled scan yields no results.
     func matches(of query: String,
                  isCancelled: () -> Bool = { Task.isCancelled }) -> [SentenceMatch] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return [] }
+        let needles = Self.searchNeedles(for: query)
+        guard !needles.isEmpty else { return [] }
         var found: [SentenceMatch] = []
         for sentence in sentences {
             if isCancelled() { return [] }
-            guard let range = sentence.text.range(of: needle, options: Self.searchOptions)
-            else { continue }
+            // The earliest hit among the needle's spellings.
+            var first: Range<String.Index>?
+            for needle in needles {
+                guard let range = sentence.text.range(of: needle, options: Self.searchOptions)
+                else { continue }
+                if first.map({ range.lowerBound < $0.lowerBound }) ?? true { first = range }
+            }
+            guard let range = first else { continue }
             found.append(SentenceMatch(sentenceID: sentence.id,
                                        page: sentence.page,
                                        text: sentence.text,
@@ -184,4 +211,50 @@ extension DocContent {
         }
         return found
     }
+
+    /// The trimmed query spelled the way stored sentences spell it; empty for
+    /// a blank query. TextNormalizer folds smart quotes, dashes and the
+    /// ellipsis to ASCII before sentences are stored, but the reader and the
+    /// search results show them typeset, so a pasted, dictated or Smart
+    /// Punctuation query arrives curly ("Daisy’s") and would match nothing.
+    ///
+    /// A dash has two stored spellings, both shown as an em dash: " - " (a
+    /// real dash in the source) and "--" (Gutenberg's ASCII dash). A query
+    /// with a dash yields a needle for each.
+    static func searchNeedles(for query: String) -> [String] {
+        var folded = ""
+        var hasDash = false
+        for scalar in query.unicodeScalars {
+            switch scalar.value {
+            case 0x2018...0x201B:
+                folded.append("'")
+            case 0x201C...0x201F:
+                folded.append("\"")
+            case 0x2026:
+                folded.append("...")
+            // The word joiner the reader sets after a typeset "--" (it comes
+            // along when text is copied), and the invisibles the normalizer
+            // deletes.
+            case 0x00AD, 0x200B...0x200D, 0x2060, 0xFEFF:
+                continue
+            case 0x2012...0x2015:
+                folded.append(dash)
+                hasDash = true
+            default:
+                folded.unicodeScalars.append(scalar)
+            }
+        }
+        let needle = folded.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        guard hasDash else { return [needle] }
+        // "said—and" → "said--and"; spacing kept as typed.
+        let ascii = needle.replacingOccurrences(of: String(dash), with: "--")
+        // "said—and" and "said — and" → "said - and", the normalizer's form.
+        let spaced = needle.replacingOccurrences(of: "\\s*\(dash)\\s*", with: " - ",
+                                                 options: .regularExpression)
+        return [ascii, spaced]
+    }
+
+    /// Every query dash becomes this one before it is respelled.
+    private static let dash: Character = "\u{2014}"
 }

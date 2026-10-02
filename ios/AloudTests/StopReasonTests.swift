@@ -1,0 +1,402 @@
+import XCTest
+@testable import Aloud
+
+/// R11's honest stops: every stop the listener didn't start records a reason
+/// that persists (across launches) until the next Play, is announced once
+/// when VoiceOver can hear it, and costs one tap to resume. Every change they
+/// didn't ask for is a notice while audio continues.
+///
+/// All silent: muted rigs on their own defaults suites; route loss and
+/// interruptions are driven through the rig's AudioSessionManager callbacks,
+/// never the global notifications. A test whose audio engine can't start in
+/// the host is skipped, not failed.
+@MainActor
+final class StopReasonTests: XCTestCase {
+
+    // MARK: - Harness
+
+    private func playingRig(sentences: Int = 40,
+                            at sentence: Int = 0,
+                            clipDuration: TimeInterval = 0.5) async throws -> PlaybackTestRig {
+        let rig = PlaybackTestRig(sentences: sentences, clipDuration: clipDuration)
+        rig.loadDefault(at: sentence)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        rig.clearRecordings()
+        return rig
+    }
+
+    /// The live-session marker, read without taking it.
+    private func liveSession(_ rig: PlaybackTestRig) -> LiveSession? {
+        rig.defaults.data(forKey: PlaybackStopStore.liveSessionKey)
+            .flatMap { try? JSONDecoder().decode(LiveSession.self, from: $0) }
+    }
+
+    /// The next launch: a new controller over the rig's anchor and stop stores.
+    private func relaunch(_ rig: PlaybackTestRig) -> PlaybackController {
+        let engine = PlaybackTestRig.RecordingEngine(voices: [PlaybackTestRig.voiceA])
+        let cache = AudioClipCache()
+        let controller = PlaybackController(engine: engine,
+                                            defaultVoice: PlaybackTestRig.voiceA,
+                                            scheduler: SynthesisScheduler(engine: engine, cache: cache),
+                                            cache: cache,
+                                            audioSession: AudioSessionManager(),
+                                            anchorStore: rig.anchorStore,
+                                            stopStore: rig.stopStore,
+                                            outputMuted: true)
+        controller.isAppActive = { true }
+        return controller
+    }
+
+    private func stop(_ reason: StopReason, _ rig: PlaybackTestRig) -> PlaybackStop {
+        PlaybackStop(reason: reason, documentID: rig.document.id)
+    }
+
+    // MARK: - Headphones
+
+    func testHeadphonesDisconnectedStopsRecordsAndAnnouncesOnce() async throws {
+        let rig = try await playingRig()
+        let cue = rig.controller.currentSentence
+
+        rig.audioSession.onRouteRequiresPause?()
+
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.currentSentence, cue)
+        XCTAssertEqual(rig.controller.stopped, stop(.headphonesDisconnected, rig))
+        XCTAssertEqual(rig.stopStore.load(), stop(.headphonesDisconnected, rig), "persisted")
+        XCTAssertEqual(rig.controller.stopReason(for: rig.document.id), .headphonesDisconnected)
+        XCTAssertNil(rig.controller.stopReason(for: UUID()), "the reason belongs to its book")
+        XCTAssertEqual(rig.announcements, ["Paused, headphones disconnected"])
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(rig.controller.currentSentence, cue, "nothing advances after the cut")
+        XCTAssertEqual(rig.announcements.count, 1)
+
+        rig.controller.play()
+        XCTAssertTrue(rig.controller.isActive, "one tap resumes")
+        XCTAssertEqual(rig.controller.currentSentence, cue)
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertNil(rig.stopStore.load(), "the stored copy goes with it")
+        XCTAssertEqual(rig.announcements.count, 1)
+        XCTAssertEqual(rig.controller.mixerOutputVolume, 0)
+    }
+
+    func testRouteLossWhilePausedRecordsNothing() {
+        let rig = PlaybackTestRig()
+        rig.loadDefault(at: 3)
+
+        rig.audioSession.onRouteRequiresPause?()
+
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertNil(rig.stopStore.load())
+        XCTAssertEqual(rig.announcements, [])
+        XCTAssertEqual(rig.controller.status, .paused)
+    }
+
+    func testAStopFromBufferingCuesAndRecords() {
+        let rig = PlaybackTestRig()
+        rig.loadDefault(at: 4)
+        rig.controller.play()
+        XCTAssertEqual(rig.controller.status, .buffering)
+
+        rig.controller.stop(because: .headphonesDisconnected)
+
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.currentSentence, 4)
+        XCTAssertEqual(rig.controller.stopped, stop(.headphonesDisconnected, rig))
+        XCTAssertEqual(rig.announcements, ["Paused, headphones disconnected"])
+    }
+
+    // MARK: - Interruptions
+
+    func testAnInterruptionThatNeverResumesIsAnnouncedAtItsEnd() async throws {
+        let rig = try await playingRig()
+
+        rig.audioSession.onInterruption?(.began)
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.stopped, stop(.interrupted, rig))
+        XCTAssertEqual(rig.announcements, [], "the audio may still come back")
+
+        rig.audioSession.onInterruption?(.ended(shouldResume: false))
+        XCTAssertEqual(rig.announcements, ["Paused by a call or another app"])
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.stopped, stop(.interrupted, rig), "it waits for Play")
+
+        rig.audioSession.onInterruption?(.ended(shouldResume: false))
+        XCTAssertEqual(rig.announcements.count, 1, "announced once")
+    }
+
+    func testAnInterruptionThatResumesLeavesNoReason() async throws {
+        let rig = try await playingRig()
+
+        rig.audioSession.onInterruption?(.began)
+        rig.audioSession.onInterruption?(.ended(shouldResume: true))
+
+        XCTAssertEqual(rig.controller.status, .playing)
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertNil(rig.stopStore.load())
+        XCTAssertEqual(rig.announcements, [])
+        XCTAssertEqual(rig.controller.userPlayAction, 1, "auto-resume is not a user play")
+    }
+
+    /// Paused by an interruption whose end hasn't come (another app kept the
+    /// audio). `.buffering` is active, so no audio engine is needed.
+    private func interruptedRig() -> PlaybackTestRig {
+        let rig = PlaybackTestRig()
+        rig.loadDefault(at: 3)
+        rig.controller.play()
+        rig.audioSession.onInterruption?(.began)
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.stopped, stop(.interrupted, rig))
+        return rig
+    }
+
+    func testAnInterruptionsEndResumesOnlyThePlaybackItStopped() {
+        let untouched = interruptedRig()
+        untouched.audioSession.onInterruption?(.ended(shouldResume: true))
+        XCTAssertTrue(untouched.controller.isActive, "left alone, its own stop comes back")
+
+        let other = PlaybackTestRig.makeDocument(hash: "other", sentences: 12)
+        let otherContent = PlaybackTestRig.makeContent(hash: "other", count: 12)
+        let moves: [(name: String, run: (PlaybackTestRig) -> Void)] = [
+            ("Play, then pause for the night", { $0.controller.play(); $0.controller.pause() }),
+            ("a pause", { $0.controller.pause() }),
+            ("a paused seek", { $0.controller.seek(to: 6, andPlay: false) }),
+            ("a skip", { $0.controller.skip(seconds: PlaybackController.skipInterval) }),
+            ("opening another book", { $0.controller.load(document: other, content: otherContent) }),
+            ("headphones unplugged meanwhile", { $0.audioSession.onRouteRequiresPause?() }),
+            ("a second interruption that stopped nothing", { $0.audioSession.onInterruption?(.began) }),
+        ]
+        for move in moves {
+            let rig = interruptedRig()
+            move.run(rig)
+
+            rig.audioSession.onInterruption?(.ended(shouldResume: true))
+
+            XCTAssertFalse(rig.controller.isActive, "after \(move.name), the end starts nothing")
+        }
+    }
+
+    /// Undo back to a Finished book is the listener's move too: the book
+    /// stays at its end, never restarting from sentence 0 on its own when
+    /// the interruption that stopped the jumped-to playback ends.
+    func testUndoingBackToTheEndLeavesTheInterruptionNothingToResume() async throws {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.1)
+        rig.loadDefault(at: 11)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        let ended = await rig.waitUntil { rig.controller.status == .ended }
+        XCTAssertTrue(ended)
+
+        rig.controller.jump(to: 2, origin: .chapter)   // a Contents pick from the end
+        XCTAssertEqual(rig.controller.undoableJump?.fromStatus, .ended)
+        rig.controller.play()
+        rig.audioSession.onInterruption?(.began)
+        XCTAssertEqual(rig.controller.stopped, stop(.interrupted, rig))
+        rig.controller.undoJump()
+        XCTAssertEqual(rig.controller.status, .ended)
+
+        rig.audioSession.onInterruption?(.ended(shouldResume: true))
+
+        XCTAssertEqual(rig.controller.status, .ended, "the end starts nothing")
+        XCTAssertEqual(rig.controller.currentSentence, 11)
+    }
+
+    // MARK: - Announcements
+
+    func testTheAnnouncementWaitsForTheForeground() async throws {
+        let rig = try await playingRig()
+        rig.appActive = false
+
+        rig.audioSession.onRouteRequiresPause?()
+        XCTAssertEqual(rig.announcements, [], "VoiceOver can't hear it in the background")
+        XCTAssertEqual(rig.controller.stopped, stop(.headphonesDisconnected, rig))
+
+        rig.appActive = true
+        rig.controller.sceneDidBecomeActive()
+        XCTAssertEqual(rig.announcements, ["Paused, headphones disconnected"])
+
+        rig.controller.sceneDidBecomeActive()
+        XCTAssertEqual(rig.announcements.count, 1)
+    }
+
+    func testADiscardedStopIsNeverAnnounced() async throws {
+        let rig = try await playingRig()
+        rig.appActive = false
+        rig.audioSession.onRouteRequiresPause?()
+
+        rig.controller.discardStop(for: UUID())
+        XCTAssertNotNil(rig.controller.stopped, "another book's discard leaves it")
+
+        rig.controller.discardStop(for: rig.document.id)
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertNil(rig.stopStore.load())
+
+        rig.appActive = true
+        rig.controller.sceneDidBecomeActive()
+        XCTAssertEqual(rig.announcements, [])
+    }
+
+    func testUnloadingTheBookDiscardsItsStop() {
+        let rig = PlaybackTestRig()
+        rig.loadDefault(at: 2)
+        rig.controller.play()
+        rig.controller.stop(because: .sleepTimer)
+        XCTAssertNotNil(rig.controller.stopped)
+
+        rig.controller.unload()
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertNil(rig.stopStore.load())
+    }
+
+    // MARK: - Errors and notices
+
+    func testAPlaybackErrorRecordsAndAnnounces() async {
+        let rig = PlaybackTestRig(sentences: 12, failing: { _ in true })
+        rig.loadDefault()
+        rig.controller.play()
+
+        let errored = await rig.waitUntil(5) { rig.controller.status == .error }
+        XCTAssertTrue(errored)
+        XCTAssertEqual(rig.controller.stopped, stop(.playbackError, rig))
+        XCTAssertEqual(rig.stopStore.load(), stop(.playbackError, rig))
+        XCTAssertEqual(rig.announcements.filter { $0 == "Playback stopped, tap to try again" }.count, 1)
+    }
+
+    func testASkippedSentenceIsANoticeWhileStillPlaying() async throws {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25, failing: { $0.hasPrefix("Line3 ") })
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+
+        let noticed = await rig.waitUntil(5) { rig.controller.notice == .skippedSentence }
+        XCTAssertTrue(noticed)
+        XCTAssertEqual(rig.controller.status, .playing)
+        XCTAssertEqual(rig.controller.skippedSentences, [3])
+        XCTAssertEqual(rig.announcements, ["Skipped a sentence the voice couldn't read"])
+        XCTAssertNil(rig.controller.stopped, "a notice is not a stop")
+    }
+
+    func testARepeatedNoticeIsAnnouncedOnce() async throws {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25,
+                                  failing: { $0.hasPrefix("Line3 ") || $0.hasPrefix("Line5 ") })
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+
+        let both = await rig.waitUntil(5) { rig.controller.skippedSentences == [3, 5] }
+        XCTAssertTrue(both)
+        XCTAssertEqual(rig.controller.notice, .skippedSentence)
+        XCTAssertEqual(rig.announcements, ["Skipped a sentence the voice couldn't read"],
+                       "the notice already showing only restarts its clock")
+    }
+
+    // MARK: - Auditions
+
+    func testAnAuditionNeverClearsAStop() async throws {
+        let rig = try await playingRig(sentences: 12, clipDuration: 0.25)
+        rig.audioSession.onRouteRequiresPause?()
+        XCTAssertNotNil(rig.controller.stopped)
+
+        let mark = rig.statuses.count
+        rig.controller.selectVoice(PlaybackTestRig.voiceB)
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        XCTAssertEqual(rig.controller.stopped, stop(.headphonesDisconnected, rig), "a voice sample isn't Play")
+
+        let back = await rig.waitUntil {
+            rig.statuses[mark...].contains(.playing) && rig.statuses.last == .paused
+        }
+        XCTAssertTrue(back)
+        XCTAssertEqual(rig.controller.stopped, stop(.headphonesDisconnected, rig))
+        XCTAssertEqual(rig.stopStore.load(), stop(.headphonesDisconnected, rig))
+    }
+
+    func testAStopDuringAnAuditionRecordsNothing() async throws {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 1)
+        rig.loadDefault(at: 2)
+        let mark = rig.statuses.count
+        rig.controller.selectVoice(PlaybackTestRig.voiceB)
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+
+        rig.audioSession.onRouteRequiresPause?()
+
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertEqual(rig.announcements, [])
+    }
+
+    // MARK: - Across launches
+
+    func testAStopSurvivesARelaunchAndClearsOnPlay() async throws {
+        let rig = try await playingRig()
+        rig.audioSession.onRouteRequiresPause?()
+
+        let next = relaunch(rig)
+        XCTAssertEqual(next.stopped, stop(.headphonesDisconnected, rig))
+        XCTAssertEqual(next.stopReason(for: rig.document.id), .headphonesDisconnected)
+
+        next.load(document: rig.document, content: rig.content)
+        next.play()
+        XCTAssertTrue(next.isActive)
+        XCTAssertNil(next.stopped)
+        XCTAssertNil(rig.stopStore.load())
+        next.pause(rampsOut: false)
+    }
+
+    func testTheLiveMarkerFollowsActivePlayback() {
+        let rig = PlaybackTestRig()
+        rig.loadDefault(at: 3)
+        XCTAssertNil(liveSession(rig))
+
+        rig.controller.play()   // buffering: playback is intended
+        XCTAssertEqual(liveSession(rig)?.documentID, rig.document.id)
+        XCTAssertEqual(liveSession(rig)?.sentenceIndex, 3)
+
+        rig.controller.seek(to: 6, andPlay: true)
+        XCTAssertEqual(liveSession(rig)?.sentenceIndex, 6, "the marker follows the playhead")
+
+        rig.controller.pause()
+        XCTAssertNil(liveSession(rig), "an orderly stop clears it")
+
+        rig.controller.play()
+        XCTAssertNotNil(liveSession(rig))
+        rig.controller.resumeAnchor = nil
+        rig.anchorStore.clear()
+
+        rig.controller.applicationWillTerminate()
+        XCTAssertNil(liveSession(rig), "so does an orderly exit")
+        XCTAssertEqual(rig.anchorStore.load()?.documentID, rig.document.id, "and the rest is anchored")
+        XCTAssertEqual(rig.anchorStore.load()?.sentenceIndex, 6)
+    }
+
+    func testClosedByIOSIsReportedOnTheNextLaunch() {
+        let rig = PlaybackTestRig()
+        rig.stopStore.markLive(LiveSession(documentID: rig.document.id, sentenceIndex: 7,
+                                           wallClock: Date(timeIntervalSinceNow: -600)))
+
+        let next = relaunch(rig)
+        var spoken: [String] = []
+        next.announce = { spoken.append($0) }
+
+        XCTAssertEqual(next.stopped, stop(.closedByIOS, rig))
+        XCTAssertEqual(rig.stopStore.load(), stop(.closedByIOS, rig))
+        XCTAssertNil(liveSession(rig), "the marker is reported once")
+        XCTAssertEqual(rig.anchorStore.load()?.sentenceIndex, 7, "the rest starts where it was speaking")
+        XCTAssertNil(rig.anchorStore.load()?.monotonic)
+        XCTAssertEqual(spoken, [])
+
+        next.sceneDidBecomeActive()
+        XCTAssertEqual(spoken, ["Stopped when iOS closed Aloud"])
+        next.sceneDidBecomeActive()
+        XCTAssertEqual(spoken.count, 1)
+
+        var document = rig.document
+        document.progressSentence = 7
+        next.load(document: document, content: rig.content)
+        next.play()
+        XCTAssertEqual(next.currentSentence, 5, "a 10-minute rest backs up 2")
+        XCTAssertEqual(next.notice, .backedUp(sentences: 2))
+        XCTAssertNil(next.stopped)
+        next.pause(rampsOut: false)
+    }
+}
