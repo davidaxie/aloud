@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Tests for tools/catalog_normalize.py (no network required).
+
+Run with:
+    python3 -m unittest tools.test_catalog_normalize -v
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import catalog_normalize as cn  # noqa: E402
+
+
+class TitleTests(unittest.TestCase):
+    def assertTitle(self, raw: str, expected: str) -> None:
+        self.assertEqual(cn.normalize_title(raw), expected)
+
+    def test_major_words_capitalized_minor_words_lowered(self):
+        self.assertTitle("The call of the wild", "The Call of the Wild")
+        self.assertTitle("I am a woman", "I Am a Woman")
+
+    def test_alternative_title_keeps_lowercase_or(self):
+        self.assertTitle("Frankenstein; or, the modern prometheus",
+                         "Frankenstein; or, The Modern Prometheus")
+
+    def test_subtitle_after_colon_starts_capitalized(self):
+        self.assertTitle("The Blue Castle: a novel", "The Blue Castle: A Novel")
+
+    def test_trailing_complete_is_dropped(self):
+        self.assertTitle("Life On The Mississippi, Complete", "Life on the Mississippi")
+        self.assertTitle("The Adventures of Ferdinand Count Fathom — Complete",
+                         "The Adventures of Ferdinand Count Fathom")
+
+    def test_each_hyphen_part_capitalized(self):
+        self.assertTitle("The case-book of Sherlock Holmes", "The Case-Book of Sherlock Holmes")
+
+    def test_ellipsis_and_volume_numbers_unchanged(self):
+        self.assertTitle("Occasion ... for Disaster", "Occasion ... for Disaster")
+        self.assertTitle("The Mysteries of London, v. 4/4", "The Mysteries of London, v. 4/4")
+
+    def test_brackets_and_ampersand_left_alone(self):
+        self.assertTitle("Love and Freindship [sic]", "Love and Freindship [sic]")
+        self.assertTitle("Literally translated, with notes, arguments, &c.",
+                         "Literally Translated, with Notes, Arguments, &c.")
+
+    def test_sentence_period_starts_a_segment(self):
+        self.assertTitle("The String of Pearls; Or, The Barber of Fleet Street. A Domestic Romance.",
+                         "The String of Pearls; or, The Barber of Fleet Street. A Domestic Romance.")
+
+    def test_no_letter_is_ever_lowered(self):
+        self.assertTitle("McTeague", "McTeague")
+        self.assertTitle("The Black Moth: A Romance of the XVIIIth Century",
+                         "The Black Moth: A Romance of the XVIIIth Century")
+
+    def test_title_rules_are_idempotent(self):
+        for raw in ("The call of the wild", "Frankenstein; or, the modern prometheus",
+                    "Life On The Mississippi, Complete", "Love and Freindship [sic]"):
+            once = cn.normalize_title(raw)
+            self.assertEqual(cn.normalize_title(once), once, raw)
+
+
+class AuthorTests(unittest.TestCase):
+    def assertAuthor(self, raw: str, expected: str) -> None:
+        self.assertEqual(cn.normalize_author(raw), expected)
+
+    def test_parenthesized_expansions_dropped(self):
+        self.assertAuthor("H. P. (Howard Phillips) Lovecraft", "H. P. Lovecraft")
+        self.assertAuthor("Mark Twain (Samuel Clemens)", "Mark Twain")
+
+    def test_bare_initial_takes_the_expansion(self):
+        self.assertAuthor("T. (Tobias) Smollett", "Tobias Smollett")
+
+    def test_pseudonym_and_et_al_dropped(self):
+        self.assertAuthor("Adela Florence Cory Nicolson (AKA Laurence Hope), et al.",
+                          "Adela Florence Cory Nicolson")
+
+    def test_run_together_initials_spaced(self):
+        self.assertAuthor("G.K. Chesterton", "G. K. Chesterton")
+
+    def test_trailing_degree_unchanged(self):
+        self.assertAuthor("Rev. A. Bernstein, B.D.", "Rev. A. Bernstein, B.D.")
+
+    def test_lowercase_first_letter_raised(self):
+        self.assertAuthor("abbé Prévost", "Abbé Prévost")
+
+
+class BookTests(unittest.TestCase):
+    def book(self, **fields) -> dict:
+        base = {"gutenberg_id": 215, "title": "The call of the wild", "author": "Jack London",
+                "year": 1903, "file": "215-the-call-of-the-wild.txt", "words": 31_000}
+        base.update(fields)
+        return base
+
+    def test_override_wins_verbatim(self):
+        raw = self.book(gutenberg_id=6768, title="The Man Upstairs", author=". G. Wodehouse")
+        out = cn.normalize_book(raw, {"6768": {"author": "P. G. Wodehouse"}})
+        self.assertEqual(out["author"], "P. G. Wodehouse")
+        self.assertEqual(out["header_author"], ". G. Wodehouse")
+
+    def test_override_beats_the_rules(self):
+        out = cn.normalize_book(self.book(), {"215": {"title": "The call of the WILD"}})
+        self.assertEqual(out["title"], "The call of the WILD")
+
+    def test_header_fields_only_when_changed(self):
+        out = cn.normalize_book(self.book(), {})
+        self.assertEqual(out["title"], "The Call of the Wild")
+        self.assertEqual(out["header_title"], "The call of the wild")
+        self.assertNotIn("header_author", out)
+
+    def test_stale_header_field_dropped(self):
+        stale = self.book(title="White Fang", author="Jack London", header_author="Jack London")
+        self.assertNotIn("header_author", cn.normalize_book(stale, {}))
+
+    def test_other_fields_and_key_order_kept(self):
+        raw = self.book()
+        out = cn.normalize_book(raw, {})
+        for key in ("gutenberg_id", "year", "file", "words"):
+            self.assertEqual(out[key], raw[key])
+        self.assertEqual(list(out)[: len(raw)], list(raw))
+
+    def test_normalize_book_is_idempotent(self):
+        overrides = cn.load_overrides()
+        for raw in (self.book(),
+                    self.book(gutenberg_id=6768, title="The Man Upstairs", author=". G. Wodehouse"),
+                    self.book(gutenberg_id=245, title="Life On The Mississippi, Complete",
+                              author="Mark Twain (Samuel Clemens)")):
+            once = cn.normalize_book(raw, overrides)
+            self.assertEqual(cn.normalize_book(once, overrides), once)
+
+
+class LintTests(unittest.TestCase):
+    RAW = [
+        {"gutenberg_id": 215, "title": "The call of the wild", "author": "Jack London"},
+        {"gutenberg_id": 6768, "title": "The Man Upstairs", "author": ". G. Wodehouse"},
+        {"gutenberg_id": 831, "title": "Four Arthurian Romances",
+         "author": "de Troyes, active 12th century Chrétien"},
+    ]
+
+    def test_lint_flags_raw_spellings(self):
+        problems = cn.lint(self.RAW)
+        self.assertIn("#215 title: lowercase major word 'call' in 'The call of the wild'", problems)
+        self.assertTrue(any(p.startswith("#6768 author:") for p in problems))
+        self.assertTrue(any(p.startswith("#831 author:") for p in problems))
+
+    def test_lint_passes_normalized_forms(self):
+        overrides = cn.load_overrides()
+        normalized = [cn.normalize_book(b, overrides) for b in self.RAW]
+        self.assertEqual(cn.lint(normalized), [])
+        self.assertEqual([b["author"] for b in normalized],
+                         ["Jack London", "P. G. Wodehouse", "Chrétien de Troyes"])
+
+    def test_lowercase_minor_word_starting_a_segment_is_flagged(self):
+        self.assertTrue(cn.title_violations("The Blue Castle: a novel"))
+        self.assertEqual(cn.title_violations("Frankenstein; or, The Modern Prometheus"), [])
+
+    def test_brackets_and_ampersand_skipped(self):
+        self.assertEqual(cn.title_violations("Love and Freindship [sic]"), [])
+        self.assertEqual(cn.title_violations("Notes, Arguments, &c."), [])
+
+
+class CLITests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        self.src = self.root / "src.json"
+        self.src.write_text(json.dumps({"books": LintTests.RAW}, ensure_ascii=False),
+                            encoding="utf-8")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def run_main(self, *argv: str) -> int:
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return cn.main(list(argv))
+
+    def test_out_writes_normalized_catalog_and_passes_lint(self):
+        dst = self.root / "out" / "catalog.json"
+        self.assertEqual(self.run_main(str(self.src), "--out", str(dst)), 0)
+        text = dst.read_text(encoding="utf-8")
+        self.assertTrue(text.endswith("}\n"))
+        books = json.loads(text)["books"]
+        self.assertEqual([b["gutenberg_id"] for b in books], [215, 6768, 831])
+        self.assertEqual(books[0]["title"], "The Call of the Wild")
+        self.assertIn("Chrétien", text, "written with ensure_ascii=False")
+
+    def test_out_leaves_an_identical_file_untouched(self):
+        dst = self.root / "catalog.json"
+        self.assertEqual(self.run_main(str(self.src), "--out", str(dst)), 0)
+        os.utime(dst, (1_000_000_000, 1_000_000_000))
+        self.assertEqual(self.run_main(str(self.src), "--out", str(dst)), 0)
+        self.assertEqual(dst.stat().st_mtime, 1_000_000_000)
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".catalog-")], [])
+
+    def test_check_exit_codes(self):
+        self.assertEqual(self.run_main(str(self.src), "--check"), 1)
+        dst = self.root / "catalog.json"
+        self.run_main(str(self.src), "--out", str(dst))
+        self.assertEqual(self.run_main(str(dst), "--check"), 0)
+
+    def test_usage_and_io_errors_exit_2(self):
+        self.assertEqual(self.run_main(), 2)
+        self.assertEqual(self.run_main(str(self.root / "missing.json"), "--check"), 2)
+        self.assertEqual(self.run_main(str(self.src), "--check", "--out", "x.json"), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
