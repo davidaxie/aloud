@@ -54,6 +54,11 @@ struct LibraryView: View {
         }
         // R12b: magic tap plays or pauses the hero from anywhere on the shelf.
         .accessibilityAction(.magicTap) { magicTap() }
+        // R10: VoiceOver cannot reach the shelf under the import overlay.
+        // RootView's hiding of the whole stack doesn't carry into the
+        // stack's hosted root or its bar, so the shelf (and each bar item
+        // below) hides itself; the overlay above stays reachable.
+        .accessibilityHidden(importer.isImporting)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -63,7 +68,9 @@ struct LibraryView: View {
         .toolbarColorScheme(colorScheme, for: .navigationBar)
         .toolbar {
             // The bar's items live outside the Group above, so each carries
-            // the magic tap too.
+            // the magic tap itself. Under the import overlay the title hides
+            // itself; the buttons leave the bar, because iOS hosts bar buttons
+            // as system items that SwiftUI's accessibility hiding doesn't reach.
             ToolbarItem(placement: .navigationBarLeading) {
                 Text("Aloud")
                     .font(Theme.font(.title))
@@ -71,13 +78,16 @@ struct LibraryView: View {
                     .fixedSize()
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityAction(.magicTap) { magicTap() }
+                    .accessibilityHidden(importer.isImporting)
             }
             // + sits rightmost, and only once there is a book: the empty
             // Library's own links are the way in until then.
             ToolbarItemGroup(placement: .topBarTrailing) {
-                settingsButton
-                if !store.documents.isEmpty {
-                    addMenu
+                if !importer.isImporting {
+                    settingsButton
+                    if !store.documents.isEmpty {
+                        addMenu
+                    }
                 }
             }
         }

@@ -77,8 +77,12 @@ final class BookshelfUITest: XCTestCase {
         let cask = app.buttons["bookshelf.row.1063"].firstMatch
         XCTAssertTrue(cask.waitForExistence(timeout: 5))
         XCTAssertEqual(cask.label, "The Cask of Amontillado, by Edgar Allan Poe, about 14 minutes")
-        XCTAssertEqual(cask.descendants(matching: .staticText).count, 0,
-                       "A row is one VoiceOver element")
+        // One VoiceOver element: a Button reads as one, with the label above
+        // (title, author, length). XCUITest on iOS 26 still lists a SwiftUI
+        // Button's label Texts as its children, so their count says nothing
+        // about VoiceOver; wrapping the row to hide them only nests a second
+        // button inside it.
+        XCTAssertEqual(cask.elementType, .button)
 
         search(app, for: "zzzz")
         let empty = app.descendants(matching: .any)["bookshelf.noResults"].firstMatch
@@ -147,10 +151,18 @@ final class BookshelfUITest: XCTestCase {
                 XCTAssertTrue(firstRow.waitForExistence(timeout: 5), "The Bookshelf lists rows at \(size.name)")
                 rowHeight = firstRow.frame.height
                 assertTextSizeTook(size, height: rowHeight, over: previous)
-                // The root's 1×1 DEBUG probes (debug.announcements) aren't UI.
+                // The root's 1×1 DEBUG probes (debug.announcements) aren't UI,
+                // and the bar caps its title's scaling by design: the title
+                // shows the Large Content Viewer instead.
+                var issues: [String] = []
                 try app.performAccessibilityAudit(for: [.dynamicType, .textClipped, .contrast, .hitRegion]) { issue in
-                    issue.element?.identifier.hasPrefix("debug.") == true
+                    if issue.element?.identifier.hasPrefix("debug.") == true
+                        || self.isNavigationBarTextScaling(issue, in: app)
+                        || self.isSystemSearchPromptClipping(issue) { return true }
+                    issues.append(self.describe(issue))
+                    return true   // collected, so one failure lists them all
                 }
+                XCTAssertEqual(issues, [], "Bookshelf at \(size.name) (\(scheme))")
                 app.terminate()
             }
             previous = (size, rowHeight)

@@ -14,14 +14,18 @@ struct PreferenceToggleRow: View {
 
     var body: some View {
         Toggle(isOn: $isOn) {
+            // Both lines wrap to their full height and never truncate, in a
+            // List row or a scroll view inside a content-sized sheet.
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                 Text(title)
                     .font(titleFont)
                     .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let subtitle {
                     Text(subtitle)
                         .font(Theme.font(.footnote))
                         .foregroundStyle(Theme.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

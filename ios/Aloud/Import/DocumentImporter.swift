@@ -245,7 +245,9 @@ final class DocumentImporter: ObservableObject {
 /// Progress card shown over the Library while extraction runs: a modal
 /// scrim in shadow ink under a raised surface card. The scrim swallows
 /// touches and the overlay is modal for VoiceOver, so the shelf beneath
-/// can't be reached until the add ends or is cancelled.
+/// can't be reached until the add ends or is cancelled. Modal alone doesn't
+/// hide the stack's hosted content, so LibraryView hides its shelf and bar
+/// items itself while `isImporting`.
 struct ImportProgressOverlay: View {
     let fileName: String
     let progress: Double

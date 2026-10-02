@@ -68,7 +68,10 @@ final class SettingsUITests: XCTestCase {
                                                 .hitRegion, .sufficientElementDescription]) { issue in
             // The root's 1×1 DEBUG probes (debug.announcements) aren't UI.
             if issue.element?.identifier.hasPrefix("debug.") == true { return true }
-            issues.append("\(issue.compactDescription) [\(issue.element?.identifier ?? "")]")
+            // The bar caps its title's scaling by design; the title shows the
+            // Large Content Viewer instead.
+            if self.isNavigationBarTextScaling(issue, in: app) { return true }
+            issues.append(self.describe(issue))
             return true   // collected, so one failure lists them all
         }
         return issues

@@ -263,6 +263,57 @@ final class StopReasonTests: XCTestCase {
         XCTAssertEqual(rig.announcements.filter { $0 == "Playback stopped, tap to try again" }.count, 1)
     }
 
+    /// A voice that fails every sentence while `isOn`: HonestStopsUITest's
+    /// `synthesis` fault, switched by hand.
+    private final class FaultSwitch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var on = false
+        var isOn: Bool {
+            get { lock.withLock { on } }
+            set { lock.withLock { on = newValue } }
+        }
+    }
+
+    /// A voice that stops reading mid-book fails its look-ahead first, each
+    /// sentence skipped as one bad one, and errors on the third. They were
+    /// never bad: the stop hands them back and waits on the first sentence
+    /// not heard, and Try again reads it, never a beat of silence past it
+    /// (the UI test saw "Resumed at 6, stopped at 4" while they stayed
+    /// skipped).
+    func testTryAgainAfterASynthesisFailureReadsOnFromTheSentenceNotHeard() async throws {
+        let fault = FaultSwitch()
+        let rig = PlaybackTestRig(sentences: 40, failing: { _ in fault.isOn })
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        let underway = await rig.waitUntil(5) { rig.controller.currentSentence >= 2 }
+        XCTAssertTrue(underway, "the look-ahead is full before the voice fails")
+
+        fault.isOn = true
+        let errored = await rig.waitUntil(10) { rig.controller.status == .error }
+        XCTAssertTrue(errored)
+        XCTAssertEqual(rig.controller.stopped, stop(.playbackError, rig))
+        XCTAssertEqual(rig.controller.skippedSentences, [], "the voice failed, not the sentences")
+        let stoppedAt = rig.controller.currentSentence
+        let read = rig.engineA.requestedTexts
+        XCTAssertTrue((0..<stoppedAt).allSatisfy { index in read.contains { $0.hasPrefix("Line\(index) ") } },
+                      "every sentence before the stop was read")
+        XCTAssertFalse(read.contains { $0.hasPrefix("Line\(stoppedAt) ") },
+                       "the stop waits on the first sentence the voice didn't read")
+
+        fault.isOn = false
+        let asked = rig.engineA.requests.count
+        let mark = rig.statuses.count
+        rig.controller.play()
+        XCTAssertEqual(rig.controller.currentSentence, stoppedAt, "one tap, at the same sentence")
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        let reading = await rig.waitUntil(5) { rig.engineA.requests.count > asked }
+        XCTAssertTrue(reading)
+        let first = rig.engineA.requestedTexts[asked]
+        XCTAssertTrue(first.hasPrefix("Line\(stoppedAt) "), "Try again reads sentence \(stoppedAt) first, got '\(first)'")
+        XCTAssertEqual(rig.controller.skippedSentences, [])
+    }
+
     func testASkippedSentenceIsANoticeWhileStillPlaying() async throws {
         let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25, failing: { $0.hasPrefix("Line3 ") })
         rig.loadDefault()

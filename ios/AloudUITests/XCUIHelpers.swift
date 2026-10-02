@@ -84,6 +84,27 @@ extension XCTestCase {
                              file: file, line: line)
     }
 
+    /// Whether an audit issue is a Dynamic Type issue on navigation-bar
+    /// content. UIKit caps text scaling inside bars by design (a bar keeps
+    /// its height at every size), so the audit calls a bar title "partially
+    /// unsupported" however its font is built. Apple's answer for bar
+    /// content is the Large Content Viewer, which every custom bar title
+    /// opts into (`.accessibilityShowsLargeContentViewer()`). Any other
+    /// issue type, and any Dynamic Type issue below the bar, still fails.
+    func isNavigationBarTextScaling(_ issue: XCUIAccessibilityAuditIssue,
+                                    in app: XCUIApplication) -> Bool {
+        guard issue.auditType == .dynamicType, let element = issue.element else { return false }
+        let center = CGPoint(x: element.frame.midX, y: element.frame.midY)
+        return app.navigationBars.allElementsBoundByIndex.contains { $0.frame.contains(center) }
+    }
+
+    /// The system search field's prompt ("Title or author") reported as
+    /// clipped: iOS draws that field, and the prompt fits its 370pt width with
+    /// room to spare. Anything else that clips is still an issue.
+    func isSystemSearchPromptClipping(_ issue: XCUIAccessibilityAuditIssue) -> Bool {
+        issue.auditType == .textClipped && issue.element?.elementType == .searchField
+    }
+
     /// How many books the Library shows: grid cards plus the Continue card.
     func libraryCount(_ app: XCUIApplication) -> Int {
         app.buttons.matching(NSPredicate(format: "identifier IN %@",
@@ -162,6 +183,27 @@ extension XCTestCase {
             .firstMatch
         guard probe.exists else { return nil }
         return Self.suffixNumber(of: probe.identifier, after: prefix)
+    }
+
+    /// The page line the active sentence's top sits on, counted from the
+    /// top of the column ("reader.activeLine.<n>").
+    func activeLine(_ app: XCUIApplication) -> Int? {
+        let prefix = "reader.activeLine."
+        let probe = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
+            .firstMatch
+        guard probe.exists else { return nil }
+        return Self.suffixNumber(of: probe.identifier, after: prefix)
+    }
+
+    /// One audit issue as a line a failure can act on: what, the element's
+    /// identifier and label, and where it sits.
+    func describe(_ issue: XCUIAccessibilityAuditIssue) -> String {
+        let check = "audit \(issue.auditType.rawValue)"
+        guard let element = issue.element else { return "\(issue.compactDescription) (\(check)) [no element]" }
+        let f = element.frame
+        return "\(issue.compactDescription) (\(check)) [\(element.identifier)] '\(element.label)' "
+            + "(\(Int(f.minX)), \(Int(f.minY)), \(Int(f.width))x\(Int(f.height)))"
     }
 
     /// The active sentence's frame on screen.

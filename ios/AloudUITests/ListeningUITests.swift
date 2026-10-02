@@ -28,6 +28,19 @@ final class ListeningUITests: XCTestCase {
                       "The Listening sheet should open", file: file, line: line)
     }
 
+    /// The element's frame once two reads a quarter second apart agree. The
+    /// sheet's content-sized detent settles after its first layout.
+    private func settledFrame(of element: XCUIElement) -> CGRect {
+        var frame = element.frame
+        for _ in 0..<12 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            let next = element.frame
+            if next == frame { break }
+            frame = next
+        }
+        return frame
+    }
+
     private func presets(_ app: XCUIApplication) -> XCUIElementQuery {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'listening.preset.'"))
     }
@@ -106,7 +119,9 @@ final class ListeningUITests: XCTestCase {
         openListeningSheet(app)
 
         let buttons = presets(app)
-        XCTAssertEqual(buttons.allElementsBoundByIndex.map(\.label), ["1×", "1.25×", "1.5×", "2×", "2.5×"])
+        // Shown as "1.25×", spoken in words (the description audit).
+        XCTAssertEqual(buttons.allElementsBoundByIndex.map(\.label),
+                       ["1", "1.25", "1.5", "2", "2.5"].map { "\($0) times speed" })
 
         let onePointFive = app.buttons["listening.preset.1.5"].firstMatch
         onePointFive.tap()
@@ -190,12 +205,40 @@ final class ListeningUITests: XCTestCase {
         XCTAssertEqual(stringValue(of: readAsides), "0")
     }
 
+    /// Clipping is audited on the Voice & speed page Settings pushes: the
+    /// same ListeningView as the sheet. Inside the reader's content-sized
+    /// sheet the clipping check flags lines that are whole on screen (the
+    /// run's recording shows them); pushed, the same views pass. So the
+    /// sheet's own audit leaves clipping to this one.
+    func testVoiceAndSpeedPageClipsNothing() throws {
+        for size in AuditTextSize.all {
+            let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-seed-classics", "1",
+                                             "-uitest-temp-model-dir"] + size.launchArguments)
+            app.launch()
+            let settings = app.buttons["library.settings"].firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 20))
+            settings.tap()
+            let row = app.buttons["settings.listening"].firstMatch
+            XCTAssertTrue(row.waitForExistence(timeout: 10))
+            row.tap()
+            XCTAssertTrue(app.buttons["model.download"].firstMatch.waitForExistence(timeout: 10))
+            var issues: [String] = []
+            try app.performAccessibilityAudit(for: .textClipped) { issue in
+                if issue.element?.identifier.hasPrefix("debug.") == true { return true }
+                issues.append(self.describe(issue))
+                return true   // collected, so one failure lists them all
+            }
+            XCTAssertEqual(issues, [], "Voice & speed page at \(size.name)")
+            app.terminate()
+        }
+    }
+
     func testListeningSheetAccessibilityAudit() throws {
         var previous: (size: AuditTextSize, height: CGFloat)?
         for size in AuditTextSize.all {
             let app = launchReader(size.launchArguments)
             openListeningSheet(app)
-            let title = app.staticTexts["listening.title"].firstMatch.frame
+            let title = settledFrame(of: app.staticTexts["listening.title"].firstMatch)
             assertTextSizeTook(size, height: title.height, over: previous)
             previous = (size, title.height)
             // Only the sheet: the reader above and behind it has its own
@@ -207,12 +250,20 @@ final class ListeningUITests: XCTestCase {
                     || ["reader.", "player.", "debug."].contains { element.identifier.hasPrefix($0) }
             }
             var issues: [String] = []
-            try app.performAccessibilityAudit(for: [.dynamicType, .textClipped, .contrast,
-                                                    .hitRegion, .sufficientElementDescription]) { issue in
+            func collect(_ issue: XCUIAccessibilityAuditIssue) -> Bool {
                 if let element = issue.element, isReader(element) { return true }
-                issues.append("\(issue.compactDescription) [\(issue.element?.identifier ?? "")]")
+                issues.append(self.describe(issue))
                 return true   // collected, so one failure lists them all
             }
+            // The settled sheet first, then Dynamic Type on its own: that
+            // audit steps the text size live and this sheet's detent follows
+            // its content (R8), so the sheet resizes through every step.
+            // Clipping is audited on the pushed page instead
+            // (testVoiceAndSpeedPageClipsNothing): in this sheet the check
+            // flags lines that are whole on screen, even at rest.
+            try app.performAccessibilityAudit(for: [.contrast, .hitRegion,
+                                                    .sufficientElementDescription], collect)
+            try app.performAccessibilityAudit(for: .dynamicType, collect)
             XCTAssertEqual(issues, [], "Listening sheet at \(size.name)")
             app.terminate()
         }

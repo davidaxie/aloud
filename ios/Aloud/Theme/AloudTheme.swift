@@ -100,7 +100,9 @@ enum Theme {
         case footnote
         /// SF 12 medium, tabular digits (.caption) — readouts, durations.
         case caption
-        /// SF 11 semibold small caps (.caption2) — section eyebrows.
+        /// SF 12 semibold small caps (.caption) — section eyebrows. Not
+        /// .caption2: it never drops below 11pt, so it doesn't follow the
+        /// smaller text sizes, which the Dynamic Type audit reports.
         case eyebrow
         /// SF bold, tabular digits (.largeTitle) — the speed readout.
         case numeral
@@ -118,7 +120,7 @@ enum Theme {
         case .subhead:  return .footnote.weight(.semibold)
         case .footnote: return .footnote
         case .caption:  return .caption.weight(.medium).monospacedDigit()
-        case .eyebrow:  return .caption2.weight(.semibold).lowercaseSmallCaps()
+        case .eyebrow:  return .caption.weight(.semibold).lowercaseSmallCaps()
         case .numeral:  return .largeTitle.weight(.bold).monospacedDigit()
         case .aside:    return .custom(serifFamilyName, size: 15, relativeTo: .footnote).italic()
         }

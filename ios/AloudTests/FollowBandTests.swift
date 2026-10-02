@@ -127,18 +127,19 @@ final class FollowBandTests: XCTestCase {
         return scrolls
     }
 
-    func testOneLineSentencesScrollAtMostFifteenTimesPerHundred() {
+    /// R16's budget is 15 or fewer follow scrolls per 100 lines read: one
+    /// 30pt line per sentence here, so 100 sentences are 100 lines.
+    func testOneLineSentencesScrollAtMostFifteenTimesPerHundredLines() {
         let scrolls = simulatedScrolls(sentenceHeight: 30)
         XCTAssertLessThanOrEqual(scrolls, 15, "the PRD's budget; the old follow scrolled ~100 times")
     }
 
-    /// The PRD band allows about 27–30 scrolls per 100 sentences of 2–2.5
-    /// lines (this 75pt simulation measures 32): above the 15 budget, which
-    /// is an open product decision, so this records the count rather than
-    /// failing on it.
-    func testTwoAndAHalfLineSentencesRecordTheirScrollCount() {
+    /// 100 sentences of 2.5 lines are 250 lines. Per sentence the band
+    /// allows about 30 scrolls, which is why the budget counts lines.
+    func testTwoAndAHalfLineSentencesStayWithinTheBudgetPerHundredLines() {
         let scrolls = simulatedScrolls(sentenceHeight: 75)
-        print("FollowBand: 2.5-line sentences scroll \(scrolls) times per 100")
-        XCTAssertLessThan(scrolls, 100, "still calmer than following every sentence")
+        let perHundredLines = Double(scrolls) * 100 / 250
+        print("FollowBand: 2.5-line sentences scroll \(scrolls) times per 250 lines")
+        XCTAssertLessThanOrEqual(perHundredLines, 15, "\(scrolls) scrolls over 250 lines")
     }
 }

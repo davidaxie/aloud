@@ -77,14 +77,20 @@ struct ModelDownloadView: View {
                 Text(NaturalVoiceCopy.offer)
                     .font(Theme.font(.body).weight(.semibold))
                     .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Button {
                 requestDownload()
             } label: {
                 // The capsule carries a text label, so it is `accentStrong`.
+                // The label wraps inside it rather than truncating; the
+                // capsule grows from its 44pt minimum.
                 Text(NaturalVoiceCopy.download)
                     .font(Theme.font(.callout).weight(.semibold))
                     .foregroundStyle(Theme.bg)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Theme.Space.md)
                     .frame(maxWidth: .infinity, minHeight: 44)
                     .background(Theme.accentStrong, in: Capsule())
             }
@@ -93,6 +99,7 @@ struct ModelDownloadView: View {
             Text(NaturalVoiceCopy.privacyLine)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -341,6 +341,7 @@ final class ListeningLoopUITests: XCTestCase {
                       "Opening the book should start it, got '\(stringValue(of: play))'")
         let start = try XCTUnwrap(currentSentence(app))
         let startScrolls = try XCTUnwrap(followScrollCount(app), "The follow probe should exist")
+        let startLine = try XCTUnwrap(activeLine(app), "The line probe should exist")
 
         var outOfView: [String] = []
         let reached = waitForSentence(in: app, timeout: 600) { sentence in
@@ -350,11 +351,18 @@ final class ListeningLoopUITests: XCTestCase {
             return sentence >= start + 100
         }
         let endScrolls = try XCTUnwrap(followScrollCount(app), "The follow probe should outlast the run")
+        let endLine = try XCTUnwrap(activeLine(app), "The line probe should outlast the run")
         let measured = endScrolls - startScrolls
-        print("ListeningLoopUITests: \(measured) follow scrolls over 100 sentences at 3x")
+        let lines = endLine - startLine
+        print("ListeningLoopUITests: \(measured) follow scrolls over 100 sentences (\(lines) lines) at 3x")
         XCTAssertNotNil(reached, "100 sentences should play")
         XCTAssertEqual(outOfView, [], "The voice never meets the nav bar or the player")
-        XCTAssertLessThanOrEqual(measured, 15, "The PRD's budget (an open product decision for long sentences)")
+        XCTAssertGreaterThan(lines, 0, "100 sentences run down the column")
+        // R16's budget: 15 or fewer follow scrolls per 100 lines read. Per
+        // sentence it can't hold for long sentences at any band that lands
+        // the voice in the same place.
+        XCTAssertLessThanOrEqual(Double(measured) * 100 / Double(max(lines, 1)), 15,
+                                 "\(measured) scrolls over \(lines) lines")
 
         // Scrolled back from the voice: nothing moves for 30 s.
         let text = app.textViews["reader.text"].firstMatch

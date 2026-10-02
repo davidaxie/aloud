@@ -74,6 +74,14 @@ final class ListeningFormatTests: XCTestCase {
         XCTAssertEqual(ListeningFormat.chipTitle(voice: michael, rate: 1.25), "Michael · 1.25×")
     }
 
+    func testSpokenRateIsWords() throws {
+        try XCTSkipUnless(Locale.current.decimalSeparator == ".", "needs a '.' decimal separator")
+        XCTAssertEqual(ListeningCopy.spokenRate(1), "1 times speed")
+        XCTAssertEqual(ListeningCopy.spokenRate(1.25), "1.25 times speed")
+        XCTAssertEqual(ListeningCopy.spokenRate(2.5), "2.5 times speed")
+        XCTAssertFalse(SpeedScale.presets.map(ListeningCopy.spokenRate).contains { $0.contains("×") })
+    }
+
     func testIdentifierNumberIsLocaleFree() {
         XCTAssertEqual(ListeningFormat.identifierNumber(1), "1")
         XCTAssertEqual(ListeningFormat.identifierNumber(1.25), "1.25")

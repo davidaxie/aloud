@@ -124,24 +124,37 @@ struct PlayerBarView: View {
         }
         // A full 44pt touch row around the 4pt line.
         .frame(height: 44)
-        // One element of shapes: without this the label has nothing to land on.
-        .accessibilityElement()
-        .accessibilityLabel("Position")
-        // The playhead's spoken position, never a sentence index (R12e).
-        .accessibilityValue(navigation.positionLine(at: playhead,
-                                                    rate: playback.rate,
-                                                    documentTitle: document.title,
-                                                    isFinished: playback.isAtEnd)
-                                .accessibilityLabel)
-        // The scrub's own step (R12c): VoiceOver reads the new value.
-        .accessibilityAdjustableAction { direction in
-            if let target = navigation.adjustmentTarget(from: playhead,
-                                                        forward: direction == .increment,
-                                                        rate: playback.rate) {
-                playback.jump(to: target, origin: .scrub)
-            }
+        // A slider to assistive tech (R12c): shapes with only an adjustable
+        // action read as a plain element (.other to XCUITest, not .slider).
+        // This swaps the accessibility alone; the drag stays on the track.
+        .accessibilityRepresentation {
+            // Constant: every assistive step arrives as the adjustable action
+            // below, never as a write to the value.
+            Slider(value: .constant(navigation.scrubFraction(of: playhead,
+                                                             in: navigation.scrubSpan(at: playhead))),
+                   in: 0...1)
+                // The whole touch row, so the element's frame is the one the
+                // drag uses: a Slider's own ideal height is a thin track, and
+                // the representation is sized from it.
+                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: .infinity)
+                .accessibilityLabel("Position")
+                // The playhead's spoken position, never a sentence index (R12e).
+                .accessibilityValue(navigation.positionLine(at: playhead,
+                                                            rate: playback.rate,
+                                                            documentTitle: document.title,
+                                                            isFinished: playback.isAtEnd)
+                                        .accessibilityLabel)
+                // The scrub's own step (R12c), by chapter in place of the
+                // slider's default: VoiceOver reads the new value.
+                .accessibilityAdjustableAction { direction in
+                    if let target = navigation.adjustmentTarget(from: playhead,
+                                                                forward: direction == .increment,
+                                                                rate: playback.rate) {
+                        playback.jump(to: target, origin: .scrub)
+                    }
+                }
+                .accessibilityIdentifier("player.scrub")
         }
-        .accessibilityIdentifier("player.scrub")
     }
 
     /// The span freezes on the first seek frame, so the track never rescales

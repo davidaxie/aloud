@@ -71,21 +71,25 @@ enum FollowBand {
 }
 
 #if DEBUG
-/// UI-test probe for R16: counts programmatic follow scrolls and holds the
-/// active sentence's frame, published through reader.followScrolls.<n> and
-/// reader.activeSentence.
+/// UI-test probe for R16: counts programmatic follow scrolls, holds the
+/// active sentence's frame, and the page line its top sits on, published
+/// through reader.followScrolls.<n>, reader.activeSentence and
+/// reader.activeLine.<n>. R16's budget is per 100 lines read, so a run
+/// measures lines as the distance the voice travelled down the column.
 @MainActor
 final class ReaderFollowProbe: ObservableObject {
     static let shared = ReaderFollowProbe()
 
     @Published private(set) var scrolls = 0
     @Published var activeRect: CGRect?
+    @Published var activeLine: Int?
 
     func noteScroll() { scrolls += 1 }
 
     func reset() {
         scrolls = 0
         activeRect = nil
+        activeLine = nil
     }
 }
 #endif

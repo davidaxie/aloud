@@ -615,7 +615,9 @@ final class ShortcutActionsTests: XCTestCase {
     /// The playhead crosses a skipped sentence's silence onto one whose
     /// synthesis hasn't finished, still .playing. Nothing is heard there, so
     /// it isn't a start: a voice failing every sentence slowly is "Couldn't
-    /// play", like one failing them at once.
+    /// play", like one failing them at once. Three failures in a row are the
+    /// voice's, so the stop hands sentences 2 and 3 back and waits on 2, the
+    /// first one never heard (R11's one tap at the same sentence).
     func testPlayheadOnASentenceStillSynthesizingIsNotAStart() async throws {
         let (h, engine, book, run) = try await continueOntoAStalledSentence()
 
@@ -625,7 +627,8 @@ final class ShortcutActionsTests: XCTestCase {
         XCTAssertEqual(outcome, .failed(title: book.title))
         XCTAssertEqual(h.rig.controller.status, .error)
         XCTAssertEqual(h.rig.controller.stopReason(for: book.id), .playbackError)
-        XCTAssertEqual(h.rig.controller.skippedSentences, [2, 3])
+        XCTAssertEqual(h.rig.controller.skippedSentences, [])
+        XCTAssertEqual(h.rig.controller.currentSentence, 2)
         XCTAssertEqual(h.mixerVolume, 0)
     }
 

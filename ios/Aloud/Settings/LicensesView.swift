@@ -84,6 +84,9 @@ struct LicensesView: View {
                 Text("Licenses")
                     .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
+                    // The bar caps text scaling; at accessibility sizes a
+                    // long press shows the title large instead.
+                    .accessibilityShowsLargeContentViewer()
             }
         }
     }

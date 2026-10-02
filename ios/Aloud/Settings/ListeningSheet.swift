@@ -16,9 +16,14 @@ struct ListeningSheet: View {
             // Pinned above the scroll view: the title never scrolls away.
             VStack(spacing: Theme.Space.xs) {
                 SheetGrabber()
+                // Wraps, centered inside the gutters, rather than truncating
+                // at the largest sizes or while the detent is still moving.
                 Text(ListeningCopy.title)
                     .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Theme.Space.sheetGutter)
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityIdentifier("listening.title")
             }

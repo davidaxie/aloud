@@ -748,6 +748,10 @@ struct ReaderTextView: UIViewRepresentable {
                     if ReaderFollowProbe.shared.activeRect != onScreen {
                         ReaderFollowProbe.shared.activeRect = onScreen
                     }
+                    let line = Int(rect.minY / ReaderPageStyle(fontSize: parent.fontSize).lineHeight)
+                    if ReaderFollowProbe.shared.activeLine != line {
+                        ReaderFollowProbe.shared.activeLine = line
+                    }
                 }
                 #endif
             }

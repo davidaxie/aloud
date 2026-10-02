@@ -56,14 +56,18 @@ final class ReaderChromeUITest: XCTestCase {
         let windowHeight = app.windows.firstMatch.frame.height
         let bottomControls = ["reader.chapterLine", "player.scrub", "player.listening",
                               "player.back15", "player.play", "player.forward15", "player.sleep"]
+        // Frames come back in window points from a fractional origin, so a
+        // fixed 44pt target can read 43.99999999999997: a hundredth of a
+        // point is rounding, never a smaller target.
+        let minimumTarget: CGFloat = 44 - 0.01
         for identifier in bottomControls {
             let control = element(identifier, in: app)
             XCTAssertTrue(control.waitForExistence(timeout: 10), "\(identifier) should exist")
             let frame = control.frame
             XCTAssertGreaterThanOrEqual(frame.minY, 0.6 * windowHeight,
                                         "\(identifier) should sit in the bottom 40% (minY \(frame.minY))")
-            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(identifier) is \(frame.width)pt wide")
-            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(identifier) is \(frame.height)pt tall")
+            XCTAssertGreaterThanOrEqual(frame.width, minimumTarget, "\(identifier) is \(frame.width)pt wide")
+            XCTAssertGreaterThanOrEqual(frame.height, minimumTarget, "\(identifier) is \(frame.height)pt tall")
         }
 
         // At rest: back, Aa, chapter line, chip, back 15, Play, forward 15,

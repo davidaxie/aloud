@@ -347,6 +347,8 @@ struct AppearanceSettingsPage: View {
                         .foregroundStyle(Theme.text)
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityIdentifier("appearance.title")
+                        // The bar caps its text size; long-press shows it large.
+                        .accessibilityShowsLargeContentViewer()
                 }
             }
     }

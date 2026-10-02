@@ -283,6 +283,11 @@ final class PlaybackController: ObservableObject {
     private var lastScheduled = -1
     private var hasActiveSchedule = false
     private var consecutiveFailures = 0
+    /// The sentences skipped since the last clip that synthesized, in order.
+    /// Each was skipped as one bad sentence; a run that reaches the stop
+    /// threshold was the voice failing, so the stop hands them back
+    /// (`withdrawFailedRunSkips`).
+    private var failedRunSkips: [Int] = []
     /// Set only by an interruption that stopped playback. Every user
     /// transport and every later stop clears it, so `.ended(shouldResume:)`
     /// brings back that stop and nothing the listener paused since.
@@ -472,6 +477,7 @@ final class PlaybackController: ObservableObject {
         wordsBefore = content.navigationIndex().wordsBefore   // before the cue's progress write
         skippedSentences = []
         consecutiveFailures = 0
+        failedRunSkips = []
         finishedCue = nil   // after the flush above, which used the outgoing book's
         sleepStopAfter = nil
         pendingFadeIn = nil
@@ -1203,6 +1209,7 @@ final class PlaybackController: ObservableObject {
         currentSentence = target
         lastScheduled = target - 1
         consecutiveFailures = 0
+        failedRunSkips = []
         chainTopUp(token: playToken)
     }
 
@@ -1251,6 +1258,7 @@ final class PlaybackController: ObservableObject {
                     // the old voice never reaches the node at or past it.
                     guard clipVoice == voiceForSentence(next) else { continue }
                     consecutiveFailures = 0
+                    failedRunSkips = []   // the skips before it stand: the voice reads
                 } catch is CancellationError {
                     return
                 } catch {
@@ -1264,6 +1272,11 @@ final class PlaybackController: ObservableObject {
                     }
                     consecutiveFailures += 1
                     if consecutiveFailures >= 3 {
+                        // Three in a row is the voice, not three bad
+                        // sentences: the run's skips (look-ahead it failed
+                        // on its way here) go back to being read, from the
+                        // first one the listener never heard.
+                        withdrawFailedRunSkips()
                         // A neural engine that fails globally degrades to the
                         // system voice instead of erroring out.
                         if voice.engine == .kokoro {
@@ -1275,6 +1288,7 @@ final class PlaybackController: ObservableObject {
                     }
                     // Skip-and-continue: one bad sentence never stops the book.
                     skippedSentences.insert(next)
+                    failedRunSkips.append(next)
                     postNotice(.skippedSentence)
                     scheduleSilence(forSentence: next, voice: voiceForSentence(next), token: token)
                     continue
@@ -1283,6 +1297,20 @@ final class PlaybackController: ObservableObject {
             guard token == playToken else { return }
             scheduleClip(clip, forSentence: next, voice: clipVoice, token: token)
         }
+    }
+
+    /// A failure run ends in the stop (or the System voice): its skips were
+    /// never bad sentences, so they leave `skippedSentences`, and a playhead
+    /// already on one of their beats of silence goes back to the first. The
+    /// run is consecutive sentences with nothing heard from its first on, so
+    /// that is where the listener stopped hearing the book, and where Try
+    /// again (R11) or the fallback voice reads from. Before the stop's
+    /// status change, so the resume anchor and the stop share it.
+    private func withdrawFailedRunSkips() {
+        guard let first = failedRunSkips.first else { return }
+        skippedSentences.subtract(failedRunSkips)
+        failedRunSkips = []
+        if currentSentence > first { currentSentence = first }
     }
 
     /// The voice sentence `index` is queued in: the handoff's from its splice

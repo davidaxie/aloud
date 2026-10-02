@@ -141,6 +141,9 @@ struct ReaderScreen: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .accessibilityAddTraits(.isHeader)
+                // The bar caps its text size and truncates a long title;
+                // long-press shows it whole and large.
+                .accessibilityShowsLargeContentViewer()
                 .accessibilityIdentifier("reader.title")
                 .accessibilityAction(.magicTap) { togglePlayback() }
         }
@@ -330,6 +333,13 @@ private struct ReaderFollowProbeOverlay: View {
                     .accessibilityElement()
                     .accessibilityLabel("Follow scrolls")
                     .accessibilityIdentifier("reader.followScrolls.\(probe.scrolls)")
+                if let line = probe.activeLine {
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityLabel("Active line")
+                        .accessibilityIdentifier("reader.activeLine.\(line)")
+                }
                 if let rect = probe.activeRect {
                     Color.clear
                         .frame(width: max(rect.width, 1), height: max(rect.height, 1))

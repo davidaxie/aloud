@@ -9,6 +9,13 @@ enum ListeningCopy {
     static let preparingVoice = "Preparing voice\u{2026}"
     static let hintSentence = "Reads the current sentence in this voice"
     static let hintSample = "Reads a sample in this voice"
+
+    /// A preset's spoken name, "1.25 times speed". "1.25×" is a numeral and
+    /// a sign, not words (the element-description audit flags it), so the
+    /// button shows it but says this. ListeningFormat's number, minus its ×.
+    static func spokenRate(_ rate: Double) -> String {
+        String(ListeningFormat.rate(rate).dropLast()) + " times speed"
+    }
 }
 
 /// R8: speed and voice in one place. The speed numeral, five presets and a
@@ -159,6 +166,7 @@ struct ListeningView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(ListeningCopy.spokenRate(preset))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("listening.preset.\(ListeningFormat.identifierNumber(preset))")
     }
@@ -197,19 +205,24 @@ struct ListeningView: View {
             playback.selectVoice(voice)
         } label: {
             HStack(spacing: Theme.Space.sm) {
+                // Each line wraps to its full height, never truncates, however
+                // the sheet's height moves under it.
                 VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                     Text(voice.name)
                         .font(Theme.font(.body).weight(selected ? .semibold : .regular))
                         .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(subtitle)
                         .font(Theme.font(.footnote))
                         .foregroundStyle(Theme.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                     // At accessibility sizes the origin joins the text column
                     // rather than squeezing it from a trailing one.
                     if isAccessibilitySize, !origin.isEmpty {
                         Text(origin)
                             .font(Theme.font(.caption))
                             .foregroundStyle(Theme.textFaint)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Spacer(minLength: Theme.Space.xs)
@@ -313,6 +326,8 @@ struct ListeningSettingsPage: View {
                         .foregroundStyle(Theme.text)
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityIdentifier("listening.title")
+                        // The bar caps its text size; long-press shows it large.
+                        .accessibilityShowsLargeContentViewer()
                 }
             }
     }
