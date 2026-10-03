@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import XCTest
 @testable import Aloud
@@ -6,8 +7,11 @@ import XCTest
 /// that matches the reading column (480-640 pt), the chips on a second row
 /// below a 560 pt column or in the larger chrome bands, and at most nine
 /// focusable controls below the text, ten while the natural-voice offer
-/// shows. Plus the sleep chip's menu: the most recent choice first, Off
-/// only while armed, in the chip's sentence case. Pure layout, no window.
+/// shows. The bands (M18, mac-ux §10.4): the bar follows the reader's text
+/// size, and fits the 520 × 480 window at 40 pt. Plus the sleep chip's
+/// menu: the most recent choice first, Off only while armed, in the chip's
+/// sentence case. Pure layout, no window; text is measured with AppKit's
+/// own metrics.
 @MainActor
 final class MacPlayerBarTests: XCTestCase {
 
@@ -162,6 +166,200 @@ final class MacPlayerBarTests: XCTestCase {
             XCTAssertEqual(MacPlayerBarLayout(barWidth: width, scale: .standard)
                             .focusableControls(message: nil, chip: .undoJump), expected, "\(width) pt")
         }
+    }
+
+    // MARK: - Bands (M18)
+
+    /// The reader's nine sizes and the band each one sets the bar in.
+    private static let sizeBands: [(points: CGFloat, scale: ChromeScale)] = [
+        (16, .standard), (17.5, .standard), (19, .standard), (21, .standard),
+        (23, .large), (26, .large), (30, .large),
+        (35, .largest), (40, .largest),
+    ]
+
+    /// Every reader step picks its band: body / callout / caption 13 / 12 /
+    /// 11 at 16-21 pt, 15 / 14 / 13 at 23-30, 17 / 16 / 15 at 35-40, and
+    /// the bar drawn at that step is the band's bar.
+    func testEachReaderSizeStepSetsTheBarsBand() {
+        XCTAssertEqual(Self.sizeBands.map(\.points), ReaderTextSize.steps, "every step of the Aa stepper and ⌘+ / ⌘−")
+        let type: [ChromeScale: [CGFloat]] = [.standard: [13, 12, 11], .large: [15, 14, 13], .largest: [17, 16, 15]]
+        for (step, expected) in Self.sizeBands.enumerated() {
+            let scale = ChromeScale(readerStep: step)
+            XCTAssertEqual(scale, expected.scale, "\(expected.points) pt")
+            XCTAssertEqual([.body, .callout, .caption].map { PlatformTypeRamp.points($0, scale: scale) },
+                           type[expected.scale], "\(expected.points) pt")
+            let layout = MacPlayerBarLayout(barWidth: 1400, scale: scale)
+            XCTAssertEqual(layout.scale, expected.scale, "\(expected.points) pt")
+            XCTAssertEqual(layout.chipsOnSecondRow, expected.scale != .standard,
+                           "\(expected.points) pt: the chips leave the transport row from 23 pt")
+        }
+    }
+
+    /// The Play circle grows a step per band (44, 52, 60), and its row,
+    /// the chips and the skips grow with it.
+    func testThePlayCircleAndTheControlsGrowWithTheBand() {
+        let table: [(ChromeScale, circle: CGFloat, playRow: CGFloat, chip: CGFloat, chipRow: CGFloat, skip: CGFloat)] = [
+            (.standard, 44, 56, 28, 44, 32),
+            (.large, 52, 64, 32, 48, 36),
+            (.largest, 60, 72, 36, 52, 40),
+        ]
+        XCTAssertEqual(table.map(\.0), ChromeScale.allCases)
+        for (scale, circle, playRow, chip, chipRow, skip) in table {
+            XCTAssertEqual(scale.playCircleDiameter, circle, "\(scale)")
+            XCTAssertEqual(MacPlayerBarLayout.transportRowHeight(for: [.back15, .play, .forward15], scale: scale),
+                           playRow, "\(scale)")
+            XCTAssertEqual(MacPlayerBarLayout.chipHeight(for: scale), chip, "\(scale)")
+            XCTAssertEqual(MacPlayerBarLayout.transportRowHeight(for: [.listening, .sleep], scale: scale),
+                           chipRow, "\(scale)")
+            XCTAssertEqual(MacPlayerBarLayout.glyphHit(for: scale), skip, "\(scale)")
+            XCTAssertGreaterThanOrEqual(MacPlayerBarLayout.chipHeight(for: scale), MacPlayerBarLayout.chipHeight,
+                                        "never under the HIG's 28 pt")
+            // The busy ring sits outside the circle; its row holds it too,
+            // so buffering never draws over the scrub or the chips' row.
+            let ring = circle + 2 * (Theme.PlayCircle.arcGap + Theme.PlayCircle.arcWidth)
+            XCTAssertGreaterThanOrEqual(playRow, ring, "\(scale): the busy ring fits its row")
+        }
+        XCTAssertEqual(MacPlayerBarLayout.chipHeight(for: .standard), MacPlayerBarLayout.chipHeight)
+        XCTAssertEqual(MacPlayerBarLayout.glyphHit(for: .standard), MacPlayerBarLayout.glyphHit)
+        let circles = ChromeScale.allCases.map(\.playCircleDiameter)
+        XCTAssertEqual(circles, circles.sorted(), "the circle only grows")
+        XCTAssertEqual(Set(circles).count, circles.count, "each band a larger circle")
+    }
+
+    /// The whole bar in each band fits the minimum window: at most half of
+    /// its 480 pt height, so the page keeps the other half, in one row or
+    /// two, at every width from the 520 pt minimum. 144 pt in one row at
+    /// the standard band.
+    func testTheBarsHeightInEveryBandFitsTheMinimumWindow() {
+        let minimum = MacWindowConfigurator.minimumSize
+        XCTAssertEqual(minimum, CGSize(width: 520, height: 480))
+        for width in [minimum.width, 599, 600, 1000, 1400] {
+            var previous: CGFloat = 0
+            for scale in ChromeScale.allCases {
+                let layout = MacPlayerBarLayout(barWidth: width, scale: scale)
+                XCTAssertLessThanOrEqual(layout.height, minimum.height / 2, "\(width) pt, \(scale): \(layout.height)")
+                XCTAssertGreaterThanOrEqual(layout.height, previous, "\(width) pt, \(scale): a larger band never shrinks it")
+                previous = layout.height
+            }
+        }
+        XCTAssertEqual(MacPlayerBarLayout(barWidth: 1000, scale: .standard).height,
+                       Theme.Space.xs + 44 + MacScrub.rowHeight + 56 + Theme.Space.sm,
+                       "insets, the chapter line, the scrub and one transport row")
+        XCTAssertEqual(MacPlayerBarLayout(barWidth: 1000, scale: .standard).height, 144)
+        XCTAssertEqual(MacPlayerBarLayout(barWidth: minimum.width, scale: .standard).height, 144 + 44,
+                       "the chips' own row below 560 pt")
+        XCTAssertEqual(MacPlayerBarLayout(barWidth: 1400, scale: .large).height,
+                       MacPlayerBarLayout(barWidth: minimum.width, scale: .large).height,
+                       "a larger band is two rows at any width")
+    }
+
+    /// At 40 pt the chapter line may wrap (mac-ux §10.4): the bar keeps room
+    /// for its title on two lines over its detail. In the other bands one
+    /// line of the band's type fits the shared line's 44 pt row.
+    func testTheChapterLineHasRoomToWrapAtTheLargestBand() {
+        for scale in ChromeScale.allCases {
+            XCTAssertLessThanOrEqual(MacPlayerBarLayout.lineHeight(.subhead, scale: scale),
+                                     MacPlayerBarLayout.chapterLineMinHeight, "\(scale): one line fits")
+        }
+        XCTAssertEqual(MacPlayerBarLayout.chapterLineHeight(for: .standard), 44)
+        XCTAssertEqual(MacPlayerBarLayout.chapterLineHeight(for: .large), 44)
+        let wrapped = 2 * MacPlayerBarLayout.lineHeight(.subhead, scale: .largest) + Theme.Space.xxs
+            + MacPlayerBarLayout.lineHeight(.footnote, scale: .largest)
+        XCTAssertGreaterThanOrEqual(MacPlayerBarLayout.chapterLineHeight(for: .largest), wrapped)
+        XCTAssertGreaterThan(MacPlayerBarLayout.chapterLineHeight(for: .largest), MacPlayerBarLayout.chapterLineMinHeight,
+                             "two lines and a detail need more than the one-line row")
+    }
+
+    /// Nothing clips at 40 pt in the narrowest window, nor in one row at
+    /// the 560 pt break: the cluster fits the column, the widest chip
+    /// labels fit their side, each label fits its chip's height, and the
+    /// skip glyphs fit their hit regions.
+    func testNothingClipsAtFortyPointsInTheMinimumWindow() {
+        let listening = "Samantha · " + ListeningFormat.rate(2.25)
+        let sleepLabels = [SleepTimer.Copy.chapterEnd, SleepTimer.Copy.bookEnd, SleepTimer.Copy.extendChip, "28:14"]
+        let cases: [(barWidth: CGFloat, scale: ChromeScale)] = [
+            (520, .standard), (600, .standard), (520, .large), (520, .largest), (1400, .largest),
+        ]
+        for (barWidth, scale) in cases {
+            let layout = MacPlayerBarLayout(barWidth: barWidth, scale: scale)
+            let label = "\(barWidth) pt, \(scale)"
+            XCTAssertLessThanOrEqual(MacPlayerBarLayout.transportClusterWidth(for: scale), layout.columnWidth, label)
+            for text in [listening] + sleepLabels {
+                XCTAssertLessThanOrEqual(chipWidth(text, scale: scale), layout.chipSideWidth, "\(label): \(text)")
+            }
+            XCTAssertLessThanOrEqual(MacPlayerBarLayout.lineHeight(.subhead, scale: scale),
+                                     MacPlayerBarLayout.chipHeight(for: scale), label)
+            for symbol in ["gobackward.15", "goforward.15"] {
+                guard let glyph = glyphSize(symbol, scale: scale) else {
+                    XCTFail("\(symbol) is a system symbol")
+                    continue
+                }
+                let hit = MacPlayerBarLayout.glyphHit(for: scale)
+                XCTAssertLessThanOrEqual(max(glyph.width, glyph.height), hit, "\(label): \(symbol)")
+            }
+        }
+        // The chip slot's one chip, glyph and title, centered over the
+        // narrowest column.
+        for chip in [ReaderChip.undoJump, .moreClassics, .followVoice(.up)] {
+            let glyph = glyphSize(chip.systemImage, scale: .largest, style: .subhead)?.width ?? .infinity
+            XCTAssertLessThanOrEqual(chipWidth(chip.title, scale: .largest) + Theme.Space.xs + glyph,
+                                     MacPlayerBarLayout.minColumnWidth, chip.title)
+        }
+    }
+
+    /// The bands move nothing in or out of the keyboard's way: nine at rest
+    /// and ten with the offer under a chip, in the same order, at every band
+    /// and width.
+    func testTheFocusBudgetHoldsInEveryBand() {
+        let expected: [MacPlayerBarLayout.Control] = [.chip, .chapterLine, .scrub,
+                                                      .listening, .back15, .play, .forward15, .sleep]
+        for scale in ChromeScale.allCases {
+            for width in [CGFloat(520), 599, 600, 1000, 1400] {
+                let layout = MacPlayerBarLayout(barWidth: width, scale: scale)
+                let label = "\(width) pt, \(scale)"
+                for message in Self.messages {
+                    for chip in Self.chips {
+                        let controls = layout.focusableControls(message: message, chip: chip)
+                        let budget = message == .naturalVoiceOffer && chip != nil
+                            ? Self.offerFocusBudget : MacPlayerBarLayout.focusBudget
+                        XCTAssertLessThanOrEqual(controls.count, budget,
+                                                 "\(label): \(String(describing: message)) with \(String(describing: chip))")
+                        XCTAssertEqual(Set(controls).count, controls.count, "\(label): no control counted twice")
+                    }
+                }
+                XCTAssertEqual(layout.focusableControls(message: nil, chip: nil).count, 7, label)
+                XCTAssertEqual(layout.focusableControls(message: nil, chip: .undoJump), expected, label)
+            }
+        }
+    }
+
+    /// A smaller band gives the page back its foot: the chip slot's reach
+    /// is measured afresh from the new band's chip; with no chip seen yet,
+    /// nothing is covered still.
+    func testABandChangeMeasuresTheChipReachAfresh() {
+        XCTAssertEqual(MacReaderScreen.chipReach(previous: 0, bandChangedTo: .largest), 0)
+        let largest = MacReaderScreen.chipReach(previous: 0, slotHeight: MacPlayerBarLayout.chipHeight(for: .largest))
+        XCTAssertEqual(largest, 36 + Theme.Space.sm)
+        for scale in ChromeScale.allCases {
+            XCTAssertEqual(MacReaderScreen.chipReach(previous: largest, bandChangedTo: scale),
+                           MacPlayerBarLayout.chipHeight(for: scale) + Theme.Space.sm, "\(scale)")
+        }
+        XCTAssertLessThan(MacReaderScreen.chipReach(previous: largest, bandChangedTo: .standard), largest)
+    }
+
+    /// A chip's width for `text`: the band's subhead (semibold, as the
+    /// chip sets it) and the capsule's 12 pt sides.
+    private func chipWidth(_ text: String, scale: ChromeScale) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: PlatformTypeRamp.points(.subhead, scale: scale), weight: .semibold)
+        return (text as NSString).size(withAttributes: [.font: font]).width.rounded(.up) + 2 * Theme.Space.sm
+    }
+
+    /// An SF Symbol at `style`'s size in `scale`'s band, large, as the skips
+    /// draw it.
+    private func glyphSize(_ name: String, scale: ChromeScale, style: Theme.TypeStyle = .body) -> CGSize? {
+        let config = NSImage.SymbolConfiguration(pointSize: PlatformTypeRamp.points(style, scale: scale),
+                                                 weight: .regular, scale: style == .body ? .large : .medium)
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)?.size
     }
 
     // MARK: - Sleep menu

@@ -1,192 +1,209 @@
 #!/usr/bin/env bash
 #
-# build_app.sh — package Aloud into a double-clickable macOS .app.
+# build_app.sh — build Aloud for Mac, the native app, in Release.
 #
 # What it does:
-#   1. Builds the frontend (frontend/dist, same-origin via .env.production).
-#   2. Assembles Aloud.app at the repo root with a launcher that boots the
-#      native app (backend + pywebview window) using the repo's own venv.
-#   3. Generates the app icon (black squircle, white speaker, orange waves).
+#   1. Syncs the Classics shelf and regenerates the Xcode project from
+#      ios/project.yml, as ios/build.sh does for the iPhone.
+#   2. Builds the AloudMac scheme in Release through ios/xcb.sh, which keeps
+#      the derived data in ~/Library/Developer/Xcode/DerivedData/Aloud-mac
+#      (never under OneDrive) and signs ad hoc, so the sandbox is real. It
+#      refuses an unsigned Mac build: unsigned means unsandboxed.
+#   3. Checks the result as the release hygiene does: the shipping bundle id
+#      (com.davidxie.Aloud.mac), no test hooks in the binary, sandboxed with
+#      no temporary exception, and a signature that verifies.
+#   4. Prints where Aloud.app is. With --install, it also copies the app to
+#      ~/Applications/Aloud.app.
 #
-# The bundle is NOT self-contained: it runs the Python in backend/.venv against
-# backend/native_app.py using ABSOLUTE paths baked in here at build time, so the
-# repo must stay where it is when you run this script.
+# It never launches Aloud. Open it yourself, from Finder or Spotlight.
+#
+# Where it installs, and where it never does:
+#   - ~/Applications, not /Applications: the build is yours alone, and
+#     /Applications would need an administrator.
+#   - Never into this repo. The repo lives in OneDrive, and codesign rejects
+#     the extended attributes OneDrive puts on the files it syncs. A signed
+#     bundle in a synced folder can also be rewritten under it, and then its
+#     signature no longer verifies.
+#
+# The old web app's packager (pywebview, com.davidxie.aloud) is
+# legacy/build_web_app.sh; see docs/legacy-web-app.md.
+#
+# Usage: ./build_app.sh [--install]
 #
 set -euo pipefail
 
+usage() {
+  echo "usage: $0 [--install]"
+  echo "  Builds Aloud for Mac (Release) and prints where Aloud.app is."
+  echo "  --install  also copies it to ~/Applications/Aloud.app"
+  echo "  It never launches the app."
+}
+
+INSTALL=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install) INSTALL=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
 # Absolute path to the repo root (this script's own directory).
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_PY="$REPO_ROOT/backend/.venv/bin/python"
-NATIVE_APP="$REPO_ROOT/backend/native_app.py"
-APP="$REPO_ROOT/Aloud.app"
+IOS="$REPO_ROOT/ios"
+# DEVELOPER_DIR and the Mac's derived-data path: the constants xcb.sh uses.
+# shellcheck source=ios/xcenv.sh
+source "$IOS/xcenv.sh"
 
-echo "==> Aloud packager"
-echo "    repo : $REPO_ROOT"
-echo "    venv : $VENV_PY"
+SHIPPING_ID="com.davidxie.Aloud.mac"
+APP="$XCB_MAC_DERIVED/Build/Products/Release/Aloud.app"
+BIN="$APP/Contents/MacOS/Aloud"
+DEST_DIR="$HOME/Applications"
+DEST="$DEST_DIR/Aloud.app"
 
-# --- sanity checks --------------------------------------------------------
-if [ ! -x "$VENV_PY" ]; then
-  echo "ERROR: venv Python not found/executable at: $VENV_PY" >&2
-  echo "       Create it first (see README 'Setup')." >&2
+echo "==> Aloud for Mac (Release)"
+echo "    repo    : $REPO_ROOT"
+echo "    derived : $XCB_MAC_DERIVED"
+
+# --- sanity checks --------------------------------------------------------------
+# hw.optional.arm64, not uname -m: a Terminal under Rosetta reads x86_64.
+if [[ $(sysctl -n hw.optional.arm64 2>/dev/null || true) != 1 ]]; then
+  echo "ERROR: Aloud for Mac builds for Apple silicon only (ARCHS = arm64)." >&2
   exit 1
 fi
-if [ ! -f "$NATIVE_APP" ]; then
-  echo "ERROR: native entrypoint missing at: $NATIVE_APP" >&2
+if [[ ! -d $DEVELOPER_DIR ]]; then
+  echo "ERROR: Xcode not found at $DEVELOPER_DIR (ios/xcenv.sh pins it)." >&2
   exit 1
 fi
 
-# --- 1. build the frontend ------------------------------------------------
-echo "==> Building frontend (cd frontend && npm run build)"
-( cd "$REPO_ROOT/frontend" && npm run build )
-if [ ! -f "$REPO_ROOT/frontend/dist/index.html" ]; then
-  echo "ERROR: build did not produce frontend/dist/index.html" >&2
+# --- 1. the shelf and the project ------------------------------------------
+echo "==> Syncing the Classics shelf"
+"$IOS/sync_bookshelf.sh"
+if [[ ! -f "$IOS/Aloud/Resources/Bookshelf/catalog.json" ]]; then
+  echo "ERROR: no Classics shelf at ios/Aloud/Resources/Bookshelf." >&2
+  echo "       It is synced from books/ (tools/gutenberg_fetch.py fills it)." >&2
   exit 1
 fi
-echo "    ok  : frontend/dist/index.html"
 
-# --- 2. assemble the .app bundle -----------------------------------------
-echo "==> Assembling $APP"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+XCODEGEN="$(command -v xcodegen || true)"
+[[ -n $XCODEGEN ]] || XCODEGEN=/opt/homebrew/bin/xcodegen
+if [[ -x $XCODEGEN ]]; then
+  echo "==> Generating ios/Aloud.xcodeproj from ios/project.yml"
+  ( cd "$IOS" && "$XCODEGEN" generate )
+else
+  echo "    note: XcodeGen not found (brew install xcodegen); building the committed project"
+fi
 
-# Launcher: exec the venv Python on native_app.py with absolute paths baked in.
-cat > "$APP/Contents/MacOS/Aloud" <<LAUNCHER
-#!/bin/bash
-# Aloud launcher (generated by build_app.sh). Absolute paths are baked in at
-# build time, so the repo must remain at the location it was built from.
-exec "$VENV_PY" "$NATIVE_APP"
-LAUNCHER
-chmod +x "$APP/Contents/MacOS/Aloud"
+# --- 2. build -----------------------------------------------------------------
+# xcb.sh adds this Mac as the destination, the derived data outside OneDrive
+# and the ad hoc identity; it prints the path of its full log first.
+echo "==> Building scheme AloudMac, Release"
+if ! "$IOS/xcb.sh" -project "$IOS/Aloud.xcodeproj" -scheme AloudMac -configuration Release build; then
+  echo "ERROR: the Release build failed; the full log is /tmp/xcb-last.log" >&2
+  exit 1
+fi
+if [[ ! -x $BIN ]]; then
+  echo "ERROR: the build reported success, but $BIN is missing" >&2
+  exit 1
+fi
 
-# Info.plist (static — plutil -lint must pass).
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleName</key>
-	<string>Aloud</string>
-	<key>CFBundleDisplayName</key>
-	<string>Aloud</string>
-	<key>CFBundleExecutable</key>
-	<string>Aloud</string>
-	<key>CFBundleIconFile</key>
-	<string>Aloud</string>
-	<key>CFBundleIdentifier</key>
-	<string>com.davidxie.aloud</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
-	<key>CFBundleVersion</key>
-	<string>1</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>11.0</string>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.productivity</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>NSHumanReadableCopyright</key>
-	<string>Aloud — offline neural text-to-speech.</string>
-</dict>
-</plist>
-PLIST
+# --- 3. check -------------------------------------------------------------------
+# The release hygiene checks (mac-contracts, end of phase 1). Each prints a
+# line; any failure stops the script before it installs anything.
+echo "==> Checking $APP"
+fail=0
+ok()  { echo "    ok  : $*"; }
+bad() { echo "    FAIL: $*" >&2; fail=1; }
 
-# --- 3. generate the icon -------------------------------------------------
-echo "==> Generating app icon"
+id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null || true)
+if [[ $id == "$SHIPPING_ID" ]]; then ok "bundle id $id"; else bad "bundle id '$id', expected $SHIPPING_ID"; fi
+
+# The test hooks a Release binary must not carry. The strings are read once,
+# and a failed read stops the script rather than passing as "none found".
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+if ! strings -a "$BIN" > "$WORK/strings.txt"; then
+  echo "ERROR: couldn't read the strings in $BIN; nothing was installed." >&2
+  exit 1
+fi
+for needle in -uitest- ALOUD_AUDIBLE ALOUD_MUTE MutedRenderPump AloudKokoroModel; do
+  n=$(grep -c -- "$needle" "$WORK/strings.txt" || true)
+  if [[ $n == 0 ]]; then ok "no '$needle' in the binary"; else bad "$n x '$needle' in the binary"; fi
+done
 
-cat > "$WORK/make_icon.py" <<'PYICON'
-"""Generate Aloud's app icon: black rounded square, white speaker, orange waves."""
-import sys
-from PIL import Image, ImageDraw
+# The signed entitlements, read as a plist: the sandbox key must be true,
+# not merely present.
+codesign -d --entitlements - --xml "$APP" > "$WORK/entitlements.plist" 2>/dev/null || true
+sandbox=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.app-sandbox' "$WORK/entitlements.plist" 2>/dev/null || true)
+if [[ $sandbox == true ]]; then ok "sandboxed"; else bad "not sandboxed"; fi
+if grep -q 'temporary-exception' "$WORK/entitlements.plist"; then bad "a temporary exception in Release"; else ok "no temporary exception"; fi
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else "icon.png"
+if codesign --verify --deep --strict "$APP" 2>&1; then ok "codesign verifies"; else bad "codesign does not verify"; fi
+# "flags=0x10002(adhoc,runtime)": signed ad hoc, with the hardened runtime.
+codesign -d --verbose=2 "$APP" 2>&1 | grep -E 'flags|Runtime' | head -3 | sed 's/^/    /' || true
 
-S = 1024          # final icon size
-SS = 4            # supersample factor for crisp antialiasing
-N = S * SS
-
-BLACK = (11, 11, 12, 255)     # near-black background (#0B0B0C)
-WHITE = (245, 245, 247, 255)  # speaker glyph
-ORANGE = (255, 149, 0, 255)   # #FF9500 macOS orange, sound waves
-
-img = Image.new("RGBA", (N, N), (0, 0, 0, 0))
-d = ImageDraw.Draw(img)
-
-# Rounded-square background (macOS squircle-ish corner radius ~22.5%).
-radius = int(N * 0.225)
-d.rounded_rectangle([0, 0, N - 1, N - 1], radius=radius, fill=BLACK)
-
-cx, cy = N * 0.44, N * 0.5  # glyph nudged left to leave room for the waves
-
-# Speaker (white): rectangular back + a triangular cone.
-back_w = N * 0.085
-back_h = N * 0.150
-back_left = N * 0.235
-back_right = back_left + back_w
-back_top = cy - back_h / 2
-back_bot = cy + back_h / 2
-cone_tip_x = N * 0.44
-cone_half_h = N * 0.150
-speaker = [
-    (back_left, back_top),
-    (back_right, back_top),
-    (cone_tip_x, cy - cone_half_h),
-    (cone_tip_x, cy + cone_half_h),
-    (back_right, back_bot),
-    (back_left, back_bot),
-]
-d.polygon(speaker, fill=WHITE)
-
-# Sound waves (orange): three concentric right-opening arcs.
-wave_cx = N * 0.455
-wave_cy = cy
-line_w = int(N * 0.028)
-for r in (N * 0.085, N * 0.155, N * 0.225):
-    box = [wave_cx - r, wave_cy - r, wave_cx + r, wave_cy + r]
-    d.arc(box, start=-48, end=48, fill=ORANGE, width=line_w)
-
-img = img.resize((S, S), Image.LANCZOS)
-img.save(OUT, "PNG")
-print(f"    ok  : icon {S}x{S} -> {OUT}")
-PYICON
-
-uv run --with pillow --python "$VENV_PY" "$WORK/make_icon.py" "$WORK/icon_1024.png"
-
-ICONSET="$WORK/Aloud.iconset"
-mkdir -p "$ICONSET"
-# Standard iconset sizes (points @1x and @2x).
-sips -z 16 16     "$WORK/icon_1024.png" --out "$ICONSET/icon_16x16.png"      >/dev/null
-sips -z 32 32     "$WORK/icon_1024.png" --out "$ICONSET/icon_16x16@2x.png"   >/dev/null
-sips -z 32 32     "$WORK/icon_1024.png" --out "$ICONSET/icon_32x32.png"      >/dev/null
-sips -z 64 64     "$WORK/icon_1024.png" --out "$ICONSET/icon_32x32@2x.png"   >/dev/null
-sips -z 128 128   "$WORK/icon_1024.png" --out "$ICONSET/icon_128x128.png"    >/dev/null
-sips -z 256 256   "$WORK/icon_1024.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
-sips -z 256 256   "$WORK/icon_1024.png" --out "$ICONSET/icon_256x256.png"    >/dev/null
-sips -z 512 512   "$WORK/icon_1024.png" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
-sips -z 512 512   "$WORK/icon_1024.png" --out "$ICONSET/icon_512x512.png"    >/dev/null
-cp "$WORK/icon_1024.png"                        "$ICONSET/icon_512x512@2x.png"
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Aloud.icns"
-echo "    ok  : Aloud.icns"
-
-# --- 4. validate ----------------------------------------------------------
-echo "==> Validating Info.plist"
-plutil -lint "$APP/Contents/Info.plist"
+if [[ $fail -ne 0 ]]; then
+  echo "ERROR: $APP failed the checks above; nothing was installed." >&2
+  exit 1
+fi
 
 echo ""
-echo "==> Done. Built: $APP"
+echo "==> Built: $APP"
+
+# --- 4. install (only with --install) -----------------------------------------
+if [[ $INSTALL -eq 1 ]]; then
+  case "$DEST" in
+    *CloudStorage*|*OneDrive*)
+      echo "ERROR: refusing to install under OneDrive: $DEST" >&2
+      exit 1 ;;
+  esac
+  if [[ -e $DEST ]]; then
+    existing=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$DEST/Contents/Info.plist" 2>/dev/null || echo unknown)
+    # Replacing another app, such as the old web app, stays your call.
+    if [[ $existing != "$SHIPPING_ID" ]]; then
+      echo "ERROR: $DEST is another app ($existing), perhaps the old web app." >&2
+      echo "       Move it to the Trash yourself, then run ./build_app.sh --install again." >&2
+      exit 1
+    fi
+    if pgrep -f "$DEST/Contents/MacOS/Aloud" >/dev/null 2>&1; then
+      echo "ERROR: Aloud is running from $DEST. Quit it (⌘Q), then run this again." >&2
+      exit 1
+    fi
+  fi
+  echo "==> Installing to $DEST"
+  mkdir -p "$DEST_DIR"
+  # Copy beside it and check the copy, so a failed copy never replaces a
+  # working install. ditto keeps the bundle's signature intact.
+  STAGE="$DEST_DIR/.Aloud.app.installing"
+  rm -rf "$STAGE"
+  ditto "$APP" "$STAGE"
+  if ! codesign --verify --deep --strict "$STAGE" 2>&1; then
+    rm -rf "$STAGE"
+    echo "ERROR: the copy in $DEST_DIR doesn't verify; nothing was installed." >&2
+    exit 1
+  fi
+  rm -rf "$DEST"
+  mv "$STAGE" "$DEST"
+  echo "    ok  : installed $DEST"
+fi
+
+# The old web app, if one is still around: deleting it stays your call.
+for old in "/Applications/Aloud.app" "$DEST" "$REPO_ROOT/Aloud.app"; do
+  [[ -e "$old/Contents/Info.plist" ]] || continue
+  old_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$old/Contents/Info.plist" 2>/dev/null || true)
+  if [[ $old_id == com.davidxie.aloud ]]; then
+    echo "    note: the old web app is still at $old; delete it when you're ready (docs/legacy-web-app.md)"
+  fi
+done
+
 echo ""
 echo "Next steps:"
-echo "  1. (optional) Drag Aloud.app into /Applications."
-echo "  2. First launch: right-click Aloud.app -> Open -> Open"
-echo "     (it is unsigned, so Gatekeeper needs this one-time approval)."
-echo "  3. After that, double-click to launch like any other app."
-echo ""
-echo "Note: the app runs the Python in backend/.venv against backend/native_app.py"
-echo "using absolute paths baked in at build time. Keep the repo at:"
-echo "  $REPO_ROOT"
-echo "If you move the repo, re-run ./build_app.sh."
+if [[ $INSTALL -eq 1 ]]; then
+  echo "  Open Aloud from ~/Applications, Spotlight or Launchpad."
+else
+  echo "  Run ./build_app.sh --install to copy it to ~/Applications,"
+  echo "  or open it in place from the path above."
+fi
+echo "  The first run reads in the System voice. For the natural voice:"
+echo "  Aloud › Settings… (⌘,) › Voice & speed › Download (353 MB, once)."

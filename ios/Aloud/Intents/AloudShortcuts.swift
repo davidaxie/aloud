@@ -12,6 +12,16 @@ import Foundation
 // Persistent identifiers: users' saved shortcuts and Action-button
 // assignments store the intent type names and SleepTimerChoice's raw values.
 // Never rename them.
+//
+// The Mac app compiles the same two intents, offered to Shortcuts, Spotlight
+// and Siri on macOS. Both run over the shared AppModel and PlaybackController
+// alone: nothing here is UIKit or iPhone-only, and neither brings a window
+// forward. An intent is the user asking for the voice, so the system's
+// launch for it is not muted as a test launch is (the Mac's Debug build
+// stays silent anyway without ALOUD_AUDIBLE=1). Only the run itself plays:
+// launching the app for an intent starts nothing on its own. Tests reach the
+// runs over a muted rig (`continueListening(with:)`, `setSleepTimer(with:)`)
+// and never through the system.
 
 /// Plays the Continue card's book from where the listener left off, without
 /// opening the app. An audio intent, so iOS keeps the audio session of a
@@ -25,10 +35,16 @@ struct ContinueListeningIntent: AudioPlaybackIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let outcome = await AppModel.shared.shortcutActions.continueListening()
-        if let error = Self.error(for: outcome) { throw error }
+        try await Self.continueListening(with: AppModel.shared.shortcutActions)
         // Success is the voice itself: no dialog talks over it.
         return .result()
+    }
+
+    /// The run, over the app's parts from perform() or a muted rig's in
+    /// tests: throws what Siri or Shortcuts says instead of playing.
+    @MainActor
+    static func continueListening(with actions: ShortcutActions) async throws {
+        if let error = error(for: await actions.continueListening()) { throw error }
     }
 
     /// What Siri or Shortcuts says instead of playing. A superseded run said
@@ -65,8 +81,15 @@ struct SetSleepTimerIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let text = AppModel.shared.shortcutActions.setSleepTimer(choice)
+        let text = setSleepTimer(with: AppModel.shared.shortcutActions)
         return .result(dialog: "\(text)")
+    }
+
+    /// The run, over the app's parts from perform() or a muted rig's in
+    /// tests: the spoken confirmation.
+    @MainActor
+    func setSleepTimer(with actions: ShortcutActions) -> String {
+        actions.setSleepTimer(choice)
     }
 }
 

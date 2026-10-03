@@ -23,9 +23,10 @@ protocol NavigationTracking: AnyObject {
 
 extension LibraryRouter: NavigationTracking {}
 
-/// R10: the one add path. Files picks, Open-in files and Bookshelf classics
-/// all land here; a finished add hands the document to `onAdded`, which
-/// AppModel points at `router.open` so it opens playing (R4).
+/// R10: the one add path. Files picks, Open-in files, Bookshelf classics
+/// and the Mac's pasted text all land here; a finished add hands the
+/// document to `onAdded`, which AppModel points at `router.open` so it
+/// opens playing (R4).
 ///
 /// The open rule. An add opens its book only if, when it ends, nothing is
 /// queued behind it and the user has not navigated since it began (no push,
@@ -72,8 +73,8 @@ final class DocumentImporter: ObservableObject {
     private let announce: (String) -> Void
     /// Files that arrived (Open-in) while another add was running or a
     /// failure was still on screen; each is imported in turn, in the batch
-    /// it came with, if any.
-    private var queued: [(url: URL, batch: Batch?)] = []
+    /// it came with, if any, and pasted text with the title it was given.
+    private var queued: [(url: URL, batch: Batch?, title: String?)] = []
     /// The batch of the file being added now, if it came in one.
     private var currentBatch: Batch?
     /// A batch's line when its last file failed: said once the failure is
@@ -123,9 +124,31 @@ final class DocumentImporter: ObservableObject {
         for url in urls { start(url, in: batch) }
     }
 
-    private func start(_ url: URL, in batch: Batch?) {
+    /// ⌘V's text in the Mac's Library (M8): a book of its own, titled from
+    /// its first line with words in it, added as a text file is. The words
+    /// are written to a file of their own (`pastedTextFolder`) and handed to
+    /// the store like any text file, so the same text pasted twice is the
+    /// book already on the shelf, and one paste opens playing by the open
+    /// rule (R4). Behind an add in flight it waits its turn, as a file does.
+    /// Text that is only whitespace fails as an empty text file does; with
+    /// an add in flight or a failure on screen there is nowhere to say so,
+    /// and it is let go.
+    func importText(_ text: String) {
+        guard let title = Self.pastedTitle(from: text) else {
+            if !isBusy { phase = .failed(.textNoText) }
+            return
+        }
+        do {
+            start(try Self.writePastedText(text), in: nil, title: title)
+        } catch {
+            if !isBusy { phase = .failed(ImportFailure(error, isPDF: false)) }
+        }
+    }
+
+    /// `title` names pasted text, whose file's name says nothing.
+    private func start(_ url: URL, in batch: Batch?, title: String? = nil) {
         guard !isBusy else {
-            queued.append((url, batch))
+            queued.append((url, batch, title))
             return
         }
         token &+= 1
@@ -136,7 +159,7 @@ final class DocumentImporter: ObservableObject {
         // record already on the shelf) is announced as such.
         let before = Set(library.documents.map(\.id))
         let isPDF = url.pathExtension.lowercased() == "pdf"
-        phase = .importing(fileName: url.lastPathComponent, progress: 0)
+        phase = .importing(fileName: title ?? url.lastPathComponent, progress: 0)
 
         let progress: @Sendable (Double) -> Void = { [weak self] value in
             Task { @MainActor in
@@ -150,7 +173,7 @@ final class DocumentImporter: ObservableObject {
             do {
                 let document = isPDF
                     ? try await library.importPDF(from: url, progress: progress)
-                    : try await library.importText(title: Self.title(from: url), author: nil,
+                    : try await library.importText(title: title ?? Self.title(from: url), author: nil,
                                                    from: url, progress: progress)
                 if token == mine {
                     phase = .idle
@@ -168,8 +191,9 @@ final class DocumentImporter: ObservableObject {
                     phase = .failed(ImportFailure(error, isPDF: isPDF))
                 }
             }
-            // Inbox cleanup runs on success, failure and cancel alike.
-            Self.removeInboxCopy(url)
+            // Inbox cleanup runs on success, failure and cancel alike, and
+            // so does a paste's.
+            Self.removeHandedOverCopy(url)
             if token == mine {
                 currentBatch = nil
                 if let batch { endFile(of: batch) }
@@ -186,7 +210,7 @@ final class DocumentImporter: ObservableObject {
         token &+= 1
         current?.cancel()
         current = nil
-        queued.forEach { Self.removeInboxCopy($0.url) }
+        queued.forEach { Self.removeHandedOverCopy($0.url) }
         let cut = ([currentBatch] + queued.map(\.batch)).compactMap { $0 }
         queued = []
         currentBatch = nil
@@ -252,7 +276,7 @@ final class DocumentImporter: ObservableObject {
     private func startNextQueued() {
         guard !isBusy, !queued.isEmpty else { return }
         let next = queued.removeFirst()
-        start(next.url, in: next.batch)
+        start(next.url, in: next.batch, title: next.title)
     }
 
     /// One of `batch`'s files has ended, added or not; the last announces,
@@ -320,6 +344,58 @@ final class DocumentImporter: ObservableObject {
         let inbox = documents.appendingPathComponent("Inbox", isDirectory: true)
             .standardizedFileURL.path
         return url.standardizedFileURL.path.hasPrefix(inbox + "/")
+    }
+
+    /// The importer's own copy of what it was handed, an Inbox copy or a
+    /// paste's file, removed once its add ends. A file picked where it
+    /// lives is never touched.
+    private static func removeHandedOverCopy(_ url: URL) {
+        guard isInboxCopy(url) || isPastedText(url) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    // MARK: Pasted text
+
+    /// The longest a pasted text's title runs before it is cut, with "…".
+    static let pastedTitleLimit = 80
+
+    /// Where pasted text waits for the store's own copy: the temporary
+    /// folder, since the iPhone's Inbox is the system's to write to.
+    static var pastedTextFolder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("Pasted", isDirectory: true)
+    }
+
+    static func isPastedText(_ url: URL) -> Bool {
+        url.isFileURL
+            && url.standardizedFileURL.path.hasPrefix(pastedTextFolder.standardizedFileURL.path + "/")
+    }
+
+    /// A pasted text's title: its first line with words in it, each run of
+    /// whitespace one space, cut back to a whole word past
+    /// `pastedTitleLimit` characters (or mid-word, when a cut at a word
+    /// would leave less than half). Nil when the text is only whitespace.
+    static func pastedTitle(from text: String) -> String? {
+        let line = text.split(whereSeparator: \.isNewline).lazy
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .first { !$0.isEmpty }
+        guard let line else { return nil }
+        guard line.count > pastedTitleLimit else { return line }
+        var cut = line.prefix(pastedTitleLimit)
+        if line[cut.endIndex] != " ", let space = cut.lastIndex(of: " "),
+           cut.distance(from: cut.startIndex, to: space) >= pastedTitleLimit / 2 {
+            cut = cut[..<space]
+        }
+        return cut.trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    /// The paste's words as a UTF-8 file of its own: the bytes the store
+    /// hashes to find the same text pasted again.
+    private static func writePastedText(_ text: String) throws -> URL {
+        let folder = pastedTextFolder
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension("txt")
+        try Data(text.utf8).write(to: url, options: .atomic)
+        return url
     }
 
     /// "moby-dick_ch1.txt" → "Moby Dick Ch1"

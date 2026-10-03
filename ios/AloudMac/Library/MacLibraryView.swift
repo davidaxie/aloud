@@ -7,7 +7,7 @@ import SwiftUI
 /// Continue card over an adaptive grid of 2:3 covers (`MacGridMetrics`).
 /// Every card opens through the router, and the reader starts it speaking
 /// (R4); the Continue card's circle plays and pauses in place (R18). The
-/// toolbar's "+" appears once a book exists.
+/// toolbar's "+" appears once a book exists. ⌘V adds what was copied.
 ///
 /// Like the iPhone's shelf, the screen never observes the PlaybackController,
 /// which publishes every sentence: only the Continue card does.
@@ -57,6 +57,12 @@ struct MacLibraryView: View {
                     MacAddMenu()
                 }
             }
+        }
+        // Edit ▸ Paste (⌘V), empty or not (M8): copied files are added as
+        // a drop's are, and copied text becomes a book titled from its
+        // first line. Only here: Classics and the reader paste nothing.
+        .onPasteCommand(of: MacFileIntake.pasteTypes) { providers in
+            Task { await MacFileIntake.shared.admitPaste(providers) }
         }
         .onReceive(store.$documents) { documents in
             shelf = ShelfLayout(for: documents, loadedID: loadedID)

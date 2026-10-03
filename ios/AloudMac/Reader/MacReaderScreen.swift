@@ -16,7 +16,8 @@ import SwiftUI
 ///
 /// One message at a time (R11): the chapter line in the bar shows the one
 /// message, and the one chip slot above the bar shows the one chip. Leaving
-/// the reader keeps the book playing; the window's close does too.
+/// the reader keeps the book playing; the window's close does too. The bar
+/// and the chip follow the reader's text size in three chrome bands (M18).
 struct MacReaderScreen: View {
     let documentID: UUID
 
@@ -66,7 +67,12 @@ struct MacReaderScreen: View {
         .background(Theme.bg)
         // The bar's type and Play circle grow with the reader's text size,
         // in three bands (M18).
-        .environment(\.chromeScale, ChromeScale(readerStep: textSizeStep))
+        .environment(\.chromeScale, chromeScale)
+        // A new band resizes the slot's chip: its reach starts over from
+        // that band's chip, so a smaller band gives the page its foot back.
+        .onChange(of: chromeScale) { _, scale in
+            chipReach = Self.chipReach(previous: chipReach, bandChangedTo: scale)
+        }
         #if DEBUG
         .overlay(alignment: .topLeading) { sentenceProbe }
         #endif
@@ -125,6 +131,12 @@ struct MacReaderScreen: View {
         }
         // Along the toolbar's edge, the window's width.
         .overlay(alignment: .top) { topEdgeRule }
+    }
+
+    /// The chrome's band for the reader's text size: ⌘+ and ⌘− (and the Aa
+    /// stepper) move the bar with the page.
+    private var chromeScale: ChromeScale {
+        ChromeScale(readerStep: textSizeStep)
     }
 
     /// Shown and loaded: the panel lists the loaded book's chapters.
@@ -318,6 +330,15 @@ extension MacReaderScreen {
     static func chipReach(previous: CGFloat, slotHeight: CGFloat) -> CGFloat {
         guard slotHeight > 0 else { return previous }
         return max(previous, (slotHeight + Theme.Space.sm).rounded(.up))
+    }
+
+    /// The reach once the chrome band changes (M18): a chip already seen is
+    /// measured afresh from the new band's chip, so a smaller band gives
+    /// the page back its foot (a showing chip is measured again as it
+    /// re-lays out). With none seen yet, nothing is covered still.
+    static func chipReach(previous: CGFloat, bandChangedTo scale: ChromeScale) -> CGFloat {
+        guard previous > 0 else { return previous }
+        return chipReach(previous: 0, slotHeight: MacPlayerBarLayout.chipHeight(for: scale))
     }
 
     /// R24: the colophon, only while the listener is at the end of THIS

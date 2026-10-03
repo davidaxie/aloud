@@ -38,9 +38,10 @@ struct MacAddMenu: View {
 // MARK: - Every route in
 
 /// Every way a file reaches the Mac app, Add from Files…, a drop on the
-/// window, Finder's Open With and a drop on the Dock icon, ends here and
-/// then in the shared `DocumentImporter`, which deduplicates by content
-/// hash, extracts and opens (M8).
+/// window, Finder's Open With, a drop on the Dock icon and ⌘V in the
+/// Library, ends here and then in the shared `DocumentImporter`, which
+/// deduplicates by content hash, extracts and opens (M8). Pasted text goes
+/// straight to the importer (`admitPaste(_:)`): it has no file to copy.
 ///
 /// Two Mac rules sit in front of the importer:
 /// - **The coordinated copy.** Each file is read through `NSFileCoordinator`
@@ -169,6 +170,55 @@ final class MacFileIntake: ObservableObject {
     /// The user has seen this file's failure.
     func dismissFailure() {
         failure = nil
+    }
+
+    // MARK: Paste
+
+    /// What Edit ▸ Paste (⌘V) takes in the Library: files, or else text.
+    nonisolated static let pasteTypes: [UTType] = [.fileURL, .plainText]
+
+    /// ⌘V in the Library (M8, phase 4). Files on the pasteboard (copied in
+    /// Finder) are admitted as the same files dropped would be: one opens
+    /// playing, several are one batch. With no file among them, the text
+    /// becomes a book of its own, titled from its first line
+    /// (`DocumentImporter.importText`), for an article copied before a
+    /// flight. A Finder copy carries each file's name as text too, so files
+    /// win: a copied photo adds nothing, never a book of its name. Several
+    /// text items make one book, in order, a blank line apart.
+    func admitPaste(_ providers: [NSItemProvider]) async {
+        let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        if !files.isEmpty {
+            var urls: [URL] = []
+            for provider in files {
+                if let url = await Self.pastedFileURL(from: provider) { urls.append(url) }
+            }
+            admit(urls)
+            return
+        }
+        let texts = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) }
+        guard !texts.isEmpty else { return }
+        var parts: [String] = []
+        for provider in texts {
+            if let text = await Self.pastedText(from: provider) { parts.append(text) }
+        }
+        // Text that couldn't be read is no text: the empty text's failure.
+        importer.importText(parts.joined(separator: "\n\n"))
+    }
+
+    private nonisolated static func pastedFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                continuation.resume(returning: url.flatMap { $0.isFileURL ? $0 : nil })
+            }
+        }
+    }
+
+    private nonisolated static func pastedText(from provider: NSItemProvider) async -> String? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: String.self) { text, _ in
+                continuation.resume(returning: text)
+            }
+        }
     }
 
     /// The batch is over once nothing is copying and the importer is idle
