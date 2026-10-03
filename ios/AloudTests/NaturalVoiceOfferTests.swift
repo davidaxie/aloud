@@ -225,4 +225,59 @@ final class NaturalVoiceOfferTests: XCTestCase {
         XCTAssertTrue(NaturalVoiceOffer.isVisible(listenedSeconds: 60, answer: nil,
                                                   deviceSupported: true, modelState: .notInstalled))
     }
+
+    // MARK: - The path (M17)
+
+    /// An offer that would show stays down until a usable path is known; a
+    /// costly path is usable (the metered prompt asks first). The default
+    /// never gates, which is the iPhone's rule.
+    func testUsablePathGatesTheRule() {
+        func visible(_ usablePath: Bool?) -> Bool {
+            NaturalVoiceOffer.isVisible(listenedSeconds: 60, answer: nil, deviceSupported: true,
+                                        modelState: .notInstalled, usablePath: usablePath)
+        }
+        XCTAssertTrue(visible(true))
+        XCTAssertFalse(visible(false), "offline: an offer that can only fail isn't shown")
+        XCTAssertFalse(visible(nil), "not before the path is known")
+        XCTAssertFalse(NaturalVoiceOffer.isVisible(listenedSeconds: 59, answer: nil, deviceSupported: true,
+                                                   modelState: .notInstalled, usablePath: true),
+                       "a usable path never brings the offer early")
+
+        XCTAssertNil(NaturalVoiceOffer.hasUsablePath(UnknownPath()))
+        XCTAssertEqual(NaturalVoiceOffer.hasUsablePath(FixedNetworkPath.unsatisfied), false)
+        XCTAssertEqual(NaturalVoiceOffer.hasUsablePath(FixedNetworkPath(isExpensiveOrConstrained: false)), true)
+        XCTAssertEqual(NaturalVoiceOffer.hasUsablePath(FixedNetworkPath(isExpensiveOrConstrained: true)), true)
+    }
+
+    /// Without a path source (the iPhone, and every test above) nothing is
+    /// watched and nothing reads offline, so the offer keeps R5's rule alone.
+    func testWithoutAPathSourceNothingIsWatched() {
+        let offer = makeOffer()
+        offer.watchNetworkPath()
+        play(offer, for: 60)
+        XCTAssertNil(offer.hasUsablePath)
+        XCTAssertFalse(offer.isOffline)
+        XCTAssertTrue(offer.isVisible)
+    }
+
+    /// The iPhone never watches the path for the offer or the card (M4);
+    /// neither does a hosted unit test on the Mac, so no test starts a live
+    /// monitor through the offer.
+    func testDefaultPathSourceIsTheMacsAppOnly() {
+        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(preparesForFlight: false, isXCTestHost: false))
+        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(preparesForFlight: true, isXCTestHost: true))
+        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(), "this test host")
+        #if os(iOS)
+        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(isXCTestHost: false), "the iPhone app")
+        #endif
+    }
+
+    /// No path has landed yet.
+    private final class UnknownPath: NetworkPathSource, @unchecked Sendable {
+        let isExpensiveOrConstrained = false
+        let allowsWiFiOnlyTransfer = true
+        let hasPath = false
+        func setChangeHandler(_ handler: @escaping @Sendable () -> Void) {}
+        func start() {}
+    }
 }

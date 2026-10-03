@@ -6,9 +6,10 @@ import Foundation
 /// than after a multi-second model load.
 ///
 /// It warms only for the neural voice with the model installed, while the
-/// app is in the foreground, and never under Low Power Mode. A memory
-/// warning cancels a load, frees an idle engine and keeps it cold until the
-/// card next appears. Hiding the card or turning on Low Power Mode never
+/// app is in the foreground, and never under Low Power Mode (the system's
+/// own setting, on a Mac as on an iPhone: M19). A memory warning cancels a
+/// load, frees an idle engine and keeps it cold until the card next
+/// appears. Hiding the card or turning on Low Power Mode never
 /// releases a warm engine: the next tap would only pay for the load again.
 ///
 /// It warms Kokoro directly and never touches the controller's status,
@@ -128,6 +129,10 @@ final class NeuralPrewarm {
         pathIsEmpty && ShelfLayout(for: documents, loadedID: loadedID).hero != nil
     }
 
+    /// On a Mac the warning is the kernel's memory-pressure source at
+    /// `.warning` or `.critical` (`MemoryPressureRelay`), and either level
+    /// frees an engine that isn't reading, a paused one included: the relay
+    /// doesn't say which level it was.
     private func memoryWarning() {
         suppressedByMemoryWarning = true
         warmTask?.cancel()

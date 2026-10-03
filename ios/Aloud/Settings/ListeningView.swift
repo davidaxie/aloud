@@ -23,7 +23,9 @@ enum ListeningCopy {
 /// bracketed asides; and the natural-voice card (or its one unsupported
 /// line). Every pick is app-wide (R7) and heard where it is made: a voice tap
 /// re-speaks the current sentence, or a sample line with no book, through the
-/// playback graph — there is no second audio path.
+/// playback graph — there is no second audio path. On the Mac (M10) the
+/// System row names the voice it resolves to, and a link opens System
+/// Settings, where premium voices download before a flight.
 ///
 /// The reader presents it in `ListeningSheet`; Settings pushes it as
 /// `ListeningSettingsPage`.
@@ -42,6 +44,12 @@ struct ListeningView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var modelManager: ModelManager
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openURL) private var openURL
+
+    /// The System row's resolved voice, "Ava (Premium)" (Mac only): read on
+    /// appear and whenever System Settings adds or removes a voice, never
+    /// per render (the installed-voice list is slow to read).
+    @State private var systemVoiceName: String?
 
     /// Fixed-width origin column, so names and subtitles line up row to row.
     @ScaledMetric(relativeTo: .caption) private var originColumnWidth: CGFloat = 80
@@ -75,6 +83,12 @@ struct ListeningView: View {
                 await Task.yield()
                 proxy.scrollTo(playback.voice.id)
             }
+        }
+        // Before the first frame, so the row never flashes its old subtitle.
+        .onAppear { resolveSystemVoiceName() }
+        .onReceive(NotificationCenter.default.publisher(for: AVSpeechEngine.installedVoicesDidChange)
+            .receive(on: RunLoop.main)) { _ in
+            resolveSystemVoiceName()
         }
         .onDisappear {
             // A drag the sheet closed under never reached onEditingChanged;
@@ -189,6 +203,40 @@ struct ListeningView: View {
         }
         // The single System row, always offered as the fallback.
         ForEach(model.engine.voices) { voiceRow($0) }
+        addSystemVoices
+    }
+
+    /// Mac only: opens Spoken Content, where premium System voices download
+    /// before a flight. The pane opens in System Settings; nothing here
+    /// speaks. A pointer's link, so the Mac's 28 pt floor with room rather
+    /// than a touch row's 44: the card's Download stays above the fold.
+    @ViewBuilder
+    private var addSystemVoices: some View {
+        if let title = DeviceCopy.addSystemVoices, let url = PlatformVoiceSetup.addVoicesURL {
+            Button {
+                openURL(url)
+            } label: {
+                Text(title)
+                    .font(Theme.font(.callout).weight(.medium))
+                    .foregroundStyle(Theme.accentStrong)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Theme.Space.sheetGutter)
+            .padding(.bottom, Theme.Space.xs)
+            .accessibilityIdentifier("listening.addVoices")
+        }
+    }
+
+    /// The System row's subtitle names its voice where the platform does,
+    /// once resolved; the iPhone keeps "Built-in fallback".
+    private func resolveSystemVoiceName() {
+        guard PlatformVoiceSetup.namesResolvedSystemVoice else { return }
+        let name = AVSpeechEngine.resolvedVoiceDisplayName()
+        if name != systemVoiceName { systemVoiceName = name }
     }
 
     /// One whole-row button: a tap selects and speaks, and the sheet stays
@@ -197,9 +245,10 @@ struct ListeningView: View {
     private func voiceRow(_ voice: TtsVoice) -> some View {
         let selected = voice.id == playback.voice.id
         let origin = Self.origin(for: voice)
+        let resolvedName = voice.id == AVSpeechEngine.systemVoiceID ? systemVoiceName : nil
         let subtitle = selected && playback.isPreparingVoice
             ? ListeningCopy.preparingVoice
-            : (voice.subtitle.isEmpty ? origin : voice.subtitle)
+            : (resolvedName ?? (voice.subtitle.isEmpty ? origin : voice.subtitle))
         let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
         return Button {
             playback.selectVoice(voice)

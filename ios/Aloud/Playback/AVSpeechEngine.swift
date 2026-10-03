@@ -82,6 +82,33 @@ final class AVSpeechEngine: TtsEngine {
         }
     }
 
+    // MARK: - The System row's name (M10)
+
+    /// The voice the System row speaks in right now, as the Mac's row names
+    /// it: "Ava (Premium)". Resolved by `bestSystemVoice`, as synthesis
+    /// resolves it, so it never names a voice other than the one heard. Nil
+    /// with no installed voice.
+    static func resolvedVoiceDisplayName() -> String? {
+        bestSystemVoice().map { displayName(of: VoiceCandidate($0, localeDefaultID: nil)) }
+    }
+
+    /// A voice's name with its tier, as System Settings lists it: "Ava
+    /// (Premium)", "Samantha (Enhanced)", plain "Samantha". A name that
+    /// already ends in a parenthesis keeps its own.
+    static func displayName(of candidate: VoiceCandidate) -> String {
+        let tier: String
+        switch candidate.quality {
+        case 3: tier = "Premium"
+        case 2: tier = "Enhanced"
+        default: return candidate.name
+        }
+        return candidate.name.hasSuffix(")") ? candidate.name : "\(candidate.name) (\(tier))"
+    }
+
+    /// Posted when voices are added or removed in System Settings, so the
+    /// row's name can be resolved again.
+    static let installedVoicesDidChange = AVSpeechSynthesizer.availableVoicesDidChangeNotification
+
     /// Always synthesizes at the default speech rate — playback rate handles speed.
     func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
         try Task.checkCancellation()

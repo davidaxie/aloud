@@ -1,16 +1,17 @@
 import XCTest
 
-/// M11's keyboard matrix for phase 1: every shortcut in the one table
-/// (`MacKey`, which mirrors `MacShortcuts`) pressed in six focus states: the
-/// page text, a bar button, the scrub, a Library card, the Classics
-/// search field and the Listening popover. Each press gives its expected
-/// effect or its expected no-op, then the state is put back for the next
-/// key, so no combination is dead. The debug beep counter (`debug.beeps`,
-/// App/MacTestSilence.swift) stays 0 throughout: a key nothing took would
-/// have sounded the system alert, which no mixer mutes. The reader-text and
-/// Contents-row states arrive with the phase-2 page. ⌘+ and ⌘− change
-/// only the reader size, which no state shows, so one more test reads it
-/// in the Aa popover.
+/// M11's keyboard matrix: every shortcut in the one table (`MacKey`, which
+/// mirrors `MacShortcuts`) pressed in seven focus states: the page text, a
+/// bar button, the scrub, a Library card, the Classics search field, the
+/// Listening popover and Contents' "Search this book". Each press gives its
+/// expected effect or its expected no-op, then the state is put back for
+/// the next key, so no combination is dead. The debug beep counter
+/// (`debug.beeps`, App/MacTestSilence.swift) stays 0 throughout: a key
+/// nothing took would have sounded the system alert, which no mixer mutes.
+/// The page fills the reader, so its text is the window's background now;
+/// Contents' rows are reached from its field (↓), so the field's state
+/// covers the list's way in. ⌘+ and ⌘− change only the reader size, which
+/// no state shows, so one more test reads it in the Aa popover.
 ///
 /// The reader states use Pride and Prejudice cued mid-chapter 1, so every
 /// skip and chapter step has somewhere to go. Muted throughout
@@ -34,21 +35,21 @@ final class MacKeyboardMatrixUITests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - The six states
+    // MARK: - The seven states
 
     func testThePageText() {
         run(FocusState(
             name: "the page text",
             arguments: MacSuite.chapterReader,
-            isIn: { suite in suite.place == .reader && !suite.isPopoverShown && suite.modals == 0 },
+            isIn: { suite in
+                suite.place == .reader && !suite.isPopoverShown && suite.modals == 0 && !suite.isContentsShown
+                    && suite.focus == "text.selectable"
+            },
             enter: { suite, test in
-                guard suite.openReader(test) else { return }
                 // Contents shown, then closed: the page's text takes the
                 // keys (a click on it would play from there). Read-only
                 // text, so Space and the arrows run their commands at once.
-                test.press(.contents, in: suite.app)
-                test.press(.contents, in: suite.app)
-                XCTAssertTrue(suite.poll(timeout: 5) { suite.focus == "text.selectable" }, "the page has the keys")
+                XCTAssertTrue(suite.focusPage(test), "the page has the keys")
             },
             keys: Self.readerKeys(space: .toggles, left: .moves(forward: false), right: .moves(forward: true))))
     }
@@ -143,6 +144,11 @@ final class MacKeyboardMatrixUITests: XCTestCase {
         var keys = Self.readerKeys(space: .toggles, left: .moves(forward: false), right: .moves(forward: true))
         keys.removeLast()
         keys += [(.escape, .closesPopover), (.closeWindow, .closesPopoverOrWindow)]
+        // The popover's window has the keys, so where ⌘F leaves the main
+        // window's first responder isn't this state's to assert.
+        if let find = keys.firstIndex(where: { $0.0 == .find }) {
+            keys[find].1 = .showsContents(searchFocused: false)
+        }
         run(FocusState(
             name: "Listening popover",
             // No Full Keyboard Access: no control inside takes Space or the
@@ -155,6 +161,36 @@ final class MacKeyboardMatrixUITests: XCTestCase {
                 _ = suite.element("listening.title").waitForExistence(timeout: 5)
             },
             keys: keys))
+    }
+
+    func testTheContentsSearchField() {
+        run(FocusState(
+            name: "Contents search field",
+            arguments: MacSuite.chapterReader,
+            isIn: { suite in
+                suite.place == .reader && suite.isContentsShown && !suite.isPopoverShown && suite.modals == 0
+                    && suite.focus == "text.editable" && !(suite.fieldText ?? "").isEmpty
+            },
+            enter: { suite, test in suite.focusContentsSearch(test, typing: "Netherfield") },
+            keys: [
+                // First, while the field holds the query its results answer:
+                // ↓ moves into them (M16). ⌘F then brings the caret back.
+                (.down, .movesIntoList),
+                // The field types the plain keys (M11): status and rate stay.
+                (.playPause, .editsField), (.faster, .editsField), (.slower, .editsField),
+                (.back15, .keepsField), (.forward15, .keepsField),
+                (.previousChapter, .keepsField), (.nextChapter, .keepsField),
+                (.find, .keepsField), (.undoJump, .keepsField),
+                // The voice is on the page: nothing to follow.
+                (.followVoice, .nothing),
+                (.biggerText, .stepsTextSize), (.smallerText, .stepsTextSize),
+                // ⌘⌫ deletes to the line's start.
+                (.deleteBook, .editsField),
+                (.escape, .clearsThenClosesContents), (.contents, .hidesContents),
+                (.addFromFiles, .opensFilePanel), (.settings, .opensSettings),
+                (.addClassic, .shows(.classics)), (.back, .shows(.library)),
+                (.closeWindow, .closesWindow),
+            ]))
     }
 
     // MARK: - The size keys' effect
@@ -184,9 +220,10 @@ final class MacKeyboardMatrixUITests: XCTestCase {
     // MARK: - Rows
 
     /// The reader's rows. Space and the arrows vary with what has focus; the
-    /// rest are the same in every reader state. Phase 1 has no Contents
-    /// panel and no page to follow, so Find, Contents and Follow the voice
-    /// are off; Delete Book… needs a focused card.
+    /// rest are the same in every reader state. ⌘F opens Contents with its
+    /// search focused and ⌃⌘S shows it (M16), each put back with ⌃⌘S.
+    /// Follow the voice is off while the page follows the voice, and
+    /// Delete Book… needs a focused card.
     private static func readerKeys(space: Effect, left: Effect, right: Effect) -> [(MacKey, Effect)] {
         [
             (.faster, .stepsRate), (.slower, .stepsRate),
@@ -195,7 +232,8 @@ final class MacKeyboardMatrixUITests: XCTestCase {
             (.back15, left), (.forward15, right),
             (.previousChapter, .jumps(forward: false)), (.nextChapter, .jumps(forward: true)),
             (.playPause, space),
-            (.undoJump, .nothing), (.followVoice, .nothing), (.find, .nothing), (.contents, .nothing),
+            (.undoJump, .nothing), (.followVoice, .nothing),
+            (.find, .showsContents(searchFocused: true)), (.contents, .showsContents(searchFocused: false)),
             (.biggerText, .stepsTextSize), (.smallerText, .stepsTextSize), (.deleteBook, .nothing),
             (.addFromFiles, .opensFilePanel), (.settings, .opensSettings),
             (.addClassic, .shows(.classics)), (.back, .shows(.library)),
@@ -208,7 +246,8 @@ final class MacKeyboardMatrixUITests: XCTestCase {
     /// What one key press should do in a state.
     enum Effect {
         /// Nothing the suite observes changes: the screen, the play state,
-        /// the playhead, the announcements, the windows and the field text.
+        /// the playhead, the announcements, the windows, the field text and
+        /// Contents.
         case nothing
         /// Playback starts; the same key pauses it again.
         case toggles
@@ -237,6 +276,17 @@ final class MacKeyboardMatrixUITests: XCTestCase {
         case keepsField
         /// Focus moves within the grid; playback is untouched.
         case movesFocus
+        /// Contents shows; with `searchFocused`, "Search this book" has the
+        /// keys (⌘F). ⌃⌘S hides it again.
+        case showsContents(searchFocused: Bool)
+        /// Contents goes, and the page's text takes the keys (⌃⌘S).
+        case hidesContents
+        /// Esc in Contents' field: the first clears the search and keeps
+        /// the caret, the second closes the panel and gives the page the keys.
+        case clearsThenClosesContents
+        /// ↓ in Contents' field: focus moves into the results, the panel
+        /// stays, and playback is untouched.
+        case movesIntoList
         /// The Listening popover closes.
         case closesPopover
         /// The main window closes; the app runs on.
@@ -329,8 +379,39 @@ final class MacKeyboardMatrixUITests: XCTestCase {
             let edited = suite.poll(timeout: 5) { suite.fieldText != before.field }
             return edited ? playbackUntouched(since: before, suite: suite) : "expected the field to change from '\(before.field ?? "")'"
         case .keepsField:
-            let lost = suite.poll(timeout: 1.5) { suite.focus != "text.editable" || suite.place != .classics }
+            let lost = suite.poll(timeout: 1.5) { suite.focus != "text.editable" || suite.place != before.place }
             return lost ? "the field lost the key (focus \(suite.focus), \(suite.place))" : playbackUntouched(since: before, suite: suite)
+        case .showsContents(let searchFocused):
+            guard suite.poll(timeout: 5, { suite.isContentsShown }) else { return "expected Contents to show" }
+            if searchFocused, !suite.poll(timeout: 5, { suite.focus == "text.editable" }) {
+                return "expected Search this book to have the keys, focus is \(suite.focus)"
+            }
+            return playbackUntouched(since: before, suite: suite)
+        case .hidesContents:
+            guard suite.poll(timeout: 5, { !suite.isContentsShown }) else { return "expected Contents to close" }
+            return suite.poll(timeout: 5) { suite.focus == "text.selectable" }
+                ? playbackUntouched(since: before, suite: suite)
+                : "closing Contents should give the page the keys, focus is \(suite.focus)"
+        case .clearsThenClosesContents:
+            let cleared = suite.poll(timeout: 5) {
+                suite.isContentsShown && suite.fieldText == "" && suite.focus == "text.editable"
+            }
+            guard cleared else { return "the first Esc should clear the search, field '\(suite.fieldText ?? "nil")'" }
+            press(.escape, in: suite.app)
+            guard suite.poll(timeout: 5, { !suite.isContentsShown }) else { return "the second Esc should close Contents" }
+            return suite.poll(timeout: 5) { suite.focus == "text.selectable" }
+                ? playbackUntouched(since: before, suite: suite)
+                : "closing Contents should give the page the keys, focus is \(suite.focus)"
+        case .movesIntoList:
+            // The list's own responder: not the field, the page, the bare
+            // window or nothing.
+            let moved = suite.poll(timeout: 5) {
+                !["text.editable", "text.selectable", "window", "none", ""].contains(suite.focus)
+            }
+            guard moved, suite.isContentsShown, suite.place == .reader else {
+                return "expected ↓ to move into the results (focus \(suite.focus), Contents \(suite.isContentsShown))"
+            }
+            return playbackUntouched(since: before, suite: suite)
         case .movesFocus:
             let wandered = suite.poll(timeout: 1.5) { suite.place != .library || suite.modals != before.modals }
             if wandered { return "expected focus to move in the grid, got \(suite.place)" }
@@ -374,7 +455,14 @@ final class MacKeyboardMatrixUITests: XCTestCase {
         case .opensSettings:
             press(.closeWindow, in: suite.app)
             XCTAssertTrue(suite.poll(timeout: 5) { !suite.settingsWindow.exists }, "⌘W closes Settings")
+        case .showsContents:
+            press(.contents, in: suite.app)
+            XCTAssertTrue(suite.poll(timeout: 5) { !suite.isContentsShown }, "⌃⌘S hides Contents")
+            // The keyboard goes back to the text; the state's entry takes it
+            // from there.
+            _ = suite.poll(timeout: 2) { suite.focus == "text.selectable" }
         case .nothing, .moves, .stepsRate, .stepsTextSize, .shows, .editsField, .keepsField, .movesFocus,
+             .hidesContents, .clearsThenClosesContents, .movesIntoList,
              .closesPopover, .closesWindow, .closesPopoverOrWindow:
             break   // the state's own entry puts it back, or nothing needs to
         }

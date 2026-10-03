@@ -18,13 +18,21 @@ enum PlatformTuning {
     /// Whether going to the background releases an idle neural voice, so
     /// iOS doesn't end the process for its memory.
     static let releasesNeuralOnBackground = true
+    /// How long the audio engine runs on once nothing plays: nil keeps it
+    /// running, as the iPhone always has.
+    static let idleEngineStopDelay: TimeInterval? = nil
     #elseif os(macOS)
-    /// Two to start, for the battery on a plane; phase 3 measures whether
-    /// four is needed to stay ahead of speech.
+    /// Two, for the battery on a plane (M19). Pending the user's on-device
+    /// measurement: raised to 4 only if synthesis measures below 5× real
+    /// time at 2 on the floor machine (an M1 with 8 GB, on battery).
     static let kokoroThreads = 2
     /// A Mac never ends an app for its memory, and a hidden window keeps
     /// reading.
     static let releasesNeuralOnBackground = false
+    /// M19: a running engine keeps the output device open, and coreaudiod
+    /// holds off idle sleep while it is. 30 s after playback stops the
+    /// engine stops too, so a paused Mac on battery can sleep.
+    static let idleEngineStopDelay: TimeInterval? = 30
     #endif
 }
 

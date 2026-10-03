@@ -116,14 +116,15 @@ extension XCTestCase {
     }
 }
 
-// MARK: - The phase-1 suite's driver
+// MARK: - The suite's driver
 
-/// What every phase-1 Mac UI test class reads and does through the one
-/// launched app: the launch argument sets, the DEBUG probes (identity,
-/// beeps, focus, playhead, announcements), the screens and how to reach
-/// them, and waits that let the app run between snapshots (never a fixed
-/// sleep). Keys still go only through `press(_:in:)`, and launching only
-/// through `XCUIApplication.aloud` and `launchAloud` (above).
+/// What every Mac UI test class reads and does through the one launched
+/// app: the launch argument sets, the DEBUG probes (identity, beeps, focus,
+/// playhead, announcements, and calm follow's on the page), the screens
+/// and how to reach them, and waits that let the app run between
+/// snapshots (never a fixed sleep). Keys still go only through
+/// `press(_:in:)`, and launching only through `XCUIApplication.aloud` and
+/// `launchAloud` (above).
 struct MacSuite {
 
     let app: XCUIApplication
@@ -169,7 +170,18 @@ struct MacSuite {
 
     var play: XCUIElement { app.buttons["player.play"].firstMatch }
 
+    /// Classics' toolbar search, or in the reader Contents' "Search this
+    /// book" (`search.field`): the one search field either screen shows.
     var searchField: XCUIElement { app.searchFields.firstMatch }
+
+    /// The reader's Contents panel, docked or floating.
+    var contentsPanel: XCUIElement { element("contents.panel") }
+
+    var isContentsShown: Bool { contentsPanel.exists }
+
+    /// The book page's text (`reader.text`): a text area, as VoiceOver
+    /// reads it. Its frame is the whole book's; `pageViewport` is what shows.
+    var pageText: XCUIElement { app.textViews["reader.text"].firstMatch }
 
     var isPopoverShown: Bool { element("listening.title").exists }
 
@@ -213,9 +225,10 @@ struct MacSuite {
     /// outside the reader.
     var playValue: String? { play.exists ? Self.string(play.value) : nil }
 
-    /// The Classics search text; nil outside Classics.
+    /// The search field's text: Classics', or Contents' in the reader; nil
+    /// where neither shows.
     var fieldText: String? {
-        guard place == .classics, searchField.exists else { return nil }
+        guard place == .classics || (place == .reader && isContentsShown), searchField.exists else { return nil }
         let text = Self.string(searchField.value)
         return text == searchField.placeholderValue ? "" : text
     }
@@ -269,16 +282,18 @@ struct MacSuite {
         var windows: Int
         var modals: Int
         var field: String?
+        var contents: Bool
 
         var description: String {
             "\(place), play \(play ?? "-"), sentence \(playhead.map(String.init) ?? "-"), "
                 + "\(announcements.count) announced, \(windows) windows, \(modals) modals, field '\(field ?? "-")'"
+                + (contents ? ", Contents shown" : "")
         }
     }
 
     func observe() -> Observation {
         Observation(place: place, play: playValue, playhead: playhead, announcements: announcements,
-                    windows: windows, modals: modals, field: fieldText)
+                    windows: windows, modals: modals, field: fieldText, contents: isContentsShown)
     }
 
     /// Back to the reader of the loaded book: from Classics pushed over it
@@ -328,6 +343,36 @@ struct MacSuite {
         if (fieldText ?? "").isEmpty { typeIntoFocusedField(typing) }
     }
 
+    /// The reader with its page holding the keys ("text.selectable"):
+    /// Contents shown, then hidden (⌃⌘S), which hands the keyboard back to
+    /// the text. A click would do it too, but a click on the page plays.
+    /// True once the page has the keys.
+    @discardableResult
+    func focusPage(_ test: XCTestCase) -> Bool {
+        guard openReader(test) else { return false }
+        if isPopoverShown { test.press(.escape, in: app) }
+        if !isContentsShown {
+            test.press(.contents, in: app)
+            _ = poll(timeout: 5) { isContentsShown }
+        }
+        test.press(.contents, in: app)
+        return poll(timeout: 5) { !isContentsShown && focus == "text.selectable" }
+    }
+
+    /// The reader's Contents with "Search this book" focused (⌘F) and
+    /// holding `typing`, its results landed (past the 200 ms debounce).
+    func focusContentsSearch(_ test: XCTestCase, typing: String) {
+        guard openReader(test) else { return }
+        if isPopoverShown { test.press(.escape, in: app) }
+        if !isContentsShown || focus != "text.editable" {
+            test.press(.find, in: app)
+            _ = poll(timeout: 5) { isContentsShown && focus == "text.editable" }
+        }
+        if (fieldText ?? "").isEmpty, typeIntoFocusedField(typing) {
+            _ = element("search.count").waitForExistence(timeout: 10)
+        }
+    }
+
     /// Types `text` into the search field, and only while a field has the
     /// keys: letters sent to a window would each be a key nothing takes.
     /// The one place a Mac UI test types text. False when nothing was typed.
@@ -362,9 +407,70 @@ struct MacSuite {
         return mainWindow.waitForExistence(timeout: 5)
     }
 
+    /// A point on screen inside the main window, to click, drag from or
+    /// scroll at.
+    func coordinate(at point: CGPoint) -> XCUICoordinate {
+        let frame = mainWindow.frame
+        return mainWindow.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: point.x - frame.minX, dy: point.y - frame.minY))
+    }
+
     /// Waits until `values` contains the play button's value.
     func waitForPlay(_ values: Set<String>, timeout: TimeInterval) -> Bool {
         poll(timeout: timeout) { values.contains(playValue ?? "") }
+    }
+
+    // MARK: The page (R16, M15)
+
+    /// What of the page shows, on screen: its scroll view below the
+    /// toolbar, beside a docked Contents, above the player bar. nil outside
+    /// the reader.
+    var pageViewport: CGRect? {
+        let scroll = app.scrollViews.containing(.textView, identifier: "reader.text").firstMatch
+        guard scroll.exists else { return nil }
+        var frame = scroll.frame
+        // The toolbar is the page's paper: should the text scroll under it,
+        // what shows starts at its edge.
+        let toolbar = mainWindow.toolbars.firstMatch
+        if toolbar.exists, toolbar.frame.maxY > frame.minY, toolbar.frame.maxY < frame.maxY {
+            frame = CGRect(x: frame.minX, y: toolbar.frame.maxY,
+                           width: frame.width, height: frame.maxY - toolbar.frame.maxY)
+        }
+        return frame
+    }
+
+    /// Programmatic follow scrolls since the page opened
+    /// (`reader.followScrolls.<n>`); nil outside the reader.
+    var followScrolls: Int? { probeNumber(after: "reader.followScrolls.") }
+
+    /// The page line the active sentence's top sits on, from the top of the
+    /// column (`reader.activeLine.<n>`): R16's budget is per 100 lines read.
+    var activeLine: Int? { probeNumber(after: "reader.activeLine.") }
+
+    /// The active sentence's frame on screen (`reader.activeSentence`).
+    var activeSentenceFrame: CGRect? {
+        let probe = element("reader.activeSentence")
+        return probe.exists ? probe.frame : nil
+    }
+
+    /// The playhead and the active sentence's frame from one moment. The
+    /// frame probe redraws a beat after the playhead probe, so a single
+    /// pair can mix two sentences: it counts only when two reads of each
+    /// agree. nil while they don't, or a probe is missing.
+    func steadyVoice() -> (sentence: Int, frame: CGRect)? {
+        guard let sentence = playhead, let frame = activeSentenceFrame,
+              playhead == sentence, activeSentenceFrame == frame else { return nil }
+        return (sentence, frame)
+    }
+
+    /// The first steady reading within `timeout`.
+    func waitForSteadyVoice(timeout: TimeInterval = 3) -> (sentence: Int, frame: CGRect)? {
+        var reading: (sentence: Int, frame: CGRect)?
+        poll(timeout: timeout) {
+            reading = steadyVoice()
+            return reading != nil
+        }
+        return reading
     }
 
     // MARK: Waiting
@@ -394,10 +500,14 @@ struct MacSuite {
     static let auditTypes: XCUIAccessibilityAuditType = [.contrast, .elementDetection, .hitRegion,
                                                          .sufficientElementDescription, .action, .parentChild]
 
-    /// The DEBUG probes are 1 × 1 test plumbing, not UI (as on the iPhone).
+    /// The DEBUG probes are test plumbing, not UI (as on the iPhone): the
+    /// 1 × 1 identity, beep, focus and playhead probes, and the page's calm
+    /// follow probes (`MacReaderFollowProbeOverlay`), drawn only in UI-test
+    /// launches.
     static func isTestPlumbing(_ issue: XCUIAccessibilityAuditIssue) -> Bool {
         guard let identifier = issue.element?.identifier else { return false }
-        return identifier.hasPrefix("debug.") || identifier.hasPrefix("reader.sentence.")
+        return ["debug.", "reader.sentence.", "reader.followScrolls.", "reader.activeLine.", "reader.activeSentence"]
+            .contains { identifier.hasPrefix($0) }
     }
 
     /// One audit issue as a line a failure can act on: what, the element's
@@ -421,6 +531,14 @@ struct MacSuite {
     }
 
     // MARK: Private
+
+    /// The number an identifier probe ends with, after `prefix`.
+    private func probeNumber(after prefix: String) -> Int? {
+        let probe = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix)).firstMatch
+        guard probe.exists else { return nil }
+        return Int(probe.identifier.dropFirst(prefix.count))
+    }
 
     private static func string(_ value: Any?) -> String {
         (value as? String) ?? value.map { "\($0)" } ?? ""

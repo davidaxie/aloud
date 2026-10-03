@@ -44,6 +44,11 @@ final class PlaybackController: ObservableObject {
                 // an audition, and fade it to silence.
                 if isRampingVolume, !isRampingToPause { cancelVolumeRamp() }
             }
+            // M19: out of playback the engine stops after the platform's
+            // idle delay, and any way back in (Play, a seek that plays, a
+            // voice sample, buffering) calls that off. Re-armed at every
+            // change, so a seek while paused starts the wait again.
+            if isActive { cancelIdleEngineStop() } else { armIdleEngineStop() }
         }
     }
     @Published private(set) var currentSentence: Int = -1 {
@@ -143,6 +148,16 @@ final class PlaybackController: ObservableObject {
 
     /// How long an "Undo jump" offer stays up. Tests shorten it.
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
+
+    /// M19: how long the engine runs on once nothing plays before it stops
+    /// (`PlatformTuning.idleEngineStopDelay`); nil keeps it running, as on
+    /// an iPhone. Tests set it.
+    var idleEngineStopDelay: TimeInterval? = PlatformTuning.idleEngineStopDelay
+    /// Runs the idle stop: `fire` on the main actor after `delay` seconds,
+    /// unless the returned item is cancelled first. Tests pass a fake clock.
+    var scheduleIdleEngineStop: (_ delay: TimeInterval,
+                                 _ fire: @escaping @MainActor @Sendable () -> Void) -> DispatchWorkItem
+        = PlaybackController.afterDelayOnMain
 
     /// Queued, so an announcement never cuts off what VoiceOver is already
     /// saying. A muted controller (UI tests) only records it, so a test can
@@ -297,6 +312,8 @@ final class PlaybackController: ObservableObject {
 
     /// Held while active (`PlatformActivity`).
     private var activity: PlatformActivity.Token?
+    /// The armed idle stop (M19), while one is.
+    private var idleEngineStopItem: DispatchWorkItem?
     /// The engine-configuration and system-sleep observers, with the
     /// center each was added to.
     private var systemObservers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
@@ -474,6 +491,7 @@ final class PlaybackController: ObservableObject {
             observer.center.removeObserver(observer.token)
         }
         PlatformActivity.end(activity)
+        idleEngineStopItem?.cancel()
     }
 
     // MARK: - Word-timing hooks (implementation in PlaybackController+WordTiming.swift)
@@ -1847,6 +1865,9 @@ final class PlaybackController: ObservableObject {
             }
             self.onAudioScheduleEvent?(.scheduled(sentence: -1, voiceID: voice.id))
             self.player.play()
+            // Status never changes for a sample: the idle wait starts again
+            // here, so the engine never stops under the line.
+            self.armIdleEngineStop()
         }
     }
 
@@ -2046,6 +2067,54 @@ final class PlaybackController: ObservableObject {
     }
     #endif
 
+    // MARK: - Idle engine stop (M19)
+
+    /// (Re)starts the wait for the idle stop. Nothing while active, or
+    /// where the platform keeps its engine running (`idleEngineStopDelay`).
+    private func armIdleEngineStop() {
+        cancelIdleEngineStop()
+        guard let delay = idleEngineStopDelay, !isActive else { return }
+        idleEngineStopItem = scheduleIdleEngineStop(delay) { [weak self] in
+            self?.stopIdleEngine()
+        }
+    }
+
+    private func cancelIdleEngineStop() {
+        idleEngineStopItem?.cancel()
+        idleEngineStopItem = nil
+    }
+
+    /// Nothing has played for `idleEngineStopDelay`: the engine stops and
+    /// lets the output device go, and with it the idle-sleep assertion
+    /// coreaudiod holds while the device runs. A paused schedule goes too,
+    /// as at a route stop (the node can't be trusted to keep its buffers
+    /// across a stopped engine): Play reads on from the start of the same
+    /// sentence, fading in like any start, and `startAudioHardware` starts
+    /// the engine again on the way, behind the same fences as every start.
+    /// Offline (muted), the pump stops with it.
+    private func stopIdleEngine() {
+        idleEngineStopItem = nil
+        guard !isActive else { return }
+        if hasActiveSchedule {
+            invalidateSchedule()   // also ends a pause's ramp, pausing the node
+            cuePrefetch()
+        }
+        guard audioEngine.isRunning else { return }
+        let engine = audioEngine
+        withEngineHeld { engine.stop() }
+        #if DEBUG
+        renderPump?.stop()
+        #endif
+    }
+
+    /// The idle stop's clock outside tests.
+    nonisolated static func afterDelayOnMain(_ delay: TimeInterval,
+                                             _ fire: @escaping @MainActor @Sendable () -> Void) -> DispatchWorkItem {
+        let item = DispatchWorkItem { MainActor.assumeIsolated { fire() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        return item
+    }
+
     /// Builds a PCM buffer in the graph's format, resampling when a clip's
     /// rate differs from the established connection (keeps gapless scheduling).
     private static func pcmBuffer(from clip: SynthesizedAudio,
@@ -2207,6 +2276,10 @@ extension PlaybackController {
               time.isSampleTimeValid, time.sampleRate > 0 else { return nil }
         return Double(time.sampleTime) / time.sampleRate
     }
+
+    /// Whether the engine runs now (M19's idle stop). Reading it never
+    /// builds the output.
+    var isEngineRunning: Bool { audioEngine.isRunning }
 
     /// Delivers `.AVAudioEngineConfigurationChange` for this controller's
     /// engine, as the system would after an output change.

@@ -2,7 +2,9 @@ import SwiftUI
 
 /// The neural-voice model card: promo → downloading (or waiting for Wi-Fi)
 /// → failed → installed, and "Checking voice files…" while files already on
-/// disk are verified.
+/// disk are verified. On the Mac (M17) the promo also says to download
+/// before a flight, and with no usable network path says to connect first,
+/// its Download disabled.
 /// The foot of the Listening view, in the reader's sheet (promo + progress,
 /// card chrome) and on Settings' Voice & speed page (`showsInstalledState`
 /// adds size-on-disk and a remove action). `showsCard` off drops the card
@@ -13,6 +15,8 @@ struct ModelDownloadView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @EnvironmentObject private var manager: ModelManager
+    /// Holds the Mac's path watch (nothing on the iPhone).
+    @EnvironmentObject private var offer: NaturalVoiceOffer
 
     var showsInstalledState = false
     var showsCard = true
@@ -73,37 +77,53 @@ struct ModelDownloadView: View {
     }
 
     private var promo: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+        let offline = offer.isOffline
+        return VStack(alignment: .leading, spacing: Theme.Space.sm) {
             tileRow {
                 icon
             } label: {
-                Text(NaturalVoiceCopy.offer)
-                    .font(Theme.font(.body).weight(.semibold))
-                    .foregroundStyle(Theme.text)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                    Text(NaturalVoiceCopy.offer)
+                        .font(Theme.font(.body).weight(.semibold))
+                        .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // The Mac's line (none on the iPhone).
+                    if let detail = NaturalVoiceCopy.promoDetail(offline: offline) {
+                        Text(detail)
+                            .font(Theme.font(.footnote))
+                            .foregroundStyle(Theme.textMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier(offline ? "model.offline" : "model.beforeFlight")
+                    }
+                }
             }
             Button {
                 requestDownload()
             } label: {
                 // The capsule carries a text label, so it is `accentStrong`.
                 // The label wraps inside it rather than truncating; the
-                // capsule grows from its 44pt minimum.
+                // capsule grows from its 44pt minimum. Disabled, it reads
+                // faint on the hairline's gray, never as a live accent.
                 Text(NaturalVoiceCopy.download)
                     .font(Theme.font(.callout).weight(.semibold))
-                    .foregroundStyle(Theme.bg)
+                    .foregroundStyle(offline ? Theme.textFaint : Theme.bg)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, Theme.Space.md)
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(Theme.accentStrong, in: Capsule())
+                    .background(offline ? Theme.line : Theme.accentStrong, in: Capsule())
             }
             .buttonStyle(.borderless)
+            .disabled(offline)
             .accessibilityIdentifier("model.download")
             Text(NaturalVoiceCopy.privacyLine)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        // The Mac learns whether a download could start; the iPhone's card
+        // watches nothing before its Download (M4).
+        .onAppear { offer.watchNetworkPath() }
     }
 
     /// Files already on disk being hashed (M3): a second or two, once, with
@@ -212,7 +232,7 @@ struct ModelDownloadView: View {
             Button {
                 isConfirmingRemove = true
             } label: {
-                Text("Remove Download")
+                Text(DeviceCopy.removeDownload)
                     .font(Theme.font(.callout).weight(.medium))
                     .foregroundStyle(Theme.textMuted)
                     .frame(minHeight: 44)

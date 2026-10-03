@@ -42,6 +42,13 @@ enum DeviceCopy {
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi"
     /// Where the installed voice lives: "353 MB on device · works offline".
     static let onDevice = "on device"
+    /// The card's line with no usable network path. None on the iPhone,
+    /// whose Download with no network waits for Wi-Fi.
+    static let connectToDownload: String? = nil
+    /// The installed card's remove action, which asks first.
+    static let removeDownload = "Remove Download"
+    /// Where more System voices come from. None on the iPhone.
+    static let addSystemVoices: String? = nil
     /// What to do after a file couldn't be opened: add it again from where
     /// it came.
     static let addAgain = "Try adding it again from Files."
@@ -58,6 +65,12 @@ enum DeviceCopy {
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi or Ethernet"
     /// "353 MB on this Mac · works offline" (M17).
     static let onDevice = "on this Mac"
+    /// No usable network path: Download is disabled until there is one (M17).
+    static let connectToDownload: String? = "Connect to the internet to download."
+    /// A Mac button that asks before it acts ends in an ellipsis.
+    static let removeDownload = "Remove Download\u{2026}"
+    /// Opens Spoken Content, where premium voices download before a flight (M10).
+    static let addSystemVoices: String? = "Add voices in System Settings\u{2026}"
     /// A Mac file arrives by the open panel, a drop or Open With, so the
     /// step names none of them.
     static let addAgain = "Try adding it again."

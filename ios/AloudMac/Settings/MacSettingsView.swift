@@ -78,11 +78,13 @@ enum MacSettingsTab: String, CaseIterable, Identifiable {
 struct MacSettingsVoiceTab: View {
 
     /// The list's tallest: with the window's toolbar and the privacy line,
-    /// the tab still fits a 1280 × 800 display.
-    static let maxListHeight: CGFloat = 560
+    /// the tab still fits a 1280 × 800 display. The not-installed list
+    /// (the card with its before-you-fly line, nine voices and "Add voices
+    /// in System Settings…") fits under it unscrolled.
+    static let maxListHeight: CGFloat = 600
 
     /// Seeded near the not-installed layout so the first frame barely moves.
-    @State private var contentHeight: CGFloat = 520
+    @State private var contentHeight: CGFloat = 560
 
     var body: some View {
         VStack(spacing: 0) {

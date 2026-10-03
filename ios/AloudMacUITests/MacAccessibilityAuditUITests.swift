@@ -7,8 +7,8 @@ import XCTest
 /// reader, the Listening popover, the Aa popover and both Settings tabs.
 /// Each runs in light and dark, at 1280 × 800 and at the 520 × 480 minimum.
 ///
-/// The one exception is test plumbing: the DEBUG probes (`debug.*` and the
-/// reader's playhead probe) are 1 × 1 elements that only UI-test launches
+/// The one exception is test plumbing: the DEBUG probes (`debug.*`, the
+/// reader's playhead probe and its follow probes) are 1 × 1 elements that only UI-test launches
 /// draw, as on the iPhone. Nothing else is allow-listed, `.parentChild`
 /// least of all. No walk touches Play, a card, a row or a voice, so
 /// nothing speaks. Runs only in the consented `AloudMacUI` scheme.

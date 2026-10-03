@@ -6,6 +6,11 @@ import Foundation
 /// offer until it is answered: by Not now, by a download starting from any
 /// surface, or by the model already being installed. An answer is never
 /// cleared, so a later Remove never brings the offer back.
+///
+/// On the Mac (M17) it also knows whether a download could start: with no
+/// usable network path the offer hides, since it could only fail, and comes
+/// back unanswered when a path returns; the card disables its Download. The
+/// path is watched only once there is a download to offer.
 @MainActor
 final class NaturalVoiceOffer: ObservableObject {
 
@@ -21,12 +26,21 @@ final class NaturalVoiceOffer: ObservableObject {
     }
 
     @Published private(set) var isVisible = false
+    /// Whether a download could reach the network: nil until the watch's
+    /// first path lands, and always nil on the iPhone, which never watches
+    /// here.
+    @Published private(set) var hasUsablePath: Bool?
+    /// A path landed and no download can use it: the Mac card's offline state.
+    var isOffline: Bool { hasUsablePath == false }
     private(set) var listenedSeconds: TimeInterval
     private(set) var answer: Answer?
 
     private let defaults: UserDefaults
     private let deviceSupported: Bool
     private let now: () -> TimeInterval
+    /// The Mac's own path watch; nil on the iPhone and in a hosted test.
+    private let pathSource: (any NetworkPathSource)?
+    private var isWatchingPath = false
 
     /// When the open `.playing` interval began; nil while not playing.
     private var playingSince: TimeInterval?
@@ -37,7 +51,8 @@ final class NaturalVoiceOffer: ObservableObject {
 
     init(defaults: UserDefaults = .standard,
          deviceSupported: Bool = ModelManager.deviceSupportsNeuralVoice,
-         now: @escaping () -> TimeInterval = { MonotonicClock.now }) {
+         now: @escaping () -> TimeInterval = { MonotonicClock.now },
+         pathSource: (any NetworkPathSource)? = NaturalVoiceOffer.defaultPathSource()) {
         #if DEBUG
         if UITestHooks.resetNaturalVoiceOffer {
             defaults.removeObject(forKey: Key.listenedSeconds)
@@ -50,8 +65,40 @@ final class NaturalVoiceOffer: ObservableObject {
         self.defaults = defaults
         self.deviceSupported = deviceSupported
         self.now = now
+        self.pathSource = pathSource
         listenedSeconds = min(max(defaults.double(forKey: Key.listenedSeconds), 0), Self.listenThreshold)
         answer = Answer(rawValue: defaults.string(forKey: Key.answer) ?? "")
+        pathSource?.setChangeHandler { [weak self] in
+            Task { @MainActor [weak self] in self?.pathChanged() }
+        }
+    }
+
+    /// The Mac's path, as the download sees it (`-uitest-offline` included).
+    /// None on the iPhone, and none in a hosted unit test, so no test ever
+    /// starts a live monitor: tests pass a fixed path.
+    nonisolated static func defaultPathSource(
+        preparesForFlight: Bool = PlatformVoiceSetup.preparesForFlight,
+        isXCTestHost: Bool = NSClassFromString("XCTestCase") != nil
+    ) -> (any NetworkPathSource)? {
+        guard preparesForFlight, !isXCTestHost else { return nil }
+        return ModelManager.defaultPathSource()
+    }
+
+    /// A known path a download can use: satisfied, costly or not (a costly
+    /// one asks first). Nil before the first path lands.
+    nonisolated static func hasUsablePath(_ source: any NetworkPathSource) -> Bool? {
+        guard source.hasPath else { return nil }
+        return source.allowsWiFiOnlyTransfer || source.isExpensiveOrConstrained
+    }
+
+    /// Starts the Mac's path watch once: from a not-installed card, or an
+    /// offer that would show. Does nothing on the iPhone.
+    func watchNetworkPath() {
+        guard let pathSource, !isWatchingPath else { return }
+        isWatchingPath = true
+        pathSource.start()
+        // A fixed path is known at once and never calls back.
+        pathChanged()
     }
 
     func attach(playback: PlaybackController, modelManager: ModelManager) {
@@ -113,15 +160,19 @@ final class NaturalVoiceOffer: ObservableObject {
     }
 
     /// A Download that found too little space leaves the offer up: its row
-    /// carries the space message and Download checks again (R21).
+    /// carries the space message and Download checks again (R21). The Mac
+    /// passes what its path watch knows, so an unknown or unusable path
+    /// keeps the offer down; the iPhone never gates on the path.
     nonisolated static func isVisible(listenedSeconds: TimeInterval,
                                       answer: Answer?,
                                       deviceSupported: Bool,
-                                      modelState: ModelManager.ModelState) -> Bool {
+                                      modelState: ModelManager.ModelState,
+                                      usablePath: Bool? = true) -> Bool {
         deviceSupported
             && answer == nil
             && (modelState == .notInstalled || modelState == .failed(.notEnoughSpace))
             && listenedSeconds >= listenThreshold
+            && usablePath == true
     }
 
     // MARK: - Private
@@ -141,14 +192,30 @@ final class NaturalVoiceOffer: ObservableObject {
         refresh()
     }
 
+    private func pathChanged() {
+        guard let pathSource else { return }
+        let usable = Self.hasUsablePath(pathSource)
+        if usable != hasUsablePath { hasUsablePath = usable }
+        refresh()
+    }
+
     /// Never depends on scene phase: a phone locked at the 60 s mark shows
-    /// the offer at the next unlock.
+    /// the offer at the next unlock. On the Mac, the first time the offer
+    /// would show is when its path starts being watched; it shows once a
+    /// usable path lands (milliseconds, online).
     private func refresh() {
-        let visible = modelState.map {
-            Self.isVisible(listenedSeconds: listenedSeconds, answer: answer,
-                           deviceSupported: deviceSupported, modelState: $0)
-        } ?? false
-        if visible != isVisible { isVisible = visible }
+        guard let modelState else {
+            if isVisible { isVisible = false }
+            return
+        }
+        func visible(usablePath: Bool?) -> Bool {
+            Self.isVisible(listenedSeconds: listenedSeconds, answer: answer, deviceSupported: deviceSupported,
+                           modelState: modelState, usablePath: usablePath)
+        }
+        // Read after the watch starts: a fixed path lands inside it.
+        if visible(usablePath: true) { watchNetworkPath() }
+        let shown = visible(usablePath: pathSource == nil ? true : hasUsablePath)
+        if shown != isVisible { isVisible = shown }
     }
 }
 
@@ -162,6 +229,15 @@ enum NaturalVoiceCopy {
     /// iPhone, "Download 353 MB on cellular?".
     static var cellularPrompt: String { DeviceCopy.meteredPrompt }
     static let privacyLine = "Downloads once from Hugging Face. Nothing about you is sent."
+    /// The Mac card's promise under the offer (M17).
+    static let beforeFlight = "Download before you fly. After that, everything works offline."
+    /// The not-installed card's line under the offer: on the Mac, the
+    /// promise, or with no usable path what to do first. None on the
+    /// iPhone, whose card reads as it always has.
+    static func promoDetail(offline: Bool) -> String? {
+        guard PlatformVoiceSetup.preparesForFlight else { return nil }
+        return offline ? DeviceCopy.connectToDownload : beforeFlight
+    }
     /// Under the cellular prompt: the costly network, where the prompt
     /// doesn't name it (`DeviceCopy.meteredDetail`), then the privacy line.
     static var cellularPromptMessage: String {

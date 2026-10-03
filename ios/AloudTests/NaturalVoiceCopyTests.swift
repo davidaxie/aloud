@@ -81,6 +81,51 @@ final class NaturalVoiceCopyTests: XCTestCase {
         #endif
     }
 
+    /// M17: the Mac's not-installed card says to download before the
+    /// flight, or with no usable path to connect first. The iPhone's card
+    /// has no such line, so it reads as it always has.
+    func testPromoDetailIsTheMacsOnly() {
+        XCTAssertEqual(NaturalVoiceCopy.beforeFlight,
+                       "Download before you fly. After that, everything works offline.")
+        #if os(iOS)
+        XCTAssertFalse(PlatformVoiceSetup.preparesForFlight)
+        XCTAssertNil(DeviceCopy.connectToDownload)
+        XCTAssertNil(NaturalVoiceCopy.promoDetail(offline: false))
+        XCTAssertNil(NaturalVoiceCopy.promoDetail(offline: true))
+        #else
+        XCTAssertTrue(PlatformVoiceSetup.preparesForFlight)
+        XCTAssertEqual(DeviceCopy.connectToDownload, "Connect to the internet to download.")
+        XCTAssertEqual(NaturalVoiceCopy.promoDetail(offline: false),
+                       "Download before you fly. After that, everything works offline.")
+        XCTAssertEqual(NaturalVoiceCopy.promoDetail(offline: true), "Connect to the internet to download.")
+        #endif
+    }
+
+    /// The installed card's remove action asks first; on the Mac its
+    /// title ends in an ellipsis, as a Mac button that opens a
+    /// confirmation does. The iPhone's reads as it always has.
+    func testRemoveDownloadTitle() {
+        #if os(iOS)
+        XCTAssertEqual(DeviceCopy.removeDownload, "Remove Download")
+        #else
+        XCTAssertEqual(DeviceCopy.removeDownload, "Remove Download\u{2026}")
+        #endif
+    }
+
+    /// M10: the link to more System voices is the Mac's alone, with its
+    /// pane; the iPhone's Listening view shows neither.
+    func testAddSystemVoicesIsTheMacsOnly() {
+        #if os(iOS)
+        XCTAssertNil(DeviceCopy.addSystemVoices)
+        XCTAssertNil(PlatformVoiceSetup.addVoicesURL)
+        XCTAssertFalse(PlatformVoiceSetup.namesResolvedSystemVoice)
+        #else
+        XCTAssertEqual(DeviceCopy.addSystemVoices, "Add voices in System Settings\u{2026}")
+        XCTAssertNotNil(PlatformVoiceSetup.addVoicesURL)
+        XCTAssertTrue(PlatformVoiceSetup.namesResolvedSystemVoice)
+        #endif
+    }
+
     /// M3: shown while files already on disk are hashed.
     func testVerifyingCopy() {
         XCTAssertEqual(NaturalVoiceCopy.verifying, "Checking voice files\u{2026}")
