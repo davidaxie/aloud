@@ -263,12 +263,13 @@ final class NaturalVoiceOfferTests: XCTestCase {
     /// The iPhone never watches the path for the offer or the card (M4);
     /// neither does a hosted unit test on the Mac, so no test starts a live
     /// monitor through the offer.
-    func testDefaultPathSourceIsTheMacsAppOnly() {
-        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(preparesForFlight: false, isXCTestHost: false))
-        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(preparesForFlight: true, isXCTestHost: true))
-        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(), "this test host")
+    func testOnlyTheMacsAppWatchesTheDownloadsPath() {
+        XCTAssertFalse(NaturalVoiceOffer.watchesDownloadPath(preparesForFlight: false, isXCTestHost: false))
+        XCTAssertFalse(NaturalVoiceOffer.watchesDownloadPath(preparesForFlight: true, isXCTestHost: true))
+        XCTAssertTrue(NaturalVoiceOffer.watchesDownloadPath(preparesForFlight: true, isXCTestHost: false))
+        XCTAssertFalse(NaturalVoiceOffer.watchesDownloadPath(), "this test host")
         #if os(iOS)
-        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(isXCTestHost: false), "the iPhone app")
+        XCTAssertFalse(NaturalVoiceOffer.watchesDownloadPath(isXCTestHost: false), "the iPhone app")
         #endif
     }
 

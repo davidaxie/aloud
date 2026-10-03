@@ -6,8 +6,9 @@ import XCTest
 /// stops, so a paused Mac on battery can idle-sleep, and Play starts it
 /// again at the same sentence, fading in; Play, a seek, a voice change and
 /// the controller's end call the wait off, and nothing that buffers or
-/// reads is ever stopped. Low Power Mode skips pre-warm, and memory
-/// pressure frees an engine that isn't reading, never one that is.
+/// reads is ever stopped. Low Power Mode skips pre-warm. Memory pressure
+/// frees an idle engine at `.warning` and a paused one only at `.critical`,
+/// never one that is reading.
 ///
 /// Silent: the rig's muted controller renders offline (no output device is
 /// ever opened), the idle wait runs on a fake clock, and Kokoro is a fake.
@@ -210,9 +211,9 @@ final class MacPowerTests: XCTestCase {
         withExtendedLifetime(prewarm) {}
     }
 
-    /// Memory pressure (the Mac's relay, posted as the lifecycle's memory
-    /// warning) never takes the engine from under the reading; paused, the
-    /// engine gives its memory back.
+    /// A warning that carries no level (as the iPhone's arrives) reads as
+    /// critical: it never takes the engine from under the reading, and
+    /// paused, the engine gives its memory back, as on the iPhone.
     func testMemoryPressureFreesAnEngineThatIsNotReading() async throws {
         let neural = FakeNeuralEngine(warm: true)
         let rig = Rig(sentences: 40, neural: neural)
@@ -241,5 +242,140 @@ final class MacPowerTests: XCTestCase {
         XCTAssertEqual(rig.controller.status, .paused)
         XCTAssertNil(rig.controller.stopped)
         withExtendedLifetime(prewarm) {}
+    }
+
+    /// Michael on a warm fake engine, with the pre-warm hearing memory
+    /// warnings on a private center and the card hidden, so nothing warms
+    /// behind the test.
+    private func makePressureRig() -> (rig: Rig, neural: FakeNeuralEngine,
+                                       center: NotificationCenter, prewarm: NeuralPrewarm) {
+        let neural = FakeNeuralEngine(warm: true)
+        let rig = Rig(sentences: 40, neural: neural)
+        rig.controller.voice = Rig.michael
+        let center = NotificationCenter()
+        let prewarm = NeuralPrewarm(playback: rig.controller,
+                                    kokoro: neural,
+                                    cardVisible: Just(false).eraseToAnyPublisher(),
+                                    isModelInstalled: { true },
+                                    isLowPowerMode: { false },
+                                    sceneActive: true,
+                                    notifications: center)
+        return (rig, neural, center, prewarm)
+    }
+
+    /// `.warning` frees an engine nothing is waiting on: no book is cued.
+    func testAWarningFreesAnIdleEngine() async {
+        let (rig, neural, center, prewarm) = makePressureRig()
+        XCTAssertEqual(rig.controller.status, .idle)
+
+        PlatformLifecycle.post(.memoryWarning, to: center, pressure: .warning)
+        let freed = await rig.waitUntil(2) { !neural.isWarm }
+        XCTAssertTrue(freed, "idle, it gives its memory back at the first level")
+        XCTAssertEqual(rig.statuses, [.idle], "nothing the listener sees")
+        withExtendedLifetime(prewarm) {}
+    }
+
+    /// A paused engine outlasts `.warning`, since Play would pay the load
+    /// again, and gives its memory back at `.critical`, still paused.
+    func testAWarningKeepsAPausedEngineAndCriticalFreesIt() async throws {
+        let (rig, neural, center, prewarm) = makePressureRig()
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        rig.controller.pause()
+        let sentence = rig.controller.currentSentence
+
+        PlatformLifecycle.post(.memoryWarning, to: center, pressure: .warning)
+        let freedEarly = await rig.waitUntil(0.5) { !neural.isWarm }
+        XCTAssertFalse(freedEarly, "a warning leaves a paused engine warm")
+
+        PlatformLifecycle.post(.memoryWarning, to: center, pressure: .critical)
+        let freed = await rig.waitUntil(2) { !neural.isWarm }
+        XCTAssertTrue(freed, "critical: the paused engine gives its memory back")
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.currentSentence, sentence, "the place is kept")
+        XCTAssertNil(rig.controller.stopped, "nothing the listener is told about")
+        withExtendedLifetime(prewarm) {}
+    }
+
+    /// No level takes the engine from under the reading.
+    func testNoLevelFreesAReadingEngine() async throws {
+        let (rig, neural, center, prewarm) = makePressureRig()
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+
+        for pressure in PlatformLifecycle.MemoryPressure.allCases {
+            PlatformLifecycle.post(.memoryWarning, to: center, pressure: pressure)
+        }
+        let freed = await rig.waitUntil(0.5) { !neural.isWarm }
+        XCTAssertFalse(freed, "a reading engine is never freed")
+        XCTAssertTrue(rig.controller.isActive)
+        withExtendedLifetime(prewarm) {}
+    }
+
+    /// The fake neural engine, counting the releases asked of it.
+    private final class CountingNeuralEngine: WarmableTtsEngine, @unchecked Sendable {
+        let base: FakeNeuralEngine
+        private let lock = NSLock()
+        private var count = 0
+        init(_ base: FakeNeuralEngine) { self.base = base }
+        var releases: Int { lock.withLock { count } }
+        var voices: [TtsVoice] { base.voices }
+        var isWarm: Bool { base.isWarm }
+        func warmUp() async throws { try await base.warmUp() }
+        func release() {
+            lock.withLock { count += 1 }
+            base.release()
+        }
+        func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            try await base.synthesize(text, voice: voice)
+        }
+    }
+
+    /// A pre-warm still loading began on a cold engine, so `.warning`
+    /// cancels it and frees what it loads, a paused book's included: the
+    /// warning never leaves warm an engine that was cold when it came.
+    func testAWarningFreesAPrewarmStillLoadingUnderAPausedBook() async {
+        let neural = FakeNeuralEngine()
+        let engine = CountingNeuralEngine(neural)
+        let rig = Rig(sentences: 40, kokoro: engine, extraRoutes: [Rig.michael.id: engine])
+        rig.controller.voice = Rig.michael
+        rig.loadDefault()
+        XCTAssertEqual(rig.controller.status, .paused)
+        let center = NotificationCenter()
+        let prewarm = NeuralPrewarm(playback: rig.controller,
+                                    kokoro: engine,
+                                    cardVisible: Just(true).eraseToAnyPublisher(),
+                                    isModelInstalled: { true },
+                                    isLowPowerMode: { false },
+                                    sceneActive: true,
+                                    notifications: center)
+        XCTAssertTrue(prewarm.isWarming, "the card shows: the load is in flight")
+        let before = engine.releases
+
+        PlatformLifecycle.post(.memoryWarning, to: center, pressure: .warning)
+        let freed = await rig.waitUntil(2) { engine.releases > before }
+        XCTAssertTrue(freed, "the cancelled load is freed")
+        XCTAssertFalse(prewarm.isWarming)
+        XCTAssertEqual(rig.controller.status, .paused, "nothing the listener sees")
+        neural.finishWarmUp()   // never leave a warm-up parked
+        withExtendedLifetime(prewarm) {}
+    }
+
+    /// The relay posts each kernel level as the warning shared code reads:
+    /// `.warning` and `.critical` as themselves, a return to normal not at
+    /// all.
+    func testTheRelayCarriesTheKernelsLevel() {
+        typealias Pressure = PlatformLifecycle.MemoryPressure
+        XCTAssertEqual(PlatformLifecycle.Event.memoryWarning.name, MemoryPressureRelay.name)
+        for (event, expected) in [(DispatchSource.MemoryPressureEvent.warning, Pressure.warning),
+                                  (.critical, .critical), ([.warning, .critical], .critical)] {
+            let level = Pressure(event)
+            XCTAssertEqual(level, expected)
+            let posted = Notification(name: MemoryPressureRelay.name, object: nil, userInfo: level?.userInfo)
+            XCTAssertEqual(Pressure(of: posted), expected)
+        }
+        XCTAssertNil(Pressure(.normal), "pressure eased: nothing to free")
     }
 }

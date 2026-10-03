@@ -10,7 +10,8 @@ import Foundation
 /// On the Mac (M17) it also knows whether a download could start: with no
 /// usable network path the offer hides, since it could only fail, and comes
 /// back unanswered when a path returns; the card disables its Download. The
-/// path is watched only once there is a download to offer.
+/// path is the download's own (`ModelManager.sharedNetworkPath`), so the
+/// process watches one, and only once there is a download to offer.
 @MainActor
 final class NaturalVoiceOffer: ObservableObject {
 
@@ -38,8 +39,11 @@ final class NaturalVoiceOffer: ObservableObject {
     private let defaults: UserDefaults
     private let deviceSupported: Bool
     private let now: () -> TimeInterval
-    /// The Mac's own path watch; nil on the iPhone and in a hosted test.
-    private let pathSource: (any NetworkPathSource)?
+    /// The download's path, from `attach` on the Mac (or a test's own);
+    /// nil on the iPhone and in a hosted test.
+    private var pathSource: (any NetworkPathSource)?
+    /// Whether `attach` adopts the download's path.
+    private let adoptsDownloadPath: Bool
     private var isWatchingPath = false
 
     /// When the open `.playing` interval began; nil while not playing.
@@ -52,7 +56,8 @@ final class NaturalVoiceOffer: ObservableObject {
     init(defaults: UserDefaults = .standard,
          deviceSupported: Bool = ModelManager.deviceSupportsNeuralVoice,
          now: @escaping () -> TimeInterval = { MonotonicClock.now },
-         pathSource: (any NetworkPathSource)? = NaturalVoiceOffer.defaultPathSource()) {
+         pathSource: (any NetworkPathSource)? = nil,
+         watchesDownloadPath: Bool = NaturalVoiceOffer.watchesDownloadPath()) {
         #if DEBUG
         if UITestHooks.resetNaturalVoiceOffer {
             defaults.removeObject(forKey: Key.listenedSeconds)
@@ -65,23 +70,20 @@ final class NaturalVoiceOffer: ObservableObject {
         self.defaults = defaults
         self.deviceSupported = deviceSupported
         self.now = now
-        self.pathSource = pathSource
+        adoptsDownloadPath = watchesDownloadPath
         listenedSeconds = min(max(defaults.double(forKey: Key.listenedSeconds), 0), Self.listenThreshold)
         answer = Answer(rawValue: defaults.string(forKey: Key.answer) ?? "")
-        pathSource?.setChangeHandler { [weak self] in
-            Task { @MainActor [weak self] in self?.pathChanged() }
-        }
+        if let pathSource { use(pathSource) }
     }
 
-    /// The Mac's path, as the download sees it (`-uitest-offline` included).
-    /// None on the iPhone, and none in a hosted unit test, so no test ever
-    /// starts a live monitor: tests pass a fixed path.
-    nonisolated static func defaultPathSource(
+    /// The Mac's app watches the download's path (`-uitest-offline`
+    /// included). The iPhone doesn't, and neither does a hosted unit test,
+    /// so no test ever starts a live monitor: tests pass a path of their own.
+    nonisolated static func watchesDownloadPath(
         preparesForFlight: Bool = PlatformVoiceSetup.preparesForFlight,
         isXCTestHost: Bool = NSClassFromString("XCTestCase") != nil
-    ) -> (any NetworkPathSource)? {
-        guard preparesForFlight, !isXCTestHost else { return nil }
-        return ModelManager.defaultPathSource()
+    ) -> Bool {
+        preparesForFlight && !isXCTestHost
     }
 
     /// A known path a download can use: satisfied, costly or not (a costly
@@ -102,6 +104,8 @@ final class NaturalVoiceOffer: ObservableObject {
     }
 
     func attach(playback: PlaybackController, modelManager: ModelManager) {
+        // Adopted, not started: the card or the 60 s mark starts it.
+        if pathSource == nil, adoptsDownloadPath { use(modelManager.sharedNetworkPath()) }
         cancellables.removeAll()
         playback.$status
             .removeDuplicates()
@@ -190,6 +194,13 @@ final class NaturalVoiceOffer: ObservableObject {
         answer = newAnswer
         defaults.set(newAnswer.rawValue, forKey: Key.answer)
         refresh()
+    }
+
+    private func use(_ source: any NetworkPathSource) {
+        pathSource = source
+        source.setChangeHandler { [weak self] in
+            Task { @MainActor [weak self] in self?.pathChanged() }
+        }
     }
 
     private func pathChanged() {

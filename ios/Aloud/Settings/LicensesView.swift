@@ -6,13 +6,17 @@ struct LicensesView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private struct Entry: Identifiable {
+    // The page's text is internal, not private: the Mac's About Aloud builds
+    // its Credits from it (`MacAboutCredits`), so the two can't disagree.
+    struct Entry: Identifiable {
         let id: String        // component name
         let license: String
         let detail: String
     }
 
-    private static let entries: [Entry] = [
+    static let intro = "Aloud is built on open-source software."
+
+    static let entries: [Entry] = [
         Entry(id: "sherpa-onnx",
               license: "Apache License 2.0",
               detail: "On-device neural text-to-speech runtime by the k2-fsa "
@@ -35,10 +39,19 @@ struct LicensesView: View {
                     + "source is available from the espeak-ng project."),
     ]
 
+    static let classicsTitle = "Bundled classics"
+    // R25: the screen users know is titled Classics; "bookshelf" is a code
+    // name, never copy.
+    static let classicsNote = "The Classics are public-domain texts from Project "
+        + "Gutenberg (gutenberg.org), lightly formatted for "
+        + "listening. Project Gutenberg is a registered "
+        + "trademark; the texts themselves are free of U.S. "
+        + "copyright."
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.xl) {
-                Text("Aloud is built on open-source software.")
+                Text(Self.intro)
                     .font(Theme.font(.footnote))
                     .foregroundStyle(Theme.textMuted)
 
@@ -54,16 +67,10 @@ struct LicensesView: View {
                 }
 
                 VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                    Text("Bundled classics")
+                    Text(Self.classicsTitle)
                         .font(Theme.font(.body).weight(.semibold))
                         .foregroundStyle(Theme.text)
-                    // R25: the screen users know is titled Classics; "bookshelf"
-                    // is a code name, never copy.
-                    Text("The Classics are public-domain texts from Project "
-                       + "Gutenberg (gutenberg.org), lightly formatted for "
-                       + "listening. Project Gutenberg is a registered "
-                       + "trademark; the texts themselves are free of U.S. "
-                       + "copyright.")
+                    Text(Self.classicsNote)
                         .font(Theme.font(.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)

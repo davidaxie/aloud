@@ -26,8 +26,12 @@ import Foundation
 /// is one of three classified failures, announced, never an error's text.
 ///
 /// Nothing here touches the network until a download is asked for or
-/// reattached (M4): both sessions and the path monitor are made on first
-/// use, so a launch with no download in flight opens no network API.
+/// reattached (M4): both sessions are made on first use, so a launch with
+/// no download in flight opens no socket. The path is the process's one
+/// (`sharedNetworkPath`): a Download or a reattach starts it, and so, on
+/// the Mac, does the not-installed card appearing or R5's offer coming due
+/// (M17), to say whether a Download could start. Watching a path opens no
+/// socket.
 ///
 /// Dev/test seeding: copy both pinned files into the container's
 /// Application Support/KokoroModel/ — `detectExisting()` (run at init)
@@ -297,16 +301,17 @@ final class ModelManager: ObservableObject {
     #if DEBUG
     /// M4 probes, read by NetworkBoundaryTests: a session exists only once
     /// a download started or reattached, and the path is watched only once
-    /// one was asked for.
+    /// a download, or on the Mac a surface offering one, asked for it.
     private(set) var hasCreatedSession = false
-    var pathMonitorStarted: Bool { isWatchingPath }
+    var pathMonitorStarted: Bool { pathHub.isStarted }
     #endif
 
     // MARK: - Private state
 
     private let pathSource: any NetworkPathSource
-    /// Set by the first `watchPath`; the source is started once.
-    private var isWatchingPath = false
+    /// The path's one start and its every watcher: this manager first, then
+    /// each `sharedNetworkPath`.
+    private let pathHub: NetworkPathHub
     /// A Download asked before the first path landed: who asked, and the
     /// run it belongs to. The first path, or `firstPathWait`, answers it.
     private var pendingRequest: (asker: UUID?, epoch: Int)?
@@ -364,6 +369,7 @@ final class ModelManager: ObservableObject {
          freeSpace: @escaping @Sendable () -> Int64? = { ModelManager.defaultFreeSpace() },
          hasher: @escaping FileHasher = { try ModelManager.sha256Hex(of: $0) }) {
         self.pathSource = pathSource
+        pathHub = NetworkPathHub(source: pathSource)
         self.defaults = defaults
         self.freeSpace = freeSpace
         self.hasher = hasher
@@ -397,7 +403,7 @@ final class ModelManager: ObservableObject {
         cellularCoordinator = DownloadCoordinator(stagingDirectory: Self.stagingDirectory(in: directory))
         wireCoordinator(wifiCoordinator)
         wireCoordinator(cellularCoordinator)
-        pathSource.setChangeHandler { [weak self] in
+        pathHub.addWatcher { [weak self] in
             Task { @MainActor [weak self] in
                 self?.answerPendingRequest()
                 self?.refreshInFlightState()
@@ -548,7 +554,8 @@ final class ModelManager: ObservableObject {
         }
         // There is room now, so the space line would be stale under the prompt.
         if state == .failed(.notEnoughSpace) { state = .notInstalled }
-        // The first Download is where the path starts being watched. The
+        // The first Download is where the path starts being watched (on the
+        // Mac, the card or the offer may have started it already). The
         // cellular question must not be answered blind, nor hold the main
         // thread while the first path lands, so it is answered then.
         watchPath()
@@ -878,12 +885,22 @@ final class ModelManager: ObservableObject {
     /// started watching. The first path usually lands within milliseconds.
     private static let firstPathWait: Duration = .milliseconds(250)
 
-    /// Starts the path source once. Reached only from a Download or a
-    /// reattach after relaunch, so a launch with no record never watches.
+    /// Starts the path source once. Reached from a Download, a reattach
+    /// after relaunch, or a `sharedNetworkPath` started by a surface that
+    /// shows one could start, so a launch with no record never watches.
     private func watchPath() {
-        guard !isWatchingPath else { return }
-        isWatchingPath = true
-        pathSource.start()
+        pathHub.start()
+    }
+
+    /// The download's own path for a surface that says whether a Download
+    /// could start (M17: the Mac's card and R5's offer), so the process
+    /// watches one path, never a second monitor beside this one (M4). It
+    /// reads this path, its `start` is `watchPath`, and its change handler
+    /// is its own, called after this manager has heard the change. Building
+    /// it watches nothing. Watching opens no socket: the sessions are still
+    /// made only by a Download or a reattach.
+    func sharedNetworkPath() -> any NetworkPathSource {
+        SharedNetworkPath(hub: pathHub)
     }
 
     /// Holds the Download asked before the first path, for the path to
@@ -1077,6 +1094,85 @@ struct ModelInstallRecord: Codable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(self).write(to: Self.url(in: directory), options: .atomic)
+    }
+}
+
+// MARK: - One network path
+
+/// One path's start and its watchers (M4): the source starts once,
+/// whichever watcher asks first, and each change reaches every watcher in
+/// the order they were added. Called on any queue.
+private final class NetworkPathHub: @unchecked Sendable {
+
+    let source: any NetworkPathSource
+    private let lock = NSLock()
+    private var started = false
+    private var watchers: [@Sendable () -> Void] = []
+
+    init(source: any NetworkPathSource) {
+        self.source = source
+        source.setChangeHandler { [weak self] in self?.changed() }
+    }
+
+    var isStarted: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return started
+    }
+
+    func addWatcher(_ watcher: @escaping @Sendable () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        watchers.append(watcher)
+    }
+
+    /// Outside the lock: a fixed path, or a monitor's first update, may
+    /// call back inside `start`.
+    func start() {
+        lock.lock()
+        let first = !started
+        started = true
+        lock.unlock()
+        if first { source.start() }
+    }
+
+    private func changed() {
+        lock.lock()
+        let watchers = self.watchers
+        lock.unlock()
+        for watcher in watchers { watcher() }
+    }
+}
+
+/// `ModelManager.sharedNetworkPath`: the hub's path, read and started
+/// through it, with a change handler of its own.
+private final class SharedNetworkPath: NetworkPathSource, @unchecked Sendable {
+
+    private let hub: NetworkPathHub
+    private let lock = NSLock()
+    private var changeHandler: (@Sendable () -> Void)?
+
+    init(hub: NetworkPathHub) {
+        self.hub = hub
+        hub.addWatcher { [weak self] in self?.changed() }
+    }
+
+    var isExpensiveOrConstrained: Bool { hub.source.isExpensiveOrConstrained }
+    var allowsWiFiOnlyTransfer: Bool { hub.source.allowsWiFiOnlyTransfer }
+    var hasPath: Bool { hub.source.hasPath }
+
+    func setChangeHandler(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        changeHandler = handler
+    }
+
+    func start() {
+        hub.start()
+    }
+
+    private func changed() {
+        lock.lock()
+        let handler = changeHandler
+        lock.unlock()
+        handler?()
     }
 }
 

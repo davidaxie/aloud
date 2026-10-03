@@ -36,7 +36,8 @@ enum PlatformLifecycle {
         case willTerminate
         /// The last reliable moment to save before the process may be killed.
         case didEnterBackground
-        /// Give back memory that can be rebuilt (the warm neural voice).
+        /// Give back memory that can be rebuilt (the warm neural voice), as
+        /// far as its `MemoryPressure` says.
         case memoryWarning
         /// The machine is about to sleep: audio is about to die.
         case systemWillSleep
@@ -70,6 +71,43 @@ enum PlatformLifecycle {
             }
         }
         #endif
+    }
+
+    /// How hard a memory warning asks (M19), read from the warning itself
+    /// so shared code never asks which platform sent it.
+    enum MemoryPressure: String, CaseIterable, Sendable {
+        /// Give back what nothing is waiting on: a load in flight, an idle
+        /// engine.
+        case warning
+        /// Give back everything that isn't reading: a paused engine too.
+        case critical
+
+        /// Where a memory warning carries its level.
+        static let userInfoKey = "AloudMemoryPressure"
+
+        /// The kernel's pressure source, as the Mac's relay hears it: nil
+        /// once pressure is back to normal, which asks for nothing.
+        init?(_ event: DispatchSource.MemoryPressureEvent) {
+            if event.contains(.critical) {
+                self = .critical
+            } else if event.contains(.warning) {
+                self = .warning
+            } else {
+                return nil
+            }
+        }
+
+        /// The level `notification` carries. One that carries none (the
+        /// iPhone's single `didReceiveMemoryWarning`) is critical, which is
+        /// what that warning has always meant here: a paused engine is
+        /// freed too.
+        init(of notification: Notification) {
+            let raw = notification.userInfo?[Self.userInfoKey] as? String
+            self = raw.flatMap(Self.init(rawValue:)) ?? .critical
+        }
+
+        /// What a memory warning at this level carries.
+        var userInfo: [AnyHashable: Any] { [Self.userInfoKey: rawValue] }
     }
 
     #if os(iOS)
@@ -125,9 +163,11 @@ enum PlatformLifecycle {
 
     #if DEBUG
     /// Delivers `event` as the system would, so tests drive the observers
-    /// on every platform the same way.
-    static func post(_ event: Event, to center: NotificationCenter? = nil) {
-        (center ?? self.center(for: event)).post(name: event.name, object: nil)
+    /// on every platform the same way. A memory warning carries `pressure`
+    /// as the Mac's relay does, or nothing, as the iPhone's does.
+    static func post(_ event: Event, to center: NotificationCenter? = nil,
+                     pressure: MemoryPressure? = nil) {
+        (center ?? self.center(for: event)).post(name: event.name, object: nil, userInfo: pressure?.userInfo)
     }
     #endif
 }
@@ -162,17 +202,19 @@ enum PlatformActivity {
 
 #if os(macOS)
 /// The Mac's memory warning: the kernel's memory-pressure source, posted on
-/// the default center as `PlatformLifecycle.Event.memoryWarning`.
+/// the default center as `PlatformLifecycle.Event.memoryWarning` carrying
+/// its level (`PlatformLifecycle.MemoryPressure`).
 enum MemoryPressureRelay {
 
     static let name = Notification.Name("AloudMemoryWarning")
 
     /// Made and resumed on first use (a static's initializer runs once) and
-    /// kept for the life of the process.
+    /// kept for the life of the process, so the handler may hold it.
     private static let source: DispatchSourceMemoryPressure = {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         source.setEventHandler {
-            NotificationCenter.default.post(name: name, object: nil)
+            guard let pressure = PlatformLifecycle.MemoryPressure(source.data) else { return }
+            NotificationCenter.default.post(name: name, object: nil, userInfo: pressure.userInfo)
         }
         source.resume()
         return source

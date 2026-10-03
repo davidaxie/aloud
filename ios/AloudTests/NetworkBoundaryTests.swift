@@ -8,6 +8,12 @@ import XCTest
 /// blocking the main thread for it. The source scan is
 /// NetworkBoundaryLintTests.
 ///
+/// The process watches one path, the download's. On the Mac the card and
+/// R5's offer share it (`sharedNetworkPath`, M17) and may start it before
+/// any Download, to say whether one could start. That opens no socket (a
+/// path monitor only reads the system's interfaces): only a Download or a
+/// reattach makes a session, the one way out to the network.
+///
 /// `-uitest-offline` (DEBUG) is the plane: the path reads as unsatisfied and
 /// every network request is refused. Those tests drive the refusal directly
 /// and never register it, since this host isn't offline.
@@ -81,6 +87,14 @@ final class NetworkBoundaryTests: XCTestCase {
         manager.startsNetworkTasks = false
         manager.announce = { _ in }
         return manager
+    }
+
+    /// Counts a shared path's change handler, called on any queue.
+    private final class Calls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        var count: Int { lock.withLock { calls } }
+        func record() { lock.withLock { calls += 1 } }
     }
 
     private var stagingExists: Bool {
@@ -257,6 +271,58 @@ final class NetworkBoundaryTests: XCTestCase {
         XCTAssertEqual(manager.requestDownload(), .notEnoughSpace)
         XCTAssertEqual(path.starts, 0)
         XCTAssertFalse(manager.pathMonitorStarted)
+        XCTAssertFalse(manager.hasCreatedSession)
+    }
+
+    // MARK: - One path
+
+    /// A surface's view of the download's path (the Mac's card and offer):
+    /// building it watches nothing, its start is the download's one start,
+    /// and starting it opens no session. It reads the download's path, and
+    /// its own change handler leaves the download's in place.
+    func testASharedPathIsTheDownloadsOneAndOpensNoSession() async {
+        let path = SpyPath(expensive: true, landsOnStart: false)
+        let manager = makeManager(path: path)
+        let shared = manager.sharedNetworkPath()
+        XCTAssertEqual(path.starts, 0, "building it watches nothing")
+        XCTAssertFalse(manager.pathMonitorStarted)
+
+        let calls = Calls()
+        shared.setChangeHandler { calls.record() }
+        shared.start()
+        shared.start()
+        XCTAssertEqual(path.starts, 1)
+        XCTAssertTrue(manager.pathMonitorStarted, "the process's one watch")
+        XCTAssertFalse(manager.hasCreatedSession, "watching the path opens no socket")
+        XCTAssertFalse(stagingExists)
+
+        let asker = UUID()
+        XCTAssertEqual(manager.requestDownload(asker: asker), .awaitingNetworkPath)
+        XCTAssertEqual(path.starts, 1, "the Download's watch is the same one")
+        path.land()
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertTrue(shared.hasPath)
+        XCTAssertTrue(shared.isExpensiveOrConstrained, "it reads the download's path")
+        let asked = await waitUntil { manager.cellularQuestion != nil }
+        XCTAssertTrue(asked, "the landed path still answered the Download")
+        XCTAssertEqual(manager.cellularQuestion, ModelManager.CellularQuestion(asker: asker))
+        XCTAssertFalse(path.readBlind)
+        XCTAssertFalse(manager.hasCreatedSession, "asking sends nothing")
+    }
+
+    /// A shared path started before any Download doesn't change what the
+    /// first Download decides: a free landed path starts the Wi-Fi-only
+    /// download at once, still without a session while tasks are off.
+    func testAPathTheCardStartedAnswersTheFirstDownloadAtOnce() {
+        let path = SpyPath(expensive: false)
+        let manager = makeManager(path: path)
+        manager.sharedNetworkPath().start()
+        XCTAssertEqual(path.starts, 1)
+        XCTAssertEqual(manager.state, .notInstalled, "watching starts no download")
+
+        XCTAssertEqual(manager.requestDownload(), .started)
+        XCTAssertEqual(path.starts, 1)
+        XCTAssertFalse(path.readBlind)
         XCTAssertFalse(manager.hasCreatedSession)
     }
 

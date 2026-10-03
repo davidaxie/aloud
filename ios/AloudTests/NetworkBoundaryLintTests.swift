@@ -44,6 +44,15 @@ final class NetworkBoundaryLintTests: XCTestCase {
         XCTAssertEqual(SourceTree.occurrences(of: "URLSession.shared", in: sources), 0)
     }
 
+    /// One path per process: only the download builds the live path, so
+    /// every other watcher (the Mac's card and R5's offer) reads the
+    /// download's own through `ModelManager.sharedNetworkPath`.
+    func testOnlyTheDownloadBuildsThePath() throws {
+        let sources = try SourceTree.appSources()
+        XCTAssertEqual(SourceTree.occurrences(of: "SystemNetworkPath(", in: sources), 1)
+        XCTAssertEqual(SourceTree.files(containing: "defaultPathSource(", in: sources), ["TTS/ModelManager.swift"])
+    }
+
     func testTheMacAppNamesNoNetworkAPI() throws {
         guard FileManager.default.fileExists(atPath: Self.macRoot.path) else {
             throw XCTSkip("ios/AloudMac doesn't exist yet")

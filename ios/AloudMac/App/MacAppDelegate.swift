@@ -14,6 +14,8 @@ import SwiftUI
 ///   plays, several are all added and none opens). A UI test's
 ///   `-uitest-open <path>` is replayed through that same entry once the
 ///   window is up.
+/// - The Dock icon's menu repeats the loaded book's Play/Pause and skips
+///   (`MacDockMenu`, M13).
 /// - No window tabs, so no Show Tab Bar.
 /// - Quitting needs nothing here: the shared `willTerminate` observers
 ///   (AppModel's, the store's) anchor the place, flush progress and clear
@@ -33,6 +35,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     private(set) lazy var keyRouter = MacKeyRouter { [unowned self] command in
         self.commandState.actions.perform(command)
     }
+
+    /// The Dock icon's menu, over the Playback menu's actions. Kept here:
+    /// its items target it.
+    private lazy var dockMenu = MacDockMenu(actions: commandState.actions)
 
     private let appearance = MacAppearance()
 
@@ -62,6 +68,12 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// The loaded book's title, Play or Pause and the two skips; nil with
+    /// no book, so only the system's items show (M13, phase 4).
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        dockMenu.menu()
     }
 
     /// A Dock click brings the main window back however it went away: closed

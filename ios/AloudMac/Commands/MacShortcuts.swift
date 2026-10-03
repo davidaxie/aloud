@@ -245,6 +245,7 @@ enum MacCommand: String, CaseIterable, Sendable {
 /// only what a Mac menu says.
 enum MacMenuCopy {
     static let playbackMenu = "Playback"
+    static let about = "About Aloud"
 
     static let play = "Play"
     static let pause = "Pause"
@@ -294,7 +295,7 @@ enum MacMenuCopy {
         previousPage, nextPage, followVoice, faster, slower, voiceAndSpeed, sleepTimer, endOfChapter,
         endOfBook, off, undoJump, findMenu, find, deleteBook, showContents, hideContents, biggerText,
         smallerText, appearance, back, addFromFiles, addClassic, close, settings, fullScreen, minimize,
-        hide, quit,
+        hide, quit, about,
     ]
 
     /// The tooltips' names, in the shared sentence case.

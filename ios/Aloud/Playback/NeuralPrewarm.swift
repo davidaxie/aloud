@@ -8,9 +8,10 @@ import Foundation
 /// It warms only for the neural voice with the model installed, while the
 /// app is in the foreground, and never under Low Power Mode (the system's
 /// own setting, on a Mac as on an iPhone: M19). A memory warning cancels a
-/// load, frees an idle engine and keeps it cold until the card next
-/// appears. Hiding the card or turning on Low Power Mode never
-/// releases a warm engine: the next tap would only pay for the load again.
+/// load and keeps the engine cold until the card next appears; it frees an
+/// idle engine, and at `.critical` a paused one too (`releasesEngine`).
+/// Hiding the card or turning on Low Power Mode never releases a warm
+/// engine: the next tap would only pay for the load again.
 ///
 /// It warms Kokoro directly and never touches the controller's status,
 /// "Preparing voice…", the schedule or the mixer.
@@ -81,7 +82,7 @@ final class NeuralPrewarm {
 
         PlatformLifecycle.publisher(for: .memoryWarning, in: notifications)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.memoryWarning() }
+            .sink { [weak self] in self?.memoryWarning(PlatformLifecycle.MemoryPressure(of: $0)) }
             .store(in: &subscriptions)
     }
 
@@ -129,16 +130,34 @@ final class NeuralPrewarm {
         pathIsEmpty && ShelfLayout(for: documents, loadedID: loadedID).hero != nil
     }
 
-    /// On a Mac the warning is the kernel's memory-pressure source at
-    /// `.warning` or `.critical` (`MemoryPressureRelay`), and either level
-    /// frees an engine that isn't reading, a paused one included: the relay
-    /// doesn't say which level it was.
-    private func memoryWarning() {
+    /// Whether a memory warning at `pressure` frees the engine behind
+    /// `status` (M19). Never one that is reading. One that nothing waits on
+    /// (no book cued, or one that ended or failed) goes at `.warning`; a
+    /// paused one only at `.critical`, since Play would pay the load again.
+    /// The iPhone's warning reads as critical (`MemoryPressure(of:)`), so
+    /// it frees a paused engine as it always has.
+    nonisolated static func releasesEngine(under pressure: PlatformLifecycle.MemoryPressure,
+                                           status: PlayerStatus) -> Bool {
+        switch status {
+        case .playing, .buffering: return false
+        case .paused: return pressure == .critical
+        case .idle, .ended, .error: return true
+        }
+    }
+
+    /// On a Mac the warning is the kernel's memory-pressure source, whose
+    /// level the relay carries (`MemoryPressureRelay`).
+    private func memoryWarning(_ pressure: PlatformLifecycle.MemoryPressure) {
         suppressedByMemoryWarning = true
+        // A load in flight began on a cold engine, so freeing what it loads
+        // finishes cancelling it at either level, a paused book's included.
+        let cancelledLoad = warmTask != nil
         warmTask?.cancel()
         warmTask = nil
+        guard cancelledLoad || Self.releasesEngine(under: pressure, status: playback.status) else { return }
         // Kokoro's serial queue runs this release after a load already in
         // progress, so a warm-up the cancel came too late for is freed too.
+        // It never frees a reading engine, whatever the level.
         playback.releaseNeuralEngineIfIdle()
     }
 }

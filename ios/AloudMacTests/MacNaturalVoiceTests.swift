@@ -5,13 +5,15 @@ import XCTest
 /// The natural voice ready before a flight, on the Mac (M17, M10's System
 /// voice): the card's Mac lines in each state, the offline state that
 /// disables Download, R5's offer suppressed with no usable path and back
-/// when one returns (still once, still after 60 s), the System row's
-/// resolved name, and the Spoken Content pane's URL.
+/// when one returns (still once, still after 60 s), the one path the offer,
+/// the card and the download share (M4), the System row's resolved name,
+/// and the Spoken Content pane's URL.
 ///
 /// SAFETY: no test downloads, starts a live monitor or opens a URL. Every
-/// offer gets a fake path that only reports what it is told; nothing plays
-/// (the listening clock is a fake), and no voice speaks: the System voice
-/// is only enumerated.
+/// offer gets a fake path that only reports what it is told, directly or
+/// through a manager with network tasks off and its own directory and
+/// defaults; nothing plays (the listening clock is a fake, the rig is
+/// muted), and no voice speaks: the System voice is only enumerated.
 @MainActor
 final class MacNaturalVoiceTests: XCTestCase {
 
@@ -34,16 +36,17 @@ final class MacNaturalVoiceTests: XCTestCase {
         func setChangeHandler(_ handler: @escaping @Sendable () -> Void) { changeHandler = handler }
         func start() { starts += 1 }
 
-        /// A new path: Wi-Fi or Ethernet when online, unsatisfied when not.
-        func land(online: Bool) {
+        /// A new path: Wi-Fi or Ethernet when online (a Personal Hotspot or
+        /// Low Data Mode when `metered`), unsatisfied when not.
+        func land(online: Bool, metered: Bool = false) {
             hasPath = true
-            set(online: online)
+            set(online: online, metered: metered)
             changeHandler?()
         }
 
-        private func set(online: Bool) {
-            allowsWiFiOnlyTransfer = online
-            isExpensiveOrConstrained = false
+        private func set(online: Bool, metered: Bool = false) {
+            allowsWiFiOnlyTransfer = online && !metered
+            isExpensiveOrConstrained = online && metered
         }
     }
 
@@ -54,19 +57,24 @@ final class MacNaturalVoiceTests: XCTestCase {
     private var suite: String!
     private var defaults: UserDefaults!
     private var clock: FakeClock!
+    private var directory: URL!
 
     override func setUp() {
         super.setUp()
         suite = "aloud.tests.macNaturalVoice.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)
         clock = FakeClock()
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacNaturalVoiceTests-\(UUID().uuidString)", isDirectory: true)
     }
 
     override func tearDown() {
         defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: directory)
         defaults = nil
         suite = nil
         clock = nil
+        directory = nil
         super.tearDown()
     }
 
@@ -74,6 +82,29 @@ final class MacNaturalVoiceTests: XCTestCase {
         let clock = self.clock!
         let offer = NaturalVoiceOffer(defaults: defaults, deviceSupported: true,
                                       now: { clock.now }, pathSource: path)
+        offer.modelStateChanged(.notInstalled)
+        return offer
+    }
+
+    /// A download on `path` that can't reach the network: its own directory
+    /// and defaults, room to spare, and network tasks off, so a regression
+    /// fails instead of fetching.
+    private func makeManager(path: any NetworkPathSource) -> ModelManager {
+        let manager = ModelManager(pathSource: path, installDirectory: directory, defaults: defaults,
+                                   freeSpace: { 2_000_000_000 }, hasher: { _ in "" })
+        manager.startsNetworkTasks = false
+        manager.announce = { _ in }
+        return manager
+    }
+
+    /// The offer as AppModel builds it, but with the Mac app's rule (the
+    /// hosted default adopts nothing), attached to `manager`.
+    private func makeAppOffer(attachedTo manager: ModelManager, rig: PlaybackTestRig,
+                              watchesDownloadPath: Bool = true) -> NaturalVoiceOffer {
+        let clock = self.clock!
+        let offer = NaturalVoiceOffer(defaults: defaults, deviceSupported: true, now: { clock.now },
+                                      watchesDownloadPath: watchesDownloadPath)
+        offer.attach(playback: rig.controller, modelManager: manager)
         offer.modelStateChanged(.notInstalled)
         return offer
     }
@@ -201,14 +232,80 @@ final class MacNaturalVoiceTests: XCTestCase {
         XCTAssertFalse(offer.isVisible, "answered once, never again")
     }
 
-    /// The app's offer watches the download's own path, so
-    /// `-uitest-offline` reaches it; a hosted test gets none, and building
-    /// the live one watches nothing.
-    func testTheAppsPathIsTheDownloadsAndStartsNothing() throws {
-        XCTAssertNil(NaturalVoiceOffer.defaultPathSource(), "this hosted test")
-        let live = try XCTUnwrap(NaturalVoiceOffer.defaultPathSource(isXCTestHost: false))
-        let system = try XCTUnwrap(live as? SystemNetworkPath, "this host isn't launched offline")
-        XCTAssertFalse(system.isMonitoring, "built, not started")
+    // MARK: - One path (M4)
+
+    /// The app's offer adopts the download's own path at attach: one
+    /// monitor for the process, started once by whichever asks first, and
+    /// each change reaches both. The card's watch opens no session.
+    func testTheOfferTheCardAndTheDownloadShareOnePath() async {
+        let path = FakePath(online: nil)
+        let manager = makeManager(path: path)
+        let rig = PlaybackTestRig()
+        let offer = makeAppOffer(attachedTo: manager, rig: rig)
+        XCTAssertEqual(path.starts, 0, "adopted, not started")
+        XCTAssertFalse(manager.pathMonitorStarted)
+
+        offer.watchNetworkPath()   // the not-installed card appeared
+        XCTAssertEqual(path.starts, 1)
+        XCTAssertTrue(manager.pathMonitorStarted, "the card's watch is the download's")
+        XCTAssertFalse(manager.hasCreatedSession, "watching opens no session")
+
+        // A Download before the first path waits on that same path.
+        let asker = UUID()
+        XCTAssertEqual(manager.requestDownload(asker: asker), .awaitingNetworkPath)
+        XCTAssertEqual(path.starts, 1, "never a second start")
+
+        // Metered: only the landed path, not the short wait, asks first.
+        path.land(online: true, metered: true)
+        let heard = await waitUntil { offer.hasUsablePath == true && manager.cellularQuestion != nil }
+        XCTAssertTrue(heard, "one change reaches the offer and the download")
+        XCTAssertEqual(manager.cellularQuestion, ModelManager.CellularQuestion(asker: asker))
+        XCTAssertFalse(manager.hasCreatedSession, "asking sends nothing")
+        XCTAssertEqual(path.starts, 1)
+    }
+
+    /// The offer starts the path at its 60 s mark, through the download.
+    func testTheOffersMarkStartsTheDownloadsPath() {
+        let path = FakePath(online: nil)
+        let manager = makeManager(path: path)
+        let rig = PlaybackTestRig()
+        let offer = makeAppOffer(attachedTo: manager, rig: rig)
+        play(offer, for: 59)
+        XCTAssertFalse(manager.pathMonitorStarted, "the first minute watches nothing")
+        play(offer, for: 1)
+        XCTAssertEqual(path.starts, 1)
+        XCTAssertTrue(manager.pathMonitorStarted)
+        XCTAssertFalse(manager.hasCreatedSession)
+    }
+
+    /// `-uitest-offline`'s path is the download's, so it reaches the card
+    /// through the shared one.
+    func testThePlanesPathReachesTheCardThroughTheDownload() {
+        let manager = makeManager(path: ModelManager.defaultPathSource(offline: true))
+        let rig = PlaybackTestRig()
+        let offer = makeAppOffer(attachedTo: manager, rig: rig)
+        offer.watchNetworkPath()
+        XCTAssertTrue(offer.isOffline, "the card disables Download")
+        XCTAssertTrue(manager.pathMonitorStarted)
+        XCTAssertFalse(manager.hasCreatedSession)
+    }
+
+    /// A hosted test's offer adopts nothing, so its card starts no path;
+    /// nor has the app's own graph in this process started one.
+    func testAHostedTestStartsNoPath() {
+        XCTAssertFalse(NaturalVoiceOffer.watchesDownloadPath(), "this hosted test")
+        XCTAssertTrue(NaturalVoiceOffer.watchesDownloadPath(isXCTestHost: false), "the Mac's app")
+        let path = FakePath(online: true)
+        let manager = makeManager(path: path)
+        let rig = PlaybackTestRig()
+        let offer = makeAppOffer(attachedTo: manager, rig: rig,
+                                 watchesDownloadPath: NaturalVoiceOffer.watchesDownloadPath())
+        offer.watchNetworkPath()
+        play(offer, for: 60)
+        XCTAssertEqual(path.starts, 0)
+        XCTAssertFalse(manager.pathMonitorStarted)
+        XCTAssertNil(offer.hasUsablePath)
+        XCTAssertFalse(AppModel.shared.modelManager.pathMonitorStarted, "the app's graph here")
     }
 
     // MARK: - The System voice (M10)

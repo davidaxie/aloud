@@ -4,9 +4,9 @@ import SwiftUI
 /// Pruned to what Aloud does: no New, Open Recent, Save or Print; no
 /// Spelling, Substitutions, Transformations or Speech (its first item would
 /// speak past the muted engine); no toolbar or sidebar items; no empty
-/// Help item. Added: File (Add from Files…, Add a Classic…), Edit (Undo
-/// Jump, Delete Book…, Find), View (Contents, text size, Appearance, Back)
-/// and Playback, with its Sleep Timer submenu.
+/// Help item. Added: About Aloud's credits, File (Add from Files…, Add a
+/// Classic…), Edit (Undo Jump, Delete Book…, Find), View (Contents, text
+/// size, Appearance, Back) and Playback, with its Sleep Timer submenu.
 ///
 /// Plain keys (Space, ←, →, [, ]) are never key equivalents here:
 /// `MacKeyRouter` dispatches them, so a search field still types them. Their
@@ -20,16 +20,24 @@ struct AloudCommands: Commands {
     @AppStorage(AppearancePreference.prefKey) private var appearanceRaw = AppearancePreference.system.rawValue
 
     var body: some Commands {
-        // File
-        CommandGroup(replacing: .newItem) {
-            item(.addFromFiles)
-            item(.addClassic)
+        // Aloud: the standard panel, with the version and the Licenses
+        // page's credits (M20). No key, as Apple's About items have none.
+        CommandGroup(replacing: .appInfo) {
+            Button(MacAboutCredits.menuTitle) { MacAboutCredits.show() }
         }
-        CommandGroup(replacing: .saveItem) {
-            Divider()
-            item(.closeWindow)
+
+        // File, as one group: a commands builder takes ten at most.
+        Group {
+            CommandGroup(replacing: .newItem) {
+                item(.addFromFiles)
+                item(.addClassic)
+            }
+            CommandGroup(replacing: .saveItem) {
+                Divider()
+                item(.closeWindow)
+            }
+            CommandGroup(replacing: .printItem) {}
         }
-        CommandGroup(replacing: .printItem) {}
 
         // Edit: Undo Jump only while its chip shows, ahead of the system's
         // Undo, which keeps the search fields' own undo.

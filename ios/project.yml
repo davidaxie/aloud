@@ -123,6 +123,10 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"       # ad hoc "Sign to Run Locally": entitlements apply, so the sandbox is real
         GENERATE_INFOPLIST_FILE: YES
+        # A generated Info.plist takes its version and build from these,
+        # over AloudMac/Info.plist's; unset, the app ships with neither.
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
