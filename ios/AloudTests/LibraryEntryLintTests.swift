@@ -113,9 +113,22 @@ final class LibraryEntryLintTests: XCTestCase {
 
     // MARK: - Silence
 
+    /// Both apps' sources: ios/Aloud, plus ios/AloudMac (as "AloudMac/…")
+    /// once it exists.
+    private func appSources() throws -> [Source] {
+        try SourceTree.appSources().map { Source(path: $0.key, text: $0.value) }
+    }
+
     func testNothingCallsSpeak() throws {
-        XCTAssertEqual(occurrences(of: ".speak(", in: try sources(in: Self.appRoot)), [],
+        XCTAssertEqual(occurrences(of: ".speak(", in: try appSources()), [],
                        "Speech goes through write() into the muted mixer, never speak()")
+    }
+
+    /// The Mac's system synthesizer speaks straight to the device, past the
+    /// muted engine; the System voice is AVSpeechSynthesizer.write().
+    func testNoMacSpeechSynthesizer() throws {
+        XCTAssertEqual(occurrences(of: "NSSpeechSynthesizer", in: try appSources()), [],
+                       "NSSpeechSynthesizer speaks past the muted mixer")
     }
 
     func testBareAppLaunchOnlyInHelpers() throws {

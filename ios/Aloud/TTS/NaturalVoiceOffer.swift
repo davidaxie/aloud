@@ -1,5 +1,5 @@
 import Combine
-import UIKit
+import Foundation
 
 /// R5: offer the natural voice after the first minute of listening, never
 /// before. Counts cumulative `.playing` time across launches, and shows the
@@ -72,7 +72,7 @@ final class NaturalVoiceOffer: ObservableObject {
             .sink { [weak self] in self?.modelStateChanged($0) }
             .store(in: &cancellables)
         // Persist before a possible termination in the background.
-        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+        PlatformLifecycle.publisher(for: .didEnterBackground)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.heartbeat() }
             .store(in: &cancellables)
@@ -158,15 +158,24 @@ enum NaturalVoiceCopy {
     static var offer: String { "Natural voice · \(ModelManager.downloadSizeText), once" }
     static let download = "Download"
     static let notNow = "Not now"
-    static var cellularPrompt: String { "Download \(ModelManager.downloadSizeText) on cellular?" }
+    /// The confirmation before a download on a costly network: on the
+    /// iPhone, "Download 353 MB on cellular?".
+    static var cellularPrompt: String { DeviceCopy.meteredPrompt }
     static let privacyLine = "Downloads once from Hugging Face. Nothing about you is sent."
+    /// Under the cellular prompt: the costly network, where the prompt
+    /// doesn't name it (`DeviceCopy.meteredDetail`), then the privacy line.
+    static var cellularPromptMessage: String {
+        DeviceCopy.meteredDetail.map { "\($0) \(privacyLine)" } ?? privacyLine
+    }
     static func downloading(_ fraction: Double) -> String {
         "Downloading natural voice · \(min(max(Int(fraction * 100), 0), 100))%"
     }
-    static let unsupported = "The natural voice needs an iPhone with more memory."
+    static let unsupported = "The natural voice needs \(DeviceNoun.withArticle) with more memory."
 
     // R21: the download can't leave the user stuck.
-    static let waitingForWiFi = "Download paused · waiting for Wi-Fi"
+    /// A Wi-Fi-only download with no free network: on the iPhone,
+    /// "Download paused · waiting for Wi-Fi".
+    static var waitingForWiFi: String { DeviceCopy.waitingForNetwork }
     static let installed = "Natural voice installed"
     static func onDevice(_ size: String) -> String { "\(size) on device · works offline" }
 

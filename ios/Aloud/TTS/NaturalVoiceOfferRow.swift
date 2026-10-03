@@ -13,6 +13,9 @@ struct NaturalVoiceOfferRow: View {
     private let onOpenContents: () -> Void
 
     @State private var isConfirmingCellular = false
+    /// Names this row to the manager, so a cellular question answered after
+    /// the first path lands opens this row's prompt and no other surface's.
+    @State private var promptAsker = UUID()
 
     init(onOpenContents: @escaping () -> Void) {
         self.onOpenContents = onOpenContents
@@ -34,7 +37,7 @@ struct NaturalVoiceOfferRow: View {
                 buttons
             }
         }
-        .naturalVoiceCellularPrompt(isPresented: $isConfirmingCellular)
+        .naturalVoiceCellularPrompt(isPresented: $isConfirmingCellular, asker: promptAsker)
     }
 
     /// The Continue card's rule too, so both surfaces read the same line.
@@ -66,7 +69,7 @@ struct NaturalVoiceOfferRow: View {
         HStack(spacing: Theme.Space.xs) {
             Button {
                 // Checks the space again; still too little keeps the line.
-                if manager.requestDownload() == .needsCellularConfirmation {
+                if manager.requestDownload(asker: promptAsker) == .needsCellularConfirmation {
                     isConfirmingCellular = true
                 }
             } label: {
@@ -98,10 +101,12 @@ struct NaturalVoiceOfferRow: View {
 }
 
 extension View {
-    /// The one "Download 353 MB on cellular?" confirmation. Every Download
-    /// button that gets `.needsCellularConfirmation` presents this.
-    func naturalVoiceCellularPrompt(isPresented: Binding<Bool>) -> some View {
-        modifier(NaturalVoiceCellularPrompt(isPresented: isPresented))
+    /// The one metered-download confirmation (`NaturalVoiceCopy.cellularPrompt`).
+    /// Every Download button that gets `.needsCellularConfirmation` presents
+    /// this, and so does the manager's late `cellularQuestion` for `asker`,
+    /// the id the button passed to `requestDownload(asker:)`.
+    func naturalVoiceCellularPrompt(isPresented: Binding<Bool>, asker: UUID? = nil) -> some View {
+        modifier(NaturalVoiceCellularPrompt(isPresented: isPresented, asker: asker))
     }
 }
 
@@ -110,16 +115,29 @@ private struct NaturalVoiceCellularPrompt: ViewModifier {
     @EnvironmentObject private var manager: ModelManager
 
     @Binding var isPresented: Bool
+    let asker: UUID?
+
+    /// Asked now (the path was known at the tap), or by the first path
+    /// for this surface. Any answer or dismissal clears both.
+    private var isAsking: Binding<Bool> {
+        let mine = ModelManager.CellularQuestion(asker: asker)
+        return Binding(get: { isPresented || manager.cellularQuestion == mine },
+                       set: { asking in
+                           guard !asking else { return }
+                           isPresented = false
+                           if manager.cellularQuestion == mine { manager.clearCellularQuestion() }
+                       })
+    }
 
     func body(content: Content) -> some View {
         content
             .confirmationDialog(NaturalVoiceCopy.cellularPrompt,
-                                isPresented: $isPresented,
+                                isPresented: isAsking,
                                 titleVisibility: .visible) {
                 Button(NaturalVoiceCopy.download) { manager.startDownload(allowingCellular: true) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(NaturalVoiceCopy.privacyLine)
+                Text(NaturalVoiceCopy.cellularPromptMessage)
             }
     }
 }

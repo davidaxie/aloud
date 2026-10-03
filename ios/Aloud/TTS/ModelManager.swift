@@ -16,6 +16,8 @@ import Foundation
 /// The download is Wi-Fi only unless the user confirms cellular (R5):
 /// `requestDownload()` asks first on an expensive or constrained path, and
 /// only `startDownload(allowingCellular: true)` uses the cellular session.
+/// The first Download asks before any path is known: it returns at once,
+/// and the answer comes when the first path lands (`cellularQuestion`).
 ///
 /// The download can't leave the user stuck (R21): free space of twice the
 /// download is checked before anything is created or sent; resume data is
@@ -123,6 +125,17 @@ final class ModelManager: ObservableObject {
         case started
         case needsCellularConfirmation
         case notEnoughSpace
+        /// The first Download, before the network path is known. When it
+        /// lands the download starts, or `cellularQuestion` asks the
+        /// surface that tapped.
+        case awaitingNetworkPath
+    }
+
+    /// A Download asked before the path was known that landed on an
+    /// expensive or constrained path. `asker` names the surface that tapped
+    /// (nil for one that names none), so only its cellular prompt shows.
+    struct CellularQuestion: Equatable {
+        let asker: UUID?
     }
 
     /// R21: twice the download (707 MB), so the staged files and the final
@@ -239,6 +252,10 @@ final class ModelManager: ObservableObject {
     /// The hashing in flight, launch check or staged file. Tests await it.
     private(set) var verification: Task<Void, Never>?
 
+    /// Set when a Download asked before the first path turns out to need
+    /// the cellular prompt; the prompt's answer clears it.
+    @Published private(set) var cellularQuestion: CellularQuestion?
+
     let installDirectory: URL
 
     var isInstalled: Bool {
@@ -280,6 +297,9 @@ final class ModelManager: ObservableObject {
     private let pathSource: any NetworkPathSource
     /// Set by the first `watchPath`; the source is started once.
     private var isWatchingPath = false
+    /// A Download asked before the first path landed: who asked, and the
+    /// run it belongs to. The first path, or `firstPathWait`, answers it.
+    private var pendingRequest: (asker: UUID?, epoch: Int)?
     private let defaults: UserDefaults
     private let freeSpace: @Sendable () -> Int64?
     private let hasher: FileHasher
@@ -365,7 +385,10 @@ final class ModelManager: ObservableObject {
         wireCoordinator(wifiCoordinator)
         wireCoordinator(cellularCoordinator)
         pathSource.setChangeHandler { [weak self] in
-            Task { @MainActor [weak self] in self?.refreshInFlightState() }
+            Task { @MainActor [weak self] in
+                self?.answerPendingRequest()
+                self?.refreshInFlightState()
+            }
         }
         detectExisting()
         // Files being checked are on disk, so there is nothing to reattach.
@@ -487,9 +510,13 @@ final class ModelManager: ObservableObject {
     /// Every Download button's entry point. Too little space fails at once,
     /// creating nothing. On cellular or Low Data Mode it asks first and
     /// sends nothing — no staging directory, no task — until the user
-    /// confirms through `startDownload(allowingCellular: true)`.
+    /// confirms through `startDownload(allowingCellular: true)`. It never
+    /// waits: before the first path lands it returns `.awaitingNetworkPath`,
+    /// and `asker` is the surface whose prompt the late answer opens.
     @discardableResult
-    func requestDownload() -> DownloadRequest {
+    func requestDownload(asker: UUID? = nil) -> DownloadRequest {
+        // A new tap supersedes a question its surface never showed.
+        clearCellularQuestion()
         // The files are on disk and being checked: nothing to fetch.
         if isVerifying { return .started }
         switch state {
@@ -502,20 +529,32 @@ final class ModelManager: ObservableObject {
             break
         }
         guard Self.hasRoom(freeBytes: freeSpace()) else {
+            pendingRequest = nil
             fail(.notEnoughSpace)
             return .notEnoughSpace
         }
         // There is room now, so the space line would be stale under the prompt.
         if state == .failed(.notEnoughSpace) { state = .notInstalled }
-        // The first Download is where the path starts being watched, so wait
-        // for it: the cellular question must not be answered blind.
-        watchPath(waitingUpTo: Self.firstPathWait)
+        // The first Download is where the path starts being watched. The
+        // cellular question must not be answered blind, nor hold the main
+        // thread while the first path lands, so it is answered then.
+        watchPath()
+        guard pathSource.hasPath else {
+            awaitFirstPath(asker: asker)
+            return .awaitingNetworkPath
+        }
         if pathSource.isExpensiveOrConstrained { return .needsCellularConfirmation }
         startDownload(allowingCellular: false)
         return .started
     }
 
+    /// The cellular prompt was answered (Download or Cancel), or went away.
+    func clearCellularQuestion() {
+        if cellularQuestion != nil { cellularQuestion = nil }
+    }
+
     func startDownload(allowingCellular: Bool = false) {
+        clearCellularQuestion()
         guard !isVerifying else { return }
         switch state {
         case .downloading, .waitingForWiFi, .installed: return
@@ -822,16 +861,50 @@ final class ModelManager: ObservableObject {
 
     // MARK: - Network, on first use (M4)
 
-    /// How long the first Download waits for the path it just started
-    /// watching. The first path usually lands within milliseconds.
-    private static let firstPathWait: TimeInterval = 0.25
+    /// How long the first Download's answer waits for the path it just
+    /// started watching. The first path usually lands within milliseconds.
+    private static let firstPathWait: Duration = .milliseconds(250)
 
     /// Starts the path source once. Reached only from a Download or a
     /// reattach after relaunch, so a launch with no record never watches.
-    private func watchPath(waitingUpTo timeout: TimeInterval = 0) {
+    private func watchPath() {
         guard !isWatchingPath else { return }
         isWatchingPath = true
-        pathSource.start(waitingUpTo: timeout)
+        pathSource.start()
+    }
+
+    /// Holds the Download asked before the first path, for the path to
+    /// answer. A second tap meanwhile only moves the prompt to its surface.
+    private func awaitFirstPath(asker: UUID?) {
+        let isFirst = pendingRequest == nil
+        pendingRequest = (asker, epoch)
+        guard isFirst else { return }
+        // Past the wait the path still reads unknown, the safe direction
+        // (see `SystemNetworkPath.isExpensiveOrConstrained`): the Wi-Fi-only
+        // download starts, which never moves a byte on a costly network.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.firstPathWait)
+            self?.answerPendingRequest()
+        }
+    }
+
+    /// The first path landed, or the wait for it ran out: the Download asked
+    /// meanwhile is answered as `requestDownload` answers a known path. A
+    /// detection, cancel or delete since, or a download already under way,
+    /// drops it.
+    private func answerPendingRequest() {
+        guard let request = pendingRequest else { return }
+        pendingRequest = nil
+        guard request.epoch == epoch, !isVerifying else { return }
+        switch state {
+        case .downloading, .waitingForWiFi, .installed: return
+        case .notInstalled, .failed: break
+        }
+        if pathSource.isExpensiveOrConstrained {
+            cellularQuestion = CellularQuestion(asker: request.asker)
+        } else {
+            startDownload(allowingCellular: false)
+        }
     }
 
     /// Made on first use by the lazy `wifiSession` and `cellularSession`,

@@ -280,14 +280,14 @@ final class PlaybackController: ObservableObject {
     private let player = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
     private var graphFormat: AVAudioFormat?
-    #if DEBUG
     /// When a scheduled clip counts as finished: once heard through the
     /// device, or, rendering offline with no device to present it, once
-    /// rendered (`.dataPlayedBack` never fires there).
+    /// rendered (`.dataPlayedBack` never fires there). Release never
+    /// renders offline.
     private var completionCallbackType: AVAudioPlayerNodeCompletionCallbackType {
         rendersOffline ? .dataRendered : .dataPlayedBack
     }
-
+    #if DEBUG
     /// Pulls the offline render along in real time (`rendersOffline`).
     private var renderPump: MutedRenderPump?
     /// Every real-time `audioEngine.start()`: one that renders offline

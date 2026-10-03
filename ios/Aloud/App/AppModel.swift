@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import UIKit
 
 /// Composition root. Builds the object graph once, restores preferences,
 /// and persists them as they change.
@@ -19,7 +18,7 @@ final class AppModel: ObservableObject {
     let modelManager: ModelManager
     let clipCache: AudioClipCache
     let scheduler: SynthesisScheduler
-    let audioSession: AudioSessionManager
+    let audioOutput: any AudioOutputMonitoring
     let playback: PlaybackController
     let nowPlaying = NowPlayingManager()
     /// App-lifetime sleep timer. It must outlive the reader screen: audio
@@ -132,14 +131,14 @@ final class AppModel: ObservableObject {
         let synthesisEngine: any TtsEngine = engineRouter
         #endif
         scheduler = SynthesisScheduler(engine: synthesisEngine, cache: clipCache)
-        audioSession = AudioSessionManager()
+        audioOutput = PlatformAudioOutput.makeMonitor()
         // outputMuted and autoplaySuppressed take their UITestHooks defaults.
         playback = PlaybackController(engine: synthesisEngine,
                                       kokoro: kokoroEngine,
                                       defaultVoice: engine.defaultVoice,
                                       scheduler: scheduler,
                                       cache: clipCache,
-                                      audioSession: audioSession)
+                                      audioSession: audioOutput)
         // A stop that names no book on the shelf (deleted elsewhere, or a
         // wiped library) has nothing to show it.
         if let stop = playback.stopped, !store.documents.contains(where: { $0.id == stop.documentID }) {
@@ -182,12 +181,8 @@ final class AppModel: ObservableObject {
             defaults.removeObject(forKey: PrefKey.skipBrackets)
         }
         AppModel.migratePreferences(defaults)
-        // Verifying counts as installed: an install from before the pinned
-        // files re-hashes once at launch, and its files are on disk meanwhile,
-        // so an explicit System voice choice must survive the migration.
         AppModel.runListeningMigrationIfNeeded(defaults, documents: store.documents,
-                                               modelInstalled: modelManager.isInstalled
-                                                   || modelManager.isVerifying)
+                                               modelInstalled: AppModel.migrationSeesModel(modelManager))
         AppModel.runCalmFollowMigrationIfNeeded(defaults)
 
         globalRate = PlaybackController.clampedRate(
@@ -195,8 +190,7 @@ final class AppModel: ObservableObject {
         wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
         playback.wordHighlightEnabled = wordHighlight   // didSet doesn't fire in init
 
-        ReaderTextSize.seedIfNeeded(defaults,
-                                    category: UIApplication.shared.preferredContentSizeCategory)
+        ReaderTextSize.seedIfNeeded(defaults, step: ReaderTextSize.platformDefaultStep)
         restorePreferences(from: defaults)
         // A launch while hot is quietly System (no book is loaded yet).
         thermalGuard.thermalStateChanged(ProcessInfo.processInfo.thermalState)
@@ -266,10 +260,11 @@ final class AppModel: ObservableObject {
     }
 
     /// Scene-phase hook (from RootView): a backgrounded, non-playing app
-    /// gives back the neural engine's memory, and never pre-warms it.
+    /// never pre-warms the neural engine, and gives back its memory where
+    /// the platform ends background processes for it.
     func handleScenePhaseChange(toBackground: Bool) {
         neuralPrewarm.sceneActivityChanged(!toBackground)
-        guard toBackground else { return }
+        guard toBackground, PlatformTuning.releasesNeuralOnBackground else { return }
         playback.releaseNeuralEngineIfIdle()
     }
 
@@ -327,8 +322,7 @@ final class AppModel: ObservableObject {
     /// report a closed-by-iOS stop. Synchronous: the process is going away
     /// (the notification is posted on the main thread).
     private func observeTermination() {
-        NotificationCenter.default
-            .publisher(for: UIApplication.willTerminateNotification)
+        PlatformLifecycle.publisher(for: .willTerminate)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.playback.applicationWillTerminate() }
             }
@@ -401,6 +395,14 @@ final class AppModel: ObservableObject {
             return !modelInstalled && id == AVSpeechEngine.systemVoiceID ? nil : id
         }
         return (recent.preferredRate.map(PlaybackController.clampedRate), voiceID)
+    }
+
+    /// The launch migration's `modelInstalled`. Verifying counts as
+    /// installed: an install from before the pinned files re-hashes once at
+    /// launch, and its files are on disk meanwhile, so an explicit System
+    /// voice choice must survive the migration.
+    static func migrationSeesModel(_ manager: ModelManager) -> Bool {
+        manager.isInstalled || manager.isVerifying
     }
 
     /// Copies `migratedListeningGlobals` into the two app-wide keys, once

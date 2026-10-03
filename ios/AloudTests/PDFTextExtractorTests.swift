@@ -161,22 +161,9 @@ final class PDFTextExtractorTests: XCTestCase {
     /// Render a deterministic PDF: each page is a list of (text, y-from-top)
     /// lines drawn in 14 pt Helvetica on US Letter.
     private func makePDF(pages: [[(String, CGFloat)]]) throws -> URL {
-        let bounds = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let renderer = UIGraphicsPDFRenderer(bounds: bounds)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont(name: "Helvetica", size: 14) ?? UIFont.systemFont(ofSize: 14),
-        ]
-        let data = renderer.pdfData { context in
-            for page in pages {
-                context.beginPage()
-                for (text, y) in page {
-                    (text as NSString).draw(at: CGPoint(x: 72, y: y), withAttributes: attributes)
-                }
-            }
-        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aloud-test-\(UUID().uuidString).pdf")
-        try data.write(to: url)
+        try FixturePDF.write(lines: pages.map { $0.map { (text: $0.0, y: $0.1) } }, to: url)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
     }

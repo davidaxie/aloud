@@ -65,6 +65,7 @@ enum ReaderMessage: Equatable {
     }
 
     /// The text as VoiceOver says it, without the middle dot or a trailing
-    /// ellipsis: "Download paused, waiting for Wi-Fi", "Preparing voice".
+    /// ellipsis: "Preparing voice", and on the iPhone "Download paused,
+    /// waiting for Wi-Fi" (the device's own `DeviceCopy.waitingForNetwork`).
     var spokenText: String { PlaybackCopy.spoken(text) }
 }

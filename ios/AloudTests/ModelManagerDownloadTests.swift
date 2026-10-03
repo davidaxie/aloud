@@ -111,6 +111,17 @@ final class ModelManagerDownloadTests: XCTestCase {
         XCTAssertFalse(stagingExists)
     }
 
+    /// A path known at the tap answers in the return value alone, at once:
+    /// the published question is only for a path that lands after the tap,
+    /// so one tap never opens the prompt twice.
+    func testAKnownPathAnswersAtOnceWithNoLateQuestion() {
+        let manager = makeManager()
+        XCTAssertEqual(manager.requestDownload(asker: UUID()), .needsCellularConfirmation)
+        XCTAssertNil(manager.cellularQuestion)
+        XCTAssertFalse(manager.hasActiveTask)
+        XCTAssertFalse(stagingExists)
+    }
+
     func testInstalledModelReportsStartedWithoutATask() throws {
         try writeVerifiedModel()
         // Expensive path too, so a regression could only ask, never send.

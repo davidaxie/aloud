@@ -13,6 +13,10 @@ enum ImportFailure: Equatable, CaseIterable {
     case outOfSpace
     case couldNotOpen
     case classicMissing
+    /// A cloud placeholder (iCloud Drive, a File Provider) that couldn't be
+    /// fetched, offline. Raised only by the Mac's coordinated copy; the
+    /// iPhone's Files picker downloads before it hands a file over.
+    case notDownloaded
 
     var title: String {
         switch self {
@@ -22,9 +26,10 @@ enum ImportFailure: Equatable, CaseIterable {
         case .pdfNoPages: return "This PDF has no pages."
         case .textNoText: return "This file has no readable text."
         case .textUnreadable: return "This text file can't be read."
-        case .outOfSpace: return "iPhone is out of space."
+        case .outOfSpace: return "\(DeviceNoun.Subject) is out of space."
         case .couldNotOpen: return "This file couldn't be opened."
         case .classicMissing: return "This classic is missing from Aloud."
+        case .notDownloaded: return "This file isn't downloaded yet."
         }
     }
 
@@ -39,6 +44,7 @@ enum ImportFailure: Equatable, CaseIterable {
         case .outOfSpace: return "Free up some space, then add it again."
         case .couldNotOpen: return "Try adding it again from Files."
         case .classicMissing: return "Try another one from Classics."
+        case .notDownloaded: return "Connect, then add it again."
         }
     }
 

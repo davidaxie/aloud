@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 /// Launch-time UI-test setup: the fault, seeds, fixture imports, routing and
 /// a shortcut action, in a fixed order. It never calls startAutoplay(); the
@@ -66,16 +65,14 @@ enum UITestFixtures {
 
     static let sentences = "The first sentence is short. The second sentence follows it. The third sentence ends the file."
 
-    /// Writes the fixture into Documents/Inbox (the Open-in drop folder) or
-    /// the temporary directory, replacing any earlier copy.
+    /// Writes the fixture into the fixture root's Inbox (on the iPhone,
+    /// Documents/Inbox, the Open-in drop folder) or the temporary directory,
+    /// replacing any earlier copy.
     static func write(_ kind: UITestFixtureKind, intoInbox: Bool) throws -> URL {
         let fileManager = FileManager.default
         let directory: URL
         if intoInbox {
-            guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
-                throw CocoaError(.fileNoSuchFile)
-            }
-            directory = documents.appendingPathComponent("Inbox", isDirectory: true)
+            directory = PlatformPaths.fixtureRoot.appendingPathComponent("Inbox", isDirectory: true)
         } else {
             directory = fileManager.temporaryDirectory
         }
@@ -84,7 +81,7 @@ enum UITestFixtures {
         if fileManager.fileExists(atPath: url.path) {
             try fileManager.removeItem(at: url)
         }
-        try data(for: kind).write(to: url)
+        try write(kind, to: url)
         return url
     }
 
@@ -97,25 +94,18 @@ enum UITestFixtures {
         }
     }
 
-    private static func data(for kind: UITestFixtureKind) -> Data {
-        let page = CGRect(x: 0, y: 0, width: 612, height: 792)
+    /// The PDFs are drawn by `FixturePDF` (one US Letter page, the text
+    /// inside one-inch margins), the same file on every platform.
+    private static func write(_ kind: UITestFixtureKind, to url: URL) throws {
         switch kind {
         case .text:
-            return Data("Aloud test fixture.\n\n\(sentences)".utf8)
+            try Data("Aloud test fixture.\n\n\(sentences)".utf8).write(to: url)
         case .pdf:
-            return UIGraphicsPDFRenderer(bounds: page).pdfData { context in
-                context.beginPage()
-                let attributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.preferredFont(forTextStyle: .body),
-                    .foregroundColor: UIColor.black,
-                ]
-                (sentences as NSString).draw(in: page.insetBy(dx: 72, dy: 72),
-                                             withAttributes: attributes)
-            }
+            try FixturePDF.write(pages: [sentences], to: url)
         case .pdfBlank:
-            return UIGraphicsPDFRenderer(bounds: page).pdfData { $0.beginPage() }
+            try FixturePDF.write(pages: [""], to: url)
         case .pdfCorrupt:
-            return Data("not a pdf".utf8)
+            try Data("not a pdf".utf8).write(to: url)
         }
     }
 }

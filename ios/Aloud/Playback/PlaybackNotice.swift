@@ -22,7 +22,7 @@ enum StopReason: String, Codable, CaseIterable, Sendable {
         case .headphonesDisconnected: return "Paused · headphones disconnected"
         case .interrupted: return "Paused by a call or another app"
         case .sleepTimer: return "Paused by sleep timer"
-        case .playbackError: return "Playback stopped · tap to try again"
+        case .playbackError: return DeviceCopy.playbackFailed
         case .tooHot: return "Paused · \(DeviceNoun.subject) is too hot"
         case .closedByIOS: return DeviceCopy.closedUnexpectedly
         case .macSlept: return "Paused · \(DeviceNoun.subject) went to sleep"

@@ -10,13 +10,16 @@ protocol NetworkPathSource: AnyObject, Sendable {
     /// Whether the Wi-Fi-only session can move bytes right now. An unknown
     /// path reads true, so nothing claims "waiting" before the first update.
     var allowsWiFiOnlyTransfer: Bool { get }
-    /// Called (on any queue) whenever the path changes.
+    /// Whether a path has landed since `start`. Until it has, the two
+    /// answers above are the unknown path's.
+    var hasPath: Bool { get }
+    /// Called (on any queue) whenever the path changes, the first path
+    /// included.
     func setChangeHandler(_ handler: @escaping @Sendable () -> Void)
     /// Starts watching the path; later calls do nothing. Nothing watches
     /// the network before the first call (M4), so a launch never does.
-    /// Waits up to `timeout` for the first path when this call starts the
-    /// watch, so a question asked right after isn't answered blind.
-    func start(waitingUpTo timeout: TimeInterval)
+    /// Returns at once: the first path arrives through the change handler.
+    func start()
 }
 
 /// The live path, from NWPathMonitor. Building it watches nothing: the
@@ -26,8 +29,6 @@ final class SystemNetworkPath: NetworkPathSource, @unchecked Sendable {
     private let lock = NSLock()
     /// Nil until `start`.
     private var monitor: NWPathMonitor?
-    /// Signalled by the first path after `start`, then dropped.
-    private var firstPath: DispatchSemaphore?
     /// The latest path the monitor delivered; nil until the first update.
     private var latest: NWPath?
     private var changeHandler: (@Sendable () -> Void)?
@@ -44,13 +45,10 @@ final class SystemNetworkPath: NetworkPathSource, @unchecked Sendable {
     }
     #endif
 
-    /// The first path lands within milliseconds, so the wait is short and
-    /// bounded. Past it the path still reads unknown, the safe direction
-    /// (see `isExpensiveOrConstrained`). The queue runs at the main
-    /// thread's QoS, since the main thread may be waiting on it: a lower
-    /// one would be a priority inversion.
-    func start(waitingUpTo timeout: TimeInterval) {
-        let arrived = DispatchSemaphore(value: 0)
+    /// The first path lands within milliseconds. The queue runs at the
+    /// main thread's QoS, since a Download the user just tapped waits on
+    /// that first path.
+    func start() {
         lock.lock()
         guard monitor == nil else {
             lock.unlock()
@@ -58,11 +56,9 @@ final class SystemNetworkPath: NetworkPathSource, @unchecked Sendable {
         }
         let monitor = NWPathMonitor()
         self.monitor = monitor
-        firstPath = arrived
         lock.unlock()
         monitor.pathUpdateHandler = { [weak self] path in self?.update(path) }
         monitor.start(queue: DispatchQueue(label: "com.davidxie.aloud.netpath", qos: .userInteractive))
-        if timeout > 0 { _ = arrived.wait(timeout: .now() + timeout) }
     }
 
     /// An unknown or unsatisfied path reads false. That direction is safe:
@@ -79,6 +75,8 @@ final class SystemNetworkPath: NetworkPathSource, @unchecked Sendable {
         return path.status == .satisfied && !path.isExpensive && !path.isConstrained
     }
 
+    var hasPath: Bool { currentPath != nil }
+
     func setChangeHandler(_ handler: @escaping @Sendable () -> Void) {
         lock.lock(); defer { lock.unlock() }
         changeHandler = handler
@@ -93,10 +91,7 @@ final class SystemNetworkPath: NetworkPathSource, @unchecked Sendable {
         lock.lock()
         latest = path
         let handler = changeHandler
-        let first = firstPath
-        firstPath = nil
         lock.unlock()
-        first?.signal()
         handler?()
     }
 }
@@ -106,6 +101,8 @@ final class FixedNetworkPath: NetworkPathSource {
 
     let isExpensiveOrConstrained: Bool
     let allowsWiFiOnlyTransfer: Bool
+    /// Known from the start, so a Download decides at once.
+    let hasPath = true
 
     /// `wifiAvailable` defaults to the opposite of an expensive path: a
     /// cellular-only phone has no Wi-Fi, an inexpensive path is Wi-Fi.
@@ -118,5 +115,5 @@ final class FixedNetworkPath: NetworkPathSource {
     func setChangeHandler(_ handler: @escaping @Sendable () -> Void) {}
 
     /// Nor is there anything to watch.
-    func start(waitingUpTo timeout: TimeInterval) {}
+    func start() {}
 }

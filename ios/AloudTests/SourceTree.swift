@@ -2,20 +2,94 @@ import XCTest
 
 /// The checkout's Swift sources, for source lints. Reads the host files next
 /// to this one, so it works only where the test host can see the checkout
-/// (the simulator can); anywhere else every lint skips instead of failing.
+/// (the simulator can); anywhere else every lint skips instead of failing,
+/// and SourceTreeReachabilityTests (iOS suite only) fails, so a skip never
+/// passes as green.
 enum SourceTree {
 
-    /// ios/Aloud, from ios/AloudTests/SourceTree.swift.
-    static let appRoot = URL(fileURLWithPath: #filePath)
+    /// The app trees a lint can scan: ios/Aloud (iOS, and the core the Mac
+    /// shares) and ios/AloudMac (the Mac's own files).
+    enum Platform: CaseIterable, Hashable {
+        case iOS, macOS
+    }
+
+    /// ios/, from ios/AloudTests/SourceTree.swift.
+    static let iosRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
-        .appendingPathComponent("Aloud", isDirectory: true)
+
+    /// ios/Aloud.
+    static let appRoot = iosRoot.appendingPathComponent("Aloud", isDirectory: true)
 
     /// ios/AloudUITests.
-    static let uiTestsRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("AloudUITests", isDirectory: true)
+    static let uiTestsRoot = iosRoot.appendingPathComponent("AloudUITests", isDirectory: true)
+
+    /// ios/AloudMac: the Mac app's own files (phase 1 on).
+    static let macRoot = iosRoot.appendingPathComponent("AloudMac", isDirectory: true)
+
+    /// ios/AloudMacTests: the Mac-hosted unit tests (phase 1 on).
+    static let macTestsRoot = iosRoot.appendingPathComponent("AloudMacTests", isDirectory: true)
+
+    /// ios/AloudMacUITests: the Mac UI tests (phase 1 on).
+    static let macUITestsRoot = iosRoot.appendingPathComponent("AloudMacUITests", isDirectory: true)
+
+    /// ios/project.yml, the XcodeGen spec, read as text.
+    static let projectSpec = iosRoot.appendingPathComponent("project.yml", isDirectory: false)
+
+    /// The key prefix of ios/AloudMac files in `appSources` and
+    /// `macCompiledSources`.
+    static let macPrefix = "AloudMac/"
+
+    /// Whether `root` is a folder on this host. Before phase 1, ios/AloudMac
+    /// and its test folders are not.
+    static func exists(_ root: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    /// The app trees of `platforms`, merged: ios/Aloud with its keys unchanged
+    /// (e.g. "Playback/PlaybackController.swift"), and ios/AloudMac with keys
+    /// prefixed "AloudMac/". A missing ios/AloudMac contributes nothing beside
+    /// iOS, and asked for alone it skips ("AloudMac not created yet").
+    static func appSources(platforms: Set<Platform> = [.iOS, .macOS]) throws -> [String: String] {
+        var merged: [String: String] = [:]
+        if platforms.contains(.iOS) {
+            merged = try sources(in: appRoot)
+        }
+        if platforms.contains(.macOS) {
+            if exists(macRoot) {
+                for (path, text) in try sources(in: macRoot) {
+                    merged[macPrefix + path] = text
+                }
+            } else if !platforms.contains(.iOS) {
+                throw XCTSkip("AloudMac not created yet")
+            }
+        }
+        return merged
+    }
+
+    /// What the Mac target compiles: ios/Aloud minus `iOSOnly` (the Mac
+    /// exclusion list, as project.yml spells it, relative to ios/Aloud: a
+    /// file, or a folder as "Folder/**"), plus ios/AloudMac under
+    /// "AloudMac/" once it exists. The list is passed in, because its one
+    /// Swift copy (MacExclusions, pinned against project.yml) is a later
+    /// slice's.
+    static func macCompiledSources(excluding iOSOnly: [String]) throws -> [String: String] {
+        let shared = try sources(in: appRoot).filter { path, _ in !isExcluded(path, by: iOSOnly) }
+        guard exists(macRoot) else { return shared }
+        return try appSources(platforms: [.macOS]).merging(shared) { mac, _ in mac }
+    }
+
+    /// Whether an exclusion entry ("App/RootView.swift" or "Resources/**")
+    /// covers `path`.
+    static func isExcluded(_ path: String, by exclusions: [String]) -> Bool {
+        exclusions.contains { entry in
+            if entry.hasSuffix("/**") {
+                return path.hasPrefix(String(entry.dropLast(2)))
+            }
+            return path == entry
+        }
+    }
 
     /// Relative path → text of every .swift file under `root`, or only those
     /// at or under `subpaths` (files like "Reader/PlayerBarView.swift" or

@@ -10,6 +10,45 @@ final class ImportFailureCopyTests: XCTestCase {
         XCTAssertEqual(ImportFailure.pdfNoText.nextStep, "Try a PDF with selectable text.")
     }
 
+    /// Every row as the iPhone reads it, letter for letter. The device noun
+    /// now comes from `DeviceNoun`, and the words around it must not move.
+    func testEveryRowReadsAsItAlwaysHas() {
+        let table: [ImportFailure: (title: String, nextStep: String)] = [
+            .pdfNoText: ("This PDF has no readable text.", "Try a PDF with selectable text."),
+            .pdfLocked: ("This PDF is locked with a password.", "Remove the password, then add it again."),
+            .pdfDamaged: ("This PDF can't be opened.", "Try another copy of the file."),
+            .pdfNoPages: ("This PDF has no pages.", "Try another PDF."),
+            .textNoText: ("This file has no readable text.", "Try a PDF or a plain-text file."),
+            .textUnreadable: ("This text file can't be read.", "Save it as UTF-8 plain text, then add it again."),
+            .outOfSpace: ("iPhone is out of space.", "Free up some space, then add it again."),
+            .couldNotOpen: ("This file couldn't be opened.", "Try adding it again from Files."),
+            .classicMissing: ("This classic is missing from Aloud.", "Try another one from Classics."),
+            .notDownloaded: ("This file isn't downloaded yet.", "Connect, then add it again."),
+        ]
+        XCTAssertEqual(Set(table.keys), Set(ImportFailure.allCases), "every row is pinned")
+        for (failure, copy) in table {
+            XCTAssertEqual(failure.title, copy.title, "\(failure) title")
+            XCTAssertEqual(failure.nextStep, copy.nextStep, "\(failure) nextStep")
+        }
+        XCTAssertEqual(ImportFailure.outOfSpace.title, "\(DeviceNoun.Subject) is out of space.")
+    }
+
+    /// The Mac's cloud placeholder row: the iPhone's Files picker downloads
+    /// before it hands a file over, so no error an iPhone add can raise
+    /// reads as "not downloaded", the ubiquity ones included.
+    func testNotDownloadedIsNeverClassifiedOnThePhone() {
+        let errors: [any Error] = [
+            CocoaError(.ubiquitousFileUnavailable),
+            CocoaError(.ubiquitousFileNotUploadedDueToQuota),
+            CocoaError(.fileReadNoSuchFile),
+            URLError(.notConnectedToInternet),
+        ]
+        for error in errors {
+            XCTAssertEqual(ImportFailure(error, isPDF: true), .couldNotOpen, "\(error)")
+            XCTAssertEqual(ImportFailure(error, isPDF: false), .couldNotOpen, "\(error)")
+        }
+    }
+
     func testEveryRowIsOneSentencePlusANextStep() {
         let terminators: Set<Character> = [".", "!", "?", "\u{2026}"]
         for failure in ImportFailure.allCases {

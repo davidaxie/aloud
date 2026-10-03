@@ -277,13 +277,17 @@ enum ReaderColumnText {
 #if canImport(UIKit)
 extension ReaderInk {
     /// The theme's colors as UIKit colors, and rule images resolved for
-    /// `traits` (their display scale and appearance).
+    /// `traits` (their display scale and appearance). The reader rebuilds
+    /// on light/dark flips, so a resolved color is safe.
     init(traits: UITraitCollection) {
         self.init(text: UIColor(Theme.text),
                   textMuted: UIColor(Theme.textMuted),
                   accent: UIColor(Theme.accent),
                   lineStrong: UIColor(Theme.lineStrong),
-                  ruleImage: { size, color in ReaderPageStyle.ruleImage(size: size, color: color, traits: traits) })
+                  ruleImage: { size, color in
+                      PlatformRuleImage.make(size: size, color: color.resolvedColor(with: traits),
+                                             scale: traits.displayScale)
+                  })
     }
 }
 

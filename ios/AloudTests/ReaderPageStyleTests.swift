@@ -101,6 +101,16 @@ final class ReaderPageStyleTests: XCTestCase {
         XCTAssertEqual(image.pngData(), expected.pngData())
     }
 
+    /// The page rules are shared with the Mac column: the trait collection
+    /// is resolved by the iOS ink (`ReaderInk(traits:)`), so this file needs
+    /// no UIKit.
+    func testPageStyleImportsNoUIKit() throws {
+        let sources = try SourceTree.sources(only: ["Reader/ReaderPageStyle.swift"])
+        let text = try XCTUnwrap(sources["Reader/ReaderPageStyle.swift"])
+        XCTAssertFalse(text.contains("import UIKit"))
+        XCTAssertFalse(text.contains("UITraitCollection"))
+    }
+
     // MARK: - Attributed string
 
     private func chaptered() -> DocContent {

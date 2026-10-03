@@ -41,18 +41,9 @@ final class ExtractionPDFTitleTests: XCTestCase {
     // MARK: - Helpers
 
     private func makePDF(fileName: String, title: String?) throws -> URL {
-        let format = UIGraphicsPDFRendererFormat()
-        format.documentInfo = title.map { [kCGPDFContextTitle as String: $0] } ?? [:]
-        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 612, height: 792),
-                                             format: format)
-        let data = renderer.pdfData { context in
-            context.beginPage()
-            ("A short page of text for the title tests." as NSString)
-                .draw(at: CGPoint(x: 72, y: 300),
-                      withAttributes: [.font: UIFont.systemFont(ofSize: 14)])
-        }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
-        try data.write(to: url)
+        try FixturePDF.write(lines: [[(text: "A short page of text for the title tests.", y: 300)]],
+                             to: url, title: title)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
     }

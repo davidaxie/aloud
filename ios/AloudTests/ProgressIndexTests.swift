@@ -1,4 +1,3 @@
-import UIKit
 import XCTest
 @testable import Aloud
 
@@ -74,7 +73,7 @@ final class ProgressIndexTests: XCTestCase {
         store.saveProgress(id: book.id, sentence: 120, fraction: 0.3)
         XCTAssertEqual(try sentenceOnDisk(index, book.id), 0, "still waiting on the throttle")
 
-        center.post(name: UIApplication.willTerminateNotification, object: nil)
+        PlatformLifecycle.post(.willTerminate, to: center)
 
         XCTAssertEqual(try sentenceOnDisk(index, book.id), 120)
     }
@@ -85,7 +84,7 @@ final class ProgressIndexTests: XCTestCase {
         store.saveProgress(id: book.id, sentence: 80, fraction: 0.2)
         XCTAssertEqual(try sentenceOnDisk(index, book.id), 0)
 
-        center.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        PlatformLifecycle.post(.didEnterBackground, to: center)
 
         let written = await waitUntil { (try? self.sentenceOnDisk(index, book.id)) == 80 }
         XCTAssertTrue(written, "the background flush never wrote")

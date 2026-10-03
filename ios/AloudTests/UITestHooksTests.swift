@@ -50,8 +50,10 @@ final class UITestHooksTests: XCTestCase {
 
     private func mute(_ arguments: [String],
                       environment: [String: String] = [:],
-                      xcTestLoaded: Bool = false) -> Bool {
-        UITestHooks.muteAudio(in: arguments, environment: environment, xcTestLoaded: xcTestLoaded)
+                      xcTestLoaded: Bool = false,
+                      debugStartsMuted: Bool = false) -> Bool {
+        UITestHooks.muteAudio(in: arguments, environment: environment, xcTestLoaded: xcTestLoaded,
+                              debugStartsMuted: debugStartsMuted)
     }
 
     func testEveryUITestArgumentMutes() {
@@ -69,6 +71,53 @@ final class UITestHooksTests: XCTestCase {
 
     func testOrdinaryLaunchIsNotMuted() {
         XCTAssertFalse(mute(["app", "-UIPreferredContentSizeCategoryName", "X"]))
+    }
+
+    // MARK: - ALOUD_AUDIBLE (testing.md D3)
+
+    /// Every test condition, as (name, arguments, environment, XCTest loaded).
+    private static let testConditions: [(String, [String], [String: String], Bool)] = [
+        ("-uitest-mute", ["app", "-uitest-mute"], [:], false),
+        ("any -uitest- argument", ["app", "-uitest-seed-first-classic"], [:], false),
+        ("XCTest loaded", ["app"], [:], true),
+        ("XCTestConfigurationFilePath", ["app"], ["XCTestConfigurationFilePath": "/x"], false),
+        ("previews", ["app"], ["XCODE_RUNNING_FOR_PREVIEWS": "1"], false),
+        ("ALOUD_MUTE", ["app"], ["ALOUD_MUTE": "1"], false),
+    ]
+
+    /// `ALOUD_AUDIBLE=1` lifts only the Mac's Debug default: every test
+    /// condition still mutes beside it, with or without that default.
+    func testAudibleNeverOverridesATestCondition() {
+        for (name, arguments, environment, xcTestLoaded) in Self.testConditions {
+            let audible = environment.merging(["ALOUD_AUDIBLE": "1"]) { current, _ in current }
+            for debugStartsMuted in [false, true] {
+                XCTAssertTrue(mute(arguments, environment: environment, xcTestLoaded: xcTestLoaded,
+                                   debugStartsMuted: debugStartsMuted),
+                              "\(name), debugStartsMuted \(debugStartsMuted)")
+                XCTAssertTrue(mute(arguments, environment: audible, xcTestLoaded: xcTestLoaded,
+                                   debugStartsMuted: debugStartsMuted),
+                              "\(name) + ALOUD_AUDIBLE=1, debugStartsMuted \(debugStartsMuted)")
+            }
+        }
+    }
+
+    /// A plain Debug launch on the Mac (Spotlight, Shortcuts, `open`) is
+    /// silent; only `ALOUD_AUDIBLE=1`, spelled exactly, opts it into sound.
+    func testMacDebugDefaultIsMuted() {
+        XCTAssertTrue(mute(["app"], debugStartsMuted: true))
+        XCTAssertFalse(mute(["app"], environment: ["ALOUD_AUDIBLE": "1"], debugStartsMuted: true))
+        for other in ["0", "", "true", "yes", " 1"] {
+            XCTAssertTrue(mute(["app"], environment: ["ALOUD_AUDIBLE": other], debugStartsMuted: true),
+                          "ALOUD_AUDIBLE=\"\(other)\" is not the opt-in")
+        }
+    }
+
+    /// Without the Debug default (the iPhone's), a plain launch plays aloud
+    /// and `ALOUD_AUDIBLE` changes nothing.
+    func testWithoutTheDebugDefaultAudibleChangesNothing() {
+        XCTAssertFalse(mute(["app"]))
+        XCTAssertFalse(mute(["app"], environment: ["ALOUD_AUDIBLE": "1"]))
+        XCTAssertFalse(mute(["app"], environment: ["ALOUD_AUDIBLE": "0"]))
     }
 
     // MARK: - suppressAutoplay

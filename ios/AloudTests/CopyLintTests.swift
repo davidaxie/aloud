@@ -31,6 +31,16 @@ final class CopyLintTests: XCTestCase {
         "DateComponentsFormatter", ".formatted(.time(", "Duration.seconds(", ".formatted(.units(",
     ]
 
+    /// The one file that may spell a device or a gesture.
+    private static let deviceCopyHome = "Platform/DeviceNoun.swift"
+
+    /// "iPhone", "iOS", "tap" and "swipe" as words, in any case and any
+    /// tense ("Double-tap", "tapped", "Swiping"), never inside another word
+    /// ("Tape", "Kiosk").
+    private static let deviceWords = [
+        #"(?i)\biphones?\b"#, #"(?i)\bios\b"#, #"(?i)\btap(s|ped|ping)?\b"#, #"(?i)\bswip(e|es|ed|ing)\b"#,
+    ]
+
     // MARK: - Add
 
     func testAddIsTheOnlyAddVerb() throws {
@@ -171,6 +181,37 @@ final class CopyLintTests: XCTestCase {
                        "'Preparing' is reserved for 'Preparing voice…':\n" + Self.located(preparing))
     }
 
+    // MARK: - Device words
+
+    /// C1 (contracts §7, S0-K): nothing the Mac compiles names the iPhone,
+    /// its system or a touch gesture. Such a line is spelled whole in
+    /// `DeviceCopy`, or names the device through `DeviceNoun`, both in
+    /// Platform/DeviceNoun.swift. The iOS-only files in `MacExclusions` keep
+    /// their own words.
+    func testMacCompiledCopyNamesNoIPhoneOrGesture() throws {
+        for spelled in ["Playback stopped \u{00B7} tap to try again", "Double-tap to listen", "Tapped twice",
+                        "Swipe up for more", "Stopped when iOS closed Aloud", "on this iPhone", "iPhone's storage"] {
+            XCTAssertTrue(Self.namesTheDevice(spelled), "the lint misses \(spelled)")
+        }
+        for neutral in ["Playback stopped", "Try again", "Taper", "Tape", "Kiosk", "Biography",
+                        "Opens and starts reading aloud", "Paused \u{00B7} your Mac went to sleep"] {
+            XCTAssertFalse(Self.namesTheDevice(neutral), "the lint flags \(neutral)")
+        }
+
+        // ios/Aloud minus the exclusions, plus ios/AloudMac once it exists.
+        let compiled = try SourceTree.macCompiledSources(excluding: MacExclusions.projectExcludes)
+        XCTAssertNil(compiled["Bookshelf/BookshelfView.swift"], "the scan drops the iOS-only files")
+        let named = SwiftLiterals.literals(in: compiled, excluding: Self.excludedPrefixes).filter { literal in
+            SwiftLiterals.isCopy(literal.text) && Self.namesTheDevice(literal.readable)
+        }
+        assertNone(named.filter { $0.path != Self.deviceCopyHome },
+                   "A line that names the iPhone, iOS, a tap or a swipe lives in \(Self.deviceCopyHome)")
+        // The scan reads the device's own lines, so an empty result above
+        // means something.
+        XCTAssertFalse(named.filter { $0.path == Self.deviceCopyHome }.isEmpty,
+                       "\(Self.deviceCopyHome) should spell the iPhone's words")
+    }
+
     // MARK: - Helpers
 
     /// The app's sources and their literals, read once per test.
@@ -193,6 +234,10 @@ final class CopyLintTests: XCTestCase {
 
     private static func isDuration(_ text: String) -> Bool {
         durationPatterns.contains { matches($0, text) }
+    }
+
+    private static func namesTheDevice(_ text: String) -> Bool {
+        deviceWords.contains { matches($0, text) }
     }
 
     private static func matches(_ pattern: String, _ text: String) -> Bool {

@@ -1,7 +1,4 @@
 import Foundation
-// Only for the trait-taking `ruleImage` the iOS column still calls; the
-// faces and the drawing go through the Platform seam.
-import UIKit
 
 /// The book-page typesetting rules for the reading column, as pure values so
 /// unit tests can pin them. Everything here is layout-only: no rule inserts,
@@ -101,15 +98,6 @@ struct ReaderPageStyle {
     /// full size, so "Chapter IV" keeps its numeral).
     static func smallCapsSerif(size: CGFloat, bold: Bool = false) -> PlatformFont {
         PlatformFontTraits.smallCaps(serif(size: size, bold: bold))
-    }
-
-    /// A solid rule image for text attachments, resolved for `traits` (the
-    /// reader rebuilds on light/dark flips, so a resolved color is safe).
-    /// The iOS column's entry point (`ReaderInk(traits:)`); the drawing is
-    /// `PlatformRuleImage`'s, which a shared caller uses directly.
-    static func ruleImage(size: CGSize, color: PlatformColor, traits: UITraitCollection) -> PlatformImage {
-        PlatformRuleImage.make(size: size, color: color.resolvedColor(with: traits),
-                               scale: traits.displayScale)
     }
 
     /// UTF-16 length of the first `count` words of `text`, including the

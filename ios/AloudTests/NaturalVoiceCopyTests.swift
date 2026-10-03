@@ -16,6 +16,20 @@ final class NaturalVoiceCopyTests: XCTestCase {
                        "Downloads once from Hugging Face. Nothing about you is sent.")
     }
 
+    /// C1: the lines that name the device or its network come from the
+    /// platform's copy, and on the iPhone read exactly as they always have.
+    /// The prompt's message is the privacy line alone, since "cellular"
+    /// already names the network.
+    func testDeviceLinesComeFromThePlatformCopy() {
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt, DeviceCopy.meteredPrompt)
+        XCTAssertEqual(NaturalVoiceCopy.waitingForWiFi, DeviceCopy.waitingForNetwork)
+        XCTAssertEqual(NaturalVoiceCopy.unsupported,
+                       "The natural voice needs \(DeviceNoun.withArticle) with more memory.")
+        XCTAssertNil(DeviceCopy.meteredDetail)
+        XCTAssertEqual(NaturalVoiceCopy.cellularPromptMessage,
+                       "Downloads once from Hugging Face. Nothing about you is sent.")
+    }
+
     func testDownloadingTruncatesAndClamps() {
         XCTAssertEqual(NaturalVoiceCopy.downloading(0.42), "Downloading natural voice · 42%")
         XCTAssertTrue(NaturalVoiceCopy.downloading(0.999).hasSuffix("99%"),

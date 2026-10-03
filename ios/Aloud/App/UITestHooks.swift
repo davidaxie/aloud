@@ -15,6 +15,10 @@ import SwiftUI
 /// - `-uitest-allow-autoplay` lifts the autoplay suppression only. Nothing
 ///   un-mutes.
 /// - Hosted unit tests are muted but not autoplay-suppressed.
+/// - Where `PlatformAudio.debugBuildsStartMuted` (the Mac), a plain Debug
+///   launch is muted too, so a system launch of the dev build stays silent.
+///   `ALOUD_AUDIBLE=1` (set only by Xcode's Run action) lifts that default
+///   and nothing else: it never overrides a test condition.
 /// - Every new hook must start with `-uitest-` so that it implies both.
 ///
 /// Phase 3 fault and probe hooks (each also mutes and suppresses autoplay):
@@ -79,10 +83,12 @@ enum UITestHooks {
 
     /// Zero the app's audio output. True for every UI-test launch, hosted
     /// unit tests, SwiftUI previews and `ALOUD_MUTE=1`; no flag un-mutes.
+    /// On the Mac a Debug build also starts muted unless `ALOUD_AUDIBLE=1`.
     static var muteAudio: Bool {
         muteAudio(in: arguments,
                   environment: ProcessInfo.processInfo.environment,
-                  xcTestLoaded: NSClassFromString("XCTestCase") != nil)
+                  xcTestLoaded: NSClassFromString("XCTestCase") != nil,
+                  debugStartsMuted: PlatformAudio.debugBuildsStartMuted)
     }
 
     /// Keep `PlaybackController.startAutoplay()` from playing. UI tests that
@@ -185,12 +191,17 @@ enum UITestHooks {
         arguments.contains { $0.hasPrefix("-uitest-") }
     }
 
-    static func muteAudio(in arguments: [String], environment: [String: String], xcTestLoaded: Bool) -> Bool {
+    /// The test conditions mute unconditionally. `ALOUD_AUDIBLE=1` appears
+    /// only in the last term, so it can lift the Debug default
+    /// (`debugStartsMuted`, the Mac's) and never a test condition.
+    static func muteAudio(in arguments: [String], environment: [String: String], xcTestLoaded: Bool,
+                          debugStartsMuted: Bool = false) -> Bool {
         isUITestLaunch(in: arguments)
             || xcTestLoaded
             || environment["XCTestConfigurationFilePath"] != nil
             || environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
             || environment["ALOUD_MUTE"] == "1"
+            || (debugStartsMuted && environment["ALOUD_AUDIBLE"] != "1")
     }
 
     static func suppressAutoplay(in arguments: [String]) -> Bool {

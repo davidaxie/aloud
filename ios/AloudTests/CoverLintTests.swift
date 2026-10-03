@@ -38,11 +38,18 @@ final class CoverLintTests: XCTestCase {
                       "the hero frames its cover with CoverGeometry.heroSize")
     }
 
+    /// Covers draw through `Image(platformImage:)` since the seam (S1);
+    /// `Image(uiImage` stays banned too, so neither spelling slips in.
     func testBookshelfRowsCarryNoCover() throws {
         let bookshelf = try SourceTree.sources(only: ["Bookshelf"])
-        for needle in ["BookCover", "DocumentCoverView", "Image(uiImage", "ThumbnailProvider"] {
+        for needle in ["BookCover", "DocumentCoverView", "Image(platformImage", "Image(uiImage", "ThumbnailProvider"] {
             XCTAssertEqual(SourceTree.files(containing: needle, in: bookshelf), [], "'\(needle)' in a Bookshelf row")
         }
+        // The cover itself draws with the first spelling, so the needle
+        // can't go stale unseen again.
+        let library = try SourceTree.sources(only: ["Library"])
+        XCTAssertTrue(SourceTree.files(containing: "Image(platformImage", in: library).contains("Library/BookCover.swift"),
+                      "the cover draws with Image(platformImage:), so the Bookshelf needle above is the live one")
     }
 
     /// The text of `struct <name>` (generic or not) up to the next top-level

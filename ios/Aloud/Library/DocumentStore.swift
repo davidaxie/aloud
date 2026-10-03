@@ -2,7 +2,6 @@ import Foundation
 import Combine
 import CryptoKit
 import PDFKit
-import UIKit
 
 /// Owns the on-disk library: document files, extracted-content cache, thumbnails,
 /// and the atomic metadata index. All mutations flow through here.
@@ -31,27 +30,26 @@ final class DocumentStore: ObservableObject {
     /// `indexURL`, `saveInterval` and `notifications` are for the unit
     /// tests: an index of their own, a short wait, and a private center, so
     /// no test touches the app's library or posts a notification the host
-    /// app hears.
+    /// app hears. Nil `notifications` is where the platform posts each
+    /// lifecycle event.
     init(pipeline: ExtractionPipeline = ExtractionPipeline(),
          indexURL: URL? = nil,
          saveInterval: TimeInterval = 2,
-         notifications: NotificationCenter = .default) {
+         notifications: NotificationCenter? = nil) {
         self.pipeline = pipeline
         self.indexURL = indexURL ?? Self.libraryDir.appendingPathComponent("library.json")
         self.saveInterval = saveInterval
         loadIndex()
 
-        notifications
-            .publisher(for: UIApplication.didEnterBackgroundNotification)
+        PlatformLifecycle.publisher(for: .didEnterBackground, in: notifications)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.flushIndex() }
             .store(in: &cancellables)
-        // Synchronous, with no hop (UIKit posts it on the main thread): the
+        // Synchronous, with no hop (it is posted on the main thread): the
         // process is going away, and a pending write would die with it. A
         // book still playing in the background has moved on since the flush
         // above, and swiping the app away reaches only this one.
-        notifications
-            .publisher(for: UIApplication.willTerminateNotification)
+        PlatformLifecycle.publisher(for: .willTerminate, in: notifications)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.flushIndex() }
             }
@@ -478,9 +476,7 @@ final class DocumentStore: ObservableObject {
     // MARK: - Paths
 
     static var libraryDir: URL {
-        let dir = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Library", isDirectory: true)
+        let dir = PlatformPaths.libraryRoot
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -611,7 +607,7 @@ final class DocumentStore: ObservableObject {
             let width: CGFloat = 480
             let height = bounds.width > 0 ? width * bounds.height / bounds.width : width * 4 / 3
             let image = page.thumbnail(of: CGSize(width: width, height: height), for: .cropBox)
-            try? image.pngData()?.write(to: destination, options: .atomic)
+            try? image.pngDataRepresentation()?.write(to: destination, options: .atomic)
         }.value
     }
 
