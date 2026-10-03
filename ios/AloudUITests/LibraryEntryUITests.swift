@@ -157,8 +157,10 @@ final class LibraryEntryUITests: XCTestCase {
 
         let cancel = app.buttons["import.cancel"].firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 15))
-        XCTAssertGreaterThanOrEqual(cancel.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(cancel.frame.height, 44)
+        // A hundredth of a point absorbs the float error of a frame read in
+        // window coordinates (43.99999999999994); any real shrink still fails.
+        XCTAssertGreaterThanOrEqual(cancel.frame.width, 44 - 0.01)
+        XCTAssertGreaterThanOrEqual(cancel.frame.height, 44 - 0.01)
         cancel.tap()
         XCTAssertTrue(waitForNonExistence(of: overlay(app), timeout: 5))
         let featured = app.buttons["library.featured"].firstMatch

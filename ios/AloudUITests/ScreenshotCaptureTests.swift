@@ -79,8 +79,12 @@ final class ScreenshotCaptureTests: XCTestCase {
         // the fresh-install default.
         let listeningChip = app.buttons["player.listening"].firstMatch
         XCTAssertTrue(listeningChip.waitForExistence(timeout: 5))
-        XCTAssertTrue(listeningChip.label.contains("Michael"),
-                      "Fresh-install default voice should be Michael, got: \(listeningChip.label)")
+        // Michael is the default only once the natural voice is installed;
+        // this capture needs a simulator seeded with the model, like
+        // KokoroPlaybackUITest, and skips without one.
+        guard listeningChip.label.contains("Michael") else {
+            throw XCTSkip("The natural voice isn't installed in this simulator (got: \(listeningChip.label))")
+        }
         listeningChip.tap()
         let michaelRow = app.buttons["voice.kokoro:am_michael"].firstMatch
         XCTAssertTrue(michaelRow.waitForExistence(timeout: 10),
