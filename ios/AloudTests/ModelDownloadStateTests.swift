@@ -3,7 +3,7 @@ import XCTest
 @testable import Aloud
 
 /// R21's pure download rules: the fixed space requirement, the failure and
-/// waiting copy, error classification, the engine's load-time size check,
+/// waiting copy, error classification, the engine's exact load-time size check,
 /// the relaunch record and the 44pt cancel. Nothing here creates a session
 /// or a task.
 @MainActor
@@ -34,19 +34,19 @@ final class ModelDownloadStateTests: XCTestCase {
     // MARK: - Space
 
     func testRequiredFreeSpaceIsTwiceTheDownload() {
-        XCTAssertEqual(ModelManager.requiredFreeBytes, 705_000_000)
+        XCTAssertEqual(ModelManager.requiredFreeBytes, 706_619_098)
     }
 
     func testHasRoom() {
         XCTAssertTrue(ModelManager.hasRoom(freeBytes: nil), "Unknown free space never blocks")
-        XCTAssertFalse(ModelManager.hasRoom(freeBytes: 704_999_999))
-        XCTAssertTrue(ModelManager.hasRoom(freeBytes: 705_000_000))
+        XCTAssertFalse(ModelManager.hasRoom(freeBytes: 706_619_097))
+        XCTAssertTrue(ModelManager.hasRoom(freeBytes: 706_619_098))
     }
 
     // MARK: - Copy
 
     func testFailureLinesAndWaitingCopy() {
-        XCTAssertEqual(NaturalVoiceCopy.failureLine(.notEnoughSpace), "Not enough space · need 705 MB free")
+        XCTAssertEqual(NaturalVoiceCopy.failureLine(.notEnoughSpace), "Not enough space · need 707 MB free")
         XCTAssertEqual(NaturalVoiceCopy.failureLine(.interrupted), "Download failed · Try again")
         XCTAssertEqual(NaturalVoiceCopy.failureLine(.damaged), "Voice files damaged · Download again")
         XCTAssertEqual(NaturalVoiceCopy.waitingForWiFi, "Download paused · waiting for Wi-Fi")
@@ -121,21 +121,28 @@ final class ModelDownloadStateTests: XCTestCase {
         XCTAssertFalse(ModelManager.installedFilesLookIntact(in: directory))
     }
 
-    func testFivePercentBoundaries() throws {
+    /// M3: the pinned file has one size. The old ±5% window let the
+    /// 2026-09-08 `main` files (325,560,556 and 28,200,960 bytes) through.
+    func testExactSizeBoundaries() throws {
         let model = ModelManager.remoteFiles[0]
         let voices = ModelManager.remoteFiles[1]
         try writeSparse(voices.name, size: voices.expectedBytes)
         let tolerance = model.expectedBytes / 20
         let cases: [(size: Int64, intact: Bool)] = [
-            (model.expectedBytes + tolerance, true),
-            (model.expectedBytes + tolerance + 1, false),
-            (model.expectedBytes - tolerance, true),
-            (model.expectedBytes - tolerance - 1, false),
+            (model.expectedBytes, true),
+            (model.expectedBytes + 1, false),
+            (model.expectedBytes - 1, false),
+            (model.expectedBytes + tolerance, false),
+            (model.expectedBytes - tolerance, false),
+            (325_560_556, false),
         ]
         for (size, intact) in cases {
             try writeSparse(model.name, size: size)
             XCTAssertEqual(ModelManager.installedFilesLookIntact(in: directory), intact, "\(size) bytes")
         }
+        try writeSparse(model.name, size: model.expectedBytes)
+        try writeSparse(voices.name, size: 28_200_960)
+        XCTAssertFalse(ModelManager.installedFilesLookIntact(in: directory), "The 54-voice voices.bin")
     }
 
     // MARK: - Relaunch record

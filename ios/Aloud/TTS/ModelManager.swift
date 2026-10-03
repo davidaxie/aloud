@@ -1,11 +1,18 @@
 import Combine
+import CryptoKit
 import Foundation
 import UIKit
 
 /// Owns the on-device Kokoro model files (`model.onnx` + `voices.bin`):
-/// detection, resumable background download from Hugging Face, size sanity
-/// checks, and deletion. Files live in Application Support/KokoroModel,
-/// excluded from backup (they are re-downloadable).
+/// detection, resumable background download from Hugging Face, verification,
+/// and deletion. Files live in Application Support/KokoroModel, excluded
+/// from backup (they are re-downloadable).
+///
+/// The files are pinned (M3): one Hugging Face revision, exact sizes and a
+/// SHA-256 per file, checked off the main actor as each file stages. A
+/// verified install is recorded in `install.json`, so a launch trusts it
+/// after two `stat`s; files the record doesn't vouch for are hashed once in
+/// the background (`isVerifying`) before anything can warm the engine.
 ///
 /// The download is Wi-Fi only unless the user confirms cellular (R5):
 /// `requestDownload()` asks first on an expensive or constrained path, and
@@ -17,9 +24,9 @@ import UIKit
 /// to the background session and show its progress at once; and every stop
 /// is one of three classified failures, announced, never an error's text.
 ///
-/// Dev/test seeding: copy both files into the container's
+/// Dev/test seeding: copy both pinned files into the container's
 /// Application Support/KokoroModel/ — `detectExisting()` (run at init)
-/// flips the state to `.installed`.
+/// hashes them once, writes the record and flips the state to `.installed`.
 @MainActor
 final class ModelManager: ObservableObject {
 
@@ -56,18 +63,30 @@ final class ModelManager: ObservableObject {
     struct RemoteFile {
         let name: String
         let url: URL
+        /// Exact: the pinned file has one size.
         let expectedBytes: Int64
+        /// Lowercase hex SHA-256 of the pinned file.
+        let sha256: String
     }
+
+    /// The Hugging Face commit both files come from. `main` moved on
+    /// 2026-09-08 to a 54-voice voices.bin that the 53-entry sid table
+    /// doesn't match (and that failed the old ±5% check on every download),
+    /// so the download never follows a branch. `ios/tools/fetch_kokoro_model.sh`
+    /// pins the same revision, sizes and hashes.
+    nonisolated static let revision = "7e9b67b79bfdcbd2b4bc144370345fcceac3cb0c"
 
     nonisolated static let remoteFiles: [RemoteFile] = [
         RemoteFile(
             name: "model.onnx",
-            url: URL(string: "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/main/model.onnx")!,
-            expectedBytes: 326_000_000),
+            url: URL(string: "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/7e9b67b79bfdcbd2b4bc144370345fcceac3cb0c/model.onnx")!,
+            expectedBytes: 325_630_829,
+            sha256: "c436dc6a842b62aba06af67e40bafcfb9c60ac3af895358f1974ad9a7f7c026b"),
         RemoteFile(
             name: "voices.bin",
-            url: URL(string: "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/main/voices.bin")!,
-            expectedBytes: 26_500_000),
+            url: URL(string: "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/7e9b67b79bfdcbd2b4bc144370345fcceac3cb0c/voices.bin")!,
+            expectedBytes: 27_678_720,
+            sha256: "8a77c0d397026208d22211f37670b5b3b11e03f190756b25a1d24041fced82a9"),
     ]
 
     /// The whole download, summed from the files themselves so no surface
@@ -103,7 +122,7 @@ final class ModelManager: ObservableObject {
         case notEnoughSpace
     }
 
-    /// R21: twice the download (705 MB), so the staged files and the final
+    /// R21: twice the download (707 MB), so the staged files and the final
     /// move never fill the phone.
     nonisolated static var requiredFreeBytes: Int64 { totalExpectedBytes * 2 }
 
@@ -123,13 +142,56 @@ final class ModelManager: ObservableObject {
             .volumeAvailableCapacityForImportantUsage
     }
 
-    /// The engine's load-time check (R21): both files within ±5% of their
-    /// expected size. Detection stays presence-based; this catches the rest.
+    /// The engine's load-time check (R21): both files at their exact pinned
+    /// size. Detection checks this too; the hash was checked before the
+    /// files ever read as installed.
     nonisolated static func installedFilesLookIntact(in directory: URL) -> Bool {
         remoteFiles.allSatisfy { file in
-            sizeIsSane(fileSize(at: directory.appendingPathComponent(file.name)),
-                       expected: file.expectedBytes)
+            sizeIsExact(fileSize(at: directory.appendingPathComponent(file.name)),
+                        expected: file.expectedBytes)
         }
+    }
+
+    /// Hashes one file and returns its lowercase hex SHA-256. Blocking;
+    /// always called off the main actor. Tests inject their own.
+    typealias FileHasher = @Sendable (URL) throws -> String
+
+    /// SHA-256 streamed in 4 MB reads, so 326 MB never sits in memory.
+    nonisolated static func sha256Hex(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        while true {
+            // Each read's buffer is freed before the next one.
+            let chunk = try autoreleasepool { try handle.read(upToCount: 4 * 1024 * 1024) }
+            guard let chunk, !chunk.isEmpty else { break }
+            digest.update(data: chunk)
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A staged file must be the pinned one: exact size (a stat), then its
+    /// SHA-256 in a detached task. Nil when it is; otherwise the staged file
+    /// is removed. A wrong size is a transfer that went wrong; the right
+    /// size with the wrong bytes is damaged.
+    nonisolated static func checkStagedFile(_ file: RemoteFile, at url: URL,
+                                            hasher: @escaping FileHasher) async -> DownloadFailure? {
+        guard sizeIsExact(fileSize(at: url), expected: file.expectedBytes) else {
+            try? FileManager.default.removeItem(at: url)
+            return .interrupted
+        }
+        guard await hashMatches(file, at: url, hasher: hasher) else {
+            try? FileManager.default.removeItem(at: url)
+            return .damaged
+        }
+        return nil
+    }
+
+    /// An unreadable file counts as a mismatch.
+    nonisolated static func hashMatches(_ file: RemoteFile, at url: URL,
+                                        hasher: @escaping FileHasher) async -> Bool {
+        let digest = await Task.detached(priority: .userInitiated) { try? hasher(url) }.value
+        return digest == file.sha256
     }
 
     /// A Wi-Fi-only download with no Wi-Fi is waiting, not downloading.
@@ -163,6 +225,16 @@ final class ModelManager: ObservableObject {
     // MARK: - State
 
     @Published private(set) var state: ModelState = .notInstalled
+
+    /// Files on disk that the install record doesn't vouch for are being
+    /// hashed ("Checking voice files…"). Meanwhile `state` stays
+    /// `.notInstalled`, so nothing engages or warms the engine on unverified
+    /// bytes, and the move to `.installed` re-engages the voice as a
+    /// finished download does.
+    @Published private(set) var isVerifying = false
+
+    /// The hashing in flight, launch check or staged file. Tests await it.
+    private(set) var verification: Task<Void, Never>?
 
     let installDirectory: URL
 
@@ -200,6 +272,17 @@ final class ModelManager: ObservableObject {
     private let pathSource: any NetworkPathSource
     private let defaults: UserDefaults
     private let freeSpace: @Sendable () -> Int64?
+    private let hasher: FileHasher
+
+    /// Bumped by every new run, cancel, delete and detection, so a hash
+    /// that finishes after its run was replaced changes nothing.
+    private var epoch = 0
+
+    #if DEBUG
+    /// Tests that drive staged files through verification turn this off, so
+    /// a regression fails the run instead of fetching 353 MB.
+    var startsNetworkTasks = true
+    #endif
 
     /// False for a `-uitest-kokoro-model-path` override: those files belong
     /// to the host, so Remove never deletes them.
@@ -237,15 +320,17 @@ final class ModelManager: ObservableObject {
     // MARK: - Init
 
     /// Existing `ModelManager()` call sites get the live network path, the
-    /// real (or hook-chosen) directory, standard defaults and the real free
-    /// space; tests pass their own.
+    /// real (or hook-chosen) directory, standard defaults, the real free
+    /// space and the real hasher; tests pass their own.
     init(pathSource: any NetworkPathSource = ModelManager.defaultPathSource(),
          installDirectory explicit: URL? = nil,
          defaults: UserDefaults = .standard,
-         freeSpace: @escaping @Sendable () -> Int64? = { ModelManager.defaultFreeSpace() }) {
+         freeSpace: @escaping @Sendable () -> Int64? = { ModelManager.defaultFreeSpace() },
+         hasher: @escaping FileHasher = { try ModelManager.sha256Hex(of: $0) }) {
         self.pathSource = pathSource
         self.defaults = defaults
         self.freeSpace = freeSpace
+        self.hasher = hasher
         let directory: URL
         let owns: Bool
         if let explicit {
@@ -277,10 +362,11 @@ final class ModelManager: ObservableObject {
             Task { @MainActor [weak self] in self?.refreshInFlightState() }
         }
         detectExisting()
+        // Files being checked are on disk, so there is nothing to reattach.
         if Self.shouldReattach(hasExplicitDirectory: explicit != nil, ownsDirectory: owns,
                                isUITestLaunch: UITestHooks.isUITestLaunch,
                                isXCTestHost: NSClassFromString("XCTestCase") != nil,
-                               isInstalled: isInstalled) {
+                               isInstalled: isInstalled || isVerifying) {
             reattachIfNeeded()
         }
     }
@@ -298,7 +384,7 @@ final class ModelManager: ObservableObject {
     /// `-uitest-temp-model-dir`: a fresh, empty directory each launch, so the
     /// model reads as absent without touching the real container.
     /// `-uitest-damaged-model` uses it too, seeded with 1-byte model files
-    /// that read as installed until the engine checks their size. Only this
+    /// that detection reads as damaged (their size is wrong). Only this
     /// throwaway directory is ever wiped at init.
     private static func uiTestTemporaryDirectory() -> URL? {
         #if DEBUG
@@ -318,18 +404,76 @@ final class ModelManager: ObservableObject {
         #endif
     }
 
-    /// Both files present on disk (any nonzero size) → installed. Presence,
-    /// not size, so dev seeding with local copies just works; a damaged
-    /// install is caught when the engine loads it (R21).
+    /// Both files present on disk → checked by `stat` alone: a wrong size
+    /// is damaged at once (reported, never deleted, R21), and a record that
+    /// still vouches for both files means installed. Any file it doesn't
+    /// vouch for (pre-pin installs have no record; a touched or replaced
+    /// file has a new stamp) is hashed once in the background first.
     func detectExisting() {
+        epoch &+= 1
+        endVerification()
         let present = Self.remoteFiles.allSatisfy { file in
             Self.fileSize(at: installDirectory.appendingPathComponent(file.name)) > 0
         }
-        if present {
-            state = .installed
-        } else if case .installed = state {
-            state = .notInstalled
+        guard present else {
+            if case .installed = state { state = .notInstalled }
+            return
         }
+        guard Self.installedFilesLookIntact(in: installDirectory) else {
+            fail(.damaged)
+            return
+        }
+        // A `-uitest-kokoro-model-path` override belongs to the host and was
+        // checked there by `ios/tools/fetch_kokoro_model.sh`; nothing is
+        // written into it.
+        guard ownsInstallDirectory else {
+            state = .installed
+            return
+        }
+        let record = ModelInstallRecord.load(from: installDirectory)
+        let unvouched = Self.remoteFiles.filter { record?.vouches(for: $0, in: installDirectory) != true }
+        guard !unvouched.isEmpty else {
+            state = .installed
+            return
+        }
+        if case .installed = state { state = .notInstalled }
+        verifyInstalledFiles(unvouched)
+    }
+
+    /// Hashes `files` in place. They match → a fresh record, then
+    /// `.installed`; otherwise they stay on disk as damaged until Download
+    /// again replaces them.
+    private func verifyInstalledFiles(_ files: [RemoteFile]) {
+        let generation = epoch
+        let directory = installDirectory
+        let hasher = self.hasher
+        isVerifying = true
+        verification = Task { [weak self] in
+            var intact = true
+            for file in files where intact {
+                intact = await Self.hashMatches(file, at: directory.appendingPathComponent(file.name),
+                                                hasher: hasher)
+            }
+            guard let self, self.epoch == generation else { return }
+            self.endVerification()
+            guard intact else {
+                self.fail(.damaged)
+                return
+            }
+            self.writeInstallRecord()
+            self.state = .installed
+        }
+    }
+
+    private func endVerification() {
+        verification = nil
+        isVerifying = false
+    }
+
+    /// Written only once both files hashed to their pins. A failed write
+    /// costs one re-hash at the next launch, nothing more.
+    private func writeInstallRecord() {
+        try? ModelInstallRecord.current(in: installDirectory)?.write(to: installDirectory)
     }
 
     // MARK: - Download
@@ -340,6 +484,8 @@ final class ModelManager: ObservableObject {
     /// confirms through `startDownload(allowingCellular: true)`.
     @discardableResult
     func requestDownload() -> DownloadRequest {
+        // The files are on disk and being checked: nothing to fetch.
+        if isVerifying { return .started }
         switch state {
         case .downloading, .waitingForWiFi, .installed:
             return .started
@@ -361,6 +507,7 @@ final class ModelManager: ObservableObject {
     }
 
     func startDownload(allowingCellular: Bool = false) {
+        guard !isVerifying else { return }
         switch state {
         case .downloading, .waitingForWiFi, .installed: return
         case .notInstalled, .failed: break
@@ -378,6 +525,7 @@ final class ModelManager: ObservableObject {
             fail(DownloadFailure.classify(error))
             return
         }
+        epoch &+= 1
         completedBytes = 0
         setInFlight(progress: 0)
         startTask(forFileAt: 0)
@@ -385,6 +533,8 @@ final class ModelManager: ObservableObject {
 
     func cancelDownload() {
         guard isInFlight else { return }
+        epoch &+= 1
+        endVerification()
         if let activeTask { cancelKeepingResumeData(activeTask) }
         clearActiveTask()
         ModelDownloadRecord.clear(from: defaults)
@@ -393,6 +543,8 @@ final class ModelManager: ObservableObject {
 
     func deleteModel() {
         if isInFlight { cancelDownload() }
+        epoch &+= 1
+        endVerification()
         ModelDownloadRecord.clear(from: defaults)
         if ownsInstallDirectory {
             try? FileManager.default.removeItem(at: installDirectory)
@@ -418,14 +570,19 @@ final class ModelManager: ObservableObject {
         let file = Self.remoteFiles[index]
         let staged = stagingDirectory.appendingPathComponent(file.name)
 
-        // A fully staged file from an earlier attempt is not re-downloaded.
-        if Self.sizeIsSane(Self.fileSize(at: staged), expected: file.expectedBytes) {
-            completedBytes += file.expectedBytes
-            publishProgress(bytesInFlight: 0)
-            startTask(forFileAt: index + 1)
+        // A fully staged file from an earlier attempt (or one that finished
+        // while Aloud was gone) is not re-downloaded, but it is hashed.
+        if Self.sizeIsExact(Self.fileSize(at: staged), expected: file.expectedBytes) {
+            verifyStagedFile(at: staged, index: index)
             return
         }
 
+        #if DEBUG
+        guard startsNetworkTasks else {
+            fail(.interrupted)
+            return
+        }
+        #endif
         let session = allowsCellularThisRun ? cellularSession : wifiSession
         // Consumed either way: a stale copy must never resume a later attempt.
         let resumeURL = Self.resumeDataURL(for: file.name, in: stagingDirectory)
@@ -479,15 +636,31 @@ final class ModelManager: ObservableObject {
 
     private func fileFinished(stagedAt url: URL) {
         guard isInFlight else { return }
-        let file = Self.remoteFiles[currentFileIndex]
-        guard Self.sizeIsSane(Self.fileSize(at: url), expected: file.expectedBytes) else {
-            try? FileManager.default.removeItem(at: url)
-            fail(.interrupted)
-            return
+        // Its task is done; a cancel while it hashes has nothing to stop.
+        clearActiveTask()
+        verifyStagedFile(at: url, index: currentFileIndex)
+    }
+
+    /// Each staged file is proven before the next one starts (M3). Progress
+    /// holds while it hashes; a wrong file is removed and the run fails.
+    private func verifyStagedFile(at url: URL, index: Int) {
+        let file = Self.remoteFiles[index]
+        let generation = epoch
+        let hasher = self.hasher
+        verification = Task { [weak self] in
+            let failure = await Self.checkStagedFile(file, at: url, hasher: hasher)
+            // A cancel, delete or new run while it hashed wins.
+            guard let self, self.epoch == generation, self.isInFlight,
+                  self.currentFileIndex == index else { return }
+            self.verification = nil
+            if let failure {
+                self.fail(failure)
+                return
+            }
+            self.completedBytes += file.expectedBytes
+            self.publishProgress(bytesInFlight: 0)
+            self.startTask(forFileAt: index + 1)
         }
-        completedBytes += file.expectedBytes
-        publishProgress(bytesInFlight: 0)
-        startTask(forFileAt: currentFileIndex + 1)
     }
 
     private func fileFailed(_ failure: DownloadFailure) {
@@ -509,6 +682,7 @@ final class ModelManager: ObservableObject {
             for file in Self.remoteFiles {
                 try? FileManager.default.removeItem(at: installDirectory.appendingPathComponent(file.name))
             }
+            try? FileManager.default.removeItem(at: ModelInstallRecord.url(in: installDirectory))
         }
         state = .notInstalled
     }
@@ -529,6 +703,8 @@ final class ModelManager: ObservableObject {
             var directory = installDirectory
             try? directory.setResourceValues(values)
             ModelDownloadRecord.clear(from: defaults)
+            // Both files hashed to their pins as they staged.
+            writeInstallRecord()
             state = .installed
         } catch {
             fail(DownloadFailure.classify(error))
@@ -656,9 +832,9 @@ final class ModelManager: ObservableObject {
         try? data.write(to: resumeDataURL(for: name, in: staging), options: .atomic)
     }
 
-    /// Within ±5% of the expected size (ports the `download_models.py` check).
-    nonisolated private static func sizeIsSane(_ size: Int64, expected: Int64) -> Bool {
-        size > 0 && abs(size - expected) <= expected / 20
+    /// The pinned file has one size (M3); ±5% once let a different file in.
+    nonisolated private static func sizeIsExact(_ size: Int64, expected: Int64) -> Bool {
+        size == expected
     }
 
     nonisolated private static func fileSize(at url: URL) -> Int64 {
@@ -706,6 +882,79 @@ struct ModelDownloadRecord: Codable, Equatable {
 
     static func clear(from defaults: UserDefaults) {
         defaults.removeObject(forKey: key)
+    }
+}
+
+// MARK: - Install record
+
+/// What a verified install looked like on disk (M3), kept beside the files
+/// as `install.json`. A launch trusts a file the record still vouches for
+/// after one `stat`, and never reads 353 MB to find out. A copy, a restore
+/// or a touch changes the file's inode or mtime, and that file is hashed
+/// again.
+struct ModelInstallRecord: Codable, Equatable {
+
+    static let fileName = "install.json"
+
+    struct File: Codable, Equatable {
+        let name: String
+        let bytes: Int64
+        let sha256: String
+        let inode: UInt64
+        /// Nanoseconds since 1970, so a touch within the same second counts.
+        let mtime: Int64
+    }
+
+    let revision: String
+    let files: [File]
+
+    static func url(in directory: URL) -> URL {
+        directory.appendingPathComponent(fileName)
+    }
+
+    /// The record for the pinned files as they sit in `directory` now; nil
+    /// if one is missing. Only written once both hashed to their pins.
+    static func current(in directory: URL) -> ModelInstallRecord? {
+        var files: [File] = []
+        for remote in ModelManager.remoteFiles {
+            guard let entry = entry(for: remote, in: directory) else { return nil }
+            files.append(entry)
+        }
+        return ModelInstallRecord(revision: ModelManager.revision, files: files)
+    }
+
+    /// `remote`'s entry as it would be recorded now, from one `stat`.
+    static func entry(for remote: ModelManager.RemoteFile, in directory: URL) -> File? {
+        var info = stat()
+        let result = directory.appendingPathComponent(remote.name).withUnsafeFileSystemRepresentation { path in
+            path.map { stat($0, &info) } ?? -1
+        }
+        guard result == 0 else { return nil }
+        let mtime = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
+        return File(name: remote.name, bytes: Int64(info.st_size), sha256: remote.sha256,
+                    inode: UInt64(info.st_ino), mtime: mtime)
+    }
+
+    /// True while `remote` is still the file this record verified: the
+    /// pinned revision and hash, and the same size, inode and mtime.
+    func vouches(for remote: ModelManager.RemoteFile, in directory: URL) -> Bool {
+        guard revision == ModelManager.revision,
+              let recorded = files.first(where: { $0.name == remote.name }),
+              recorded.sha256 == remote.sha256,
+              recorded.bytes == remote.expectedBytes else { return false }
+        return Self.entry(for: remote, in: directory) == recorded
+    }
+
+    /// Nil when missing or undecodable: the files are hashed again.
+    static func load(from directory: URL) -> ModelInstallRecord? {
+        guard let data = try? Data(contentsOf: url(in: directory)) else { return nil }
+        return try? JSONDecoder().decode(ModelInstallRecord.self, from: data)
+    }
+
+    func write(to directory: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(self).write(to: Self.url(in: directory), options: .atomic)
     }
 }
 

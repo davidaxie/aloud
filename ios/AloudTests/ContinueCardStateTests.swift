@@ -148,14 +148,14 @@ final class ContinueCardStateTests: XCTestCase {
         XCTAssertTrue(offers, "the offer stays up after a failed space check")
         XCTAssertEqual(ContinueListeningCopy.subtitle(for: document, rate: 1, stop: nil,
                                                       offersNaturalVoice: offers, modelState: lacking),
-                       "Natural voice · not enough space · need 705 MB free")
+                       "Natural voice · not enough space · need 707 MB free")
         let spoken = ContinueListeningCopy.spokenSubtitle(for: document, rate: 1, stop: nil,
                                                           offersNaturalVoice: offers, modelState: lacking)
-        XCTAssertEqual(spoken, "Natural voice, not enough space, need 705 MB free")
+        XCTAssertEqual(spoken, "Natural voice, not enough space, need 707 MB free")
         XCTAssertEqual(ContinueListeningCopy.value(isSpeaking: false, spokenSubtitle: spoken),
-                       "Natural voice, not enough space, need 705 MB free")
+                       "Natural voice, not enough space, need 707 MB free")
         XCTAssertEqual(ContinueListeningCopy.label(title: document.title, author: document.author) + ", " + spoken,
-                       "Continue listening, Gatsby, F. Scott Fitzgerald, Natural voice, not enough space, need 705 MB free",
+                       "Continue listening, Gatsby, F. Scott Fitzgerald, Natural voice, not enough space, need 707 MB free",
                        "VoiceOver hears whose space is short")
         // Download found room: the plain offer again.
         XCTAssertEqual(ContinueListeningCopy.subtitle(for: document, rate: 1, stop: nil,
@@ -181,7 +181,7 @@ final class ContinueCardStateTests: XCTestCase {
 
     /// The space line is the card's longest subtitle. From xLarge on a 375pt
     /// phone (a 335pt card) it takes three lines beside the cover and the
-    /// circle; a two-line limit cut it to "…need 705 MB f…".
+    /// circle; a two-line limit cut it to "…need 707 MB f…".
     @MainActor
     func testTheSpaceLineWrapsToAThirdLineInsteadOfTruncating() {
         func height(subtitle: String) -> CGFloat {

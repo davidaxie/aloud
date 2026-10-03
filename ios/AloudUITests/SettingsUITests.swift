@@ -195,7 +195,7 @@ final class SettingsUITests: XCTestCase {
 
         let failure = app.buttons["model.failure"].firstMatch
         XCTAssertTrue(failure.waitForExistence(timeout: 5), "The space line replaces the card's button")
-        XCTAssertEqual(failure.label, "Not enough space, need 705 MB free")
+        XCTAssertEqual(failure.label, "Not enough space, need 707 MB free")
         XCTAssertFalse(app.descendants(matching: .any)["model.progress"].firstMatch.waitForExistence(timeout: 3),
                        "Nothing was downloaded")
     }

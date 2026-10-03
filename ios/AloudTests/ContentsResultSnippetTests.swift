@@ -16,13 +16,13 @@ private func firstMatch(of query: String, in sentence: String) throws -> Sentenc
 /// line; a hit deep in a long sentence used to sit in the truncated tail.
 final class ContentsResultSnippetTests: XCTestCase {
 
-    private typealias Snippet = ContentsResultLabel.Snippet
+    private typealias Snippet = ContentsSearch.Snippet
 
     private static let longSentence = "When the countess came back from the ball at the Bezukhovs' "
         + "with the whole household behind her, Natasha was already asleep."
 
     private func snippet(_ query: String, in sentence: String, leadLimit: Int = 16) throws -> Snippet {
-        ContentsResultLabel.snippet(for: try firstMatch(of: query, in: sentence), leadLimit: leadLimit)
+        ContentsSearch.snippet(for: try firstMatch(of: query, in: sentence), leadLimit: leadLimit)
     }
 
     // MARK: - Where the hit falls
@@ -45,17 +45,17 @@ final class ContentsResultSnippetTests: XCTestCase {
 
     /// The accessibility sizes' limit leaves the ellipsis and the hit.
     func testTheAccessibilityLimitLeavesLittleMoreThanTheEllipsis() throws {
-        let limit = ContentsResultLabel.leadLimit(for: .accessibility3)
+        let limit = ContentsSearch.leadLimit(for: .accessibility3)
         XCTAssertEqual(try snippet("Natasha", in: Self.longSentence, leadLimit: limit),
                        Snippet(lead: "\u{2026}", hit: "Natasha", tail: " was already asleep."))
     }
 
     func testTheAccessibilitySizesKeepLessThanTheOthers() {
         for size in [DynamicTypeSize.accessibility1, .accessibility3, .accessibility5] {
-            XCTAssertLessThan(ContentsResultLabel.leadLimit(for: size),
-                              ContentsResultLabel.leadLimit(for: .large), "\(size)")
+            XCTAssertLessThan(ContentsSearch.leadLimit(for: size),
+                              ContentsSearch.leadLimit(for: .large), "\(size)")
         }
-        XCTAssertEqual(ContentsResultLabel.leadLimit(for: .xxxLarge), ContentsResultLabel.leadLimit(for: .large))
+        XCTAssertEqual(ContentsSearch.leadLimit(for: .xxxLarge), ContentsSearch.leadLimit(for: .large))
     }
 
     /// A window that already starts on a word keeps that word.
@@ -111,10 +111,10 @@ final class ContentsResultSnippetTests: XCTestCase {
     /// the window's edge is kept whole or dropped whole.
     func testTheCutNeverSplitsACharacter() {
         let family = "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}"
-        XCTAssertEqual(ContentsResultLabel.trimmedLead(String(repeating: family, count: 20), limit: 16),
+        XCTAssertEqual(ContentsSearch.trimmedLead(String(repeating: family, count: 20), limit: 16),
                        "\u{2026}" + String(repeating: family, count: 16))
         let accented = String(repeating: "e\u{0301}", count: 20)
-        let trimmed = ContentsResultLabel.trimmedLead(accented, limit: 16)
+        let trimmed = ContentsSearch.trimmedLead(accented, limit: 16)
         XCTAssertEqual(Array(trimmed.unicodeScalars),
                        Array(("\u{2026}" + String(repeating: "e\u{0301}", count: 16)).unicodeScalars))
     }
@@ -133,7 +133,7 @@ final class ContentsResultSnippetTests: XCTestCase {
             let match = try firstMatch(of: word, in: sentence)
             let prefix = String(typeset.utf16.prefix(match.range.lowerBound.utf16Offset(in: sentence)))!
             for limit in [0, 2, 16, 40] {
-                let result = ContentsResultLabel.snippet(for: match, leadLimit: limit)
+                let result = ContentsSearch.snippet(for: match, leadLimit: limit)
                 let context = "\"\(word)\" at \(limit): \(result)"
                 XCTAssertEqual(result.hit.compare(word, options: DocContent.searchOptions), .orderedSame, context)
                 XCTAssertTrue(typeset.hasSuffix(result.hit + result.tail), context)
@@ -188,7 +188,7 @@ final class ContentsResultLabelLayoutTests: XCTestCase {
     func testTheHitSitsOnTheFirstLineAtEverySize() throws {
         let match = try firstMatch(of: "Natasha", in: Self.longSentence)
         for size in Self.sizes {
-            let snippet = ContentsResultLabel.snippet(for: match, leadLimit: ContentsResultLabel.leadLimit(for: size))
+            let snippet = ContentsSearch.snippet(for: match, leadLimit: ContentsSearch.leadLimit(for: size))
             let oneLine = height(of: Text(snippet.hit).font(Theme.font(.body)), size: size)
             let throughHit = height(of: Text(snippet.lead + snippet.hit).font(Theme.font(.body)), size: size)
             XCTAssertEqual(throughHit, oneLine, accuracy: 0.5,

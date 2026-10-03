@@ -110,8 +110,8 @@ final class ColophonColumnTests: XCTestCase {
         XCTAssertEqual(coordinator.endMarkRange.location, mark.location)
         XCTAssertEqual(NSMaxRange(coordinator.endMarkRange), textView.textStorage.length)
         XCTAssertEqual(tail(textView, coordinator),
-                       ReaderTextView.Coordinator.makeEndMark(colophon: colophon, fontSize: 19,
-                                                              traits: textView.traitCollection).string)
+                       ReaderColumnText.makeEndMark(colophon: colophon, fontSize: 19,
+                                                    traits: textView.traitCollection).string)
         let after = textView.textStorage.attributedSubstring(from: NSRange(location: 0, length: mark.location))
         XCTAssertTrue(after.isEqual(to: before), "nothing above the end mark changes")
         XCTAssertNotNil(textView.textLayoutManager, "still TextKit 2")
@@ -219,8 +219,8 @@ final class ColophonColumnTests: XCTestCase {
         XCTAssertEqual(reopened.shownColophon, colophon)
         XCTAssertNil(reopened.colophonVeil, "a reopen never fades")
         XCTAssertEqual(tail(reopenedView, reopened),
-                       ReaderTextView.Coordinator.makeEndMark(colophon: colophon, fontSize: 19,
-                                                              traits: reopenedView.traitCollection).string)
+                       ReaderColumnText.makeEndMark(colophon: colophon, fontSize: 19,
+                                                    traits: reopenedView.traitCollection).string)
     }
 
     // MARK: - The follow target
@@ -346,5 +346,21 @@ final class ColophonColumnTests: XCTestCase {
         coordinator.setColophon(nil, animated: false)
         XCTAssertEqual(textView.accessibilityLabel, coordinator.parent.content.sentences[159].text)
         XCTAssertEqual(textView.accessibilityHint, ReaderRotor.textHint)
+    }
+
+    // MARK: - The shared column layout
+
+    /// `ReaderColumnLayout` reaches the text through the content manager,
+    /// never `.layoutManager`. That must be the very storage the colophon
+    /// swap edits, or a deep jump's one-shot layout would measure another
+    /// text and stop short.
+    func testTheColumnLayoutReadsTheStorageTheColophonEdits() throws {
+        let (coordinator, textView) = try makeColumn()
+        let contentManager = try XCTUnwrap(textView.textLayoutManager?.textContentManager)
+        let storage = (contentManager as? NSTextContentStorage)?.textStorage
+        XCTAssertTrue(storage === textView.textStorage)
+        coordinator.setColophon(colophon, animated: false)
+        XCTAssertEqual(storage?.length, textView.textStorage.length, "the swap is seen through both")
+        XCTAssertNotNil(textView.textLayoutManager, "still TextKit 2")
     }
 }

@@ -21,8 +21,9 @@ import UIKit
 /// what following and VoiceOver aim at.
 ///
 /// The sentence highlight and the optional word underline are drawn by
-/// `ReaderHighlightLayer` beneath the text — never as text attributes — so
-/// glyph metrics never change and the layout is rock-steady while reading.
+/// `ReaderHighlightLayer` (`HighlightLayers`) beneath the text — never as
+/// text attributes — so glyph metrics never change and the layout is
+/// rock-steady while reading.
 struct ReaderTextView: UIViewRepresentable {
 
     let content: DocContent
@@ -140,10 +141,6 @@ struct ReaderTextView: UIViewRepresentable {
         /// `Theme.Motion.colophon` after it appears on screen.
         private(set) var colophonVeil: UIView?
 
-        /// Cached bounding rect of the active sentence, so the per-frame
-        /// `updateFollowChip` never forces TextKit layout. Invalidated on
-        /// sentence change, rebuild, and content-size change.
-        private var cachedActiveRect: CGRect?
         /// Content height of the last layout pass; a jump means TextKit
         /// swapped estimated line heights wholesale under a still offset.
         private var lastContentHeight: CGFloat = 0
@@ -152,9 +149,19 @@ struct ReaderTextView: UIViewRepresentable {
         private var lastViewportHeight: CGFloat = 0
 
         // Calm follow (R16)
+        /// The follow state and its decisions, with the cached active-sentence
+        /// rect and the placement checks; this coordinator measures and moves
+        /// the UITextView for it.
+        private var follow = ReaderFollowEngine()
         /// Off from the moment the user scrolls; never back on by itself.
-        var isFollowing = true
-        var lastFollowRequest = 0
+        var isFollowing: Bool {
+            get { follow.isFollowing }
+            set { follow.isFollowing = newValue }
+        }
+        var lastFollowRequest: Int {
+            get { follow.lastFollowRequest }
+            set { follow.lastFollowRequest = newValue }
+        }
         /// The one in-flight glide; touches stop it where it is.
         private var glide: UIViewPropertyAnimator?
         /// Set when a touch lands: a tap that began on moving text only
@@ -164,36 +171,20 @@ struct ReaderTextView: UIViewRepresentable {
         /// touch can stop the deceleration without a callback.
         private var deceleratingAfterDrag = false
         /// Every follow scroll, for the R16 budget.
-        private(set) var programmaticScrollCount = 0
-        /// The last direction published to `voiceOffscreen`. Kept here, not
-        /// read back from the binding, whose writes land a turn later.
-        private(set) var voiceOffscreen: ReaderFollowDirection?
+        var programmaticScrollCount: Int { follow.programmaticScrollCount }
+        /// The last direction published to `voiceOffscreen` (kept by the
+        /// engine, not read back from the binding).
+        var voiceOffscreen: ReaderFollowDirection? { follow.voiceOffscreen }
         /// Test seam.
         var reduceMotion: () -> Bool = { UIAccessibility.isReduceMotionEnabled }
         /// Test seam: whether a flick is still coasting. A view outside a
         /// window never decelerates.
         var isCoasting: (UIScrollView) -> Bool = { $0.isDecelerating }
-        /// After a placement without motion, keep re-placing on every layout
-        /// pass until the geometry resolves: insets and bounds settle a few
-        /// passes after `attributedText` is set, and a deep target's
-        /// estimated line heights shift once it is really laid out. Checked
-        /// by `verifyPlacement`; cleared when the user scrolls.
-        private var pendingPlacement = false
-        /// Layout passes the current placement check may still take, and
-        /// the text's laid-out height at its last pass (see
-        /// `verifyPlacement`).
-        private var placementPassesLeft = 0
-        private var placementHeight: CGFloat?
-        private static let placementPassLimit = 12
 
         // VoiceOver (R12a)
         /// The sentence the rotor is on; nil = the playhead's. Cleared on
         /// focus loss and after playing.
         private(set) var accessibilitySentence: Int?
-        /// A rotor stop placed without motion, checked on each layout pass
-        /// like `pendingPlacement` until it holds in the band. Cleared by a
-        /// user scroll, following, or a rebuild.
-        private var pendingReveal: Int?
 
         #if DEBUG
         private let publishesProbe = UITestHooks.isUITestLaunch
@@ -263,10 +254,10 @@ struct ReaderTextView: UIViewRepresentable {
         func rebuild(content: DocContent, fontSize: CGFloat) {
             guard let textView else { return }
             cancelGlide()
-            let built = Self.makeAttributedString(content: content, fontSize: fontSize,
-                                                  isChapterBook: parent.isChapterBook,
-                                                  colophon: parent.colophon,
-                                                  traits: textView.traitCollection)
+            let built = ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
+                                                              isChapterBook: parent.isChapterBook,
+                                                              colophon: parent.colophon,
+                                                              traits: textView.traitCollection)
             textView.attributedText = built.string
             sentenceRanges = built.sentenceRanges
             // A fresh column, a reopen included, shows the colophon in place:
@@ -282,9 +273,9 @@ struct ReaderTextView: UIViewRepresentable {
             wordRangeCache = [:]
             activeWordRange = nil
             activeWordToken = -1
-            cachedActiveRect = nil
-            startPlacementCheck()
-            pendingReveal = nil
+            follow.cachedActiveRect = nil
+            follow.startPlacementCheck()
+            follow.pendingReveal = nil
             // Rotor items are searched on demand; only the list is set here.
             textView.accessibilityCustomRotors = ReaderRotor.available(content: content,
                                                                        navigation: parent.navigation)
@@ -308,7 +299,7 @@ struct ReaderTextView: UIViewRepresentable {
             // the old offset would land a paused reader on another passage.
             let reflowed = builtBoldText != wasBoldText
             if !reflowed {
-                pendingPlacement = false   // trait flip preserves the offset instead
+                follow.pendingPlacement = false   // trait flip preserves the offset instead
             }
             setActiveSentence(active, scroll: false)
             setActiveWord(parent.activeWord)
@@ -341,12 +332,12 @@ struct ReaderTextView: UIViewRepresentable {
             // Only once a column is built: the mark is always its tail.
             guard endMarkRange.length > 0, NSMaxRange(endMarkRange) == storage.length else { return }
             let appearing = shownColophon == nil && colophon != nil
-            let mark = Self.makeEndMark(colophon: colophon, fontSize: builtFontSize,
-                                        traits: textView.traitCollection)
+            let mark = ReaderColumnText.makeEndMark(colophon: colophon, fontSize: builtFontSize,
+                                                    traits: textView.traitCollection)
             storage.replaceCharacters(in: endMarkRange, with: mark)
             endMarkRange = NSRange(location: endMarkRange.location, length: mark.length)
             shownColophon = colophon
-            cachedActiveRect = nil   // the follow target moved (`followRange`)
+            follow.cachedActiveRect = nil   // the follow target moved (`followRange`)
             removeColophonVeil()
             if colophon != nil, isFollowing { followIfNeeded(animated: true) }
             if appearing, animated { fadeInColophon() }
@@ -395,7 +386,7 @@ struct ReaderTextView: UIViewRepresentable {
             let changed = id != activeSentence
             if changed {
                 setActiveWord(-1)   // never carry a word underline across sentences
-                cachedActiveRect = nil
+                follow.cachedActiveRect = nil
             }
             activeSentence = id
             renderSentenceHighlight(animated: changed)
@@ -459,51 +450,16 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// Laid-out line pieces of `range` in content coordinates.
-        private func segments(for range: NSRange) -> [ReaderHighlightLayer.Segment] {
-            guard let textView,
-                  let layoutManager = textView.textLayoutManager,
-                  let contentManager = layoutManager.textContentManager,
-                  let start = contentManager.location(layoutManager.documentRange.location,
-                                                      offsetBy: range.location),
-                  let end = contentManager.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end) else { return [] }
-            layoutManager.ensureLayout(for: textRange)
-            let inset = textView.textContainerInset
-            var result: [ReaderHighlightLayer.Segment] = []
-            layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) {
-                _, frame, baseline, _ in
-                result.append(.init(frame: frame.offsetBy(dx: inset.left, dy: inset.top),
-                                    baseline: baseline))
-                return true
-            }
-            return result
+        private func segments(for range: NSRange) -> [HighlightLayers.Segment] {
+            column?.segments(for: range) ?? []
         }
 
         /// Absolute NSRanges of sentence `id`'s tokens (nil = whitespace),
-        /// computed once per sentence from the same tokenizer offsets the
-        /// playback side uses (concatenation is byte-identical, so walking
-        /// UTF-16 lengths from the sentence range's location is exact).
+        /// from the same tokenizer the playback side uses, cached per
+        /// sentence (`ReaderColumnLayout.wordRanges`).
         private func wordRanges(for id: Int) -> [NSRange?]? {
-            if let cached = wordRangeCache[id] { return cached }
-            guard sentenceRanges.indices.contains(id),
-                  parent.content.sentences.indices.contains(id) else { return nil }
-
-            let sentenceRange = sentenceRanges[id]
-            let tokens = SentenceSegmenter.tokenizeSentence(parent.content.sentences[id].text)
-            var ranges: [NSRange?] = []
-            ranges.reserveCapacity(tokens.count)
-            var location = sentenceRange.location
-            for token in tokens {
-                let length = token.text.utf16.count
-                ranges.append(token.weight > 0 ? NSRange(location: location, length: length) : nil)
-                location += length
-            }
-            // Paranoia: a mismatch means offsets are unsafe to apply.
-            guard location == sentenceRange.location + sentenceRange.length else { return nil }
-
-            if wordRangeCache.count > 16 { wordRangeCache.removeAll() }
-            wordRangeCache[id] = ranges
-            return ranges
+            ReaderColumnLayout.wordRanges(for: id, sentenceRanges: sentenceRanges,
+                                          sentences: parent.content.sentences, cache: &wordRangeCache)
         }
 
         // MARK: Calm follow (R16)
@@ -528,18 +484,20 @@ struct ReaderTextView: UIViewRepresentable {
                   let rect = activeSentenceRect(), let viewport = viewport(),
                   !FollowBand.contains(rect, in: viewport),
                   let target = landingTarget() else { return }
-            let distance = target - textView.contentOffset.y
-            guard abs(distance) > 1 else { return }   // pinned at an end of the text
-            scroll(toY: target, animated: animated && FollowBand.glides(
-                distance: distance, viewportHeight: viewport.height, reduceMotion: reduceMotion()))
+            // Nothing within a point: pinned at an end of the text.
+            switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
+                                           animated: animated, reaim: false) {
+            case .none: return
+            case .glide(let y): scroll(toY: y, animated: true)
+            case .jump(let y, _): scroll(toY: y, animated: false)
+            }
         }
 
         /// Play, a jump, Undo or the Follow chip: follow again and bring the
         /// active sentence into the band. A sentence already in the band
         /// stays put.
         func resumeFollowing() {
-            isFollowing = true
-            pendingReveal = nil   // the voice owns the scroll again
+            follow.resume()   // the voice owns the scroll again
             defer { updateFollowChip() }
             guard let textView, !textView.isTracking, !textView.isDragging else { return }
             // Following takes the scroll back from a flick still coasting.
@@ -559,15 +517,16 @@ struct ReaderTextView: UIViewRepresentable {
             }
             guard !FollowBand.contains(rect, in: viewport),
                   let target = landingOffset(for: rect) else { return }
-            let distance = target - textView.contentOffset.y
-            guard abs(distance) > 1 else { return }
-            if FollowBand.glides(distance: distance, viewportHeight: viewport.height,
-                                 reduceMotion: reduceMotion()) {
-                scroll(toY: target, animated: true)
-            } else {
-                jump(toY: target) { self.landingTarget() }
+            switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
+                                           animated: true, reaim: true) {
+            case .none:
+                return
+            case .glide(let y):
+                scroll(toY: y, animated: true)
+            case .jump(let y, _):
+                jump(toY: y) { self.landingTarget() }
                 // A jump keeps verifying while estimated heights resolve.
-                startPlacementCheck()
+                follow.startPlacementCheck()
             }
         }
 
@@ -575,9 +534,9 @@ struct ReaderTextView: UIViewRepresentable {
         /// fresh column, a reflow), then verifies on every layout pass.
         func placeActiveSentence() {
             guard isFollowing, let textView, !textView.isTracking, !textView.isDragging else { return }
-            pendingReveal = nil
+            follow.pendingReveal = nil
             ensureLayoutThroughActiveSentence()
-            startPlacementCheck()
+            follow.startPlacementCheck()
             if let target = landingTarget(), abs(target - textView.contentOffset.y) > 1 {
                 jump(toY: target) { self.landingTarget() }
             }
@@ -590,15 +549,20 @@ struct ReaderTextView: UIViewRepresentable {
         /// cached sentence rect.
         private func landingTarget() -> CGFloat? {
             guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
-            cachedActiveRect = rect
+            follow.cachedActiveRect = rect
             return landingOffset(for: rect)
         }
 
         private func landingOffset(for rect: CGRect) -> CGFloat? {
-            guard let textView, let viewport = viewport() else { return nil }
-            return FollowBand.landingContentOffsetY(sentenceMinY: rect.minY, viewport: viewport,
-                                                    contentOffsetY: textView.contentOffset.y,
-                                                    range: restingOffsets())
+            guard let viewport = viewport() else { return nil }
+            return ReaderFollowEngine.landingOffset(for: rect, in: scrollState(viewport: viewport))
+        }
+
+        /// The scroll view as the follow decisions see it, with the band
+        /// measured in `viewport`.
+        private func scrollState(viewport: CGRect) -> ReaderScrollState {
+            ReaderScrollState(contentOffsetY: textView?.contentOffset.y ?? 0, viewport: viewport,
+                              restingRange: restingOffsets(), reduceMotion: reduceMotion())
         }
 
         /// Every contentOffset.y the text can rest at: from its top under
@@ -621,10 +585,8 @@ struct ReaderTextView: UIViewRepresentable {
         /// `jump(toY:reaim:)`).
         private func laidOutHeight() -> CGFloat {
             guard let textView else { return 0 }
-            guard let usage = textView.textLayoutManager?.usageBoundsForTextContainer,
-                  usage.maxY > 0 else { return textView.contentSize.height }
-            let inset = textView.textContainerInset
-            return (usage.maxY + inset.top + inset.bottom).rounded(.up)
+            return column?.laidOutHeight(bottomInset: textView.textContainerInset.bottom)
+                ?? textView.contentSize.height
         }
 
         /// A placement without motion: one counted scroll. Moving the offset
@@ -644,7 +606,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// budget counts them all.
         private func scroll(toY y: CGFloat, animated: Bool) {
             guard let textView else { return }
-            programmaticScrollCount += 1
+            follow.noteScroll()
             #if DEBUG
             if publishesProbe { ReaderFollowProbe.shared.noteScroll() }
             #endif
@@ -718,18 +680,15 @@ struct ReaderTextView: UIViewRepresentable {
         /// A drag, a scroll-to-top or a VoiceOver scroll: stop following.
         func userTookOverScroll() {
             stopGlideInPlace()
-            isFollowing = false
-            pendingPlacement = false   // don't fight the user
-            pendingReveal = nil
+            follow.takeOver()   // and drops pending checks: don't fight the user
             updateFollowChip()
         }
 
         /// A user scroll came to rest: following resumes only when the voice
         /// is in view.
         func userScrollEnded() {
-            if let rect = activeSentenceRect(), let viewport = viewport(),
-               FollowBand.direction(of: rect, in: viewport) == nil {
-                isFollowing = true
+            if let rect = activeSentenceRect(), let viewport = viewport() {
+                follow.scrollEnded(voice: rect, in: viewport)
             }
             updateFollowChip()
         }
@@ -741,7 +700,7 @@ struct ReaderTextView: UIViewRepresentable {
             guard let textView else { return }
             var direction: ReaderFollowDirection?
             if let rect = activeSentenceRect(), let viewport = viewport() {
-                if !isFollowing { direction = FollowBand.direction(of: rect, in: viewport) }
+                direction = follow.chipDirection(voice: rect, in: viewport)
                 #if DEBUG
                 if publishesProbe {
                     let onScreen = rect.offsetBy(dx: -textView.contentOffset.x, dy: -textView.contentOffset.y)
@@ -755,8 +714,7 @@ struct ReaderTextView: UIViewRepresentable {
                 }
                 #endif
             }
-            guard direction != voiceOffscreen else { return }
-            voiceOffscreen = direction
+            guard follow.publish(direction) else { return }
             let binding = parent.$voiceOffscreen
             Task { @MainActor in binding.wrappedValue = direction }
         }
@@ -774,9 +732,9 @@ struct ReaderTextView: UIViewRepresentable {
             guard let textView else { return }
             let height = textView.contentSize.height
             if height != lastContentHeight {
-                cachedActiveRect = nil
+                follow.cachedActiveRect = nil
                 refreshHighlightGeometry()
-                if isFollowing, !pendingPlacement, lastContentHeight > 0 {
+                if isFollowing, !follow.pendingPlacement, lastContentHeight > 0 {
                     followIfNeeded(animated: false)
                 }
                 lastContentHeight = height
@@ -786,7 +744,7 @@ struct ReaderTextView: UIViewRepresentable {
             if viewportHeight != lastViewportHeight {
                 let resized = lastViewportHeight > 0
                 lastViewportHeight = viewportHeight
-                if resized, isFollowing, !pendingPlacement {
+                if resized, isFollowing, !follow.pendingPlacement {
                     followIfNeeded(animated: !reduceMotion())
                 }
             }
@@ -795,28 +753,10 @@ struct ReaderTextView: UIViewRepresentable {
             verifyPlacement()
         }
 
-        /// Arms the layout-pass check of a placement without motion.
-        private func startPlacementCheck() {
-            pendingPlacement = true
-            placementPassesLeft = Self.placementPassLimit
-            placementHeight = nil
-        }
-
-        /// Arms the same check for a rotor stop placed without motion.
-        private func startRevealCheck(_ id: Int) {
-            pendingReveal = id
-            placementPassesLeft = Self.placementPassLimit
-            placementHeight = nil
-        }
-
+        /// Ends a placement or rotor-stop check and shows the chip it held.
         private func endPlacementCheck() {
-            pendingPlacement = false
-            pendingReveal = nil
+            follow.endPlacementCheck()
             updateFollowChip()
-        }
-
-        private enum PlacementCheck {
-            case holds, unresolved, moveTo(CGFloat)
         }
 
         /// One layout pass's check of a placement (`pendingPlacement`) or a
@@ -828,39 +768,36 @@ struct ReaderTextView: UIViewRepresentable {
         /// still move a landing, so it asks for another pass. Ends after
         /// `placementPassLimit` passes in any case.
         private func verifyPlacement() {
-            guard pendingPlacement || pendingReveal != nil,
+            guard follow.isCheckingPlacement,
                   let textView, glide == nil,
                   !textView.isTracking, !textView.isDragging,
                   textView.bounds.height > 0 else { return }
             let check = checkPlacement()
             if case .unresolved = check { return }   // no layout to measure yet
-            let height = laidOutHeight()
-            let steady = placementHeight.map { abs($0 - height) < 0.5 } ?? false
-            placementHeight = height
-            placementPassesLeft -= 1
-            switch check {
-            case .moveTo(let settled):
+            // Steady: the laid-out height held since the pass before.
+            switch follow.placementPass(check, laidOutHeight: laidOutHeight()) {
+            case .correct(let settled):
                 // A correction of a placement already counted, so no `scroll`.
                 textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: settled), animated: false)
                 // An offset set inside layoutSubviews doesn't mark the view
                 // for layout: ask for the pass that confirms the correction
                 // (still bounded by placementPassLimit).
                 textView.setNeedsLayout()
-            case .holds where steady:
+            case .end:
                 endPlacementCheck()
                 return
-            case .holds, .unresolved:
+            case .confirm:
                 textView.setNeedsLayout()   // confirm on the next pass
             }
-            if placementPassesLeft <= 0 { endPlacementCheck() }
+            if follow.placementPassesSpent { endPlacementCheck() }
         }
 
         /// Measures the pending placement on the layout as it stands; when
         /// it's off, confirms the layout up to it and says where it goes.
-        private func checkPlacement() -> PlacementCheck {
+        private func checkPlacement() -> ReaderFollowEngine.PlacementCheck {
             guard let textView else { return .unresolved }
             let settled: CGFloat?
-            if let id = pendingReveal {
+            if let id = follow.pendingReveal {
                 guard sentenceRanges.indices.contains(id), revealOffset(for: id) != nil else { return .holds }
                 ensureLayout(through: sentenceRanges[id])
                 settled = revealOffset(for: id)
@@ -970,26 +907,8 @@ struct ReaderTextView: UIViewRepresentable {
                 return
             }
             guard let offset = characterOffset(at: point),
-                  let id = sentence(containing: offset) else { return }
+                  let id = ReaderColumnLayout.sentence(containing: offset, in: sentenceRanges) else { return }
             parent.onTapSentence(id)
-        }
-
-        private func sentence(containing offset: Int) -> Int? {
-            guard let id = sentence(atOrAfter: offset), sentenceRanges[id].location <= offset else { return nil }
-            return id
-        }
-
-        /// The first sentence that ends after `offset`: the one holding it,
-        /// or the next one when `offset` falls between sentences (a
-        /// paragraph break, a page mark).
-        private func sentence(atOrAfter offset: Int) -> Int? {
-            var low = 0, high = sentenceRanges.count
-            while low < high {
-                let mid = (low + high) / 2
-                let range = sentenceRanges[mid]
-                if range.location + range.length <= offset { low = mid + 1 } else { high = mid }
-            }
-            return low < sentenceRanges.count ? low : nil
         }
 
         // MARK: VoiceOver (R12a)
@@ -1049,19 +968,13 @@ struct ReaderTextView: UIViewRepresentable {
         /// Where the first rotor step starts: the playhead while it is on
         /// screen, else the first sentence at the top of the screen.
         private func rotorAnchor() -> Int {
-            guard let textView, let viewport = viewport() else { return max(activeSentence, 0) }
+            guard let viewport = viewport() else { return max(activeSentence, 0) }
             if let rect = activeSentenceRect(), FollowBand.direction(of: rect, in: viewport) == nil {
                 return activeSentence
             }
             // The top line may sit in a paragraph gap; look a little lower.
-            for step in 0..<4 {
-                let point = CGPoint(x: textView.textContainerInset.left,
-                                    y: viewport.minY + CGFloat(step) * builtFontSize)
-                if let offset = characterOffset(at: point), let id = sentence(atOrAfter: offset) {
-                    return id
-                }
-            }
-            return max(activeSentence, 0)
+            return column?.sentence(nearTopOf: viewport, lineStep: builtFontSize, in: sentenceRanges)
+                ?? max(activeSentence, 0)
         }
 
         /// Brings a rotor stop into the band without motion, and stops
@@ -1076,7 +989,7 @@ struct ReaderTextView: UIViewRepresentable {
             ensureLayout(through: sentenceRanges[id])
             if let target = revealOffset(for: id) {
                 jump(toY: target) { self.revealOffset(for: id) }
-                startRevealCheck(id)
+                follow.startRevealCheck(id)
             }
             updateFollowChip()
         }
@@ -1103,40 +1016,26 @@ struct ReaderTextView: UIViewRepresentable {
 
         // MARK: TextKit 2 geometry
 
-        private func characterOffset(at point: CGPoint) -> Int? {
-            guard let textView,
-                  let layoutManager = textView.textLayoutManager,
-                  let contentManager = layoutManager.textContentManager else { return nil }
+        /// The column's TextKit 2 geometry (`ReaderColumnLayout`) under the
+        /// text container inset as it stands.
+        private var column: ReaderColumnLayout? {
+            guard let textView, let layoutManager = textView.textLayoutManager else { return nil }
             let inset = textView.textContainerInset
-            let containerPoint = CGPoint(x: point.x - inset.left, y: point.y - inset.top)
-            guard let fragment = layoutManager.textLayoutFragment(for: containerPoint) else { return nil }
+            return ReaderColumnLayout(textLayoutManager: layoutManager,
+                                      origin: CGPoint(x: inset.left, y: inset.top))
+        }
 
-            let frame = fragment.layoutFragmentFrame
-            let local = CGPoint(x: containerPoint.x - frame.minX, y: containerPoint.y - frame.minY)
-            let fragmentStart = contentManager.offset(
-                from: layoutManager.documentRange.location, to: fragment.rangeInElement.location)
-
-            for line in fragment.textLineFragments {
-                let bounds = line.typographicBounds
-                guard local.y <= bounds.maxY || line === fragment.textLineFragments.last else { continue }
-                // characterIndex(for:) takes LINE-local coordinates; lines can
-                // start right of the fragment origin (first-line indents,
-                // centered headings), so offset by the line's own origin.
-                let index = line.characterIndex(for: CGPoint(x: local.x - bounds.minX,
-                                                             y: local.y - bounds.minY))
-                guard index >= 0 else { return nil }
-                return fragmentStart + index
-            }
-            return nil
+        private func characterOffset(at point: CGPoint) -> Int? {
+            column?.characterOffset(at: point)
         }
 
         /// Cached bounding rect of the follow target, the active sentence or
         /// the shown colophon (see `cachedActiveRect` and `followRange`),
         /// in content coordinates like `viewport()`.
         func activeSentenceRect() -> CGRect? {
-            if let cachedActiveRect { return cachedActiveRect }
+            if let cached = follow.cachedActiveRect { return cached }
             guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
-            cachedActiveRect = rect
+            follow.cachedActiveRect = rect
             return rect
         }
 
@@ -1153,7 +1052,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// stands now, refreshing the cache. Deliberate moves and tests
         /// only, never per frame.
         func measureActiveSentenceRect() -> CGRect? {
-            cachedActiveRect = nil
+            follow.cachedActiveRect = nil
             return activeSentenceRect()
         }
 
@@ -1171,283 +1070,33 @@ struct ReaderTextView: UIViewRepresentable {
 
         /// One-shot layout from the document start into the paragraph after
         /// `range`'s, so `range` sits on its real frame, not on estimated
-        /// heights of everything above it. Drawing a highlight lays a far
-        /// sentence out on its own at an ESTIMATED y, and an ensureLayout
-        /// pass never re-places the last fragment it reaches when that one
-        /// is already placed, so the pass must reach one fragment past it.
+        /// heights of everything above it (`ReaderColumnLayout`: the pass
+        /// reaches one fragment past it).
         private func ensureLayout(through range: NSRange) {
-            guard let textView,
-                  let layoutManager = textView.textLayoutManager,
-                  let contentManager = layoutManager.textContentManager else { return }
-            let text = textView.textStorage.mutableString
-            guard NSMaxRange(range) <= text.length else { return }
-            // Paragraphs are TextKit 2's layout fragments.
-            let next = NSMaxRange(text.paragraphRange(for: range))
-            let start = layoutManager.documentRange.location
-            guard let end = contentManager.location(start, offsetBy: min(next + 1, text.length)),
-                  let textRange = NSTextRange(location: start, end: end) else { return }
-            layoutManager.ensureLayout(for: textRange)
+            column?.ensureLayout(through: range)
         }
 
         private func boundingRect(for range: NSRange) -> CGRect? {
-            guard let textView,
-                  let layoutManager = textView.textLayoutManager,
-                  let contentManager = layoutManager.textContentManager,
-                  let start = contentManager.location(layoutManager.documentRange.location,
-                                                      offsetBy: range.location),
-                  let end = contentManager.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end) else { return nil }
-
-            layoutManager.ensureLayout(for: textRange)
-            var union = CGRect.null
-            layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) {
-                _, frame, _, _ in
-                union = union.union(frame)
-                return true
-            }
-            guard !union.isNull, union.height > 0 else { return nil }
-            return union.offsetBy(dx: textView.textContainerInset.left,
-                                  dy: textView.textContainerInset.top)
+            column?.boundingRect(for: range)
         }
 
         // MARK: Attributed string
 
-        /// The whole column. The end mark (`makeEndMark`) comes last, so
-        /// `endMarkRange` is the tail and swapping it never moves a sentence.
+        /// The whole column, built by `ReaderColumnText` for `traits`.
         static func makeAttributedString(content: DocContent, fontSize: CGFloat,
                                          isChapterBook: Bool = false,
                                          colophon: ReaderColophon? = nil,
                                          traits: UITraitCollection = .current)
             -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
-
-            let page = ReaderPageStyle(fontSize: fontSize)
-            // Bold Text: body and headings take the serif's bold face.
-            let bold = traits.legibilityWeight == .bold
-            let bodyFont = ReaderPageStyle.serif(size: fontSize, bold: bold)
-
-            func bodyStyle(indent: Bool) -> NSParagraphStyle {
-                let style = NSMutableParagraphStyle()
-                style.minimumLineHeight = page.lineHeight
-                style.maximumLineHeight = page.lineHeight
-                style.paragraphSpacing = page.paragraphGap
-                style.firstLineHeadIndent = indent ? page.firstLineIndent : 0
-                style.hyphenationFactor = ReaderPageStyle.hyphenationFactor
-                return style
-            }
-            func bodyAttributes(indent: Bool) -> [NSAttributedString.Key: Any] {
-                [.font: bodyFont, .foregroundColor: UIColor(Theme.text),
-                 .paragraphStyle: bodyStyle(indent: indent)]
-            }
-
-            // The page numeral sits 8pt under its hairline: no space before
-            // (the rule paragraph already carries the gap from the text).
-            let numeralStyle = NSMutableParagraphStyle()
-            numeralStyle.alignment = .center
-            numeralStyle.paragraphSpacingBefore = 0
-            numeralStyle.paragraphSpacing = (fontSize * 1.6).rounded()
-            var numeralAttributes = markAttributes(fontSize: fontSize)
-            numeralAttributes[.paragraphStyle] = numeralStyle
-
-            // Chapter opening: space above, a centered small-caps heading
-            // (still a speakable, tappable, highlightable sentence), a short
-            // accent rule, space, then an unindented first paragraph whose
-            // first words are in small caps.
-            func headingAttributes(isFirst: Bool) -> [NSAttributedString.Key: Any] {
-                let style = NSMutableParagraphStyle()
-                style.alignment = .center
-                style.paragraphSpacingBefore = isFirst ? 0 : page.openingSpaceAbove
-                style.paragraphSpacing = page.headingToRule
-                style.hyphenationFactor = 0
-                return [.font: ReaderPageStyle.smallCapsSerif(size: page.headingSize, bold: bold),
-                        .foregroundColor: UIColor(Theme.text),
-                        .kern: ReaderPageStyle.headingKern,
-                        .paragraphStyle: style]
-            }
-
-            // Which paragraphs open a chapter: text books only, the first
-            // paragraph of a chapter group that reads as a heading, and only
-            // when the book is genuinely chaptered (see ReaderPageStyle).
-            var openings = Set<Int>()
-            if isChapterBook {
-                var candidates: [Int] = []
-                var previousPage: Int?
-                for (index, paragraph) in content.paragraphs.enumerated() {
-                    defer { previousPage = paragraph.page }
-                    guard paragraph.page != previousPage else { continue }
-                    let lines = paragraph.sentenceIDs
-                        .filter { content.sentences.indices.contains($0) }
-                        .map { content.sentences[$0].text }
-                    // Also as lines: the extractor recognizes two-line headings
-                    // ("I" over a title line), which a space-joined string
-                    // hides.
-                    if TextExtractor.isChapterHeading(lines.joined(separator: " "))
-                        || (lines.count > 1 && TextExtractor.isChapterHeading(lines.joined(separator: "\n"))) {
-                        candidates.append(index)
-                    }
-                }
-                openings = ReaderPageStyle.openingParagraphs(candidates: candidates)
-            }
-
-            // Page indices may arrive 0- or 1-based; display starts at 1 either
-            // way — the shared rule every page-naming surface uses. Text books
-            // group by chapter, so they never get page marks.
-            let pageOffset = content.pageOffset
-            let showPageMarks = !isChapterBook && content.pageCount > 1
-
-            let result = NSMutableAttributedString()
-            var ranges = [NSRange](repeating: NSRange(location: 0, length: 0),
-                                   count: content.sentences.count)
-            var lastPage: Int?
-            var afterOpening = false
-
-            for (index, paragraph) in content.paragraphs.enumerated() {
-                if showPageMarks, let last = lastPage, paragraph.page != last {
-                    // PDF page boundary: a short hairline over the page numeral.
-                    result.append(ruleParagraph(size: ReaderPageStyle.pageRuleSize,
-                                                color: UIColor(Theme.lineStrong),
-                                                spacingBefore: (fontSize * 1.2).rounded(),
-                                                spacingAfter: Theme.Space.xs,
-                                                traits: traits))
-                    result.append(NSAttributedString(
-                        string: "\(paragraph.page + pageOffset)\n", attributes: numeralAttributes))
-                }
-                let isFirstParagraph = lastPage == nil
-                lastPage = paragraph.page
-
-                let sentenceIDs = paragraph.sentenceIDs.filter { content.sentences.indices.contains($0) }
-                let isOpening = openings.contains(index)
-                // Book convention: no indent on a book's first paragraph or
-                // the first paragraph after a chapter opening.
-                let attributes = isOpening
-                    ? headingAttributes(isFirst: isFirstParagraph)
-                    : bodyAttributes(indent: !(isFirstParagraph || afterOpening))
-                let paragraphStart = result.length
-
-                var first = true
-                for sentenceID in sentenceIDs {
-                    let sentence = content.sentences[sentenceID]
-                    if !first {
-                        result.append(NSAttributedString(string: " ", attributes: attributes))
-                    }
-                    first = false
-                    let location = result.length
-                    // Display-only typesetting; UTF-16 length is preserved, so
-                    // this range (and the word-tint offsets walked from the
-                    // source text) stay exact.
-                    result.append(NSAttributedString(
-                        string: ReaderTypography.typeset(sentence.text), attributes: attributes))
-                    ranges[sentence.id] = NSRange(location: location,
-                                                  length: result.length - location)
-                }
-                result.append(NSAttributedString(string: "\n", attributes: attributes))
-
-                if isOpening {
-                    result.append(ruleParagraph(size: ReaderPageStyle.ruleSize,
-                                                color: UIColor(Theme.accent),
-                                                spacingBefore: 0,
-                                                spacingAfter: page.ruleToText,
-                                                traits: traits))
-                } else if afterOpening, let firstID = sentenceIDs.first {
-                    // Opening words in small caps: font only, never length.
-                    let length = ReaderPageStyle.utf16LengthOfFirstWords(
-                        content.sentences[firstID].text, count: ReaderPageStyle.openingSmallCapsWords)
-                    result.addAttribute(.font, value: ReaderPageStyle.smallCapsSerif(size: fontSize, bold: bold),
-                                        range: NSRange(location: paragraphStart, length: length))
-                }
-                afterOpening = isOpening
-            }
-
-            let endMark = makeEndMark(colophon: colophon, fontSize: fontSize, traits: traits)
-            let endMarkRange = NSRange(location: result.length, length: endMark.length)
-            result.append(endMark)
-            return (result, ranges, endMarkRange)
+            ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
+                                                  isChapterBook: isChapterBook, colophon: colophon,
+                                                  traits: traits)
         }
 
-        /// The end of the text. nil: the "· · ·" mark. A colophon (R24),
-        /// every paragraph centered and unhyphenated, honoring Bold Text: an
-        /// accent rule, the heading (`ColophonCopy.theEnd`) in the serif's
-        /// italic, the title in small caps, the author and the listening
-        /// time, both muted. None of it is a sentence, so it is never
-        /// spoken, tapped or highlighted.
+        /// The end of the text (`ReaderColumnText.makeEndMark`).
         static func makeEndMark(colophon: ReaderColophon?, fontSize: CGFloat,
                                 traits: UITraitCollection) -> NSAttributedString {
-            guard let colophon else {
-                return NSAttributedString(string: "· · ·", attributes: markAttributes(fontSize: fontSize))
-            }
-            let page = ReaderPageStyle(fontSize: fontSize)
-            let bold = traits.legibilityWeight == .bold
-            func centered(spacingAfter: CGFloat) -> NSParagraphStyle {
-                let style = NSMutableParagraphStyle()
-                style.alignment = .center
-                style.paragraphSpacing = spacingAfter
-                style.hyphenationFactor = 0
-                return style
-            }
-            let mark = NSMutableAttributedString()
-            // The chapter opening's rule and spacing, so the end reads as the
-            // book's own typography.
-            mark.append(ruleParagraph(size: ReaderPageStyle.ruleSize, color: UIColor(Theme.accent),
-                                      spacingBefore: page.openingSpaceAbove,
-                                      spacingAfter: page.headingToRule, traits: traits))
-            mark.append(NSAttributedString(string: ColophonCopy.theEnd + "\n", attributes: [
-                .font: ReaderPageStyle.italicSerif(size: page.headingSize, bold: bold),
-                .foregroundColor: UIColor(Theme.text),
-                .paragraphStyle: centered(spacingAfter: page.headingToRule),
-            ]))
-            // Display-only typesetting, like the sentences' (curly quotes).
-            mark.append(NSAttributedString(string: ReaderTypography.typeset(colophon.title) + "\n", attributes: [
-                .font: ReaderPageStyle.smallCapsSerif(size: fontSize, bold: bold),
-                .foregroundColor: UIColor(Theme.text),
-                .kern: ReaderPageStyle.headingKern,
-                .paragraphStyle: centered(spacingAfter: page.paragraphGap),
-            ]))
-            if let author = colophon.author {
-                mark.append(NSAttributedString(string: author + "\n", attributes: [
-                    .font: ReaderPageStyle.serif(size: fontSize, bold: bold),
-                    .foregroundColor: UIColor(Theme.textMuted),
-                    .paragraphStyle: centered(spacingAfter: page.paragraphGap),
-                ]))
-            }
-            mark.append(NSAttributedString(string: colophon.listeningLine, attributes: [
-                .font: ReaderPageStyle.serif(size: page.colophonDetailSize, bold: bold),
-                .foregroundColor: UIColor(Theme.textMuted),
-                .paragraphStyle: centered(spacingAfter: 0),
-            ]))
-            return mark
-        }
-
-        /// The "· · ·" end mark's and the PDF page numerals' look.
-        private static func markAttributes(fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
-            let markStyle = NSMutableParagraphStyle()
-            markStyle.alignment = .center
-            markStyle.paragraphSpacingBefore = (fontSize * 1.2).rounded()
-            markStyle.paragraphSpacing = (fontSize * 1.6).rounded()
-            return [
-                .font: UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: UIColor(Theme.textMuted),
-                .kern: 1.2,
-                .paragraphStyle: markStyle,
-            ]
-        }
-
-        /// A centered rule image on a paragraph of its own: chapter openings
-        /// and the colophon (accent), PDF page marks (hairline).
-        private static func ruleParagraph(size: CGSize, color: UIColor, spacingBefore: CGFloat,
-                                          spacingAfter: CGFloat, traits: UITraitCollection) -> NSAttributedString {
-            let attachment = NSTextAttachment()
-            attachment.image = ReaderPageStyle.ruleImage(size: size, color: color, traits: traits)
-            attachment.bounds = CGRect(origin: .zero, size: size)
-            let style = NSMutableParagraphStyle()
-            style.alignment = .center
-            style.paragraphSpacingBefore = spacingBefore
-            style.paragraphSpacing = spacingAfter
-            style.minimumLineHeight = max(size.height, 4)
-            style.maximumLineHeight = max(size.height, 4)
-            let rule = NSMutableAttributedString(attachment: attachment)
-            rule.append(NSAttributedString(string: "\n"))
-            rule.addAttribute(.paragraphStyle, value: style,
-                              range: NSRange(location: 0, length: rule.length))
-            return rule
+            ReaderColumnText.makeEndMark(colophon: colophon, fontSize: fontSize, traits: traits)
         }
     }
 }
@@ -1556,5 +1205,14 @@ final class ReaderUITextView: UITextView {
             || previousTraitCollection?.legibilityWeight != traitCollection.legibilityWeight {
             onTraitChange?()
         }
+    }
+}
+
+// MARK: - Glide timing
+
+extension FollowBand {
+    /// The glide's (0.4, 0, 0.2, 1) curve as UIKit timing (`startGlide`).
+    static func timingParameters() -> UICubicTimingParameters {
+        UICubicTimingParameters(controlPoint1: glideCurve.0, controlPoint2: glideCurve.1)
     }
 }

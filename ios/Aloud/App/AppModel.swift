@@ -182,8 +182,12 @@ final class AppModel: ObservableObject {
             defaults.removeObject(forKey: PrefKey.skipBrackets)
         }
         AppModel.migratePreferences(defaults)
+        // Verifying counts as installed: an install from before the pinned
+        // files re-hashes once at launch, and its files are on disk meanwhile,
+        // so an explicit System voice choice must survive the migration.
         AppModel.runListeningMigrationIfNeeded(defaults, documents: store.documents,
-                                               modelInstalled: modelManager.isInstalled)
+                                               modelInstalled: modelManager.isInstalled
+                                                   || modelManager.isVerifying)
         AppModel.runCalmFollowMigrationIfNeeded(defaults)
 
         globalRate = PlaybackController.clampedRate(

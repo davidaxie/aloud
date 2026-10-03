@@ -38,10 +38,16 @@ final class NaturalVoiceCopyTests: XCTestCase {
         XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on device · works offline")
     }
 
+    /// M3: shown while files already on disk are hashed.
+    func testVerifyingCopy() {
+        XCTAssertEqual(NaturalVoiceCopy.verifying, "Checking voice files\u{2026}")
+        XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.verifying), "Checking voice files")
+    }
+
     func testFailureParts() {
         let space = NaturalVoiceCopy.failure(.notEnoughSpace)
         XCTAssertEqual(space.status, "Not enough space")
-        XCTAssertEqual(space.detail, "need 705 MB free")
+        XCTAssertEqual(space.detail, "need 707 MB free")
         XCTAssertFalse(space.detailIsAction, "Nothing to tap until there is room")
         let interrupted = NaturalVoiceCopy.failure(.interrupted)
         XCTAssertEqual(interrupted.status, "Download failed")
@@ -54,7 +60,7 @@ final class NaturalVoiceCopyTests: XCTestCase {
     }
 
     func testFailureLines() {
-        XCTAssertEqual(NaturalVoiceCopy.failureLine(.notEnoughSpace), "Not enough space · need 705 MB free")
+        XCTAssertEqual(NaturalVoiceCopy.failureLine(.notEnoughSpace), "Not enough space · need 707 MB free")
         XCTAssertEqual(NaturalVoiceCopy.failureLine(.interrupted), "Download failed · Try again")
         XCTAssertEqual(NaturalVoiceCopy.failureLine(.damaged), "Voice files damaged · Download again")
     }
@@ -63,9 +69,9 @@ final class NaturalVoiceCopyTests: XCTestCase {
     /// failed space check it says so and still names the voice (R21).
     func testOfferLineNamesTheVoiceAfterASpaceFailure() {
         XCTAssertEqual(NaturalVoiceCopy.offerLine(modelState: .failed(.notEnoughSpace)),
-                       "Natural voice · not enough space · need 705 MB free")
+                       "Natural voice · not enough space · need 707 MB free")
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.offerLine(modelState: .failed(.notEnoughSpace))),
-                       "Natural voice, not enough space, need 705 MB free")
+                       "Natural voice, not enough space, need 707 MB free")
         let others: [ModelManager.ModelState] = [.notInstalled, .downloading(0.4), .waitingForWiFi(0.4), .installed,
                                                  .failed(.interrupted), .failed(.damaged)]
         for state in others {
@@ -77,7 +83,7 @@ final class NaturalVoiceCopyTests: XCTestCase {
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi),
                        "Download paused, waiting for Wi-Fi")
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.notEnoughSpace)),
-                       "Not enough space, need 705 MB free")
+                       "Not enough space, need 707 MB free")
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.interrupted)),
                        "Download failed, Try again")
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.damaged)),

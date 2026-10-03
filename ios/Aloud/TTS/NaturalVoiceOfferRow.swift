@@ -3,7 +3,7 @@ import SwiftUI
 /// The natural-voice offer as it sits in the reader's chapter line (R5):
 /// "Natural voice · 353 MB, once" with [Download] and [Not now]. After a
 /// Download that found too little space it reads "Natural voice · not
-/// enough space · need 705 MB free" (R21) until Download finds room or Not
+/// enough space · need 707 MB free" (R21) until Download finds room or Not
 /// now answers.
 struct NaturalVoiceOfferRow: View {
 

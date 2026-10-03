@@ -2,9 +2,9 @@ import XCTest
 import UIKit
 @testable import Aloud
 
-/// Display typesetting (`ReaderTypography`) and the reader's attributed-string
-/// build: curly quotes and em dashes on screen, the UTF-16 length contract
-/// that keeps sentence/word ranges exact, and chapter headings in text books.
+/// Display typesetting (`ReaderTypography`): curly quotes and em dashes on
+/// screen, and the UTF-16 length contract that keeps sentence/word ranges
+/// exact. The column's attributed string is `ReaderColumnTextTests`.
 final class ReaderTypographyTests: XCTestCase {
 
     // MARK: - Quotes
@@ -98,105 +98,5 @@ final class ReaderTypographyTests: XCTestCase {
             XCTAssertEqual(ReaderTypography.typeset(sample).utf16.count, sample.utf16.count,
                            "length changed for \(sample.debugDescription)")
         }
-    }
-
-    // MARK: - Reader attributed string
-
-    private func makeContent(_ paragraphs: [[(text: String, page: Int)]]) -> DocContent {
-        var sentences: [Sentence] = []
-        var paras: [Paragraph] = []
-        for (p, entries) in paragraphs.enumerated() {
-            let start = sentences.count
-            for entry in entries {
-                sentences.append(Sentence(id: sentences.count, text: entry.text, para: p, page: entry.page))
-            }
-            paras.append(Paragraph(id: p, sentenceIDs: start..<sentences.count,
-                                   page: entries.first?.page ?? 1))
-        }
-        return DocContent(title: "Test", pageCount: paras.map(\.page).max() ?? 1,
-                          sentences: sentences, paragraphs: paras, contentHash: "h")
-    }
-
-    @MainActor
-    func testSentenceRangesMatchSourceLengthsAfterTypesetting() {
-        let content = makeContent([
-            [("I", 1)],
-            [(#""Whenever you feel," he said, "remember that.""#, 1), ("It was--late.", 1)],
-            [("II", 2)],
-            [("Simon Called Peter - either it was terrible.", 2)],
-        ])
-        let built = ReaderTextView.Coordinator.makeAttributedString(
-            content: content, fontSize: 19, isChapterBook: true)
-        let rendered = built.string.string as NSString
-        for sentence in content.sentences {
-            let range = built.sentenceRanges[sentence.id]
-            XCTAssertEqual(range.length, sentence.text.utf16.count)
-            XCTAssertEqual(rendered.substring(with: range),
-                           ReaderTypography.typeset(sentence.text))
-        }
-    }
-
-    /// Three chapters, five paragraphs apart: a genuinely chaptered book.
-    private func chapteredContent() -> DocContent {
-        var paragraphs: [[(text: String, page: Int)]] = []
-        for (chapter, numeral) in ["I", "II", "III"].enumerated() {
-            paragraphs.append([(numeral, chapter + 1)])
-            for n in 1...4 {
-                paragraphs.append([("Paragraph \(n) of chapter \(numeral) runs on for a while.", chapter + 1)])
-            }
-        }
-        return makeContent(paragraphs)
-    }
-
-    @MainActor
-    func testChapterBooksStyleHeadingsAndDropPageMarks() {
-        let content = chapteredContent()
-        let built = ReaderTextView.Coordinator.makeAttributedString(
-            content: content, fontSize: 19, isChapterBook: true)
-        XCTAssertFalse(built.string.string.contains("PAGE"),
-                       "text books group by chapter; no page marks")
-
-        let bodyFont = built.string.attribute(.font, at: built.sentenceRanges[2].location,
-                                              effectiveRange: nil) as? UIFont
-        for heading in [0, 5, 10] {
-            let location = built.sentenceRanges[heading].location
-            let style = built.string.attribute(.paragraphStyle, at: location,
-                                               effectiveRange: nil) as? NSParagraphStyle
-            let font = built.string.attribute(.font, at: location, effectiveRange: nil) as? UIFont
-            XCTAssertEqual(style?.alignment, .center, "heading \(heading) should be centered")
-            XCTAssertGreaterThan(font?.pointSize ?? 0, bodyFont?.pointSize ?? .infinity)
-        }
-    }
-
-    @MainActor
-    func testTooFewHeadingsGetNoOpenings() {
-        let content = makeContent([
-            [("I", 1)],
-            [("In my younger years my father gave me some advice.", 1)],
-            [("II", 2)],
-            [("About half way between West Egg and New York.", 2)],
-        ])
-        let built = ReaderTextView.Coordinator.makeAttributedString(
-            content: content, fontSize: 19, isChapterBook: true)
-        let style = built.string.attribute(.paragraphStyle, at: built.sentenceRanges[2].location,
-                                           effectiveRange: nil) as? NSParagraphStyle
-        XCTAssertNotEqual(style?.alignment, .center, "two headings are not enough for openings")
-        XCTAssertFalse(built.string.string.contains("PAGE"))
-    }
-
-    @MainActor
-    func testPDFsKeepPageMarksAndPlainParagraphs() {
-        let content = makeContent([
-            [("First page text.", 1)],
-            [("Second page text.", 2)],
-        ])
-        let built = ReaderTextView.Coordinator.makeAttributedString(
-            content: content, fontSize: 19, isChapterBook: false)
-        // A hairline attachment over the page numeral, never "PAGE N".
-        XCTAssertFalse(built.string.string.contains("PAGE"))
-        XCTAssertTrue(built.string.string.contains("\u{FFFC}\n2\n"))
-        let style = built.string.attribute(.paragraphStyle, at: built.sentenceRanges[0].location,
-                                           effectiveRange: nil) as? NSParagraphStyle
-        XCTAssertNotEqual(style?.alignment, .center)
     }
 }

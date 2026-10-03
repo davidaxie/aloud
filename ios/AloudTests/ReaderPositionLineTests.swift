@@ -121,8 +121,8 @@ final class ReaderPositionLineTests: XCTestCase {
     /// A Contents row shows "8 min" but speaks its time in full (R25), after
     /// the visible title.
     func testContentsRowLabelSpellsOutItsTime() {
-        let current = ContentsSheet.chapterAccessibilityLabel(title: "CHAPTER I", minutes: 72, isCurrent: true)
-        let other = ContentsSheet.chapterAccessibilityLabel(title: "CHAPTER II", minutes: 8, isCurrent: false)
+        let current = ContentsSearch.chapterAccessibilityLabel(title: "CHAPTER I", minutes: 72, isCurrent: true)
+        let other = ContentsSearch.chapterAccessibilityLabel(title: "CHAPTER II", minutes: 8, isCurrent: false)
         XCTAssertEqual(current, "CHAPTER I, 1 hour 12 minutes, current")
         XCTAssertEqual(other, "CHAPTER II, 8 minutes")
         for label in [current, other] {

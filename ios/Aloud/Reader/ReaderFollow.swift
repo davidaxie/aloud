@@ -1,5 +1,6 @@
 import Combine
-import UIKit
+import CoreGraphics
+import Foundation
 
 /// Where the voice is relative to the viewport: the Follow chip's arrow.
 enum ReaderFollowDirection: Equatable, Sendable {
@@ -53,10 +54,6 @@ enum FollowBand {
     /// Reduce Motion, jumps.
     static func glides(distance: CGFloat, viewportHeight: CGFloat, reduceMotion: Bool) -> Bool {
         !reduceMotion && abs(distance) <= viewportHeight
-    }
-
-    static func timingParameters() -> UICubicTimingParameters {
-        UICubicTimingParameters(controlPoint1: glideCurve.0, controlPoint2: glideCurve.1)
     }
 
     /// How much of the text view the bottom chrome covers: from the

@@ -26,7 +26,7 @@ import SwiftUI
 /// - `-uitest-haptic-log` exposes the transport haptic log (debug.haptics).
 /// - `-uitest-low-disk` reports 100 MB free to the download's space check.
 /// - `-uitest-damaged-model` installs 1-byte model files in the temporary
-///   model directory, so the engine's load-time check finds them damaged.
+///   model directory, which launch-time detection reads as damaged.
 ///
 /// Phase 4 (R26): `-uitest-shortcut continue` or `-uitest-shortcut
 /// sleep-<raw>` runs that App Shortcut's action as the last launch step, the
@@ -150,11 +150,11 @@ enum UITestHooks {
     /// Expose TransportHaptics' log through the debug.haptics probe.
     static var hapticLog: Bool { arguments.contains("-uitest-haptic-log") }
 
-    /// Report 100 MB free, below the download's 705 MB requirement.
+    /// Report 100 MB free, below the download's 707 MB requirement.
     static var forceLowDiskSpace: Bool { arguments.contains("-uitest-low-disk") }
 
-    /// Use the temporary model directory with 1-byte model files: the model
-    /// reads as installed until the engine's load-time size check runs.
+    /// Use the temporary model directory with 1-byte model files: their
+    /// sizes are off, so launch-time detection reads them as damaged.
     static var damagedModel: Bool { arguments.contains("-uitest-damaged-model") }
 
     /// `-uitest-shortcut <name>`: the shortcut action this launch runs.

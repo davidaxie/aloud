@@ -1,0 +1,310 @@
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
+import SwiftUI
+
+#if canImport(UIKit)
+private typealias MarkFont = UIFont
+#else
+private typealias MarkFont = NSFont
+#endif
+
+/// The colors the column is set in, and how its rule images are drawn, as
+/// the host's appearance has them. The iOS host passes the theme's own
+/// `UIColor`s (`init(traits:)`), the same values the column always used.
+struct ReaderInk {
+    #if canImport(UIKit)
+    typealias Tint = UIColor
+    typealias RuleImage = UIImage
+    #else
+    typealias Tint = NSColor
+    typealias RuleImage = NSImage
+    #endif
+
+    var text: Tint
+    var textMuted: Tint
+    var accent: Tint
+    var lineStrong: Tint
+    /// A solid rule image of `size` in a color: chapter openings and the
+    /// colophon (accent), PDF page marks (hairline).
+    var ruleImage: (CGSize, Tint) -> RuleImage
+}
+
+/// The reading column's attributed string: every paragraph, page mark and
+/// chapter opening, then the end mark. Pure: the host passes Bold Text as
+/// `bold` and its colors as `ReaderInk`, so both columns build the same text.
+enum ReaderColumnText {
+
+    /// The whole column. The end mark (`makeEndMark`) comes last, so
+    /// `endMarkRange` is the tail and swapping it never moves a sentence.
+    static func makeAttributedString(content: DocContent, fontSize: CGFloat,
+                                     isChapterBook: Bool = false,
+                                     colophon: ReaderColophon? = nil,
+                                     bold: Bool, ink: ReaderInk)
+        -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
+
+        let page = ReaderPageStyle(fontSize: fontSize)
+        // Bold Text: body and headings take the serif's bold face.
+        let bodyFont = ReaderPageStyle.serif(size: fontSize, bold: bold)
+
+        func bodyStyle(indent: Bool) -> NSParagraphStyle {
+            let style = NSMutableParagraphStyle()
+            style.minimumLineHeight = page.lineHeight
+            style.maximumLineHeight = page.lineHeight
+            style.paragraphSpacing = page.paragraphGap
+            style.firstLineHeadIndent = indent ? page.firstLineIndent : 0
+            style.hyphenationFactor = ReaderPageStyle.hyphenationFactor
+            return style
+        }
+        func bodyAttributes(indent: Bool) -> [NSAttributedString.Key: Any] {
+            [.font: bodyFont, .foregroundColor: ink.text,
+             .paragraphStyle: bodyStyle(indent: indent)]
+        }
+
+        // The page numeral sits 8pt under its hairline: no space before
+        // (the rule paragraph already carries the gap from the text).
+        let numeralStyle = NSMutableParagraphStyle()
+        numeralStyle.alignment = .center
+        numeralStyle.paragraphSpacingBefore = 0
+        numeralStyle.paragraphSpacing = (fontSize * 1.6).rounded()
+        var numeralAttributes = markAttributes(fontSize: fontSize, ink: ink)
+        numeralAttributes[.paragraphStyle] = numeralStyle
+
+        // Chapter opening: space above, a centered small-caps heading
+        // (still a speakable, tappable, highlightable sentence), a short
+        // accent rule, space, then an unindented first paragraph whose
+        // first words are in small caps.
+        func headingAttributes(isFirst: Bool) -> [NSAttributedString.Key: Any] {
+            let style = NSMutableParagraphStyle()
+            style.alignment = .center
+            style.paragraphSpacingBefore = isFirst ? 0 : page.openingSpaceAbove
+            style.paragraphSpacing = page.headingToRule
+            style.hyphenationFactor = 0
+            return [.font: ReaderPageStyle.smallCapsSerif(size: page.headingSize, bold: bold),
+                    .foregroundColor: ink.text,
+                    .kern: ReaderPageStyle.headingKern,
+                    .paragraphStyle: style]
+        }
+
+        // Which paragraphs open a chapter: text books only, the first
+        // paragraph of a chapter group that reads as a heading, and only
+        // when the book is genuinely chaptered (see ReaderPageStyle).
+        var openings = Set<Int>()
+        if isChapterBook {
+            var candidates: [Int] = []
+            var previousPage: Int?
+            for (index, paragraph) in content.paragraphs.enumerated() {
+                defer { previousPage = paragraph.page }
+                guard paragraph.page != previousPage else { continue }
+                let lines = paragraph.sentenceIDs
+                    .filter { content.sentences.indices.contains($0) }
+                    .map { content.sentences[$0].text }
+                // Also as lines: the extractor recognizes two-line headings
+                // ("I" over a title line), which a space-joined string
+                // hides.
+                if TextExtractor.isChapterHeading(lines.joined(separator: " "))
+                    || (lines.count > 1 && TextExtractor.isChapterHeading(lines.joined(separator: "\n"))) {
+                    candidates.append(index)
+                }
+            }
+            openings = ReaderPageStyle.openingParagraphs(candidates: candidates)
+        }
+
+        // Page indices may arrive 0- or 1-based; display starts at 1 either
+        // way — the shared rule every page-naming surface uses. Text books
+        // group by chapter, so they never get page marks.
+        let pageOffset = content.pageOffset
+        let showPageMarks = !isChapterBook && content.pageCount > 1
+
+        let result = NSMutableAttributedString()
+        var ranges = [NSRange](repeating: NSRange(location: 0, length: 0),
+                               count: content.sentences.count)
+        var lastPage: Int?
+        var afterOpening = false
+
+        for (index, paragraph) in content.paragraphs.enumerated() {
+            if showPageMarks, let last = lastPage, paragraph.page != last {
+                // PDF page boundary: a short hairline over the page numeral.
+                result.append(ruleParagraph(size: ReaderPageStyle.pageRuleSize,
+                                            color: ink.lineStrong,
+                                            spacingBefore: (fontSize * 1.2).rounded(),
+                                            spacingAfter: Theme.Space.xs,
+                                            ink: ink))
+                result.append(NSAttributedString(
+                    string: "\(paragraph.page + pageOffset)\n", attributes: numeralAttributes))
+            }
+            let isFirstParagraph = lastPage == nil
+            lastPage = paragraph.page
+
+            let sentenceIDs = paragraph.sentenceIDs.filter { content.sentences.indices.contains($0) }
+            let isOpening = openings.contains(index)
+            // Book convention: no indent on a book's first paragraph or
+            // the first paragraph after a chapter opening.
+            let attributes = isOpening
+                ? headingAttributes(isFirst: isFirstParagraph)
+                : bodyAttributes(indent: !(isFirstParagraph || afterOpening))
+            let paragraphStart = result.length
+
+            var first = true
+            for sentenceID in sentenceIDs {
+                let sentence = content.sentences[sentenceID]
+                if !first {
+                    result.append(NSAttributedString(string: " ", attributes: attributes))
+                }
+                first = false
+                let location = result.length
+                // Display-only typesetting; UTF-16 length is preserved, so
+                // this range (and the word-tint offsets walked from the
+                // source text) stay exact.
+                result.append(NSAttributedString(
+                    string: ReaderTypography.typeset(sentence.text), attributes: attributes))
+                ranges[sentence.id] = NSRange(location: location,
+                                              length: result.length - location)
+            }
+            result.append(NSAttributedString(string: "\n", attributes: attributes))
+
+            if isOpening {
+                result.append(ruleParagraph(size: ReaderPageStyle.ruleSize,
+                                            color: ink.accent,
+                                            spacingBefore: 0,
+                                            spacingAfter: page.ruleToText,
+                                            ink: ink))
+            } else if afterOpening, let firstID = sentenceIDs.first {
+                // Opening words in small caps: font only, never length.
+                let length = ReaderPageStyle.utf16LengthOfFirstWords(
+                    content.sentences[firstID].text, count: ReaderPageStyle.openingSmallCapsWords)
+                result.addAttribute(.font, value: ReaderPageStyle.smallCapsSerif(size: fontSize, bold: bold),
+                                    range: NSRange(location: paragraphStart, length: length))
+            }
+            afterOpening = isOpening
+        }
+
+        let endMark = makeEndMark(colophon: colophon, fontSize: fontSize, bold: bold, ink: ink)
+        let endMarkRange = NSRange(location: result.length, length: endMark.length)
+        result.append(endMark)
+        return (result, ranges, endMarkRange)
+    }
+
+    /// The end of the text. nil: the "· · ·" mark. A colophon (R24),
+    /// every paragraph centered and unhyphenated, honoring Bold Text: an
+    /// accent rule, the heading (`ColophonCopy.theEnd`) in the serif's
+    /// italic, the title in small caps, the author and the listening
+    /// time, both muted. None of it is a sentence, so it is never
+    /// spoken, tapped or highlighted.
+    static func makeEndMark(colophon: ReaderColophon?, fontSize: CGFloat,
+                            bold: Bool, ink: ReaderInk) -> NSAttributedString {
+        guard let colophon else {
+            return NSAttributedString(string: "· · ·", attributes: markAttributes(fontSize: fontSize, ink: ink))
+        }
+        let page = ReaderPageStyle(fontSize: fontSize)
+        func centered(spacingAfter: CGFloat) -> NSParagraphStyle {
+            let style = NSMutableParagraphStyle()
+            style.alignment = .center
+            style.paragraphSpacing = spacingAfter
+            style.hyphenationFactor = 0
+            return style
+        }
+        let mark = NSMutableAttributedString()
+        // The chapter opening's rule and spacing, so the end reads as the
+        // book's own typography.
+        mark.append(ruleParagraph(size: ReaderPageStyle.ruleSize, color: ink.accent,
+                                  spacingBefore: page.openingSpaceAbove,
+                                  spacingAfter: page.headingToRule, ink: ink))
+        mark.append(NSAttributedString(string: ColophonCopy.theEnd + "\n", attributes: [
+            .font: ReaderPageStyle.italicSerif(size: page.headingSize, bold: bold),
+            .foregroundColor: ink.text,
+            .paragraphStyle: centered(spacingAfter: page.headingToRule),
+        ]))
+        // Display-only typesetting, like the sentences' (curly quotes).
+        mark.append(NSAttributedString(string: ReaderTypography.typeset(colophon.title) + "\n", attributes: [
+            .font: ReaderPageStyle.smallCapsSerif(size: fontSize, bold: bold),
+            .foregroundColor: ink.text,
+            .kern: ReaderPageStyle.headingKern,
+            .paragraphStyle: centered(spacingAfter: page.paragraphGap),
+        ]))
+        if let author = colophon.author {
+            mark.append(NSAttributedString(string: author + "\n", attributes: [
+                .font: ReaderPageStyle.serif(size: fontSize, bold: bold),
+                .foregroundColor: ink.textMuted,
+                .paragraphStyle: centered(spacingAfter: page.paragraphGap),
+            ]))
+        }
+        mark.append(NSAttributedString(string: colophon.listeningLine, attributes: [
+            .font: ReaderPageStyle.serif(size: page.colophonDetailSize, bold: bold),
+            .foregroundColor: ink.textMuted,
+            .paragraphStyle: centered(spacingAfter: 0),
+        ]))
+        return mark
+    }
+
+    /// The "· · ·" end mark's and the PDF page numerals' look.
+    private static func markAttributes(fontSize: CGFloat, ink: ReaderInk) -> [NSAttributedString.Key: Any] {
+        let markStyle = NSMutableParagraphStyle()
+        markStyle.alignment = .center
+        markStyle.paragraphSpacingBefore = (fontSize * 1.2).rounded()
+        markStyle.paragraphSpacing = (fontSize * 1.6).rounded()
+        return [
+            .font: MarkFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: ink.textMuted,
+            .kern: 1.2,
+            .paragraphStyle: markStyle,
+        ]
+    }
+
+    /// A centered rule image on a paragraph of its own: chapter openings
+    /// and the colophon (accent), PDF page marks (hairline).
+    private static func ruleParagraph(size: CGSize, color: ReaderInk.Tint, spacingBefore: CGFloat,
+                                      spacingAfter: CGFloat, ink: ReaderInk) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.image = ink.ruleImage(size, color)
+        attachment.bounds = CGRect(origin: .zero, size: size)
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.paragraphSpacingBefore = spacingBefore
+        style.paragraphSpacing = spacingAfter
+        style.minimumLineHeight = max(size.height, 4)
+        style.maximumLineHeight = max(size.height, 4)
+        let rule = NSMutableAttributedString(attachment: attachment)
+        rule.append(NSAttributedString(string: "\n"))
+        rule.addAttribute(.paragraphStyle, value: style,
+                          range: NSRange(location: 0, length: rule.length))
+        return rule
+    }
+}
+
+#if canImport(UIKit)
+extension ReaderInk {
+    /// The theme's colors as UIKit colors, and rule images resolved for
+    /// `traits` (their display scale and appearance).
+    init(traits: UITraitCollection) {
+        self.init(text: UIColor(Theme.text),
+                  textMuted: UIColor(Theme.textMuted),
+                  accent: UIColor(Theme.accent),
+                  lineStrong: UIColor(Theme.lineStrong),
+                  ruleImage: { size, color in ReaderPageStyle.ruleImage(size: size, color: color, traits: traits) })
+    }
+}
+
+extension ReaderColumnText {
+    /// The column for an iOS trait collection: Bold Text is
+    /// `legibilityWeight == .bold`, and the colors are `ReaderInk(traits:)`.
+    static func makeAttributedString(content: DocContent, fontSize: CGFloat,
+                                     isChapterBook: Bool = false,
+                                     colophon: ReaderColophon? = nil,
+                                     traits: UITraitCollection = .current)
+        -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
+        makeAttributedString(content: content, fontSize: fontSize, isChapterBook: isChapterBook,
+                             colophon: colophon, bold: traits.legibilityWeight == .bold,
+                             ink: ReaderInk(traits: traits))
+    }
+
+    /// The end mark for an iOS trait collection (see `makeAttributedString`).
+    static func makeEndMark(colophon: ReaderColophon?, fontSize: CGFloat,
+                            traits: UITraitCollection) -> NSAttributedString {
+        makeEndMark(colophon: colophon, fontSize: fontSize, bold: traits.legibilityWeight == .bold,
+                    ink: ReaderInk(traits: traits))
+    }
+}
+#endif

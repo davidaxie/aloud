@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The neural-voice model card: promo → downloading (or waiting for Wi-Fi)
-/// → failed → installed.
+/// → failed → installed, and "Checking voice files…" while files already on
+/// disk are verified.
 /// The foot of the Listening view, in the reader's sheet (promo + progress,
 /// card chrome) and on Settings' Voice & speed page (`showsInstalledState`
 /// adds size-on-disk and a remove action). `showsCard` off drops the card
@@ -53,6 +54,8 @@ struct ModelDownloadView: View {
     private var content: some View {
         if !ModelManager.deviceSupportsNeuralVoice {
             unsupported
+        } else if manager.isVerifying {
+            verifying
         } else {
             switch manager.state {
             case .notInstalled:
@@ -100,6 +103,21 @@ struct ModelDownloadView: View {
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Files already on disk being hashed (M3): a second or two, once, with
+    /// nothing to do but wait, so it reads quiet like the Wi-Fi wait.
+    private var verifying: some View {
+        tileRow {
+            icon
+        } label: {
+            Text(NaturalVoiceCopy.verifying)
+                .font(Theme.font(.body).weight(.semibold))
+                .foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(NaturalVoiceCopy.spoken(NaturalVoiceCopy.verifying))
+                .accessibilityIdentifier("model.verifying")
         }
     }
 
@@ -286,6 +304,12 @@ struct ModelDownloadView: View {
             isConfirmingCellular = true
         }
     }
+}
+
+/// The verification line belongs to the natural voice's copy table; it sits
+/// here, beside the one row that shows it.
+extension NaturalVoiceCopy {
+    static let verifying = "Checking voice files\u{2026}"
 }
 
 /// The in-flight card's cancel: a 34 pt disc inside a 44 pt target, or a

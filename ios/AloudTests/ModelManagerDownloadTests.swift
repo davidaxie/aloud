@@ -5,12 +5,12 @@ import XCTest
 /// constrained path the download asks first and sends nothing. R21: too
 /// little space fails before anything is created, damaged files are
 /// reported (never deleted) until Download again, and a test directory never
-/// reattaches to a download.
+/// reattaches to a download. (M3's pin and hashes: ModelVerificationTests.)
 ///
-/// SAFETY: no test here may create a URLSession task. Every manager sits on
-/// an expensive path with an injected free space and its own defaults
-/// suite, so requestDownload() can only fail or ask, and startDownload() is
-/// never called.
+/// SAFETY: no test here may create a URLSession task or hash a model file.
+/// Every manager sits on an expensive path with an injected free space, its
+/// own defaults suite and a hasher that never reads, so requestDownload()
+/// can only fail or ask, and startDownload() is never called.
 @MainActor
 final class ModelManagerDownloadTests: XCTestCase {
 
@@ -47,7 +47,8 @@ final class ModelManagerDownloadTests: XCTestCase {
         let manager = ModelManager(pathSource: FixedNetworkPath(isExpensiveOrConstrained: true),
                                    installDirectory: directory,
                                    defaults: defaults,
-                                   freeSpace: { freeSpace.bytes })
+                                   freeSpace: { freeSpace.bytes },
+                                   hasher: { _ in "" })
         manager.announce = { [weak self] in self?.announcements.append($0) }
         return manager
     }
@@ -56,11 +57,18 @@ final class ModelManagerDownloadTests: XCTestCase {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent("staging").path)
     }
 
-    private func writeOneByteModel() throws {
+    /// Sparse files at the pinned sizes (no real disk use) plus the record
+    /// a verified install leaves, so detection trusts them by `stat` alone.
+    private func writeVerifiedModel() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for file in ModelManager.remoteFiles {
-            try Data([0x01]).write(to: directory.appendingPathComponent(file.name))
+            let url = directory.appendingPathComponent(file.name)
+            XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(file.expectedBytes))
+            try handle.close()
         }
+        try XCTUnwrap(ModelInstallRecord.current(in: directory)).write(to: directory)
     }
 
     private func modelFilesExist() -> Bool {
@@ -72,9 +80,9 @@ final class ModelManagerDownloadTests: XCTestCase {
     // MARK: - Size
 
     func testOneSizeString() {
-        XCTAssertEqual(ModelManager.totalExpectedBytes, 352_500_000)
+        XCTAssertEqual(ModelManager.totalExpectedBytes, 353_309_549)
         XCTAssertEqual(ModelManager.downloadSizeText, "353 MB")
-        XCTAssertEqual(ModelManager.formattedSize(705_000_000), "705 MB")
+        XCTAssertEqual(ModelManager.formattedSize(706_619_098), "707 MB")
     }
 
     // MARK: - Sessions
@@ -104,7 +112,7 @@ final class ModelManagerDownloadTests: XCTestCase {
     }
 
     func testInstalledModelReportsStartedWithoutATask() throws {
-        try writeOneByteModel()
+        try writeVerifiedModel()
         // Expensive path too, so a regression could only ask, never send.
         let manager = makeManager()
         XCTAssertEqual(manager.state, .installed)
@@ -122,7 +130,7 @@ final class ModelManagerDownloadTests: XCTestCase {
         XCTAssertFalse(manager.hasActiveTask)
         XCTAssertFalse(stagingExists)
         XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.notEnoughSpace))])
-        XCTAssertEqual(announcements, ["Not enough space, need 705 MB free"])
+        XCTAssertEqual(announcements, ["Not enough space, need 707 MB free"])
     }
 
     func testUnknownFreeSpaceAllows() {
@@ -140,7 +148,7 @@ final class ModelManagerDownloadTests: XCTestCase {
         XCTAssertEqual(manager.requestDownload(), .notEnoughSpace)
         XCTAssertEqual(announcements.count, 2, "Each tap says why it did nothing")
 
-        space.bytes = 705_000_000
+        space.bytes = ModelManager.requiredFreeBytes
         XCTAssertEqual(manager.requestDownload(), .needsCellularConfirmation)
         XCTAssertEqual(manager.state, .notInstalled, "The space line is gone once there is room")
         XCTAssertFalse(manager.hasActiveTask)
@@ -150,9 +158,9 @@ final class ModelManagerDownloadTests: XCTestCase {
     // MARK: - Damaged files (R21)
 
     func testDamagedFilesFailAndStayOnDisk() throws {
-        try writeOneByteModel()
+        try writeVerifiedModel()
         let manager = makeManager()
-        XCTAssertEqual(manager.state, .installed, "Detection stays presence-based")
+        XCTAssertEqual(manager.state, .installed, "A verified install reads as installed by stat alone")
         manager.markInstalledFilesDamaged()
         XCTAssertEqual(manager.state, .failed(.damaged))
         XCTAssertFalse(manager.isInstalled)
@@ -168,11 +176,13 @@ final class ModelManagerDownloadTests: XCTestCase {
     }
 
     func testDownloadAgainRemovesTheDamagedFilesFirst() throws {
-        try writeOneByteModel()
+        try writeVerifiedModel()
         let manager = makeManager()
         manager.markInstalledFilesDamaged()
         XCTAssertEqual(manager.requestDownload(), .needsCellularConfirmation)
         XCTAssertFalse(modelFilesExist())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ModelInstallRecord.url(in: directory).path),
+                       "The record goes with the files")
         XCTAssertEqual(manager.state, .notInstalled)
         XCTAssertFalse(manager.hasActiveTask)
         XCTAssertFalse(stagingExists)
