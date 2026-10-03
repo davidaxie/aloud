@@ -41,10 +41,6 @@ struct MacCommandActions {
     let continuePlayback: ContinuePlayback
     let ui: MacUIState
     var defaults: UserDefaults = .standard
-    /// The reader has a Contents panel to show (phase 2). Until then Find and
-    /// Show Contents are off in the reader, never live keys with nothing to
-    /// show.
-    var hasContentsPanel = MacReaderScreen.hasContentsPanel
 
     /// Opens the Settings window: Voice & Speed… away from the reader.
     var openSettings: () -> Void = {}
@@ -84,9 +80,9 @@ struct MacCommandActions {
         case .faster: return Self.steppedRate(from: playback.rate, faster: true) != nil
         case .slower: return Self.steppedRate(from: playback.rate, faster: false) != nil
         case .undoJump: return playback.undoableJump != nil
-        case .find: return place == .classics || (place.isReader && hasContentsPanel)
+        case .find: return place == .classics || place.isReader
         case .deleteBook: return deleteBook != nil
-        case .toggleContents: return place.isReader && hasContentsPanel
+        case .toggleContents: return place.isReader
         case .biggerText: return Self.steppedTextSize(from: textSizeStep, bigger: true) != nil
         case .smallerText: return Self.steppedTextSize(from: textSizeStep, bigger: false) != nil
         case .back: return !router.path.isEmpty
@@ -116,6 +112,9 @@ struct MacCommandActions {
         case .sleepTimer: break   // a submenu: `selectSleep(_:)`
         case .undoJump: playback.undoJump()
         case .find:
+            // The reader's Find is Contents search (`MacContentsPanel`):
+            // shown if it wasn't, with "Search this book" focused. Classics'
+            // is its toolbar search.
             if place.isReader {
                 ui.isContentsShown = true
                 ui.searchFocus = .contents

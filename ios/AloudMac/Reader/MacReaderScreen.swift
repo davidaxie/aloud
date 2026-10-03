@@ -3,8 +3,9 @@ import SwiftUI
 /// One document in the window (M6, M9, contracts §6). Identity sits in the
 /// toolbar: Contents, the system back button (⌘[), the book's title with its
 /// author as the subtitle, and Aa. Every frequent control sits in the bottom
-/// bar. In phase 1 the page slot holds the title page; phase 2 puts the
-/// TextKit 2 page and the Contents panel there.
+/// bar. The page slot holds the title page until wave 2.2 puts the TextKit 2
+/// page there; the Contents panel (M16) sits on its leading edge, docked
+/// beside it in a window 780 pt wide or more and floating over it below.
 ///
 /// Opening cues the saved sentence and hands the book to `startAutoplay()`,
 /// as the iPhone's reader does (R4): one click from the Library is a voice.
@@ -38,19 +39,12 @@ struct MacReaderScreen: View {
     /// Bumped by Follow the voice; phase 2's page follows on a change.
     @State private var followRequests = 0
 
-    /// The Contents panel arrives in phase 2: until then its button, ⌃⌘S's
-    /// panel and the chapter line's toggle have nothing to show.
-    static let hasContentsPanel = false
-
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .bottom) {
-                page
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if content != nil {
-                    MacChipSlot(voiceOffscreen: voiceOffscreen, onFollowVoice: followVoice)
-                        .padding(.bottom, Theme.Space.sm)
-                }
+            // The window's width, not the page's: the reader spans the
+            // window, and the panel docks by what the window can hold.
+            GeometryReader { proxy in
+                pageArea(MacContentsLayout(windowWidth: proxy.size.width))
             }
             if let content, let navigation, let document {
                 MacPlayerBar(document: document, content: content, navigation: navigation,
@@ -82,6 +76,36 @@ struct MacReaderScreen: View {
     }
 
     // MARK: - Page
+
+    /// The page with the chip slot over its foot, and Contents on its
+    /// leading edge while shown. One place in the tree for the panel,
+    /// docked or floating, so a resize across 780 pt keeps its search.
+    private func pageArea(_ layout: MacContentsLayout) -> some View {
+        let inset = isContentsVisible ? layout.pageInset : 0
+        return ZStack(alignment: .topLeading) {
+            page
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The chip rides the page: centered beside a docked panel,
+                // and under a floating card, the one raised surface, which
+                // would otherwise lose its last rows to the chip below 780
+                // pt. A jump closes the card, uncovering Undo jump.
+                .overlay(alignment: .bottom) {
+                    if content != nil {
+                        MacChipSlot(voiceOffscreen: voiceOffscreen, onFollowVoice: followVoice)
+                            .padding(.bottom, Theme.Space.sm)
+                    }
+                }
+                .padding(.leading, inset)
+            if isContentsVisible, let content, let navigation {
+                MacContentsPanel(content: content, navigation: navigation, layout: layout)
+            }
+        }
+    }
+
+    /// Shown and loaded: the panel lists the loaded book's chapters.
+    private var isContentsVisible: Bool {
+        ui.isContentsShown && content != nil && navigation != nil
+    }
 
     @ViewBuilder
     private var page: some View {
@@ -120,7 +144,6 @@ struct MacReaderScreen: View {
             Button(action: toggleContents) {
                 Label(MacMenuCopy.Help.label(for: .toggleContents), systemImage: "sidebar.leading")
             }
-            .disabled(!Self.hasContentsPanel)
             .help(MacCommand.toggleContents.help)
             .accessibilityIdentifier("reader.contents")
         }
@@ -200,8 +223,9 @@ struct MacReaderScreen: View {
 
     // MARK: - Actions
 
+    /// The toolbar button and the chapter line; ⌃⌘S is the menu's. Shown
+    /// or hidden stays with the window, from book to book.
     private func toggleContents() {
-        guard Self.hasContentsPanel else { return }
         ui.isContentsShown.toggle()
     }
 

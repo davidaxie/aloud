@@ -1,0 +1,811 @@
+import AppKit
+import SwiftUI
+
+/// Contents beside the page (M16, mac-ux §3.6): the iPhone's Contents
+/// (`ContentsSheet`) as an app-drawn leading panel, 300 wide on
+/// Theme.surface, never a sidebar or a material. "Search this book" is
+/// pinned at the top; below it the chapter list with each chapter's
+/// listening time, the current chapter marked by a 3pt accent bar, a
+/// semibold title and `.isSelected`, under the shared Part, Book and Act
+/// section headers (R17). A book without a chapter list (The Cask of
+/// Amontillado) shows search only. Typing replaces the list with results
+/// after the iPhone's 200 ms debounce, the hit in semibold: on the Mac
+/// accent is never text.
+///
+/// The window picks the chrome (`MacContentsLayout`): docked beside the
+/// page from 780 pt wide, a floating card over it below that, which closes
+/// after a jump. A row click is the shared jump (R15) and plays from
+/// there: the chip slot offers Undo jump, and ⌘Z takes it.
+///
+/// Keyboard (M11): ⌘F focuses the field (`MacUIState.searchFocus`), ↓
+/// there moves into the list (`MacSearchHandoff`), ↑/↓ walk its rows,
+/// Return jumps, and Esc clears the search, then closes the panel. The
+/// list takes those four keys and passes every other one on, so Space and
+/// ←/→ still reach the commands, and nothing beeps.
+///
+/// Chapters and labels are the reader's, derived once per document, as on
+/// the iPhone: deriving them here would rescan the book on every playhead
+/// tick.
+struct MacContentsPanel: View {
+    let content: DocContent
+    let navigation: ReaderNavigation
+    let layout: MacContentsLayout
+
+    @EnvironmentObject private var playback: PlaybackController
+    @Environment(MacUIState.self) private var ui
+    @Environment(\.chromeScale) private var scale
+
+    @State private var query = ""
+    @State private var results: [SentenceMatch] = []
+    /// The trimmed query `results` answer; nil until one has been scanned,
+    /// so "No matches" never shows before the user has typed. A new scan
+    /// leaves the previous answer on screen until it lands.
+    @State private var searchedQuery: String?
+    @State private var debounceTask: Task<Void, Never>?
+    @State private var scanTask: Task<[SentenceMatch], Never>?
+    /// Return in the field before its scan landed: the top result, once it does.
+    @State private var submitPending = false
+    /// Bumped to put the caret in the field: ⌘F, ↑ off the first row, Esc
+    /// from the results.
+    @State private var fieldFocusRequest = 0
+    /// The row the keyboard is on: a chapter index, or a result's.
+    @State private var cursor: Int?
+    @FocusState private var isListFocused: Bool
+    /// Whose ↓ handoff is offered: this panel's, until it goes.
+    @State private var handoffOwner = UUID()
+
+    var body: some View {
+        let mode = MacContents.mode(hasChapterList: navigation.hasChapterList, query: query,
+                                    searchedQuery: searchedQuery, resultCount: results.count)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(MacContents.title)
+                .font(Theme.font(.headline, scale: scale))
+                .foregroundStyle(Theme.text)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("contents.title")
+                .padding(.horizontal, Theme.Space.md)
+                .padding(.top, Theme.Space.md)
+                .padding(.bottom, Theme.Space.sm)
+
+            // Pinned: the field never scrolls away with the list.
+            MacContentsSearchField(text: $query, focusRequest: fieldFocusRequest,
+                                   fontSize: PlatformTypeRamp.points(.body, scale: scale),
+                                   onSubmit: submit, onEscape: escape)
+                .padding(.horizontal, Theme.Space.md)
+                .padding(.bottom, Theme.Space.xs)
+
+            list(mode)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                // One stop for the keyboard, as a table is: the rows are
+                // its cursor, never focus stops of their own.
+                .focusable(rowCount(mode) > 0, interactions: .edit)
+                .focused($isListFocused)
+                .focusEffectDisabled()
+                .onKeyPress(.upArrow) { moveCursor(by: -1, mode: mode) }
+                .onKeyPress(.downArrow) { moveCursor(by: 1, mode: mode) }
+                .onKeyPress(.return) { activateCursor(mode) }
+                .onKeyPress(.escape) {
+                    escape()
+                    return .handled
+                }
+        }
+        .frame(width: MacContentsLayout.panelWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .clipShape(RoundedRectangle(cornerRadius: layout == .overlaid ? Theme.Radius.lg : 0,
+                                    style: .continuous))
+        .background { chrome }
+        .padding(layout == .overlaid ? Theme.Space.sm : 0)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(MacContents.title)
+        .accessibilityIdentifier("contents.panel")
+        .onChange(of: query) { _, newValue in
+            scheduleSearch(for: newValue)
+        }
+        // ⌘F (Edit ▸ Find) names this field; the request is spent once read.
+        .onChange(of: ui.searchFocus, initial: true) { _, target in
+            guard target == .contents else { return }
+            focusField()
+            ui.searchFocus = nil
+        }
+        // Focus that lands on the list some other way (Tab, a click on its
+        // background) starts on the row ↓ would have.
+        .onChange(of: isListFocused) { _, focused in
+            if focused, cursor == nil { cursor = initialCursor(mode) }
+        }
+        .onAppear {
+            MacSearchHandoff.shared.offer(by: handoffOwner) { focusList() }
+        }
+        .onDisappear {
+            MacSearchHandoff.shared.withdraw(by: handoffOwner)
+            debounceTask?.cancel()
+            scanTask?.cancel()
+        }
+    }
+
+    // MARK: - Chrome
+
+    /// Docked: paper with a trailing border, the page beside it. Overlaid:
+    /// a floating card, the only place the reader raises anything.
+    @ViewBuilder
+    private var chrome: some View {
+        switch layout {
+        case .docked:
+            Theme.surface
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(Theme.Stroke.borderColor)
+                        .frame(width: Theme.Stroke.borderWidth)
+                }
+                .accessibilityHidden(true)
+        case .overlaid:
+            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .fill(Theme.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                        .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+                .shadow(color: Theme.Elevation.raisedInk, radius: Theme.Elevation.raisedRadius,
+                        y: Theme.Elevation.raisedY)
+                .accessibilityHidden(true)
+        }
+    }
+
+    // MARK: - Lists
+
+    @ViewBuilder
+    private func list(_ mode: MacContents.Mode) -> some View {
+        switch mode {
+        case .chapters: chapterList
+        case .results: resultsList
+        case .noMatches(let searched): emptyState(for: searched)
+        // Search only, or the first scan still running.
+        case .searchOnly, .searching: Color.clear
+        }
+    }
+
+    private var chapterList: some View {
+        let current = navigation.chapterIndex(containing: playback.currentSentence)
+        let rate = playback.rate
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    ForEach(navigation.sections) { section in
+                        if let title = section.title {
+                            Section {
+                                chapterRows(section, current: current, rate: rate)
+                            } header: {
+                                sectionHeader(title, id: section.id)
+                            }
+                        } else {
+                            Section {
+                                chapterRows(section, current: current, rate: rate)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, Theme.Space.xs)
+            }
+            .onAppear { scrollToCurrent(proxy, current: current) }
+            .onChange(of: cursor) { _, row in
+                if let row { proxy.scrollTo(row) }
+            }
+        }
+    }
+
+    private func chapterRows(_ section: ContentsSection, current: Int?, rate: Double) -> some View {
+        ForEach(section.chapterRange, id: \.self) { index in
+            chapterRow(MacContents.chapterRow(navigation, index: index, current: current, rate: rate))
+        }
+    }
+
+    /// Opaque, so the rows scrolling beneath a pinned header never show
+    /// through it.
+    private func sectionHeader(_ title: String, id: Int) -> some View {
+        Text(title)
+            .font(Theme.font(.eyebrow, scale: scale))
+            .eyebrowTracking()
+            .foregroundStyle(Theme.textMuted)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Space.md)
+            .padding(.top, Theme.Space.sm)
+            .padding(.bottom, Theme.Space.xs)
+            .background(Theme.surface)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier("contents.section.\(id)")
+    }
+
+    private func chapterRow(_ row: MacContentsChapterRow) -> some View {
+        Button {
+            pickChapter(row.index)
+        } label: {
+            MacContentsChapterLabel(row: row, scale: scale)
+        }
+        .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
+        .focusable(false)
+        .overlay { cursorRing(row.index) }
+        .padding(.horizontal, Theme.Space.xs)
+        // The current chapter's marker: a bar on the panel's leading edge,
+        // outside the rows, so every title stays aligned.
+        .overlay(alignment: .leading) {
+            if row.isCurrent {
+                Rectangle()
+                    .fill(Theme.accentStrong)
+                    .frame(width: 3)
+                    .accessibilityHidden(true)
+            }
+        }
+        .id(row.index)
+        .accessibilityLabel(row.accessibilityLabel)
+        .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
+        .accessibilityIdentifier(row.identifier)
+    }
+
+    private var resultsList: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            Text(MacContents.countLabel(results.count))
+                .font(Theme.font(.subhead, scale: scale))
+                .monospacedDigit()
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, Theme.Space.md)
+                .accessibilityIdentifier("search.count")
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(results.indices, id: \.self) { index in
+                            resultRow(results[index], index: index)
+                        }
+                    }
+                    .padding(.vertical, Theme.Space.xs)
+                }
+                .onChange(of: cursor) { _, row in
+                    if let row { proxy.scrollTo(row) }
+                }
+            }
+        }
+    }
+
+    private func resultRow(_ match: SentenceMatch, index: Int) -> some View {
+        Button {
+            pickResult(index)
+        } label: {
+            MacContentsResultLabel(match: match, location: navigation.qualifiedTitle(forPage: match.page),
+                                   scale: scale)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Theme.Space.sm)
+                .padding(.vertical, Theme.Space.xs)
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
+        .focusable(false)
+        .overlay { cursorRing(index) }
+        .padding(.horizontal, Theme.Space.xs)
+        .id(index)
+        .accessibilityIdentifier("search.result.\(match.sentenceID)")
+    }
+
+    private func emptyState(for searched: String) -> some View {
+        Text(MacContents.noMatchesLabel(searched))
+            .font(Theme.font(.callout, scale: scale))
+            .foregroundStyle(Theme.textMuted)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Theme.Space.md)
+            .padding(.top, Theme.Space.xxl)
+            .accessibilityIdentifier("search.empty")
+    }
+
+    /// The keyboard's row while the list has focus: the system focus
+    /// ring's shape, in the accent, over the hover plate.
+    @ViewBuilder
+    private func cursorRing(_ index: Int) -> some View {
+        if isListFocused, cursor == index {
+            RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                .strokeBorder(Theme.accentStrong, lineWidth: 2)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// Land on the current chapter without animation. A LazyVStack has not
+    /// laid out its rows when `onAppear` fires, so the scroll repeats once
+    /// after the first layout pass, as the iPhone's sheet does.
+    private func scrollToCurrent(_ proxy: ScrollViewProxy, current: Int?) {
+        guard let current else { return }
+        Task { @MainActor in
+            proxy.scrollTo(current, anchor: .center)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            proxy.scrollTo(current, anchor: .center)
+        }
+    }
+
+    // MARK: - Keyboard
+
+    private func rowCount(_ mode: MacContents.Mode) -> Int {
+        switch mode {
+        case .chapters: return navigation.chapters.count
+        case .results: return results.count
+        case .searchOnly, .searching, .noMatches: return 0
+        }
+    }
+
+    /// Where the keyboard enters the list: the current chapter, or the top
+    /// result.
+    private func initialCursor(_ mode: MacContents.Mode) -> Int? {
+        switch mode {
+        case .chapters: return navigation.chapterIndex(containing: playback.currentSentence) ?? 0
+        case .results: return results.isEmpty ? nil : 0
+        case .searchOnly, .searching, .noMatches: return nil
+        }
+    }
+
+    private var currentMode: MacContents.Mode {
+        MacContents.mode(hasChapterList: navigation.hasChapterList, query: query,
+                         searchedQuery: searchedQuery, resultCount: results.count)
+    }
+
+    /// ↓ in the field (`MacSearchHandoff`): the list takes focus on its
+    /// entry row. False with no rows, and the field keeps the key.
+    private func focusList() -> Bool {
+        guard let entry = initialCursor(currentMode) else { return false }
+        cursor = entry
+        isListFocused = true
+        return true
+    }
+
+    private func focusField() {
+        isListFocused = false
+        fieldFocusRequest &+= 1
+    }
+
+    private func moveCursor(by delta: Int, mode: MacContents.Mode) -> KeyPress.Result {
+        switch MacContents.step(cursor ?? initialCursor(mode), by: delta, count: rowCount(mode)) {
+        case .row(let row): cursor = row
+        case .field: focusField()
+        }
+        return .handled
+    }
+
+    private func activateCursor(_ mode: MacContents.Mode) -> KeyPress.Result {
+        guard let cursor, cursor < rowCount(mode) else { return .handled }
+        switch mode {
+        case .chapters: pickChapter(cursor)
+        case .results: pickResult(cursor)
+        case .searchOnly, .searching, .noMatches: break
+        }
+        return .handled
+    }
+
+    /// Esc: the first clears the search, the next closes the panel.
+    private func escape() {
+        switch MacContents.escape(query: query) {
+        case .clearSearch:
+            query = ""
+            focusField()
+        case .close:
+            ui.isContentsShown = false
+        }
+    }
+
+    /// Return in the field: the top result, as Spotlight does. Pressed
+    /// before the debounced scan lands, it waits for it.
+    private func submit() {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard searchedQuery == trimmed else {
+            submitPending = true
+            return
+        }
+        if !results.isEmpty { pickResult(0) }
+    }
+
+    // MARK: - Jumps
+
+    private func pickChapter(_ index: Int) {
+        guard navigation.chapters.indices.contains(index) else { return }
+        cursor = index
+        jump(to: navigation.chapters[index].startSentence, origin: .chapter)
+    }
+
+    private func pickResult(_ index: Int) {
+        guard results.indices.contains(index) else { return }
+        cursor = index
+        jump(to: results[index].sentenceID, origin: .searchResult)
+    }
+
+    /// A docked panel keeps focus in its list, so ↓ Return can step again;
+    /// a card closes, uncovering the page the jump moved.
+    private func jump(to sentence: Int, origin: JumpOrigin) {
+        MacContents.jump(playback, to: sentence, origin: origin)
+        if layout.closesAfterJump {
+            ui.isContentsShown = false
+        } else {
+            isListFocused = true
+        }
+    }
+
+    // MARK: - Debounced scan
+
+    /// Debounce, then scan off the main thread, as the iPhone's sheet does:
+    /// the previous scan is cancelled, and only the surviving one publishes.
+    private func scheduleSearch(for newValue: String) {
+        debounceTask?.cancel()
+        scanTask?.cancel()
+        submitPending = false
+        cursor = nil
+        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            results = []
+            searchedQuery = nil
+            return
+        }
+        let content = content
+        debounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: MacContents.debounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            let scan = Task.detached(priority: .userInitiated) {
+                content.matches(of: trimmed)
+            }
+            scanTask = scan
+            let found = await scan.value
+            guard !scan.isCancelled, !Task.isCancelled else { return }
+            results = found
+            searchedQuery = trimmed
+            if submitPending {
+                submitPending = false
+                if !found.isEmpty { pickResult(0) }
+            }
+        }
+    }
+}
+
+// MARK: - Layout
+
+/// Where the Contents panel sits (mac-ux §3.6): beside the page while the
+/// window holds the panel and a reading column, over the page below that.
+enum MacContentsLayout: Equatable {
+    case docked
+    case overlaid
+
+    /// The panel's width, docked or not.
+    static let panelWidth: CGFloat = 300
+    /// The narrowest reading column the page keeps beside a docked panel.
+    static let readingMinimum: CGFloat = 480
+    /// 300 + 480: from here the panel docks.
+    static let dockingWidth: CGFloat = panelWidth + readingMinimum
+
+    init(windowWidth: CGFloat) {
+        self = windowWidth >= Self.dockingWidth ? .docked : .overlaid
+    }
+
+    /// A card covers the page a jump just moved, so it goes.
+    var closesAfterJump: Bool { self == .overlaid }
+
+    /// The page's leading inset while the panel shows: a docked panel takes
+    /// its width, a card floats over the page.
+    var pageInset: CGFloat { self == .docked ? Self.panelWidth : 0 }
+}
+
+// MARK: - Rules
+
+/// The panel's rules and copy, apart from the view, so the tests read what
+/// the panel draws and does.
+@MainActor
+enum MacContents {
+
+    static let title = "Contents"
+    static let searchPrompt = "Search this book"
+    /// The iPhone's debounce: a scan per pause in typing, not per key.
+    static let debounceNanoseconds: UInt64 = 200_000_000
+    /// Characters kept before a result's hit: the iPhone's below the
+    /// accessibility sizes, which a 300 pt panel's line holds twice over.
+    static let leadLimit = ContentsSearch.leadLimit(for: .large)
+
+    static func countLabel(_ count: Int) -> String {
+        count == 1 ? "1 match" : "\(count) matches"
+    }
+
+    static func noMatchesLabel(_ query: String) -> String {
+        "No matches for \u{201C}\(query)\u{201D}"
+    }
+
+    // MARK: Chapters
+
+    /// Chapter `index` as its row shows and speaks it. Rate-aware, like the
+    /// chapter line's time left: at 2× a chapter takes half as long.
+    static func chapterRow(_ navigation: ReaderNavigation, index: Int, current: Int?,
+                           rate: Double) -> MacContentsChapterRow {
+        let chapter = navigation.chapters[index]
+        let labels = navigation.labels
+        return MacContentsChapterRow(
+            index: index,
+            title: labels.contextTitle(forPage: chapter.page),
+            minutes: chapter.estimatedMinutes(wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate),
+            startSentence: chapter.startSentence,
+            isCurrent: index == current,
+            isCompleted: current.map { index < $0 } ?? false,
+            identifier: "chapters.row.\(labels.displayPage(chapter.page))")
+    }
+
+    /// Every chapter's row, with the playhead's marked.
+    static func chapterRows(_ navigation: ReaderNavigation, playhead: Int,
+                            rate: Double) -> [MacContentsChapterRow] {
+        let current = navigation.chapterIndex(containing: playhead)
+        return navigation.chapters.indices.map { chapterRow(navigation, index: $0, current: current, rate: rate) }
+    }
+
+    // MARK: What shows
+
+    enum Mode: Equatable {
+        /// No query: the chapter list.
+        case chapters
+        /// No query in a book without a chapter list: the field alone.
+        case searchOnly
+        /// A query whose first scan hasn't landed.
+        case searching
+        case results
+        case noMatches(String)
+    }
+
+    static func mode(hasChapterList: Bool, query: String, searchedQuery: String?,
+                     resultCount: Int) -> Mode {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return hasChapterList ? .chapters : .searchOnly
+        }
+        guard let searchedQuery else { return .searching }
+        return resultCount == 0 ? .noMatches(searchedQuery) : .results
+    }
+
+    // MARK: Keys
+
+    enum CursorMove: Equatable {
+        case row(Int)
+        /// Up off the first row: back to "Search this book".
+        case field
+    }
+
+    /// ↑/↓ from `cursor` over `count` rows: clamped at the bottom, back to
+    /// the field off the top.
+    static func step(_ cursor: Int?, by delta: Int, count: Int) -> CursorMove {
+        guard count > 0 else { return .field }
+        guard let cursor else { return delta < 0 ? .field : .row(0) }
+        let next = cursor + delta
+        return next < 0 ? .field : .row(min(next, count - 1))
+    }
+
+    enum Escape: Equatable {
+        case clearSearch
+        case close
+    }
+
+    /// The first Esc clears the search; with nothing to clear, Esc closes.
+    static func escape(query: String) -> Escape {
+        query.isEmpty ? .close : .clearSearch
+    }
+
+    // MARK: Jumps
+
+    /// A row's click (R15, M16): the shared jump, which offers Undo jump
+    /// with the listener's status, then play from there. On the Mac a row
+    /// plays, as a click on the page does; ⌘Z restores the sentence and the
+    /// pause.
+    static func jump(_ playback: PlaybackController, to sentence: Int, origin: JumpOrigin) {
+        playback.jump(to: sentence, origin: origin)
+        guard playback.document != nil, !playback.isListenerPlaying else { return }
+        playback.seek(to: max(playback.currentSentence, 0), andPlay: true)
+    }
+}
+
+/// One chapter row, as the panel draws and VoiceOver reads it.
+struct MacContentsChapterRow: Equatable {
+    /// Into `ReaderNavigation.chapters`.
+    let index: Int
+    let title: String
+    let minutes: Int
+    let startSentence: Int
+    let isCurrent: Bool
+    /// Before the current chapter: muted.
+    let isCompleted: Bool
+    /// The iPhone's: "chapters.row.<page>".
+    let identifier: String
+
+    /// "8 min", "1 hr 12 min".
+    var estimate: String { ListeningEstimate.phrase(minutes: minutes) }
+
+    /// "CHAPTER I, 1 hour 12 minutes, current".
+    var accessibilityLabel: String {
+        ContentsSearch.chapterAccessibilityLabel(title: title, minutes: minutes, isCurrent: isCurrent)
+    }
+}
+
+// MARK: - Row labels
+
+/// Serif title, semibold on the current chapter, with its listening time
+/// trailing in tabular digits. Two lines before it truncates: the panel's
+/// width is fixed, and the chrome's type grows with the reader's size.
+private struct MacContentsChapterLabel: View {
+    let row: MacContentsChapterRow
+    let scale: ChromeScale
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+            Text(row.title)
+                .font(Theme.readerSerif(PlatformTypeRamp.points(.headline, scale: scale),
+                                        weight: row.isCurrent ? .semibold : .regular))
+                .foregroundStyle(row.isCompleted ? Theme.textMuted : Theme.text)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(row.estimate)
+                .font(Theme.font(.caption, scale: scale))
+                .monospacedDigit()
+                .foregroundStyle(Theme.textFaint)
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .padding(.horizontal, Theme.Space.sm)
+        .padding(.vertical, Theme.Space.xs)
+        .frame(minHeight: 44)
+    }
+}
+
+/// A result: the sentence cut to start a few words before its hit
+/// (`ContentsSearch.snippet`), the hit in semibold, over its chapter or
+/// page.
+private struct MacContentsResultLabel: View {
+    let match: SentenceMatch
+    let location: String
+    let scale: ChromeScale
+
+    var body: some View {
+        let snippet = ContentsSearch.snippet(for: match, leadLimit: MacContents.leadLimit)
+        let font = Theme.font(.body, scale: scale)
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            (Text(snippet.lead).font(font)
+                + Text(snippet.hit).font(font.weight(.semibold))
+                + Text(snippet.tail).font(font))
+                .foregroundStyle(Theme.text)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                // The cut is only visual: VoiceOver reads the whole sentence.
+                .accessibilityLabel(ReaderTypography.typeset(match.text))
+
+            Text(location)
+                .font(Theme.font(.footnote, scale: scale))
+                .foregroundStyle(Theme.textFaint)
+                .lineLimit(1)
+        }
+    }
+}
+
+// MARK: - Search field
+
+/// "Search this book": an `NSSearchField`, so the key router knows it for
+/// a search field and offers its ↓ to the list (`MacSearchHandoff`), and
+/// so it edits through the window's field editor, whose menu carries no
+/// Speech (`MacFieldEditor`). Return submits, Esc goes to the panel, and
+/// every other key is the field's own.
+struct MacContentsSearchField: NSViewRepresentable {
+    @Binding var text: String
+    /// Each change puts the caret in the field.
+    let focusRequest: Int
+    let fontSize: CGFloat
+    let onSubmit: () -> Void
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> MacContentsSearchFieldView {
+        let field = MacContentsSearchFieldView()
+        field.placeholderString = MacContents.searchPrompt
+        field.setAccessibilityIdentifier("search.field")
+        field.controlSize = .large
+        field.font = .systemFont(ofSize: fontSize)
+        field.sendsSearchStringImmediately = true
+        field.delegate = context.coordinator
+        // The cancel button clears through the action; typing reports
+        // through `controlTextDidChange`.
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchChanged(_:))
+        field.stringValue = text
+        return field
+    }
+
+    func updateNSView(_ field: MacContentsSearchFieldView, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+        if field.font?.pointSize != fontSize { field.font = .systemFont(ofSize: fontSize) }
+        guard context.coordinator.focusRequest != focusRequest else { return }
+        context.coordinator.focusRequest = focusRequest
+        // Not inside SwiftUI's update: the focus change reaches its state.
+        DispatchQueue.main.async { field.requestFocus() }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: MacContentsSearchFieldView,
+                      context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? MacContentsLayout.panelWidth, height: nsView.intrinsicContentSize.height)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: MacContentsSearchField
+        /// The request the field last answered: none yet, so a request
+        /// made as the panel appears (⌘F) lands with the first update.
+        var focusRequest = 0
+
+        init(parent: MacContentsSearchField) {
+            self.parent = parent
+        }
+
+        @objc func searchChanged(_ sender: NSSearchField) {
+            if parent.text != sender.stringValue { parent.text = sender.stringValue }
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            searchChanged(field)
+        }
+
+        /// Return and Esc are the panel's, and handled: neither ends the
+        /// edit, and neither beeps. Every other command is the field's,
+        /// save one it has no use for, which ends here in silence.
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            switch MacContentsFieldKey(selector: selector) {
+            case .submit?: parent.onSubmit()
+            case .escape?: parent.onEscape()
+            case nil: return MacContentsFieldKey.isUnused(selector, by: textView)
+            }
+            return true
+        }
+    }
+}
+
+/// The field's two keys of its own, as the field editor reads them.
+enum MacContentsFieldKey: Equatable {
+    case submit
+    case escape
+
+    init?(selector: Selector) {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)),
+             #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            self = .submit
+        case #selector(NSResponder.cancelOperation(_:)):
+            self = .escape
+        default:
+            return nil
+        }
+    }
+
+    /// An unbound key's `noop:`, or a command the field editor doesn't
+    /// implement: past the field it would climb the chain to the alert
+    /// sound (M11).
+    static func isUnused(_ selector: Selector, by textView: NSTextView) -> Bool {
+        selector == Selector(("noop:")) || !textView.responds(to: selector)
+    }
+}
+
+/// Takes the caret when asked, or, asked before it is in a window (⌘F
+/// opening the panel), as soon as it is.
+final class MacContentsSearchFieldView: NSSearchField {
+    private var wantsFocus = false
+
+    func requestFocus() {
+        guard let window else {
+            wantsFocus = true
+            return
+        }
+        wantsFocus = false
+        window.makeFirstResponder(self)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard wantsFocus, window != nil else { return }
+        requestFocus()
+    }
+}

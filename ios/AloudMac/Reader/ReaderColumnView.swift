@@ -1,0 +1,1195 @@
+import AppKit
+import SwiftUI
+
+/// The book page (M14, M15, contracts §6): a TextKit 2 `NSTextView` in an
+/// `NSScrollView`, rendering the whole document as one attributed string
+/// (`ReaderColumnText`) with a sentence-range table for highlighting and
+/// click-to-play (R15). It ports the iPhone's `ReaderTextView` onto the same
+/// shared core: `ReaderColumnLayout` measures, `HighlightLayers` draws the
+/// highlight beneath the text, and `ReaderFollowEngine` decides calm follow.
+///
+/// Calm follow (R16): while following, the page scrolls only when the
+/// spoken sentence leaves the `FollowBand` (18–70% of the visible height),
+/// then glides once (0.45 s, `NSAnimationContext`) so it lands at 28%, or
+/// jumps under Reduce Motion. Any user scroll stops following: a gesture or
+/// the scroller (live-scroll notifications), a wheel without phases, the
+/// scroll keys or VoiceOver (the clip view's bounds moving under no scroll
+/// of ours). Nothing re-engages it on a timer: only Play, a jump or Undo,
+/// Follow the voice (`followRequest`), or a scroll that ends with the voice
+/// in view.
+///
+/// The interface the reader screen uses (wave 2.2):
+/// - `content`, `isChapterBook`, `navigation` and `fontSize`
+///   (`ReaderTextSize.points(forStep:)`): a change of content or size
+///   rebuilds the column.
+/// - `activeSentence` (`playback.currentSentence`) moves the highlight, and
+///   `activeWord` (`playback.currentWord`, or -1 while Word highlight is off:
+///   the preference is gated once, at the source) moves the underline.
+/// - `followRequest` (`followRequest(for:followVoiceCount:)`): any change
+///   follows the voice again. Follow the voice (the chip, ⌘J) bumps its
+///   count; Play, a jump and Undo bump the controller's serials.
+/// - `obscuredBottom`: chrome drawn over the page's bottom edge, which the
+///   band stays above.
+/// - `colophon` (R24): at `.ended` the end mark becomes it, fading in.
+/// - Out: `voiceOffscreen`, the Follow chip's arrow while not following;
+///   `onPlaySentence`, a click or Play from Here (`playFromSentence(_:on:)`);
+///   and `onTextUnderTopBar`, for the toolbar's hairline.
+///
+/// The highlight and underline never touch `textStorage`, so glyph metrics
+/// never change and the layout holds still while reading.
+struct ReaderColumnView: NSViewRepresentable {
+
+    let content: DocContent
+    /// Text books group sentences by chapter (styled openings, no page
+    /// marks); PDFs keep their page marks.
+    var isChapterBook = false
+    /// Chapter starts, for the rotors (wave 2.2).
+    var navigation: ReaderNavigation? = nil
+    let fontSize: CGFloat
+    let activeSentence: Int
+    /// Token index of the spoken word in the active sentence; -1 = none.
+    let activeWord: Int
+    /// Any change resumes following and brings the active sentence into the
+    /// band.
+    var followRequest = 0
+    /// How far chrome reaches up over the page's bottom edge; the band is
+    /// measured above it.
+    var obscuredBottom: CGFloat = 0
+    /// R24: the colophon that replaces the "· · ·" end mark at the end of
+    /// the book; nil everywhere else.
+    var colophon: ReaderColophon? = nil
+    /// Where the voice is while the page is NOT following it and it is off
+    /// screen (the Follow chip's arrow); nil otherwise.
+    @Binding var voiceOffscreen: ReaderFollowDirection?
+    /// A click on a sentence, or Play from Here: play from this sentence.
+    let onPlaySentence: (Int) -> Void
+    /// True once text has scrolled up under the toolbar (past the page's
+    /// top inset), false back at the top; reported on a change, a turn
+    /// later, so the screen's state never changes inside an update.
+    var onTextUnderTopBar: ((Bool) -> Void)? = nil
+
+    func makeNSView(context: Context) -> ReaderScrollView {
+        context.coordinator.makeScrollView()
+    }
+
+    func updateNSView(_ scrollView: ReaderScrollView, context: Context) {
+        context.coordinator.update(to: self)
+    }
+
+    static func dismantleNSView(_ scrollView: ReaderScrollView, coordinator: Coordinator) {
+        coordinator.tearDown()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    /// R15: a click plays from the clicked sentence in any state, through
+    /// the same jump the iPhone's tap makes (a far one offers Undo jump).
+    @MainActor
+    static func playFromSentence(_ id: Int, on playback: PlaybackController) {
+        playback.jump(to: id, origin: .sentence)
+    }
+
+    /// The follow request the screen passes: a user Play, every jump and
+    /// Undo, and each Follow the voice (`followVoiceCount`).
+    @MainActor
+    static func followRequest(for playback: PlaybackController, followVoiceCount: Int) -> Int {
+        playback.userPlayAction &+ playback.jumpSerial &+ followVoiceCount
+    }
+
+    // MARK: - Coordinator
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var parent: ReaderColumnView
+        private(set) weak var scrollView: ReaderScrollView?
+        private(set) weak var page: ReaderPageView?
+        var textView: ReaderNSTextView? { page?.textView }
+
+        private(set) var builtHash = ""
+        private(set) var builtFontSize: CGFloat = 0
+        /// The look (light or dark, Increase Contrast) the colors were
+        /// resolved for; a change rebuilds them.
+        private var builtLook: NSAppearance.Name?
+        private(set) var activeSentence = -1
+        private(set) var sentenceRanges: [NSRange] = []
+
+        // End of the book (R24)
+        /// The colophon the text shows in place of "· · ·"; nil = the mark.
+        private(set) var shownColophon: ReaderColophon?
+        /// The end mark's characters, always the tail of the text.
+        private(set) var endMarkRange = NSRange(location: 0, length: 0)
+        /// The paper-colored cover the colophon fades in from.
+        private(set) var colophonVeil: ReaderVeilView?
+
+        /// The text's height at the last layout pass; a change means TextKit
+        /// swapped estimated line heights under a still offset.
+        private var lastContentHeight: CGFloat = 0
+        /// The band's height at the last layout pass; a change re-checks it.
+        private var lastViewportHeight: CGFloat = 0
+
+        // Calm follow (R16)
+        private var follow = ReaderFollowEngine()
+        /// Off from the moment the user scrolls; never back on by itself.
+        var isFollowing: Bool {
+            get { follow.isFollowing }
+            set { follow.isFollowing = newValue }
+        }
+        var lastFollowRequest: Int {
+            get { follow.lastFollowRequest }
+            set { follow.lastFollowRequest = newValue }
+        }
+        /// Where the one in-flight glide is going; nil when none. A click or
+        /// a user scroll stops it where it is.
+        private var glideTarget: CGFloat?
+        /// Tells a finished glide from one stopped and replaced since.
+        private var glideSerial = 0
+        /// Whether a follow glide is moving the page right now.
+        var isGliding: Bool { glideTarget != nil }
+        /// Every glide started, of `programmaticScrollCount`'s scrolls
+        /// (Reduce Motion makes none).
+        private(set) var glideCount = 0
+        /// Set when a click lands: a click that began on moving text only
+        /// stops it (R15).
+        private var clickBeganWhileScrolling = false
+        /// Moves of our own in progress (offsets, rebuilds): the clip view's
+        /// bounds moving then is not the reader scrolling.
+        private var programmaticMoves = 0
+        /// Between a gesture's (or the scroller's) start and the end of its
+        /// momentum.
+        private var inLiveScroll = false
+        /// A finger on the trackpad or the scroller holds the page: a live
+        /// scroll short of its momentum. Momentum alone never keeps the
+        /// page from the voice: following stops it, as on the iPhone.
+        private var userHoldsScroll: Bool {
+            inLiveScroll && scrollView?.inMomentum != true
+        }
+        /// The clip view's bounds and the page's height when last seen, to
+        /// tell a scroll from a resize or a reflow.
+        private var lastClipBounds = CGRect.zero
+        private var lastPageHeight: CGFloat = 0
+        /// The end of a scroll no gesture announced: a quiet moment after it.
+        private var discreteScrollEnd: DispatchWorkItem?
+        static let discreteScrollSettle: TimeInterval = 0.25
+        /// A layout pass asked for, to confirm a placement.
+        private var layoutPassRequested = false
+        /// What `onTextUnderTopBar` was last told.
+        private var reportedTextUnderTopBar = false
+        /// Inside `handleLayout`: the frame it may grow calls back in.
+        private var isHandlingLayout = false
+        /// The text storage is being replaced or its tail swapped: a layout
+        /// pass then would measure the new text with the old ranges.
+        private var isEditingText = false
+        /// Every follow scroll, for the R16 budget.
+        var programmaticScrollCount: Int { follow.programmaticScrollCount }
+        /// The last direction published to `voiceOffscreen`.
+        var voiceOffscreen: ReaderFollowDirection? { follow.voiceOffscreen }
+        /// Test seam.
+        var reduceMotion: () -> Bool = { PlatformAccessibility.reduceMotion }
+        /// Test seam: whether momentum is still moving the page, or stopped
+        /// it a moment ago (the touch of the click that lands on it).
+        var isCoasting: (ReaderScrollView) -> Bool = { $0.isCoastingOrJustStopped }
+
+        #if DEBUG
+        private let publishesProbe = UITestHooks.isUITestLaunch
+        #endif
+
+        // Word underline (drawn by HighlightLayers, never in textStorage)
+        private(set) var activeWordToken = -1
+        private var activeWordRange: NSRange?
+        /// Absolute token ranges per sentence (`ReaderColumnLayout.wordRanges`).
+        private var wordRangeCache: [Int: [NSRange?]] = [:]
+
+        init(parent: ReaderColumnView) {
+            self.parent = parent
+        }
+
+        // MARK: Setup
+
+        /// The scroll view, its page and the text view, wired. Builds
+        /// nothing from the content: the first update does.
+        func makeScrollView() -> ReaderScrollView {
+            let textView = ReaderNSTextView(usingTextLayoutManager: true)
+            Self.configure(textView)
+            let page = ReaderPageView(textView: textView)
+            let scrollView = ReaderScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 600))
+            scrollView.drawsBackground = false
+            scrollView.borderType = .noBorder
+            scrollView.hasVerticalScroller = true
+            scrollView.hasHorizontalScroller = false
+            scrollView.autohidesScrollers = true
+            // The page sits under the toolbar's safe area already; no
+            // automatic inset moves the offsets the band is measured in.
+            scrollView.automaticallyAdjustsContentInsets = false
+            scrollView.contentInsets = NSEdgeInsetsZero
+            scrollView.contentView.drawsBackground = false
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.documentView = page
+            self.scrollView = scrollView
+            self.page = page
+
+            textView.onClickLanded = { [weak self] in self?.clickLanded() }
+            textView.onClickEnded = { [weak self] point, clicks, selectionMade in
+                self?.clickEnded(at: point, clickCount: clicks, selectionMade: selectionMade)
+            }
+            textView.sentenceAtPoint = { [weak self] point in self?.sentence(at: point) }
+            textView.characterOffsetAtPoint = { [weak self] point in self?.column?.characterOffset(at: point) }
+            textView.baselineOrigin = { [weak self] range in
+                self?.segments(for: range).first.map { CGPoint(x: $0.frame.minX, y: $0.frame.minY + $0.baseline) }
+            }
+            textView.onPlayFromHere = { [weak self] id in self?.parent.onPlaySentence(id) }
+            textView.onCommand = { [weak self] selector in self?.keyScroll(selector) ?? false }
+            textView.onAppearanceChange = { [weak self] in self?.rebuildForAppearanceChange() }
+            textView.onLayout = { [weak self] in self?.handleLayout() }
+            textView.onFrameChange = { [weak self] in self?.textFrameChanged() }
+            page.laidOutTextHeight = { [weak self] in self?.laidOutTextHeight() }
+            scrollView.onTile = { [weak self] in self?.tiled() }
+            scrollView.onPhaselessWheel = { [weak self] in self?.userScrolledDiscretely() }
+
+            let center = NotificationCenter.default
+            center.addObserver(self, selector: #selector(liveScrollWillStart(_:)),
+                               name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
+            center.addObserver(self, selector: #selector(liveScrollDidEnd(_:)),
+                               name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
+            center.addObserver(self, selector: #selector(clipBoundsDidChange(_:)),
+                               name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+
+            #if DEBUG
+            if publishesProbe { ReaderFollowProbe.shared.reset() }
+            #endif
+            updateGeometry()
+            return scrollView
+        }
+
+        /// Read-only, selectable, and none of NSTextView's editing, checking,
+        /// finding or rich-text machinery: no find bar (⌘F is Contents
+        /// search), no font panel or ruler, no spelling, substitutions or
+        /// Writing Tools.
+        static func configure(_ textView: ReaderNSTextView) {
+            textView.isEditable = false
+            textView.isSelectable = true
+            textView.isFieldEditor = false
+            textView.drawsBackground = false
+            textView.usesFindBar = false
+            textView.isIncrementalSearchingEnabled = false
+            textView.usesFontPanel = false
+            textView.usesRuler = false
+            textView.isRulerVisible = false
+            textView.usesInspectorBar = false
+            textView.importsGraphics = false
+            textView.allowsImageEditing = false
+            textView.allowsUndo = false
+            textView.allowsDocumentBackgroundColorChange = false
+            textView.isContinuousSpellCheckingEnabled = false
+            textView.isGrammarCheckingEnabled = false
+            textView.isAutomaticSpellingCorrectionEnabled = false
+            textView.isAutomaticQuoteSubstitutionEnabled = false
+            textView.isAutomaticDashSubstitutionEnabled = false
+            textView.isAutomaticTextReplacementEnabled = false
+            textView.isAutomaticLinkDetectionEnabled = false
+            textView.isAutomaticDataDetectionEnabled = false
+            textView.isAutomaticTextCompletionEnabled = false
+            textView.smartInsertDeleteEnabled = false
+            textView.displaysLinkToolTips = false
+            if #available(macOS 15.0, *) {
+                textView.writingToolsBehavior = .none
+            }
+            textView.isVerticallyResizable = true
+            textView.isHorizontallyResizable = false
+            textView.autoresizingMask = [.width]
+            textView.minSize = .zero
+            textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            textView.textContainer?.widthTracksTextView = true
+            textView.textContainer?.lineFragmentPadding = 0
+            textView.textContainer?.size = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+            textView.setAccessibilityIdentifier("reader.text")
+        }
+
+        /// Observers go with the view; a glide or a pending scroll end
+        /// must not outlive it.
+        func tearDown() {
+            NotificationCenter.default.removeObserver(self)
+            discreteScrollEnd?.cancel()
+            discreteScrollEnd = nil
+            stopGlideInPlace()
+        }
+
+        // MARK: Updates
+
+        func update(to newParent: ReaderColumnView) {
+            let obscuredBottomChanged = parent.obscuredBottom != newParent.obscuredBottom
+            parent = newParent
+            guard textView != nil else { return }
+
+            if builtHash != newParent.content.contentHash || builtFontSize != newParent.fontSize {
+                rebuild(content: newParent.content, fontSize: newParent.fontSize)
+                // A fresh column starts on the voice.
+                lastFollowRequest = newParent.followRequest
+                isFollowing = true
+                setActiveSentence(newParent.activeSentence, scroll: false)
+                setActiveWord(newParent.activeWord)
+                // Placed once the view has its size and insets.
+                Task { @MainActor [weak self] in self?.placeActiveSentence() }
+                return
+            }
+
+            // Before the follow request: Listen again clears the colophon,
+            // so following then aims at sentence 0, not at the end mark.
+            if shownColophon != newParent.colophon {
+                setColophon(newParent.colophon, animated: true)
+            }
+
+            if lastFollowRequest != newParent.followRequest {
+                lastFollowRequest = newParent.followRequest
+                setActiveSentence(newParent.activeSentence, scroll: false)
+                resumeFollowing()
+            } else if activeSentence != newParent.activeSentence {
+                setActiveSentence(newParent.activeSentence, scroll: true)
+            }
+
+            if activeWordToken != newParent.activeWord {
+                setActiveWord(newParent.activeWord)
+            }
+
+            if obscuredBottomChanged {
+                followIfNeeded(animated: true)
+                updateFollowChip()
+            }
+        }
+
+        // MARK: Building
+
+        func rebuild(content: DocContent, fontSize: CGFloat) {
+            guard let textView, let storage = textView.textStorage else { return }
+            stopGlideInPlace()
+            let appearance = textView.effectiveAppearance
+            let built = ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
+                                                              isChapterBook: parent.isChapterBook,
+                                                              colophon: parent.colophon,
+                                                              bold: PlatformLegibility.isBold(appearance),
+                                                              ink: ReaderInk(appearance: appearance))
+            // No layout pass is handled until the ranges and state below
+            // match the new text.
+            isEditingText = true
+            defer { isEditingText = false }
+            movingProgrammatically {
+                storage.setAttributedString(built.string)
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
+            }
+            sentenceRanges = built.sentenceRanges
+            // A fresh column, a reopen included, shows the colophon in
+            // place: only an end reached on screen fades in.
+            shownColophon = parent.colophon
+            endMarkRange = built.endMarkRange
+            removeColophonVeil()
+            builtHash = content.contentHash
+            builtFontSize = fontSize
+            builtLook = Self.look(of: appearance)
+            page?.highlight.clearSentence()
+            activeSentence = -1
+            wordRangeCache = [:]
+            activeWordRange = nil
+            activeWordToken = -1
+            follow.cachedActiveRect = nil
+            follow.startPlacementCheck()
+            follow.pendingReveal = nil
+            // The measure is in ems of the text size.
+            updateGeometry()
+        }
+
+        /// Light/dark and Increase Contrast only recolor (the Mac has no
+        /// Bold Text), so the offset still frames the same passage.
+        func rebuildForAppearanceChange() {
+            guard let textView, !builtHash.isEmpty, builtHash == parent.content.contentHash,
+                  Self.look(of: textView.effectiveAppearance) != builtLook else { return }
+            let active = activeSentence
+            let offset = contentOffsetY
+            rebuild(content: parent.content, fontSize: parent.fontSize)
+            follow.pendingPlacement = false
+            setActiveSentence(active, scroll: false)
+            setActiveWord(parent.activeWord)
+            setOffset(offset)
+        }
+
+        /// Which of the four looks a theme token tells apart `appearance` is.
+        private static func look(of appearance: NSAppearance) -> NSAppearance.Name? {
+            appearance.bestMatch(from: PlatformColor.lookNames)
+        }
+
+        // MARK: Geometry
+
+        /// The column centered at its measure, the page as wide as the clip
+        /// view, and 0.45 × the visible height of paper under the end. Runs
+        /// on every tile (a resize) and after a rebuild.
+        func updateGeometry() {
+            guard let scrollView, let page, let textView else { return }
+            let visible = scrollView.contentView.bounds.size
+            let fontSize = builtFontSize > 0 ? builtFontSize : parent.fontSize
+            let inset = NSSize(width: ReaderColumnMetrics.sideInset(forWidth: visible.width, fontSize: fontSize),
+                               height: ReaderColumnMetrics.topInset)
+            // The paper first: a reflow the new width starts measures the
+            // resting range with it.
+            page.bottomInset = ReaderColumnMetrics.bottomInset(forVisibleHeight: visible.height)
+            page.minimumHeight = visible.height
+            if textView.textContainerInset != inset {
+                textView.textContainerInset = inset
+            }
+            if page.frame.width != visible.width {
+                page.setFrameSize(NSSize(width: visible.width, height: page.frame.height))
+            }
+            if textView.frame.width != visible.width || textView.frame.origin != .zero {
+                textView.frame = NSRect(x: 0, y: 0, width: visible.width, height: textView.frame.height)
+            }
+            // The container tracks the text view's width, and is set here
+            // too: a new inset alone (a text size) doesn't move the frame.
+            let columnWidth = max(visible.width - 2 * inset.width, 0)
+            if let container = textView.textContainer, container.size.width != columnWidth {
+                container.size = NSSize(width: columnWidth, height: CGFloat.greatestFiniteMagnitude)
+            }
+            syncPageHeight()
+        }
+
+        /// The page follows the text, and TextKit's own figure for it when
+        /// the text view's frame trails a deep layout pass (it only grows the
+        /// frame here; the text view settles it). A clip view clamped by a
+        /// shorter page reports that as a move of the page, never the
+        /// reader's.
+        private func syncPageHeight() {
+            guard let page, let textView else { return }
+            // A point and a half of slack: TextKit and the text view may
+            // round the same figure apart.
+            if let laidOut = laidOutTextHeight(), laidOut > textView.frame.height + 1.5 {
+                textView.setFrameSize(NSSize(width: textView.frame.width, height: laidOut))
+            }
+            page.syncHeight()
+            lastPageHeight = page.frame.height
+        }
+
+        private func tiled() {
+            updateGeometry()
+            handleLayout()
+        }
+
+        private func textFrameChanged() {
+            syncPageHeight()
+            handleLayout()
+        }
+
+        // MARK: End of the book (R24)
+
+        /// Swaps the end mark for `colophon` (or back to "· · ·") in ONE tail
+        /// edit of the text storage: every sentence range stays valid and
+        /// nothing above the mark re-lays out. While following, the colophon
+        /// is brought into the band like the voice; appearing with
+        /// `animated`, it fades in through a paper veil (opacity only, so
+        /// Reduce Motion keeps it), framed after that follow scroll.
+        func setColophon(_ colophon: ReaderColophon?, animated: Bool) {
+            guard colophon != shownColophon, let textView, let storage = textView.textStorage else { return }
+            guard endMarkRange.length > 0, NSMaxRange(endMarkRange) == storage.length else { return }
+            let appearing = shownColophon == nil && colophon != nil
+            let appearance = textView.effectiveAppearance
+            let mark = ReaderColumnText.makeEndMark(colophon: colophon, fontSize: builtFontSize,
+                                                    bold: PlatformLegibility.isBold(appearance),
+                                                    ink: ReaderInk(appearance: appearance))
+            isEditingText = true
+            movingProgrammatically {
+                storage.replaceCharacters(in: endMarkRange, with: mark)
+            }
+            endMarkRange = NSRange(location: endMarkRange.location, length: mark.length)
+            isEditingText = false
+            shownColophon = colophon
+            follow.cachedActiveRect = nil   // the follow target moved (`followRange`)
+            removeColophonVeil()
+            if colophon != nil, isFollowing { followIfNeeded(animated: true) }
+            if appearing, animated { fadeInColophon() }
+            updateFollowChip()
+        }
+
+        /// Covers the new colophon with the page's own paper and fades the
+        /// cover out over `Theme.Motion.colophon`.
+        private func fadeInColophon() {
+            guard let page, let textView, let rect = boundingRect(for: endMarkRange) else { return }
+            let veil = ReaderVeilView(frame: CGRect(x: 0, y: rect.minY, width: page.bounds.width, height: rect.height))
+            veil.wantsLayer = true
+            veil.layer?.backgroundColor = textView.effectiveAppearance.resolvedCGColor(Theme.bg)
+            page.addSubview(veil, positioned: .above, relativeTo: textView)
+            colophonVeil = veil
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Theme.Motion.colophon
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                veil.animator().alphaValue = 0
+            } completionHandler: { [weak self, weak veil] in
+                MainActor.assumeIsolated {
+                    guard let veil else { return }
+                    veil.removeFromSuperview()
+                    if self?.colophonVeil === veil { self?.colophonVeil = nil }
+                }
+            }
+        }
+
+        private func removeColophonVeil() {
+            colophonVeil?.removeFromSuperview()
+            colophonVeil = nil
+        }
+
+        /// Layout moved the text under a fade in flight: keep the cover on
+        /// the colophon.
+        private func reframeColophonVeil() {
+            guard let veil = colophonVeil, let page, let rect = boundingRect(for: endMarkRange) else { return }
+            let frame = CGRect(x: 0, y: rect.minY, width: page.bounds.width, height: rect.height)
+            if veil.frame != frame { veil.frame = frame }
+        }
+
+        // MARK: Highlighting
+
+        func setActiveSentence(_ id: Int, scroll: Bool) {
+            guard textView != nil else { return }
+            let changed = id != activeSentence
+            if changed {
+                setActiveWord(-1)   // never carry a word underline across sentences
+                follow.cachedActiveRect = nil
+            }
+            activeSentence = id
+            renderSentenceHighlight(animated: changed)
+            if scroll && isFollowing { followIfNeeded(animated: true) }
+            updateFollowChip()
+        }
+
+        /// Draws the active sentence in the highlight layer beneath the
+        /// text. Never touches `textStorage`.
+        private func renderSentenceHighlight(animated: Bool) {
+            guard let page, let textView else { return }
+            guard sentenceRanges.indices.contains(activeSentence) else {
+                page.highlight.clearSentence()
+                return
+            }
+            let appearance = textView.effectiveAppearance
+            page.highlight.showSentence(segments(for: sentenceRanges[activeSentence]),
+                                        fill: appearance.resolvedCGColor(Theme.highlightBg),
+                                        mark: appearance.resolvedCGColor(Theme.accent),
+                                        gutterX: textView.textContainerOrigin.x,
+                                        animated: animated, reduceMotion: reduceMotion())
+        }
+
+        /// Word layer: an accent underline under the spoken word.
+        func setActiveWord(_ token: Int) {
+            guard textView != nil else { return }
+            var newRange: NSRange?
+            if token >= 0, let ranges = wordRanges(for: activeSentence), ranges.indices.contains(token) {
+                newRange = ranges[token]   // nil for whitespace tokens
+            }
+            activeWordToken = token
+            guard newRange != activeWordRange else { return }
+            let slide = activeWordRange != nil
+            activeWordRange = newRange
+            renderWordUnderline(animated: slide)
+        }
+
+        private func renderWordUnderline(animated: Bool) {
+            guard let page, let textView else { return }
+            guard let range = activeWordRange else {
+                page.highlight.clearWord()
+                return
+            }
+            page.highlight.showWord(segments(for: range),
+                                    color: textView.effectiveAppearance.resolvedCGColor(Theme.accentStrong),
+                                    animated: animated, reduceMotion: reduceMotion())
+        }
+
+        /// Geometry changed under the highlight (a reflow, estimates
+        /// resolving): redraw in place, no crossfade.
+        private func refreshHighlightGeometry() {
+            renderSentenceHighlight(animated: false)
+            renderWordUnderline(animated: false)
+        }
+
+        private func segments(for range: NSRange) -> [HighlightLayers.Segment] {
+            column?.segments(for: range) ?? []
+        }
+
+        private func wordRanges(for id: Int) -> [NSRange?]? {
+            ReaderColumnLayout.wordRanges(for: id, sentenceRanges: sentenceRanges,
+                                          sentences: parent.content.sentences, cache: &wordRangeCache)
+        }
+
+        // MARK: Calm follow (R16)
+
+        /// The visible content rect the band is measured in: the clip view,
+        /// above any chrome drawn over the page's bottom edge.
+        func viewport() -> CGRect? {
+            guard let scrollView else { return nil }
+            let bounds = scrollView.contentView.bounds
+            return CGRect(x: 0, y: bounds.minY, width: bounds.width,
+                          height: max(bounds.height - parent.obscuredBottom, 0))
+        }
+
+        private var contentOffsetY: CGFloat {
+            scrollView?.contentView.bounds.origin.y ?? 0
+        }
+
+        /// While following: a sentence that has left the band glides (or,
+        /// under Reduce Motion and past one viewport, jumps) to the landing
+        /// line. Never moves under a gesture.
+        func followIfNeeded(animated: Bool) {
+            guard isFollowing, !userHoldsScroll,
+                  let rect = activeSentenceRect(), let viewport = viewport(), viewport.height > 0,
+                  !FollowBand.contains(rect, in: viewport),
+                  let target = landingTarget() else { return }
+            switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
+                                           animated: animated, reaim: false) {
+            case .none: return
+            case .glide(let y): scroll(toY: y, animated: true)
+            case .jump(let y, _): scroll(toY: y, animated: false)
+            }
+        }
+
+        /// Play, a jump, Undo or Follow the voice: follow again and bring
+        /// the active sentence into the band. A sentence already in the band
+        /// stays put.
+        func resumeFollowing() {
+            follow.resume()   // the voice owns the scroll again
+            defer { updateFollowChip() }
+            guard !userHoldsScroll else { return }
+            // Following takes the scroll back from a coast.
+            stopCoasting()
+            guard let viewport = viewport(), viewport.height > 0,
+                  var rect = measureActiveSentenceRect() else { return }
+            // Off screen, a deep jump must land on CONFIRMED geometry, not on
+            // estimated heights of everything above it; on screen, the
+            // sentence is measured where it is drawn.
+            if FollowBand.direction(of: rect, in: viewport) != nil {
+                ensureLayoutThroughActiveSentence()
+                guard let confirmed = activeSentenceRect() else { return }
+                rect = confirmed
+            }
+            guard !FollowBand.contains(rect, in: viewport),
+                  let target = landingOffset(for: rect) else { return }
+            switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
+                                           animated: true, reaim: true) {
+            case .none:
+                return
+            case .glide(let y):
+                scroll(toY: y, animated: true)
+            case .jump(let y, _):
+                jump(toY: y) { self.landingTarget() }
+                // A jump keeps verifying while estimated heights resolve.
+                follow.startPlacementCheck()
+            }
+        }
+
+        /// Follow the voice, as the chip and ⌘J ask through `followRequest`.
+        func followTheVoice() {
+            resumeFollowing()
+        }
+
+        /// Puts the active sentence on the landing line without motion (a
+        /// fresh column), then verifies on every layout pass.
+        func placeActiveSentence() {
+            guard isFollowing, !userHoldsScroll, let viewport = viewport(), viewport.height > 0 else { return }
+            follow.pendingReveal = nil
+            ensureLayoutThroughActiveSentence()
+            follow.startPlacementCheck()
+            if let target = landingTarget(), abs(target - contentOffsetY) > 1 {
+                jump(toY: target) { self.landingTarget() }
+            }
+            updateFollowChip()
+        }
+
+        /// The offset that puts the active sentence (or the shown colophon)
+        /// on the landing line under CURRENT geometry; nil while its layout
+        /// can't resolve. Refreshes the cached rect.
+        private func landingTarget() -> CGFloat? {
+            guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
+            follow.cachedActiveRect = rect
+            return landingOffset(for: rect)
+        }
+
+        private func landingOffset(for rect: CGRect) -> CGFloat? {
+            guard let viewport = viewport() else { return nil }
+            return ReaderFollowEngine.landingOffset(for: rect, in: scrollState(viewport: viewport))
+        }
+
+        private func scrollState(viewport: CGRect) -> ReaderScrollState {
+            ReaderScrollState(contentOffsetY: contentOffsetY, viewport: viewport,
+                              restingRange: restingOffsets(), reduceMotion: reduceMotion())
+        }
+
+        /// Every offset the page can rest at: from its top to its end, the
+        /// paper under the text included.
+        private func restingOffsets() -> ClosedRange<CGFloat> {
+            guard let scrollView, let page else { return 0...0 }
+            let highest = laidOutHeight() + page.bottomInset - scrollView.contentView.bounds.height
+            return 0...max(highest, 0)
+        }
+
+        /// TextKit's own figure for the text's height (the text view's frame
+        /// trails it after a deep layout pass); nil before any layout.
+        private func laidOutTextHeight() -> CGFloat? {
+            guard let textView else { return nil }
+            return column?.laidOutHeight(bottomInset: textView.textContainerInset.height)
+        }
+
+        private func laidOutHeight() -> CGFloat {
+            laidOutTextHeight() ?? textView?.frame.height ?? 0
+        }
+
+        /// A placement without motion: one counted scroll. A landing the old
+        /// height clamped short is re-aimed at once, as a correction of the
+        /// same scroll.
+        private func jump(toY y: CGFloat, reaim: () -> CGFloat?) {
+            scroll(toY: y, animated: false)
+            if let settled = reaim(), abs(settled - contentOffsetY) > 1 {
+                setOffset(settled)
+            }
+        }
+
+        /// Every follow, placement and reveal goes through here, so the R16
+        /// budget counts them all.
+        private func scroll(toY y: CGFloat, animated: Bool) {
+            follow.noteScroll()
+            #if DEBUG
+            if publishesProbe { ReaderFollowProbe.shared.noteScroll() }
+            #endif
+            stopCoasting()
+            if animated {
+                startGlide(toY: y)
+            } else {
+                stopGlideInPlace()
+                setOffset(y)
+            }
+        }
+
+        /// Moves the page to `y` at once, as a move of ours.
+        private func setOffset(_ y: CGFloat) {
+            guard let scrollView, let page else { return }
+            let clip = scrollView.contentView
+            page.ensureRoom(forOffset: y, visibleHeight: clip.bounds.height)
+            movingProgrammatically {
+                clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: y))
+                scrollView.reflectScrolledClipView(clip)
+            }
+            lastPageHeight = page.frame.height
+        }
+
+        /// One 0.45 s glide on the (0.4, 0, 0.2, 1) curve. A click or a user
+        /// scroll stops it where it is.
+        private func startGlide(toY y: CGFloat) {
+            guard let scrollView, let page else { return }
+            stopGlideInPlace()
+            let clip = scrollView.contentView
+            page.ensureRoom(forOffset: y, visibleHeight: clip.bounds.height)
+            lastPageHeight = page.frame.height
+            glideCount += 1
+            glideSerial &+= 1
+            let serial = glideSerial
+            glideTarget = y
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = FollowBand.glideDuration
+                context.timingFunction = FollowBand.mediaTimingFunction()
+                clip.animator().setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: y))
+            } completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.glideSerial == serial, self.glideTarget != nil else { return }
+                    self.glideTarget = nil
+                    if let scrollView = self.scrollView {
+                        scrollView.reflectScrolledClipView(scrollView.contentView)
+                    }
+                    self.updateFollowChip()
+                }
+            }
+        }
+
+        /// Stops a glide where the page is on screen right now.
+        private func stopGlideInPlace() {
+            guard glideTarget != nil else { return }
+            glideTarget = nil
+            glideSerial &+= 1
+            guard let scrollView else { return }
+            let clip = scrollView.contentView
+            let here = clip.bounds.origin
+            movingProgrammatically {
+                // A zero-length animation of the same key replaces the glide.
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0
+                    clip.animator().setBoundsOrigin(here)
+                }
+                clip.setBoundsOrigin(here)
+                scrollView.reflectScrolledClipView(clip)
+            }
+        }
+
+        /// Stops a coast where it is: left running, it keeps moving the page
+        /// under a glide, and a click on it must only stop it.
+        private func stopCoasting() {
+            guard let scrollView, isCoasting(scrollView) || scrollView.inMomentum else { return }
+            scrollView.stopCoasting()
+        }
+
+        private func movingProgrammatically(_ move: () -> Void) {
+            programmaticMoves += 1
+            defer { programmaticMoves -= 1 }
+            move()
+        }
+
+        /// A gesture, the scroller, a key or VoiceOver: stop following.
+        func userTookOverScroll() {
+            stopGlideInPlace()
+            follow.takeOver()   // and drops pending checks: don't fight the user
+            updateFollowChip()
+        }
+
+        /// A user scroll came to rest: following resumes only when the voice
+        /// is in view.
+        func userScrollEnded() {
+            if let rect = activeSentenceRect(), let viewport = viewport() {
+                follow.scrollEnded(voice: rect, in: viewport)
+            }
+            updateFollowChip()
+        }
+
+        /// A scroll no gesture announced (a wheel without phases, a scroller
+        /// click, the keys, VoiceOver): it takes over at once and ends after
+        /// a quiet moment.
+        func userScrolledDiscretely() {
+            userTookOverScroll()
+            discreteScrollEnd?.cancel()
+            let end = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.discreteScrollEnd = nil
+                    self.userScrollEnded()
+                }
+            }
+            discreteScrollEnd = end
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.discreteScrollSettle, execute: end)
+        }
+
+        /// Runs on every scroll frame, so it never forces TextKit layout:
+        /// the sentence rect comes from the cache and the rest is bounds
+        /// arithmetic.
+        func updateFollowChip() {
+            var direction: ReaderFollowDirection?
+            if let rect = activeSentenceRect(), let viewport = viewport() {
+                direction = follow.chipDirection(voice: rect, in: viewport)
+                #if DEBUG
+                if publishesProbe {
+                    let onScreen = rect.offsetBy(dx: 0, dy: -contentOffsetY)
+                    if ReaderFollowProbe.shared.activeRect != onScreen {
+                        ReaderFollowProbe.shared.activeRect = onScreen
+                    }
+                    let line = Int(rect.minY / ReaderPageStyle(fontSize: parent.fontSize).lineHeight)
+                    if ReaderFollowProbe.shared.activeLine != line {
+                        ReaderFollowProbe.shared.activeLine = line
+                    }
+                }
+                #endif
+            }
+            guard follow.publish(direction) else { return }
+            let binding = parent.$voiceOffscreen
+            Task { @MainActor in binding.wrappedValue = direction }
+        }
+
+        /// One layout pass: a change of the text's height means TextKit
+        /// swapped estimated line heights under a still offset (while
+        /// following, that re-checks the band; the cached rect is stale
+        /// either way), and a change of the visible height re-checks the
+        /// band. Then a pending placement is verified.
+        func handleLayout() {
+            guard let textView, !isHandlingLayout, !isEditingText else { return }
+            isHandlingLayout = true
+            defer { isHandlingLayout = false }
+            let height = textView.frame.height
+            if height != lastContentHeight {
+                follow.cachedActiveRect = nil
+                refreshHighlightGeometry()
+                if isFollowing, !follow.pendingPlacement, lastContentHeight > 0 {
+                    followIfNeeded(animated: false)
+                }
+                lastContentHeight = height
+            }
+
+            let viewportHeight = viewport()?.height ?? 0
+            if viewportHeight != lastViewportHeight {
+                let resized = lastViewportHeight > 0
+                lastViewportHeight = viewportHeight
+                if resized, isFollowing, !follow.pendingPlacement {
+                    followIfNeeded(animated: !reduceMotion())
+                }
+            }
+
+            reframeColophonVeil()
+            verifyPlacement()
+        }
+
+        /// Ends a placement or rotor-stop check and shows the chip it held.
+        private func endPlacementCheck() {
+            follow.endPlacementCheck()
+            updateFollowChip()
+        }
+
+        /// One layout pass's check of a placement put in place without
+        /// motion (`ReaderFollowEngine.placementPass`): re-placed when off,
+        /// ended once in place on a steady height, and ended after
+        /// `placementPassLimit` passes in any case.
+        private func verifyPlacement() {
+            guard follow.isCheckingPlacement, glideTarget == nil, !userHoldsScroll,
+                  let scrollView, scrollView.contentView.bounds.height > 0 else { return }
+            let check = checkPlacement()
+            if case .unresolved = check { return }   // no layout to measure yet
+            switch follow.placementPass(check, laidOutHeight: laidOutHeight()) {
+            case .correct(let settled):
+                // A correction of a placement already counted, so no `scroll`.
+                setOffset(settled)
+                requestLayoutPass()
+            case .end:
+                endPlacementCheck()
+                return
+            case .confirm:
+                requestLayoutPass()
+            }
+            if follow.placementPassesSpent { endPlacementCheck() }
+        }
+
+        /// Measures the pending placement on the layout as it stands; when
+        /// it is off, confirms the layout up to it and says where it goes.
+        private func checkPlacement() -> ReaderFollowEngine.PlacementCheck {
+            let settled: CGFloat?
+            if let id = follow.pendingReveal {
+                guard sentenceRanges.indices.contains(id), revealOffset(for: id) != nil else { return .holds }
+                column?.ensureLayout(through: sentenceRanges[id])
+                settled = revealOffset(for: id)
+            } else {
+                guard let target = landingTarget() else { return .unresolved }
+                guard abs(target - contentOffsetY) > 1 else { return .holds }
+                ensureLayoutThroughActiveSentence()
+                guard let confirmed = landingTarget() else { return .unresolved }
+                settled = confirmed
+            }
+            guard let settled, abs(settled - contentOffsetY) > 1 else { return .holds }
+            return .moveTo(settled)
+        }
+
+        /// The offset that puts sentence `id` on the landing line; nil while
+        /// it sits in the band, or the page can't scroll that far.
+        private func revealOffset(for id: Int) -> CGFloat? {
+            guard sentenceRanges.indices.contains(id),
+                  let rect = boundingRect(for: sentenceRanges[id]), let viewport = viewport(),
+                  !FollowBand.contains(rect, in: viewport),
+                  let target = landingOffset(for: rect),
+                  abs(target - contentOffsetY) > 1 else { return nil }
+            return target
+        }
+
+        /// Asks AppKit for the next layout pass, which verifies the
+        /// placement again (never from inside the pass now running).
+        private func requestLayoutPass() {
+            guard !layoutPassRequested else { return }
+            layoutPassRequested = true
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.layoutPassRequested = false
+                    self.textView?.needsLayout = true
+                }
+            }
+        }
+
+        // MARK: Scrolling, as the reader does it
+
+        @objc func liveScrollWillStart(_ notification: Notification) {
+            inLiveScroll = true
+            discreteScrollEnd?.cancel()
+            discreteScrollEnd = nil
+            userTookOverScroll()
+        }
+
+        @objc func liveScrollDidEnd(_ notification: Notification) {
+            inLiveScroll = false
+            scrollView?.liveScrollEnded()
+            userScrollEnded()
+        }
+
+        /// Every move of the page. One that no gesture announced, made by
+        /// none of ours, that is neither a resize (the size, the page's
+        /// height, or AppKit keeping the clip view on the page as the
+        /// window resizes) nor TextKit settling the text under a still
+        /// reader, is the reader scrolling.
+        @objc func clipBoundsDidChange(_ notification: Notification) {
+            guard let scrollView, let page else { return }
+            let bounds = scrollView.contentView.bounds
+            let pageHeight = page.frame.height
+            defer {
+                lastClipBounds = bounds
+                lastPageHeight = pageHeight
+            }
+            updateFollowChip()
+            updateTextUnderTopBar(offset: bounds.minY)
+            guard bounds.origin.y != lastClipBounds.origin.y,
+                  bounds.size == lastClipBounds.size,
+                  pageHeight == lastPageHeight,
+                  programmaticMoves == 0, glideTarget == nil, !inLiveScroll,
+                  !scrollView.isResizing, !scrollView.inLiveResize,
+                  textView?.isLayingOut != true else { return }
+            userScrolledDiscretely()
+        }
+
+        /// Bounds arithmetic only, safe on every scroll frame: the first line
+        /// rests `topInset` below the toolbar, so text is under it only once
+        /// the page has scrolled past that gap.
+        private func updateTextUnderTopBar(offset: CGFloat) {
+            let under = offset > ReaderColumnMetrics.topInset
+            guard under != reportedTextUnderTopBar else { return }
+            reportedTextUnderTopBar = under
+            guard let report = parent.onTextUnderTopBar else { return }
+            Task { @MainActor in report(under) }
+        }
+
+        /// The scroll keys (↑ ↓, Page Up and Down, Home and End, ⌘↑ ⌘↓): the
+        /// page moves as the reader asked, which takes over the scroll.
+        func keyScroll(_ selector: Selector) -> Bool {
+            guard let step = KeyScroll(selector), let scrollView else { return false }
+            let bounds = scrollView.contentView.bounds
+            let line = ReaderPageStyle(fontSize: builtFontSize > 0 ? builtFontSize : parent.fontSize).lineHeight
+            let pageStep = max(bounds.height - 2 * line, line)
+            let range = restingOffsets()
+            var y = bounds.origin.y
+            switch step {
+            case .lineUp: y -= line
+            case .lineDown: y += line
+            case .pageUp: y -= pageStep
+            case .pageDown: y += pageStep
+            case .top: y = range.lowerBound
+            case .end: y = range.upperBound
+            }
+            y = min(max(y, range.lowerBound), range.upperBound)
+            stopGlideInPlace()
+            if abs(y - bounds.origin.y) > 0.5 { setOffset(y) }
+            userScrolledDiscretely()
+            return true
+        }
+
+        enum KeyScroll {
+            case lineUp, lineDown, pageUp, pageDown, top, end
+
+            init?(_ selector: Selector) {
+                switch selector {
+                case #selector(NSResponder.moveUp(_:)), #selector(NSResponder.scrollLineUp(_:)):
+                    self = .lineUp
+                case #selector(NSResponder.moveDown(_:)), #selector(NSResponder.scrollLineDown(_:)):
+                    self = .lineDown
+                case #selector(NSResponder.pageUp(_:)), #selector(NSResponder.scrollPageUp(_:)):
+                    self = .pageUp
+                case #selector(NSResponder.pageDown(_:)), #selector(NSResponder.scrollPageDown(_:)):
+                    self = .pageDown
+                case #selector(NSResponder.moveToBeginningOfDocument(_:)),
+                     #selector(NSResponder.scrollToBeginningOfDocument(_:)):
+                    self = .top
+                case #selector(NSResponder.moveToEndOfDocument(_:)),
+                     #selector(NSResponder.scrollToEndOfDocument(_:)):
+                    self = .end
+                default:
+                    return nil
+                }
+            }
+        }
+
+        // MARK: Click → sentence (R15)
+
+        /// The mouse is down on the page, before AppKit tracks a click or a
+        /// drag.
+        func clickLanded() {
+            let gliding = isGliding
+            let coasting = scrollView.map(isCoasting) ?? false
+            clickBeganWhileScrolling = coasting || gliding
+            // A click on moving text stops it there.
+            stopCoasting()
+            if gliding {
+                // Stopping a glide is the reader taking the scroll: following
+                // survives only if the voice is in view; else the chip shows.
+                userTookOverScroll()
+                userScrollEnded()
+            }
+        }
+
+        /// The click AppKit tracked has ended: one click, with no selection
+        /// made, plays from its sentence.
+        func clickEnded(at point: CGPoint, clickCount: Int, selectionMade: Bool) {
+            let wasScrolling = clickBeganWhileScrolling
+            clickBeganWhileScrolling = false
+            guard clickCount == 1, !selectionMade else { return }
+            handleClick(at: point, isDecelerating: wasScrolling)
+        }
+
+        /// A click plays from the clicked sentence in any state, unless it
+        /// landed on moving text: then it only stopped the scroll.
+        func handleClick(at point: CGPoint, isDecelerating: Bool) {
+            if isDecelerating {
+                userScrollEnded()
+                return
+            }
+            guard let id = sentence(at: point) else { return }
+            parent.onPlaySentence(id)
+        }
+
+        /// The sentence under `point` (page coordinates); nil between
+        /// sentences or off the text.
+        func sentence(at point: CGPoint) -> Int? {
+            guard let offset = column?.characterOffset(at: point) else { return nil }
+            return ReaderColumnLayout.sentence(containing: offset, in: sentenceRanges)
+        }
+
+        // MARK: TextKit 2 geometry
+
+        /// The column's TextKit 2 geometry under the text container origin
+        /// as it stands. Never the TextKit 1 layout object.
+        private var column: ReaderColumnLayout? {
+            guard let textView, let manager = textView.textLayoutManager else { return nil }
+            let origin = textView.textContainerOrigin
+            return ReaderColumnLayout(textLayoutManager: manager, origin: CGPoint(x: origin.x, y: origin.y))
+        }
+
+        /// Sentence `id`'s laid-out rect in page coordinates (tests, and the
+        /// screen's anchoring in wave 2.2).
+        func rect(forSentence id: Int) -> CGRect? {
+            guard sentenceRanges.indices.contains(id) else { return nil }
+            return boundingRect(for: sentenceRanges[id])
+        }
+
+        /// Cached rect of the follow target (the active sentence or the shown
+        /// colophon), in page coordinates like `viewport()`.
+        func activeSentenceRect() -> CGRect? {
+            if let cached = follow.cachedActiveRect { return cached }
+            guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
+            follow.cachedActiveRect = rect
+            return rect
+        }
+
+        /// What following and placement aim at: the colophon while it shows,
+        /// else the active sentence.
+        private var followRange: NSRange? {
+            if shownColophon != nil, endMarkRange.length > 0 { return endMarkRange }
+            return sentenceRanges.indices.contains(activeSentence) ? sentenceRanges[activeSentence] : nil
+        }
+
+        /// The active sentence's rect measured again, refreshing the cache.
+        /// Deliberate moves and tests only, never per frame.
+        func measureActiveSentenceRect() -> CGRect? {
+            follow.cachedActiveRect = nil
+            return activeSentenceRect()
+        }
+
+        /// `ensureLayout(through:)` for the follow target, redrawing its
+        /// highlight if that moved it.
+        private func ensureLayoutThroughActiveSentence() {
+            guard let range = followRange else { return }
+            let drawnAt = measureActiveSentenceRect()
+            column?.ensureLayout(through: range)
+            if measureActiveSentenceRect() != drawnAt { refreshHighlightGeometry() }
+        }
+
+        private func boundingRect(for range: NSRange) -> CGRect? {
+            column?.boundingRect(for: range)
+        }
+    }
+}

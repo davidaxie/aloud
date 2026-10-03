@@ -136,33 +136,68 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertEqual(router.path, [.reader(book), .bookshelf], "no Classics below: it pushes one")
     }
 
-    /// No Contents panel yet (phase 1): Find and ⌃⌘S are off in the reader,
-    /// so neither is a live key with nothing to show, and the title stays
-    /// Show Contents.
-    func testReaderWithoutAPanelOffersNoContentsOrFind() {
-        let (_, base) = makeActions()
-        XCTAssertEqual(base.hasContentsPanel, MacReaderScreen.hasContentsPanel,
-                       "the reader says when its panel exists")
-        var actions = base
-        actions.hasContentsPanel = false
-        actions.router.path = [.reader(UUID())]
-        XCTAssertFalse(actions.isEnabled(.toggleContents))
-        XCTAssertFalse(actions.isEnabled(.find))
-        XCTAssertFalse(actions.perform(.toggleContents))
-        XCTAssertFalse(actions.ui.isContentsShown)
-        XCTAssertEqual(actions.title(for: .toggleContents), MacMenuCopy.showContents)
-    }
+    // MARK: - Contents (M16)
 
     func testFindInTheReaderOpensContentsSearch() {
-        let (_, base) = makeActions()
-        var actions = base
-        actions.hasContentsPanel = true
+        let (_, actions) = makeActions()
         actions.router.path = [.reader(UUID())]
+        XCTAssertTrue(actions.isEnabled(.find))
         XCTAssertEqual(actions.title(for: .toggleContents), MacMenuCopy.showContents)
         XCTAssertTrue(actions.perform(.find))
         XCTAssertTrue(actions.ui.isContentsShown)
         XCTAssertEqual(actions.ui.searchFocus, .contents)
         XCTAssertEqual(actions.title(for: .toggleContents), MacMenuCopy.hideContents)
+
+        // ⌘F with the panel up keeps it, and asks for the field again.
+        actions.ui.searchFocus = nil
+        XCTAssertTrue(actions.perform(.find))
+        XCTAssertTrue(actions.ui.isContentsShown)
+        XCTAssertEqual(actions.ui.searchFocus, .contents)
+    }
+
+    func testShowContentsTogglesInTheReaderOnly() {
+        let (_, actions) = makeActions()
+        XCTAssertFalse(actions.isEnabled(.toggleContents), "the Library has no Contents")
+        XCTAssertFalse(actions.perform(.toggleContents))
+        XCTAssertFalse(actions.ui.isContentsShown)
+
+        actions.router.path = [.reader(UUID())]
+        XCTAssertTrue(actions.isEnabled(.toggleContents))
+        XCTAssertTrue(actions.perform(.toggleContents))
+        XCTAssertTrue(actions.ui.isContentsShown)
+        XCTAssertEqual(actions.title(for: .toggleContents), MacMenuCopy.hideContents)
+        XCTAssertNil(actions.ui.searchFocus, "showing Contents leaves focus where it was")
+        XCTAssertTrue(actions.perform(.toggleContents))
+        XCTAssertFalse(actions.ui.isContentsShown)
+        XCTAssertEqual(actions.title(for: .toggleContents), MacMenuCopy.showContents)
+
+        actions.router.path = [.bookshelf]
+        XCTAssertFalse(actions.isEnabled(.toggleContents), "nor do Classics")
+    }
+
+    /// Classics' ⌘F stays its toolbar search, and leaves Contents alone.
+    func testFindInClassicsStaysClassicsSearch() {
+        let (_, actions) = makeActions()
+        actions.router.path = [.bookshelf]
+        XCTAssertTrue(actions.perform(.find))
+        XCTAssertEqual(actions.ui.searchFocus, .classics)
+        XCTAssertFalse(actions.ui.isContentsShown)
+    }
+
+    /// A Contents row's jump is the shared one: ⌘Z (Undo Jump) is live
+    /// after it and puts the sentence and the pause back.
+    func testUndoJumpAfterAContentsJump() async {
+        let (rig, actions) = makeActions(sentences: 40)
+        rig.loadDefault(at: 3)
+        XCTAssertFalse(actions.isEnabled(.undoJump))
+        MacContents.jump(rig.controller, to: 30, origin: .chapter)
+        XCTAssertEqual(rig.controller.currentSentence, 30)
+        XCTAssertTrue(actions.isEnabled(.undoJump))
+        XCTAssertTrue(actions.perform(.undoJump))
+        XCTAssertEqual(rig.controller.currentSentence, 3)
+        let paused = await rig.waitUntil(2) { !rig.controller.isActive }
+        XCTAssertTrue(paused, "the listener was paused there")
+        XCTAssertFalse(actions.isEnabled(.undoJump), "spent")
     }
 
     func testTextSizeKeysWriteTheOnePreference() {
