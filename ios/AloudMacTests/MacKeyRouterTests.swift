@@ -33,6 +33,40 @@ final class MacKeyRouterTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Any key a window gets, a ⌘ key the menus may refuse included, gives
+    /// that window the tail: Settings' chain ends there too, so a key no
+    /// menu item takes is swallowed rather than beeped.
+    func testEveryWindowAKeyReachesEndsInTheTail() {
+        let window = makeWindow()
+        XCTAssertFalse(Self.chain(of: window).contains { $0 === router.tail }, "a new window has no tail yet")
+        let followVoice = MacShortcutsTests.key("j", code: 38, flags: .command, window: window)
+        XCTAssertNotNil(router.handle(followVoice, in: window), "⌘J is still the menu's to take")
+        XCTAssertTrue(Self.chain(of: window).contains { $0 === router.tail }, "but the window now ends in the tail")
+        XCTAssertEqual(performed, [])
+    }
+
+    /// The tail's Paste belongs to the main window (or to no key window):
+    /// from Settings it never adds a book to the Library behind it.
+    func testTheTailsPasteIsTheMainWindowsOnly() {
+        XCTAssertTrue(MacKeyTail.libraryWindowHasKeys(nil))
+        let main = makeWindow()
+        main.setAccessibilityIdentifier(MacWindowConfigurator.accessibilityIdentifier)
+        XCTAssertTrue(MacKeyTail.libraryWindowHasKeys(main))
+        let settings = makeWindow()
+        settings.setAccessibilityIdentifier("aloud.window.settings")
+        XCTAssertFalse(MacKeyTail.libraryWindowHasKeys(settings))
+    }
+
+    private static func chain(of window: NSWindow) -> [NSResponder] {
+        var chain: [NSResponder] = []
+        var next: NSResponder? = window
+        while let responder = next, chain.count < 40 {
+            chain.append(responder)
+            next = responder.nextResponder
+        }
+        return chain
+    }
+
     /// A focused, editable text view types Space as a space, and no
     /// command runs: a search field keeps its spaces.
     func testEditableTextGetsSpaceAndNoCommandFires() throws {

@@ -409,4 +409,29 @@ final class MacImportTests: XCTestCase {
             .appendingPathComponent("book.pdf")
         XCTAssertTrue(DocumentImporter.isInboxCopy(staged))
     }
+
+    /// A quit or crash mid-add leaves a staged copy no queue will reach:
+    /// the first add of the next launch clears it. Later sweeps take only
+    /// empty folders, and nothing that isn't the intake's own.
+    func testTheFirstSweepOfALaunchClearsAnEarlierRunsCopies() throws {
+        let root = try makeFolder()
+        let fm = FileManager.default
+        let unfinished = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let empty = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let foreign = root.appendingPathComponent("Keep", isDirectory: true)
+        for folder in [unfinished, empty, foreign] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        _ = try writeText("left.txt", in: unfinished)
+        _ = try writeText("other.txt", in: foreign)
+
+        MacFileIntake.sweepStagingFolders(in: root, includingUnfinished: false)
+        XCTAssertFalse(fm.fileExists(atPath: empty.path), "an empty folder goes on every sweep")
+        XCTAssertTrue(fm.fileExists(atPath: unfinished.path), "a copy in flight is left alone mid-launch")
+
+        MacFileIntake.sweepStagingFolders(in: root, includingUnfinished: true)
+        XCTAssertFalse(fm.fileExists(atPath: unfinished.path), "an earlier run's copy goes at launch")
+        XCTAssertTrue(fm.fileExists(atPath: foreign.appendingPathComponent("other.txt").path),
+                      "only the intake's own folders")
+    }
 }

@@ -128,6 +128,9 @@ if ! strings -a "$BIN" > "$WORK/strings.txt"; then
   echo "ERROR: couldn't read the strings in $BIN; nothing was installed." >&2
   exit 1
 fi
+# Swift keeps a string of 15 bytes or fewer inside the code, where strings(1)
+# can't see it, so short names (ALOUD_MUTE) are proven DEBUG-only by the
+# iPhone suite's MacSilenceLintTests instead; these catch the longer ones.
 for needle in -uitest- ALOUD_AUDIBLE ALOUD_MUTE MutedRenderPump AloudKokoroModel; do
   n=$(grep -c -- "$needle" "$WORK/strings.txt" || true)
   if [[ $n == 0 ]]; then ok "no '$needle' in the binary"; else bad "$n x '$needle' in the binary"; fi

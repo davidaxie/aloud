@@ -154,6 +154,25 @@ final class MacSilenceLintTests: XCTestCase {
         XCTAssertGreaterThan(taps, 0, "the scan finds the meter's taps")
     }
 
+    /// The test hooks' names ("-uitest-…", ALOUD_MUTE, the audible switch)
+    /// exist only in DEBUG code, so a Release build can't be steered by
+    /// them. The Release binary check can't prove this alone: Swift keeps
+    /// a string of 15 bytes or fewer inside the code, where `strings`
+    /// never sees it.
+    func testTestHookNamesAreDebugOnly() throws {
+        let sources = try SourceTree.appSources()
+        var found = 0
+        for (path, source) in sources.sorted(by: { $0.key < $1.key }) {
+            let debugOnly = Self.debugOnly(source.components(separatedBy: "\n"))
+            for literal in SwiftLiterals.literals(in: source, path: path)
+            where ["-uitest-", "ALOUD_MUTE", Self.audible].contains(where: literal.text.contains) {
+                found += 1
+                XCTAssertTrue(debugOnly[literal.line - 1], "\(path):\(literal.line) names a test hook outside #if DEBUG")
+            }
+        }
+        XCTAssertGreaterThan(found, 0, "the scan finds the hooks")
+    }
+
     func testNeitherAppStartsAProcess() throws {
         let code = try SourceTree.appSources().mapValues(SwiftLiterals.code(in:))
         for (api, pattern) in Self.processAPIs.sorted(by: { $0.key < $1.key }) {

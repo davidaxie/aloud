@@ -69,6 +69,10 @@ final class MacKeyRouter {
     /// What the monitor returns: the event, for AppKit's own dispatch, or
     /// nil once it was delivered or handled here.
     func handle(_ event: NSEvent, in window: NSWindow?) -> NSEvent? {
+        // Every window the keys reach ends in the tail (Settings and the
+        // popovers too), so a ⌘ key no menu item takes is swallowed there,
+        // never beeped.
+        if let window { ensureTail(on: window) }
         if Self.isPlainDown(event), Self.isSearchFieldEditor(window?.firstResponder),
            !Self.isComposing(window?.firstResponder), searchHandoff.moveDown() {
             // ↓ from the search field into its results (M7), as Spotlight
@@ -311,7 +315,7 @@ final class MacKeyTail: NSResponder, NSMenuItemValidation, NSUserInterfaceValida
     /// Edit ▸ Paste (⌘V) that no responder before the tail took: the
     /// Library adds what was copied, while it offers (`MacPasteTarget`).
     @objc func paste(_ sender: Any?) {
-        guard Self.isUnobstructed else { return }
+        guard Self.isUnobstructed, Self.libraryWindowHasKeys(NSApp.keyWindow) else { return }
         router?.pasteTarget.pasteNow()
     }
 
@@ -324,7 +328,15 @@ final class MacKeyTail: NSResponder, NSMenuItemValidation, NSUserInterfaceValida
     /// an unvalidated one: on.
     func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         guard item.action == #selector(paste(_:)) else { return true }
-        return Self.isUnobstructed && router?.pasteTarget.canPaste == true
+        return Self.isUnobstructed && Self.libraryWindowHasKeys(NSApp.keyWindow) && router?.pasteTarget.canPaste == true
+    }
+
+    /// The tail ends every window's chain, Settings' too: a ⌘V there must
+    /// never add a book to the Library behind it. Paste is the main
+    /// window's, or nobody's key window's.
+    static func libraryWindowHasKeys(_ keyWindow: NSWindow?) -> Bool {
+        guard let keyWindow else { return true }
+        return keyWindow.accessibilityIdentifier() == MacWindowConfigurator.accessibilityIdentifier
     }
 
     /// No alert, sheet or modal panel is up: Paste is theirs to ignore,

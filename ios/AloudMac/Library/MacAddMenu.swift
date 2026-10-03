@@ -115,7 +115,13 @@ final class MacFileIntake: ObservableObject {
     func admit(_ urls: [URL]) {
         let files = urls.filter(Self.isAddable)
         guard !files.isEmpty else { return }
-        if staging == 0 { Self.sweepStagingFolders() }
+        if staging == 0 {
+            // The first add of a launch also clears what an earlier run
+            // staged and never handed over (a quit or crash mid-add): the
+            // importer's queue lives in memory, so nothing staged survives.
+            Self.sweepStagingFolders(in: Self.stagingRoot, includingUnfinished: !Self.sweptEarlierRuns)
+            Self.sweptEarlierRuns = true
+        }
         staging += files.count
         let stage = stage
         // The open rule's clock starts here, not at the handoff: a user who
@@ -384,15 +390,22 @@ final class MacFileIntake: ObservableObject {
         if let bodyError { throw bodyError }
     }
 
+    /// Whether this launch has cleared an earlier run's leftovers.
+    private static var sweptEarlierRuns = false
+
     /// The importer deletes each staged file, not its folder: the empty
     /// folders go before the next batch, while nothing is being copied.
-    private static func sweepStagingFolders() {
+    /// `includingUnfinished` also removes folders that still hold a copy
+    /// (only the intake's own, named by a UUID), once per launch.
+    static func sweepStagingFolders(in root: URL, includingUnfinished: Bool) {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(at: stagingRoot,
+        guard let entries = try? fm.contentsOfDirectory(at: root,
                                                         includingPropertiesForKeys: [.isDirectoryKey])
         else { return }
         for folder in entries where (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
-            if (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+            let isEmpty = (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true
+            let isOurs = UUID(uuidString: folder.lastPathComponent) != nil
+            if isEmpty || (includingUnfinished && isOurs) {
                 try? fm.removeItem(at: folder)
             }
         }
