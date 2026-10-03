@@ -32,7 +32,7 @@ enum MacKey: CaseIterable {
     case faster, slower, followVoice, undoJump, find, contents
     case biggerText, smallerText, back, addFromFiles, addClassic, deleteBook
     case settings, closeWindow
-    case escape, pageUp, pageDown, home, end, tab, shiftTab, returnKey
+    case escape, pageUp, pageDown, home, end, tab, shiftTab, returnKey, down
 
     /// The key, as `typeKey` takes it.
     var key: String {
@@ -59,6 +59,7 @@ enum MacKey: CaseIterable {
         case .end: return XCUIKeyboardKey.end.rawValue
         case .tab, .shiftTab: return XCUIKeyboardKey.tab.rawValue
         case .returnKey: return XCUIKeyboardKey.return.rawValue
+        case .down: return XCUIKeyboardKey.downArrow.rawValue
         }
     }
 
@@ -72,7 +73,7 @@ enum MacKey: CaseIterable {
         case .addClassic: return [.shift, .command]
         case .shiftTab: return .shift
         case .playPause, .back15, .forward15, .faster, .slower, .escape, .pageUp, .pageDown, .home, .end,
-             .tab, .returnKey:
+             .tab, .returnKey, .down:
             return []
         }
     }
@@ -112,5 +113,316 @@ extension XCTestCase {
             return
         }
         app.activate()
+    }
+}
+
+// MARK: - The phase-1 suite's driver
+
+/// What every phase-1 Mac UI test class reads and does through the one
+/// launched app: the launch argument sets, the DEBUG probes (identity,
+/// beeps, focus, playhead, announcements), the screens and how to reach
+/// them, and waits that let the app run between snapshots (never a fixed
+/// sleep). Keys still go only through `press(_:in:)`, and launching only
+/// through `XCUIApplication.aloud` and `launchAloud` (above).
+struct MacSuite {
+
+    let app: XCUIApplication
+
+    // MARK: Launch argument sets
+
+    /// A fresh container as far as a test can make one: no books, no stop,
+    /// default voice and speed, no natural-voice offer, and no model (so
+    /// the System voice reads, with no warm-up and no download).
+    static let fresh = ["-uitest-reset-library", "-uitest-reset-voice-pref",
+                        "-uitest-temp-model-dir", "-uitest-reset-natural-voice-offer"]
+
+    /// Full Keyboard Access for this process only: Tab reaches every
+    /// control, and the user's System Settings stay untouched.
+    static let keyboardNavigation = ["-AppleKeyboardUIMode", "3"]
+
+    /// The window's minimum (M5). Before `aloud()`'s default size, so it wins.
+    static let minimumWindow = ["-uitest-window-size", "520x480"]
+
+    /// Pride and Prejudice (chapters), opened paused mid-chapter 1.
+    static let chapterReader = fresh + ["-uitest-seed-classic", "1342", "-uitest-open-first-doc",
+                                        "-uitest-seek-text", "so odd a mixture"]
+
+    /// The Cask of Amontillado, the first classic (no chapters), opened.
+    static let firstClassicReader = fresh + ["-uitest-seed-first-classic", "-uitest-open-first-doc"]
+
+    /// How a speed step is announced: "1.25 times speed" (ListeningCopy).
+    static let rateAnnouncementSuffix = "times speed"
+
+    // MARK: Elements
+
+    func element(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)[identifier].firstMatch
+    }
+
+    var mainWindow: XCUIElement { app.windows["aloud.window.main"].firstMatch }
+
+    /// The Settings window: SwiftUI names it, and titles it by its tab.
+    var settingsWindow: XCUIElement {
+        app.windows.matching(NSPredicate(format: "identifier CONTAINS[c] 'settings' OR title CONTAINS[c] 'settings' "
+                                         + "OR title == 'Voice & speed' OR title == 'Text & appearance'")).firstMatch
+    }
+
+    var play: XCUIElement { app.buttons["player.play"].firstMatch }
+
+    var searchField: XCUIElement { app.searchFields.firstMatch }
+
+    var isPopoverShown: Bool { element("listening.title").exists }
+
+    /// Add from Files…'s open panel: a sheet on the window, or the panel's
+    /// own Open and Cancel buttons wherever the system draws it.
+    var isFilePanelShown: Bool {
+        app.sheets.count > 0 || (app.buttons["Open"].exists && app.buttons["Cancel"].exists)
+    }
+
+    /// Sheets, dialogs and alerts over any window.
+    var modals: Int { app.sheets.count + app.dialogs.count + app.alerts.count }
+
+    var windows: Int { app.windows.count }
+
+    // MARK: Probes
+
+    /// keyDowns that would have beeped (`debug.beeps`); nil without the probe.
+    var beeps: Int? { Int(Self.string(element("debug.beeps").value)) }
+
+    /// The main window's first responder (`debug.focus`): "window",
+    /// "text.editable", an identifier or a class.
+    var focus: String { Self.string(element("debug.focus").value) }
+
+    /// The playhead from the reader's DEBUG probe; nil outside the reader.
+    var playhead: Int? {
+        let prefix = "reader.sentence."
+        let probe = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix)).firstMatch
+        guard probe.exists else { return nil }
+        return Int(probe.identifier.dropFirst(prefix.count))
+    }
+
+    /// What VoiceOver would have heard, oldest first (muted: recorded only).
+    var announcements: [String] {
+        let probe = element("debug.announcements")
+        guard probe.exists else { return [] }
+        return Self.string(probe.value).split(separator: "\n").map(String.init)
+    }
+
+    /// "playing", "buffering", "paused", "stopped, playback error"; nil
+    /// outside the reader.
+    var playValue: String? { play.exists ? Self.string(play.value) : nil }
+
+    /// The Classics search text; nil outside Classics.
+    var fieldText: String? {
+        guard place == .classics, searchField.exists else { return nil }
+        let text = Self.string(searchField.value)
+        return text == searchField.placeholderValue ? "" : text
+    }
+
+    /// Whether `element` has keyboard focus, through the attribute XCUITest
+    /// keeps for it; false when it can't be read.
+    func hasKeyboardFocus(_ element: XCUIElement) -> Bool {
+        guard element.exists, element.responds(to: NSSelectorFromString("hasKeyboardFocus")) else { return false }
+        return (element.value(forKey: "hasKeyboardFocus") as? Bool) ?? false
+    }
+
+    var isLibraryCardFocused: Bool {
+        app.descendants(matching: .any).matching(identifier: "library.card").allElementsBoundByIndex
+            .contains { hasKeyboardFocus($0) }
+    }
+
+    /// Books on the Library: the grid's cards and the Continue card.
+    var libraryBookCount: Int {
+        app.descendants(matching: .any).matching(identifier: "library.card").count
+            + app.descendants(matching: .any).matching(identifier: "library.continue").count
+    }
+
+    // MARK: Screens
+
+    enum Place: Equatable, CustomStringConvertible {
+        case library, classics, reader, closed
+
+        var description: String {
+            switch self {
+            case .library: return "the Library"
+            case .classics: return "Classics"
+            case .reader: return "the reader"
+            case .closed: return "no window"
+            }
+        }
+    }
+
+    var place: Place {
+        guard mainWindow.exists else { return .closed }
+        if play.exists { return .reader }
+        if element("bookshelf.list").exists { return .classics }
+        return .library
+    }
+
+    /// One reading of everything a key could change.
+    struct Observation: Equatable, CustomStringConvertible {
+        var place: Place
+        var play: String?
+        var playhead: Int?
+        var announcements: [String]
+        var windows: Int
+        var modals: Int
+        var field: String?
+
+        var description: String {
+            "\(place), play \(play ?? "-"), sentence \(playhead.map(String.init) ?? "-"), "
+                + "\(announcements.count) announced, \(windows) windows, \(modals) modals, field '\(field ?? "-")'"
+        }
+    }
+
+    func observe() -> Observation {
+        Observation(place: place, play: playValue, playhead: playhead, announcements: announcements,
+                    windows: windows, modals: modals, field: fieldText)
+    }
+
+    /// Back to the reader of the loaded book: from Classics pushed over it
+    /// (⌘[), or from the Library through the Continue card's body. True
+    /// once the reader shows.
+    @discardableResult
+    func openReader(_ test: XCTestCase, timeout: TimeInterval = 30) -> Bool {
+        if place == .reader { return true }
+        if modals > 0 { test.press(.escape, in: app) }
+        if place == .classics {
+            test.press(.back, in: app)
+            if play.waitForExistence(timeout: 5) { return true }
+        }
+        if place == .library {
+            let hero = element("library.continue")
+            if hero.waitForExistence(timeout: 5) {
+                hero.click()
+            } else if element("library.card").exists {
+                element("library.card").click()
+            }
+        }
+        return play.waitForExistence(timeout: timeout)
+    }
+
+    /// Back to the Library root with ⌘[, one screen at a time.
+    @discardableResult
+    func backToLibrary(_ test: XCTestCase) -> Bool {
+        for _ in 0..<3 where place != .library {
+            if modals > 0 { test.press(.escape, in: app) }
+            test.press(.back, in: app)
+            _ = poll(timeout: 5) { place != .reader && place != .classics }
+        }
+        return place == .library
+    }
+
+    /// Classics with its search field focused (⌘F) and holding `typing`.
+    func focusClassicsSearch(_ test: XCTestCase, typing: String) {
+        if place == .library {
+            let more = element("library.moreClassics")
+            if more.exists { more.click() } else { test.press(.addClassic, in: app) }
+        }
+        guard element("bookshelf.list").waitForExistence(timeout: 10) else { return }
+        if focus != "text.editable" {
+            test.press(.find, in: app)
+            _ = poll(timeout: 5) { focus == "text.editable" }
+        }
+        if (fieldText ?? "").isEmpty { typeIntoFocusedField(typing) }
+    }
+
+    /// Types `text` into the search field, and only while a field has the
+    /// keys: letters sent to a window would each be a key nothing takes.
+    /// The one place a Mac UI test types text. False when nothing was typed.
+    @discardableResult
+    func typeIntoFocusedField(_ text: String) -> Bool {
+        guard focus == "text.editable", searchField.exists else { return false }
+        searchField.typeText(text)
+        return true
+    }
+
+    /// Presses Tab until `focused` holds, at most `limit` times.
+    @discardableResult
+    func tab(_ test: XCTestCase, limit: Int = 30, until focused: () -> Bool) -> Bool {
+        for _ in 0..<limit {
+            if focused() { return true }
+            test.press(.tab, in: app)
+        }
+        return focused()
+    }
+
+    /// The main window back after ⌘W, through Window ▸ Aloud (a click, not
+    /// a key). True once it shows.
+    func reopenMainWindow() -> Bool {
+        if mainWindow.exists { return true }
+        guard app.state == .runningForeground || app.state == .runningBackground else { return false }
+        let windowMenu = app.menuBars.menuBarItems["Window"].firstMatch
+        guard windowMenu.exists else { return false }
+        windowMenu.click()
+        let item = app.menuBars.menuItems["Aloud"].firstMatch
+        guard item.waitForExistence(timeout: 3) else { return false }
+        item.click()
+        return mainWindow.waitForExistence(timeout: 5)
+    }
+
+    /// Waits until `values` contains the play button's value.
+    func waitForPlay(_ values: Set<String>, timeout: TimeInterval) -> Bool {
+        poll(timeout: timeout) { values.contains(playValue ?? "") }
+    }
+
+    // MARK: Waiting
+
+    /// Re-checks `condition` until it holds or `timeout` passes, letting the
+    /// app run between snapshots. True when it held.
+    @discardableResult
+    func poll(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if condition() { return true }
+            guard Date() < deadline else { return false }
+            // An expectation nobody fulfils: a wait that spins the run loop
+            // and never fails the test.
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "poll")], timeout: 0.2)
+        }
+    }
+
+    /// Lets the app run for `seconds`, for a state that must hold that long.
+    func idle(_ seconds: TimeInterval) {
+        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "idle")], timeout: seconds)
+    }
+
+    // MARK: Audits
+
+    /// The macOS audit (testing §2.4): every type there is on the Mac.
+    static let auditTypes: XCUIAccessibilityAuditType = [.contrast, .elementDetection, .hitRegion,
+                                                         .sufficientElementDescription, .action, .parentChild]
+
+    /// The DEBUG probes are 1 × 1 test plumbing, not UI (as on the iPhone).
+    static func isTestPlumbing(_ issue: XCUIAccessibilityAuditIssue) -> Bool {
+        guard let identifier = issue.element?.identifier else { return false }
+        return identifier.hasPrefix("debug.") || identifier.hasPrefix("reader.sentence.")
+    }
+
+    /// One audit issue as a line a failure can act on: what, the element's
+    /// identifier and label, and where it sits.
+    static func describe(_ issue: XCUIAccessibilityAuditIssue) -> String {
+        let types: [(XCUIAccessibilityAuditType, String)] = [
+            (.contrast, "contrast"), (.elementDetection, "elementDetection"), (.hitRegion, "hitRegion"),
+            (.sufficientElementDescription, "sufficientElementDescription"), (.action, "action"),
+            (.parentChild, "parentChild"),
+        ]
+        let check = types.first { issue.auditType.contains($0.0) }?.1 ?? "audit \(issue.auditType.rawValue)"
+        guard let element = issue.element else { return "\(issue.compactDescription) (\(check)) [no element]" }
+        let f = element.frame
+        return "\(issue.compactDescription) (\(check)) [\(element.identifier)] '\(element.label)' "
+            + "(\(Int(f.minX)), \(Int(f.minY)), \(Int(f.width))x\(Int(f.height)))"
+    }
+
+    /// An element's value as text ("" for none).
+    func text(_ element: XCUIElement) -> String {
+        Self.string(element.value)
+    }
+
+    // MARK: Private
+
+    private static func string(_ value: Any?) -> String {
+        (value as? String) ?? value.map { "\($0)" } ?? ""
     }
 }

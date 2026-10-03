@@ -49,10 +49,12 @@ struct MacAddMenu: View {
 ///   that can't fetch it, offline, fails as `notDownloaded`, and nothing is
 ///   stored. The copy sits in `Documents/Inbox`, where the importer already
 ///   deletes its file once the add ends, whatever the outcome.
-/// - **Several files open none.** The importer opens the last file of a
-///   queue; here, a batch of two or more is added quietly and the user stays
-///   where they are. One file opens playing (R4), unless the user moved on
-///   while it was still copying.
+/// - **Several files open none.** Two or more go to the importer as one
+///   batch (`importFiles(at:)`): all are added quietly, the user stays where
+///   they are, and VoiceOver hears one count ("Added 3 books"), not a line
+///   per file. One file opens playing (R4), unless the user moved on while
+///   it was still copying. Open With hands its files over one at a time, so
+///   they are gathered into one batch first (`admitOpened(_:)`).
 @MainActor
 final class MacFileIntake: ObservableObject {
 
@@ -70,9 +72,15 @@ final class MacFileIntake: ObservableObject {
     private let importer: DocumentImporter
     private let stage: Stage
     /// While set, a finished add never opens its book: a batch is in flight.
+    /// The importer's batch opens none on its own; the hold covers what it
+    /// can't know, the one file of a batch whose others failed to copy, and
+    /// a file whose user moved on while it copied.
     private(set) var holdsOpens = false
     /// Files still being copied, so a batch's hold outlasts a quick first add.
     private var staging = 0
+    /// Files opened from outside the app this turn, admitted together on
+    /// the next (`admitOpened(_:)`).
+    private var gathered: [URL] = []
     private var cancellables: Set<AnyCancellable> = []
 
     init(importer: DocumentImporter, stage: @escaping Stage = MacFileIntake.coordinatedCopy) {
@@ -122,16 +130,40 @@ final class MacFileIntake: ObservableObject {
                 }
             }
             // Held from the handoff, not the admit: a classic clicked while
-            // a batch copies still opens. All at once, so the importer
-            // queues the batch behind its first file. A single file whose
-            // user moved on is added quietly, as the importer's rule would.
+            // a batch copies still opens. All at once, as one batch, so the
+            // importer queues it behind its first file and announces it
+            // once. A single file whose user moved on is added quietly, as
+            // the importer's rule would.
             let movedOn = startedAt != importer.navigation?.navigationGeneration
             if files.count > 1 || movedOn, !staged.isEmpty { holdsOpens = true }
-            staged.forEach(importer.importFile(at:))
+            importer.importFiles(at: staged)
             staging -= files.count
             if failure == nil { failure = firstFailure }
             releaseHoldIfSettled()
         }
+    }
+
+    /// One file opened from outside the app: Finder's Open With or a drop
+    /// on the Dock icon. AppKit hands over an Apple event's files in one
+    /// `application(_:open:)` call, and SwiftUI passes them to `onOpenURL`
+    /// one at a time, back to back, with no turn of the main actor between
+    /// them. So the files of one turn are gathered and admitted on the next,
+    /// all together: several open none and are counted once, as the same
+    /// files dropped on the window would be, and one alone opens playing.
+    /// No timer: a later Open With is a later event, and a gathering of its
+    /// own, and a single file waits no longer than a turn. A file handed
+    /// over twice in one turn is gathered once: one file still opens.
+    func admitOpened(_ url: URL) {
+        guard !gathered.contains(url) else { return }
+        gathered.append(url)
+        guard gathered.count == 1 else { return }
+        Task { self.admitGathered() }
+    }
+
+    private func admitGathered() {
+        let urls = gathered
+        gathered = []
+        admit(urls)
     }
 
     /// The user has seen this file's failure.

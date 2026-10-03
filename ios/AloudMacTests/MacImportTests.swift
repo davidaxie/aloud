@@ -2,8 +2,9 @@ import XCTest
 @testable import Aloud
 
 /// M8 on the Mac: every route in goes through `MacFileIntake` and then the
-/// shared importer. The same file twice is one book; several files are all
-/// added and none opens; a cloud placeholder the coordinator can't fetch
+/// shared importer. The same file twice is one book; several files, from
+/// any route, Open With's included, are all added, none opens, and one
+/// count is announced; a cloud placeholder the coordinator can't fetch
 /// fails as `notDownloaded` and stores nothing. Fixtures are written into
 /// the test host's own temporary folder: a sandboxed host can't read the
 /// checkout.
@@ -102,13 +103,15 @@ final class MacImportTests: XCTestCase {
 
     // MARK: Batches
 
-    /// Three files are all added and none opens, and the hold ends with the
-    /// batch: the next single file opens as usual.
+    /// Three files are all added and none opens, VoiceOver hears one count
+    /// for them (M8), and the hold ends with the batch: the next single
+    /// file opens as usual, announced by its title.
     func testThreeFilesAreAddedAndNoneOpens() async throws {
         let folder = try makeFolder()
         let library = FakeLibrary()
         let router = LibraryRouter()
-        let importer = DocumentImporter(library: library) { _ in }
+        var announcements: [String] = []
+        let importer = DocumentImporter(library: library) { announcements.append($0) }
         importer.navigation = router
         importer.onAdded = { router.open($0) }
         let intake = MacFileIntake(importer: importer, stage: Self.inPlace)
@@ -121,12 +124,14 @@ final class MacImportTests: XCTestCase {
         XCTAssertTrue(settled, "the hold ends with the batch")
         XCTAssertEqual(library.importedNames, ["a.txt", "b.txt", "c.pdf"], "in the order chosen")
         XCTAssertEqual(router.path, [], "none of them opens")
+        XCTAssertEqual(announcements, ["Added 3 books"], "one count, not a line per file")
 
         let single = try writeText("d.txt", in: folder)
         intake.admit([single])
         let opened = await waitUntil { router.path.count == 1 }
         XCTAssertTrue(opened, "one file still opens playing")
         XCTAssertEqual(library.documents.count, 4)
+        XCTAssertEqual(announcements, ["Added 3 books", "Added d.txt"], "and is announced as before")
     }
 
     /// The open rule counts the copy: a user who moves on while a cloud
@@ -202,7 +207,8 @@ final class MacImportTests: XCTestCase {
         let folder = try makeFolder()
         let library = FakeLibrary()
         let router = LibraryRouter()
-        let importer = DocumentImporter(library: library) { _ in }
+        var announcements: [String] = []
+        let importer = DocumentImporter(library: library) { announcements.append($0) }
         importer.navigation = router
         importer.onAdded = { router.open($0) }
         let intake = MacFileIntake(importer: importer) { url in
@@ -220,7 +226,111 @@ final class MacImportTests: XCTestCase {
         XCTAssertTrue(settled)
         XCTAssertEqual(library.importedNames, ["a.txt", "c.txt"])
         XCTAssertEqual(router.path, [], "still a batch: none of them opens")
+        XCTAssertEqual(announcements, ["Added 2 books"], "the two that were added, counted once")
         XCTAssertEqual(intake.failure, .notDownloaded)
+    }
+
+    // MARK: Open With and the Dock
+
+    /// What the window's `onOpenURL` does with each file SwiftUI hands it.
+    private func openWith(_ url: URL, router: LibraryRouter, intake: MacFileIntake) {
+        router.clearForOpenIn()
+        intake.admitOpened(url)
+    }
+
+    /// An importer over `library` that opens through `router` and announces
+    /// through `announce`, and an intake over it that copies nothing.
+    private func openWithIntake(library: FakeLibrary, router: LibraryRouter,
+                                announce: @escaping (String) -> Void) -> (DocumentImporter, MacFileIntake) {
+        let importer = DocumentImporter(library: library, announce: announce)
+        importer.navigation = router
+        importer.onAdded = { router.open($0) }
+        return (importer, MacFileIntake(importer: importer, stage: Self.inPlace))
+    }
+
+    /// Two files of one Open With, handed over one at a time in the same
+    /// turn, are one batch: both added, neither opens, one count. Before the
+    /// gathering, each was its own add, announced one by one, and the last
+    /// opened.
+    func testFilesOpenedTogetherAreOneBatch() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        router.showBookshelf()
+        var announcements: [String] = []
+        let (importer, intake) = openWithIntake(library: library, router: router) { announcements.append($0) }
+        let files = try ["a.txt", "b.pdf"].map { try writeText($0, in: folder) }
+
+        for file in files { openWith(file, router: router, intake: intake) }
+        let added = await waitUntil { library.documents.count == 2 && importer.phase == .idle }
+        XCTAssertTrue(added, "both are added")
+        let settled = await waitUntil { !intake.holdsOpens }
+        XCTAssertTrue(settled, "the hold ends with the batch")
+        XCTAssertEqual(library.importedNames, ["a.txt", "b.pdf"], "in the order handed over")
+        XCTAssertEqual(router.path, [], "the bare Library, and neither opens")
+        XCTAssertEqual(announcements, ["Added 2 books"], "one count, not a line per file")
+    }
+
+    /// One file alone opens playing (R4), from wherever the user was.
+    func testOneFileOpenedAloneOpens() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        router.showBookshelf()
+        var announcements: [String] = []
+        let (_, intake) = openWithIntake(library: library, router: router) { announcements.append($0) }
+
+        openWith(try writeText("one.txt", in: folder), router: router, intake: intake)
+        let opened = await waitUntil { router.path.count == 1 }
+        XCTAssertTrue(opened, "the file opens")
+        let id = try XCTUnwrap(library.documents.first?.id)
+        XCTAssertEqual(router.path, [.reader(id)], "over the bare Library, not Classics")
+        XCTAssertEqual(announcements, ["Added one.txt"])
+        XCTAssertFalse(intake.holdsOpens)
+    }
+
+    /// The same file handed over twice in one turn is one file: added once
+    /// and opened, not a batch of two that opens none.
+    func testOneFileHandedOverTwiceStillOpens() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        var announcements: [String] = []
+        let (importer, intake) = openWithIntake(library: library, router: router) { announcements.append($0) }
+        let file = try writeText("twice.txt", in: folder)
+
+        openWith(file, router: router, intake: intake)
+        openWith(file, router: router, intake: intake)
+        let opened = await waitUntil { router.path.count == 1 && importer.phase == .idle }
+        XCTAssertTrue(opened, "the file opens")
+        XCTAssertEqual(library.importedNames, ["twice.txt"], "added once")
+        XCTAssertEqual(announcements, ["Added twice.txt"])
+        XCTAssertFalse(intake.holdsOpens)
+    }
+
+    /// Two opens in turns of their own are two gatherings, each a single
+    /// open: the second book takes the first one's place.
+    func testOpensInSeparateTurnsEachOpen() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        var announcements: [String] = []
+        let (importer, intake) = openWithIntake(library: library, router: router) { announcements.append($0) }
+
+        openWith(try writeText("first.txt", in: folder), router: router, intake: intake)
+        let first = await waitUntil { router.path.count == 1 && importer.phase == .idle }
+        XCTAssertTrue(first, "the first file opens")
+        let firstID = try XCTUnwrap(library.documents.first?.id)
+        XCTAssertEqual(router.path, [.reader(firstID)])
+
+        openWith(try writeText("second.txt", in: folder), router: router, intake: intake)
+        let second = await waitUntil { library.documents.count == 2 && importer.phase == .idle }
+        XCTAssertTrue(second, "the second file is added")
+        let secondID = try XCTUnwrap(library.documents.last?.id)
+        let reopened = await waitUntil { router.path == [.reader(secondID)] }
+        XCTAssertTrue(reopened, "and opens in its own turn, as a single file")
+        XCTAssertEqual(announcements, ["Added first.txt", "Added second.txt"], "each announced by its title")
+        XCTAssertFalse(intake.holdsOpens)
     }
 
     // MARK: Cloud placeholders

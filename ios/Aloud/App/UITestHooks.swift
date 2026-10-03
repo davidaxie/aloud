@@ -341,7 +341,7 @@ enum UITestShortcut: Equatable {
 /// keeps the accessor type; it carries no hook string itself.
 enum UITestFaultKind: String, CaseIterable {
     case route, interruption, interruptionResume = "interruption-resume", synthesis, skip, warmup,
-         thermalSerious = "thermal-serious", thermalCritical = "thermal-critical"
+         thermalSerious = "thermal-serious", thermalCritical = "thermal-critical", willSleep = "will-sleep"
 }
 
 /// The launch fixtures `-uitest-open-fixture` and `-uitest-pick-fixture`

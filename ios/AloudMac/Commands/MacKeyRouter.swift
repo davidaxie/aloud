@@ -13,8 +13,10 @@ import AppKit
 /// beeps, and a search field still types spaces and brackets.
 ///
 /// ⌘←, ⌘→ and ⌘⌫ are also text keys: with an editable field focused they go
-/// straight to it, so a menu item never takes the caret's moves. Every
-/// other key passes through untouched. Installed once, by the app delegate.
+/// straight to it, so a menu item never takes the caret's moves. ↓ in a
+/// search field goes to the list under it when that list offers to take
+/// it (`MacSearchHandoff`), and to the field otherwise. Every other key
+/// passes through untouched. Installed once, by the app delegate.
 @MainActor
 final class MacKeyRouter {
 
@@ -22,6 +24,8 @@ final class MacKeyRouter {
     typealias Perform = @MainActor (MacCommand) -> Bool
 
     private let perform: Perform
+    /// Where ↓ in a search field goes: the app's one, or a test's own.
+    let searchHandoff: MacSearchHandoff
     private var monitor: Any?
     /// The plain key on its way through a window's chain, while it is, and
     /// whether it already ran its command there: one press, one command,
@@ -31,8 +35,9 @@ final class MacKeyRouter {
     /// One tail, appended to each window the router sends a key to.
     let tail = MacKeyTail()
 
-    init(perform: @escaping Perform) {
+    init(searchHandoff: MacSearchHandoff? = nil, perform: @escaping Perform) {
         self.perform = perform
+        self.searchHandoff = searchHandoff ?? .shared
         tail.router = self
     }
 
@@ -57,6 +62,13 @@ final class MacKeyRouter {
     /// What the monitor returns: the event, for AppKit's own dispatch, or
     /// nil once it was delivered or handled here.
     func handle(_ event: NSEvent, in window: NSWindow?) -> NSEvent? {
+        if Self.isPlainDown(event), Self.isSearchFieldEditor(window?.firstResponder),
+           !Self.isComposing(window?.firstResponder), searchHandoff.moveDown() {
+            // ↓ from the search field into its results (M7), as Spotlight
+            // does. The toolbar field's editor would take it for its caret
+            // before the list could see it.
+            return nil
+        }
         guard let command = MacCommand.command(for: event), command.defersToEditableText else { return event }
         if let window, Self.isEditableText(window.firstResponder) {
             // A field types it (held down, too), or moves its caret on ⌘←
@@ -133,6 +145,59 @@ final class MacKeyRouter {
         if let text = responder as? NSText { return text.isEditable }
         if let field = responder as? NSTextField { return field.isEditable }
         return false
+    }
+
+    /// The window's field editor while a search field edits through it:
+    /// the first responder of a focused search field, toolbar's included.
+    static func isSearchFieldEditor(_ responder: NSResponder?) -> Bool {
+        guard let editor = responder as? NSTextView, editor.isFieldEditor else { return false }
+        return editor.delegate is NSSearchField
+    }
+
+    /// ↓ with no modifier: ⇧↓, ⌥↓ and ⌘↓ select or move in the field.
+    private static func isPlainDown(_ event: NSEvent) -> Bool {
+        event.specialKey == .downArrow && MacModifiers(event: event).isEmpty
+    }
+
+    /// An input method's unconfirmed text is in the field: its ↓ picks the
+    /// next candidate, and the monitor sees the key before the input method.
+    private static func isComposing(_ responder: NSResponder?) -> Bool {
+        (responder as? NSTextInputClient)?.hasMarkedText() ?? false
+    }
+}
+
+/// ↓ in a search field, offered to the list under it (M7, mac-ux §3.4):
+/// Spotlight's move from the field into its results. The toolbar search
+/// field's editor takes every arrow before SwiftUI's content sees one, so
+/// the router asks here first. One offer at a time: a view makes it as it
+/// appears and withdraws it as it goes, and a withdrawal by a view whose
+/// offer was since replaced leaves the newer one.
+@MainActor
+final class MacSearchHandoff {
+    /// Moves focus into the list; false with nowhere to move it, and the
+    /// field keeps the key.
+    typealias Take = @MainActor () -> Bool
+
+    /// The app's one: Classics offers, the router asks.
+    static let shared = MacSearchHandoff()
+
+    private var owner: UUID?
+    private var take: Take?
+
+    func offer(by owner: UUID, _ take: @escaping Take) {
+        self.owner = owner
+        self.take = take
+    }
+
+    func withdraw(by owner: UUID) {
+        guard self.owner == owner else { return }
+        self.owner = nil
+        take = nil
+    }
+
+    /// True once focus moved into the list.
+    func moveDown() -> Bool {
+        take?() ?? false
     }
 }
 

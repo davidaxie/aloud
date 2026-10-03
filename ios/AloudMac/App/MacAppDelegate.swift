@@ -8,10 +8,12 @@ import SwiftUI
 /// - Closing the window keeps the book playing; a Dock click brings the
 ///   window back (M5).
 /// - Finder's Open With and a drop on the Dock icon reach the window's
-///   `onOpenURL` (the Library's intake: one file opens and plays, several
-///   are all added). This delegate leaves `application(_:open:)` to
-///   SwiftUI, which delivers them there, and replays a UI test's
-///   `-uitest-open <path>` through that same entry once the window is up.
+///   `onOpenURL`. This delegate leaves `application(_:open:)` to SwiftUI,
+///   which delivers an event's files there one at a time, back to back;
+///   the Library's intake gathers them into one batch (one file opens and
+///   plays, several are all added and none opens). A UI test's
+///   `-uitest-open <path>` is replayed through that same entry once the
+///   window is up.
 /// - No window tabs, so no Show Tab Bar.
 /// - Quitting needs nothing here: the shared `willTerminate` observers
 ///   (AppModel's, the store's) anchor the place, flush progress and clear
@@ -45,6 +47,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         MacTestSilence.installIfMuted()
         #endif
+        // Before the first text field: no text menu offers Speech.
+        MacFieldEditor.install()
         // Before the first window, so its first frame is the chosen paper.
         appearance.start()
     }
@@ -92,7 +96,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     /// Files to open, by the app's own Open With entry (SwiftUI's delegate,
     /// which hands them to `onOpenURL`); if that entry is missing, the same
     /// steps `onOpenURL` takes (the bare Library, then the window's intake,
-    /// so several files still open none).
+    /// the files already together, so several still open none).
     static func open(_ urls: [URL]) {
         let entry = NSApp.delegate
         if let entry, entry.responds(to: #selector(NSApplicationDelegate.application(_:open:))) {
@@ -110,7 +114,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 /// system synthesizer, on the speakers, past the muted engine (M11, testing
 /// §1.3). The commands remove
 /// the text-editing group that carries it; this is the backstop, for a
-/// Speech item AppKit adds on its own.
+/// Speech item AppKit adds on its own. Text views' right-click menus go
+/// through it too (`MacFieldEditor`).
 @MainActor
 enum MacMenuPruner {
     static let speechActions: Set<String> = ["startSpeaking:", "stopSpeaking:"]

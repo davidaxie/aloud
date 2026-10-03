@@ -220,7 +220,8 @@ struct MacPlayerBar: View {
 
 /// The bar's geometry and its control inventory, pure, so the column math,
 /// the second row and the focus budget are tested without a window (M9:
-/// at most 9 focusable controls below the text). The view draws its
+/// at most 9 focusable controls below the text at rest, 10 while the
+/// natural-voice offer shows). The view draws its
 /// transport from `transportRows`, so the inventory is what it draws.
 struct MacPlayerBarLayout: Equatable {
 
@@ -250,7 +251,10 @@ struct MacPlayerBarLayout: Equatable {
     /// Mac targets: the HIG's 28 pt minimum hit region; the skips get 32.
     static let chipHeight: CGFloat = 28
     static let glyphHit: CGFloat = 32
-    /// Most controls the bar and its chip slot may offer the keyboard.
+    /// Most controls the bar and its chip slot may offer the keyboard at
+    /// rest. While the natural-voice offer shows, its Download and Not now
+    /// are one more than a line's one inline action, so under a chip the
+    /// bar holds 10 then; the offer shows once, after 60 s of listening.
     static let focusBudget = 9
 
     let columnWidth: CGFloat

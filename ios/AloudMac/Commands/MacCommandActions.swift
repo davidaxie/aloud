@@ -130,7 +130,7 @@ struct MacCommandActions {
         case .back: router.path.removeLast()
         case .addFromFiles: router.rootPresentation = .filePicker
         case .addClassic:
-            router.showBookshelf()
+            showClassics()
             ui.searchFocus = .classics
         case .closeWindow: NSApp.keyWindow?.performClose(nil)
         case .settings, .fullScreen, .minimize, .hide, .quit: return false
@@ -264,6 +264,19 @@ struct MacCommandActions {
         } else {
             playback.jump(to: target, origin: .chapter)
         }
+    }
+
+    /// Add a Classic… lands in Classics. From a reader opened from Classics
+    /// it goes back to that Classics, never a second one on top: the stack
+    /// holds one Classics, as R24's More classics keeps it. One assignment,
+    /// so the navigation generation moves once. Elsewhere it pushes one.
+    private func showClassics() {
+        guard let index = router.path.lastIndex(of: .bookshelf) else {
+            router.showBookshelf()
+            return
+        }
+        guard index < router.path.count - 1 else { return }
+        router.path = Array(router.path.prefix(through: index))
     }
 
     private func stepRate(faster: Bool) {

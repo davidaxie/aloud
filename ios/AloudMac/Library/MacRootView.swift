@@ -66,11 +66,14 @@ struct MacRootView: View {
         }
         // Finder's Open With and a drop on the Dock icon, when they arrive
         // as a URL: the bare Library first, as on the iPhone, so the
-        // overlay, any failure and the opened reader have the window.
+        // overlay, any failure and the opened reader have the window (a
+        // second file of the same open finds it bare already). SwiftUI
+        // hands several files over one at a time; the intake gathers them
+        // into one batch, so they are all added and none opens.
         .onOpenURL { url in
             guard url.isFileURL else { return }
             router.clearForOpenIn()
-            intake.admit([url])
+            intake.admitOpened(url)
         }
         // Fixed copy only: one sentence and its next step (R10). The
         // intake's failure (a file that never reached the importer) first.

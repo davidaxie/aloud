@@ -40,6 +40,11 @@ enum DeviceCopy {
     static let meteredDetail: String? = nil
     /// The download waits for a network that costs nothing.
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi"
+    /// Where the installed voice lives: "353 MB on device · works offline".
+    static let onDevice = "on device"
+    /// What to do after a file couldn't be opened: add it again from where
+    /// it came.
+    static let addAgain = "Try adding it again from Files."
     #elseif os(macOS)
     /// A crash, a force quit or a flat battery mid-read: the Mac's system
     /// doesn't close apps on its own.
@@ -51,5 +56,10 @@ enum DeviceCopy {
     /// a network the listener marked Low Data.
     static let meteredDetail: String? = "Your Mac is using a Personal Hotspot or Low Data Mode."
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi or Ethernet"
+    /// "353 MB on this Mac · works offline" (M17).
+    static let onDevice = "on this Mac"
+    /// A Mac file arrives by the open panel, a drop or Open With, so the
+    /// step names none of them.
+    static let addAgain = "Try adding it again."
     #endif
 }

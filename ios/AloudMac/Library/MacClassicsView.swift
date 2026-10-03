@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The bundled classics (M7, mac-ux §3.4), pushed into the window. Rows are
@@ -6,7 +7,8 @@ import SwiftUI
 /// copy on the shelf. Three sections by listening length under the shared
 /// `BookshelfIndex`; the toolbar search (⌘F) spans all three, matches title
 /// or author and ignores diacritics. Return in the search field opens the
-/// top result, the arrows walk focused rows, and Esc clears the field.
+/// top result, ↓ there moves focus to the first row (`MacSearchHandoff`),
+/// the arrows walk focused rows, and Esc clears the field.
 struct MacClassicsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var importer: DocumentImporter
@@ -21,6 +23,8 @@ struct MacClassicsView: View {
     @State private var libraryIDs: Set<Int> = []
     @State private var isSearchFocused = false
     @FocusState private var focusedRow: Int?
+    /// Whose ↓ handoff is offered: this screen's, until it goes.
+    @State private var handoffOwner = UUID()
 
     /// The row column's widest: rows past it would scatter title and length.
     private static let columnMaxWidth: CGFloat = 720
@@ -55,6 +59,10 @@ struct MacClassicsView: View {
                 .accessibilityIdentifier("bookshelf.list")
                 // Each keystroke reshapes the list; start it from the top.
                 .onChange(of: query) { scroller.scrollTo("top", anchor: .top) }
+                .onAppear {
+                    MacSearchHandoff.shared.offer(by: handoffOwner) { focusFirstRow(scroller) }
+                }
+                .onDisappear { MacSearchHandoff.shared.withdraw(by: handoffOwner) }
             }
         }
         .background(Theme.bg)
@@ -159,6 +167,17 @@ struct MacClassicsView: View {
     private func openTopResult() {
         guard let first = results?.first else { return }
         listen(to: first)
+    }
+
+    /// ↓ in the search field: the first row drawn, of the results or of the
+    /// shelf, takes focus, as Spotlight's list does. A row is a button, which
+    /// takes focus only under keyboard navigation; without it, or with no
+    /// row, false, and the field keeps the key.
+    private func focusFirstRow(_ scroller: ScrollViewProxy) -> Bool {
+        guard NSApp.isFullKeyboardAccessEnabled, let first = visibleBooks.first else { return false }
+        scroller.scrollTo("top", anchor: .top)
+        focusedRow = first.id
+        return true
     }
 
     private func moveFocus(_ direction: MoveCommandDirection) {

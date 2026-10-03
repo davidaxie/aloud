@@ -177,7 +177,8 @@ enum NaturalVoiceCopy {
     /// "Download paused · waiting for Wi-Fi".
     static var waitingForWiFi: String { DeviceCopy.waitingForNetwork }
     static let installed = "Natural voice installed"
-    static func onDevice(_ size: String) -> String { "\(size) on device · works offline" }
+    /// On the iPhone, "353 MB on device · works offline".
+    static func onDevice(_ size: String) -> String { "\(size) \(DeviceCopy.onDevice) · works offline" }
 
     /// A failure's line in two parts: what happened, then what to do (an
     /// action when the line itself retries, as on the card).

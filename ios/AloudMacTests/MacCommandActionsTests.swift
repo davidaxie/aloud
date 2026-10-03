@@ -108,6 +108,34 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertEqual(actions.place, .library)
     }
 
+    /// ⇧⌘O from a reader opened from Classics goes back to that Classics,
+    /// in one move, never stacking a second one. From a reader opened from
+    /// the Library it pushes Classics, and in Classics it stays.
+    func testAddAClassicNeverStacksASecondClassics() {
+        let (_, actions) = makeActions()
+        let router = actions.router
+        let book = UUID(), other = UUID()
+
+        router.path = [.bookshelf, .reader(book)]
+        let generation = router.navigationGeneration
+        XCTAssertTrue(actions.perform(.addClassic))
+        XCTAssertEqual(router.path, [.bookshelf], "back to the Classics the reader came from")
+        XCTAssertEqual(router.navigationGeneration, generation &+ 1, "one move")
+        XCTAssertEqual(actions.ui.searchFocus, .classics)
+
+        XCTAssertTrue(actions.perform(.addClassic))
+        XCTAssertEqual(router.path, [.bookshelf], "in Classics it stays")
+        XCTAssertEqual(router.navigationGeneration, generation &+ 1)
+
+        router.path = [.reader(other), .bookshelf, .reader(book)]
+        XCTAssertTrue(actions.perform(.addClassic))
+        XCTAssertEqual(router.path, [.reader(other), .bookshelf], "the nearest Classics, the one Back reaches")
+
+        router.path = [.reader(book)]
+        XCTAssertTrue(actions.perform(.addClassic))
+        XCTAssertEqual(router.path, [.reader(book), .bookshelf], "no Classics below: it pushes one")
+    }
+
     /// No Contents panel yet (phase 1): Find and ⌃⌘S are off in the reader,
     /// so neither is a live key with nothing to show, and the title stays
     /// Show Contents.

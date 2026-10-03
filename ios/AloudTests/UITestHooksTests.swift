@@ -177,6 +177,7 @@ final class UITestHooksTests: XCTestCase {
             "warmup": .warmup,
             "thermal-serious": .thermalSerious,
             "thermal-critical": .thermalCritical,
+            "will-sleep": .willSleep,
         ]
         XCTAssertEqual(expected.count, UITestFaultKind.allCases.count)
         for (raw, kind) in expected {

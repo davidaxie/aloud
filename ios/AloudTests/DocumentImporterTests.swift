@@ -262,6 +262,148 @@ final class DocumentImporterTests: XCTestCase {
         XCTAssertTrue(library.importedURLs.isEmpty)
     }
 
+    // MARK: Several at once (M8)
+
+    /// Three files handed over at once: all added in order, none opens,
+    /// and VoiceOver hears one count when the last ends, not a line each.
+    func testSeveralFilesAreAllAddedNoneOpensAndOneCountIsAnnounced() async {
+        let library = FakeLibrary(result: .success(Self.document(title: "Unused")))
+        library.documentsByFileName = ["a.txt": Self.document(title: "A"), "b.pdf": Self.document(title: "B"),
+                                       "c.txt": Self.document(title: "C")]
+        library.gatesImports = true
+        let router = LibraryRouter()
+        let (importer, log) = makeRoutedImporter(library, router: router)
+
+        importer.importFiles(at: ["a.txt", "b.pdf", "c.txt"].map(pickedURL))
+        for count in 1...2 {
+            let started = await waitUntil { library.importedURLs.count == count && library.pendingImports == 1 }
+            XCTAssertTrue(started)
+            library.releaseImport()
+            let next = await waitUntil { library.importedURLs.count == count + 1 }
+            XCTAssertTrue(next)
+            XCTAssertEqual(log.announcements, [], "nothing is said until the last ends")
+        }
+        library.releaseImport()
+        let announced = await waitUntil { !log.announcements.isEmpty }
+        XCTAssertTrue(announced)
+        await settle()
+        XCTAssertEqual(library.importedURLs.map(\.lastPathComponent), ["a.txt", "b.pdf", "c.txt"])
+        XCTAssertEqual(log.announcements, ["Added 3 books"])
+        XCTAssertTrue(log.opened.isEmpty, "none of them opens")
+        XCTAssertEqual(router.path, [])
+        XCTAssertEqual(importer.phase, .idle)
+    }
+
+    /// A file already on the shelf isn't counted; a batch of nothing new
+    /// says so, naming the book when it held only one (the same file twice,
+    /// or the others failed).
+    func testABatchCountsOnlyNewBooks() async {
+        let old = Self.document(title: "Old"), older = Self.document(title: "Older")
+        let library = FakeLibrary(result: .success(Self.document(title: "New")))
+        library.documents = [old, older]
+        library.documentsByFileName = ["old.txt": old, "older.txt": older]
+        let (importer, log) = makeImporter(library)
+
+        importer.importFiles(at: [pickedURL("new.txt"), pickedURL("old.txt")])
+        let announced = await waitUntil { !log.announcements.isEmpty }
+        XCTAssertTrue(announced)
+        XCTAssertEqual(log.announcements, ["Added 1 book"])
+
+        importer.importFiles(at: [pickedURL("old.txt"), pickedURL("older.txt")])
+        let both = await waitUntil { log.announcements.count == 2 }
+        XCTAssertTrue(both)
+        XCTAssertEqual(log.announcements.last, "These books are already in your library")
+
+        importer.importFiles(at: [pickedURL("old.txt"), pickedURL("old.txt")])
+        let twice = await waitUntil { log.announcements.count == 3 }
+        XCTAssertTrue(twice)
+        XCTAssertEqual(log.announcements.last, "Old is already in your library", "one book, named")
+
+        // The last one fails: its alert is read first, and the line waits
+        // for it to close.
+        library.result = .failure(ExtractionError.noReadableText)
+        importer.importFiles(at: [pickedURL("old.txt"), pickedURL("scan.pdf")])
+        let failed = await waitUntil { importer.failure != nil }
+        XCTAssertTrue(failed)
+        await settle()
+        XCTAssertEqual(log.announcements.count, 3, "nothing said over the alert")
+        importer.dismissFailure()
+        XCTAssertEqual(log.announcements.last, "Old is already in your library", "the failure isn't counted")
+        await settle()
+        XCTAssertEqual(log.announcements.count, 4, "said once")
+        XCTAssertTrue(log.opened.isEmpty)
+    }
+
+    /// A failure in a batch shows and holds the rest, as any failure does;
+    /// the count still comes once, after the last.
+    func testAFailureInABatchHoldsTheRestAndTheCountComesLast() async {
+        let library = FakeLibrary(result: .failure(ExtractionError.noReadableText))
+        library.documentsByFileName = ["a.txt": Self.document(title: "A"), "c.txt": Self.document(title: "C")]
+        let (importer, log) = makeImporter(library)
+
+        importer.importFiles(at: ["a.txt", "scan.pdf", "c.txt"].map(pickedURL))
+        let failed = await waitUntil { importer.failure != nil }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(importer.phase, .failed(.pdfNoText))
+        await settle()
+        XCTAssertEqual(library.importedURLs.count, 2, "the third waits for the alert")
+        XCTAssertEqual(log.announcements, [])
+
+        importer.dismissFailure()
+        let announced = await waitUntil { !log.announcements.isEmpty }
+        XCTAssertTrue(announced)
+        await settle()
+        XCTAssertEqual(log.announcements, ["Added 2 books"])
+        XCTAssertTrue(log.opened.isEmpty)
+    }
+
+    /// Cancel mid-batch: the rest are dropped, and the books already added
+    /// are still announced.
+    func testCancellingABatchAnnouncesWhatItAdded() async {
+        let library = FakeLibrary(result: .success(Self.document(title: "Unused")))
+        library.documentsByFileName = ["a.txt": Self.document(title: "A")]
+        library.gatesImports = true
+        let (importer, log) = makeImporter(library)
+
+        importer.importFiles(at: ["a.txt", "b.txt", "c.txt"].map(pickedURL))
+        let firstStarted = await waitUntil { library.pendingImports == 1 }
+        XCTAssertTrue(firstStarted)
+        library.gatesImports = false
+        library.holdsImports = true   // the second one holds until cancelled
+        library.releaseImport()
+        let secondStarted = await waitUntil { library.importedURLs.count == 2 }
+        XCTAssertTrue(secondStarted)
+        XCTAssertEqual(log.announcements, [])
+
+        importer.cancel()
+        XCTAssertEqual(log.announcements, ["Added 1 book"])
+        let cancelled = await waitUntil { library.sawCancellation }
+        XCTAssertTrue(cancelled)
+        await settle()
+        XCTAssertEqual(library.importedURLs.count, 2, "the third never starts")
+        XCTAssertEqual(log.announcements, ["Added 1 book"], "said once")
+        XCTAssertTrue(log.opened.isEmpty)
+        XCTAssertEqual(importer.phase, .idle)
+    }
+
+    /// One file handed over the batch way is an ordinary add: it opens and
+    /// is announced by title.
+    func testOneFileThroughTheBatchPathIsAnOrdinaryAdd() async {
+        let fixture = Self.document(title: "Fixture")
+        let library = FakeLibrary(result: .success(fixture))
+        let (importer, log) = makeImporter(library)
+
+        importer.importFiles(at: [pickedURL("fixture.txt")])
+        let opened = await waitUntil { !log.opened.isEmpty }
+        XCTAssertTrue(opened)
+        await settle()
+        XCTAssertEqual(log.opened.map(\.id), [fixture.id])
+        XCTAssertEqual(log.announcements, ["Added Fixture"])
+
+        importer.importFiles(at: [])
+        XCTAssertEqual(importer.phase, .idle, "no files, no add")
+    }
+
     // MARK: Classics
 
     private let classic = BookshelfBook(gutenbergID: 1063, title: "The Cask of Amontillado",

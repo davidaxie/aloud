@@ -119,6 +119,10 @@ enum UITestFaultInjector {
             model.thermalGuard.thermalStateChanged(.serious)
         case .thermalCritical:
             model.thermalGuard.thermalStateChanged(.critical)
+        case .willSleep:
+            // As the system posts it, so the stop goes through the real
+            // observer (on the Mac, the workspace's own center).
+            PlatformLifecycle.post(.systemWillSleep)
         case .warmup:
             break   // armed at launch
         }

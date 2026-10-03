@@ -69,7 +69,16 @@ final class NaturalVoiceCopyTests: XCTestCase {
         XCTAssertEqual(NaturalVoiceCopy.waitingForWiFi, "Download paused · waiting for Wi-Fi or Ethernet")
         #endif
         XCTAssertEqual(NaturalVoiceCopy.installed, "Natural voice installed")
+    }
+
+    /// Where the installed voice lives: the iPhone's words, and the Mac's
+    /// (PRD M17), through `DeviceCopy`.
+    func testInstalledSizeNamesTheDevice() {
+        #if os(iOS)
         XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on device · works offline")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on this Mac · works offline")
+        #endif
     }
 
     /// M3: shown while files already on disk are hashed.

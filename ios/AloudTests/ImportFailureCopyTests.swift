@@ -12,12 +12,15 @@ final class ImportFailureCopyTests: XCTestCase {
 
     /// Every row as the iPhone reads it, letter for letter. The device noun
     /// now comes from `DeviceNoun`, and the words around it must not move.
-    /// The Mac's one different row is pinned letter for letter too.
+    /// The Mac's two different rows are pinned letter for letter too: its
+    /// files don't come from Files.
     func testEveryRowReadsAsItAlwaysHas() {
         #if os(iOS)
         let outOfSpace = "iPhone is out of space."
+        let addAgain = "Try adding it again from Files."
         #else
         let outOfSpace = "Your Mac is out of space."
+        let addAgain = "Try adding it again."
         #endif
         let table: [ImportFailure: (title: String, nextStep: String)] = [
             .pdfNoText: ("This PDF has no readable text.", "Try a PDF with selectable text."),
@@ -27,7 +30,7 @@ final class ImportFailureCopyTests: XCTestCase {
             .textNoText: ("This file has no readable text.", "Try a PDF or a plain-text file."),
             .textUnreadable: ("This text file can't be read.", "Save it as UTF-8 plain text, then add it again."),
             .outOfSpace: (outOfSpace, "Free up some space, then add it again."),
-            .couldNotOpen: ("This file couldn't be opened.", "Try adding it again from Files."),
+            .couldNotOpen: ("This file couldn't be opened.", addAgain),
             .classicMissing: ("This classic is missing from Aloud.", "Try another one from Classics."),
             .notDownloaded: ("This file isn't downloaded yet.", "Connect, then add it again."),
         ]
@@ -37,11 +40,14 @@ final class ImportFailureCopyTests: XCTestCase {
             XCTAssertEqual(failure.nextStep, copy.nextStep, "\(failure) nextStep")
         }
         XCTAssertEqual(ImportFailure.outOfSpace.title, "\(DeviceNoun.Subject) is out of space.")
+        XCTAssertEqual(ImportFailure.couldNotOpen.nextStep, DeviceCopy.addAgain)
     }
 
+    #if os(iOS)
     /// The Mac's cloud placeholder row: the iPhone's Files picker downloads
     /// before it hands a file over, so no error an iPhone add can raise
-    /// reads as "not downloaded", the ubiquity ones included.
+    /// reads as "not downloaded", the ubiquity ones included. The Mac's
+    /// intake raises it (`MacImportTests`).
     func testNotDownloadedIsNeverClassifiedOnThePhone() {
         let errors: [any Error] = [
             CocoaError(.ubiquitousFileUnavailable),
@@ -54,6 +60,7 @@ final class ImportFailureCopyTests: XCTestCase {
             XCTAssertEqual(ImportFailure(error, isPDF: false), .couldNotOpen, "\(error)")
         }
     }
+    #endif
 
     func testEveryRowIsOneSentencePlusANextStep() {
         let terminators: Set<Character> = [".", "!", "?", "\u{2026}"]
@@ -114,5 +121,12 @@ final class ImportFailureCopyTests: XCTestCase {
     func testAnnouncementCopy() {
         XCTAssertEqual(ImportCopy.added("Fixture"), "Added Fixture")
         XCTAssertEqual(ImportCopy.alreadyInLibrary("Fixture"), "Fixture is already in your library")
+    }
+
+    /// M8: several files at once are announced once, by count.
+    func testBatchAnnouncementCopy() {
+        XCTAssertEqual(ImportCopy.addedBooks(3), "Added 3 books")
+        XCTAssertEqual(ImportCopy.addedBooks(1), "Added 1 book")
+        XCTAssertEqual(ImportCopy.booksAlreadyInLibrary, "These books are already in your library")
     }
 }

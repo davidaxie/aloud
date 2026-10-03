@@ -42,7 +42,7 @@ enum ImportFailure: Equatable, CaseIterable {
         case .textNoText: return "Try a PDF or a plain-text file."
         case .textUnreadable: return "Save it as UTF-8 plain text, then add it again."
         case .outOfSpace: return "Free up some space, then add it again."
-        case .couldNotOpen: return "Try adding it again from Files."
+        case .couldNotOpen: return DeviceCopy.addAgain
         case .classicMissing: return "Try another one from Classics."
         case .notDownloaded: return "Connect, then add it again."
         }
@@ -88,4 +88,10 @@ enum ImportFailure: Equatable, CaseIterable {
 enum ImportCopy {
     static func added(_ title: String) -> String { "Added \(title)" }
     static func alreadyInLibrary(_ title: String) -> String { "\(title) is already in your library" }
+    /// Several files at once, announced once when the last ends (M8): the
+    /// new books only, so a file already on the shelf isn't counted.
+    static func addedBooks(_ count: Int) -> String { count == 1 ? "Added 1 book" : "Added \(count) books" }
+    /// Several files at once, nothing new: two or more books already on the
+    /// shelf (one is named, as `alreadyInLibrary`).
+    static let booksAlreadyInLibrary = "These books are already in your library"
 }

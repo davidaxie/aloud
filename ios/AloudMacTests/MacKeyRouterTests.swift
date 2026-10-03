@@ -11,13 +11,15 @@ final class MacKeyRouterTests: XCTestCase {
 
     private var performed: [MacCommand] = []
     private var router: MacKeyRouter!
+    private var handoff: MacSearchHandoff!
     private var windows: [NSWindow] = []
 
     override func setUp() {
         super.setUp()
         MacTestSilence.installIfMuted()
         performed = []
-        router = MacKeyRouter { [unowned self] command in
+        handoff = MacSearchHandoff()
+        router = MacKeyRouter(searchHandoff: handoff) { [unowned self] command in
             performed.append(command)
             return true
         }
@@ -27,6 +29,7 @@ final class MacKeyRouterTests: XCTestCase {
         windows.forEach { $0.close() }
         windows = []
         router = nil
+        handoff = nil
         super.tearDown()
     }
 
@@ -174,7 +177,129 @@ final class MacKeyRouterTests: XCTestCase {
         XCTAssertNil(router.tail.nextResponder)
     }
 
+    // MARK: - ↓ from a search field
+
+    /// ↓ in a search field goes to the list that offered to take it (M7):
+    /// the field never sees it, and no command runs.
+    func testDownFromASearchFieldGoesToTheList() throws {
+        var takes = 0
+        handoff.offer(by: UUID()) { takes += 1; return true }
+        let (window, _) = try makeWindowWithSearchField()
+        XCTAssertNil(router.handle(Self.down(window: window), in: window), "the list took it")
+        XCTAssertEqual(takes, 1)
+        XCTAssertEqual(performed, [])
+    }
+
+    /// A list with no row to take focus leaves ↓ to the field's caret.
+    func testDownStaysTheFieldsWhenTheListTakesNothing() throws {
+        var takes = 0
+        handoff.offer(by: UUID()) { takes += 1; return false }
+        let (window, _) = try makeWindowWithSearchField()
+        let down = Self.down(window: window)
+        XCTAssertTrue(router.handle(down, in: window) === down, "AppKit's, for the field")
+        XCTAssertEqual(takes, 1)
+    }
+
+    /// With no list offering, and with ⇧↓, ⌥↓ or ⌘↓ (which select or move
+    /// in the field), ↓ is the field's, untouched.
+    func testDownWithoutAnOfferOrWithAModifierStaysTheFields() throws {
+        let (window, _) = try makeWindowWithSearchField()
+        let alone = Self.down(window: window)
+        XCTAssertTrue(router.handle(alone, in: window) === alone, "no list offered")
+
+        var takes = 0
+        handoff.offer(by: UUID()) { takes += 1; return true }
+        for flags: NSEvent.ModifierFlags in [.shift, .option, .command] {
+            let held = Self.down(flags: flags, window: window)
+            XCTAssertTrue(router.handle(held, in: window) === held, "\(flags.rawValue) is the field's")
+        }
+        XCTAssertEqual(takes, 0)
+        XCTAssertEqual(performed, [])
+    }
+
+    /// Only a search field hands ↓ on: a plain text field and a text view
+    /// keep it for their caret, and outside a field it is AppKit's.
+    func testDownOutsideASearchFieldPassesOn() throws {
+        var takes = 0
+        handoff.offer(by: UUID()) { takes += 1; return true }
+        let fieldWindow = makeWindow()
+        let field = NSTextField(frame: NSRect(x: 20, y: 40, width: 240, height: 24))
+        fieldWindow.contentView?.addSubview(field)
+        XCTAssertTrue(fieldWindow.makeFirstResponder(field))
+        XCTAssertTrue(fieldWindow.firstResponder is NSTextView, "the text field is editing")
+        XCTAssertFalse(MacKeyRouter.isSearchFieldEditor(fieldWindow.firstResponder))
+        let inField = Self.down(window: fieldWindow)
+        XCTAssertTrue(router.handle(inField, in: fieldWindow) === inField)
+
+        let (textWindow, text) = makeWindowWithText(editable: true)
+        XCTAssertFalse(MacKeyRouter.isSearchFieldEditor(text))
+        let inText = Self.down(window: textWindow)
+        XCTAssertTrue(router.handle(inText, in: textWindow) === inText)
+
+        let bare = makeWindow()
+        let inWindow = Self.down(window: bare)
+        XCTAssertTrue(router.handle(inWindow, in: bare) === inWindow)
+        XCTAssertTrue(router.handle(inWindow, in: nil) === inWindow)
+        XCTAssertEqual(takes, 0)
+        XCTAssertEqual(performed, [])
+    }
+
+    /// While an input method composes in the field (a CJK source's
+    /// unconfirmed text), ↓ picks its next candidate: the field's, with the
+    /// list offering.
+    func testDownWhileComposingStaysTheFields() throws {
+        var takes = 0
+        handoff.offer(by: UUID()) { takes += 1; return true }
+        let (window, _) = try makeWindowWithSearchField()
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        editor.setMarkedText("ぷ", selectedRange: NSRange(location: 1, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(editor.hasMarkedText(), "the field is composing")
+        let down = Self.down(window: window)
+        XCTAssertTrue(router.handle(down, in: window) === down, "the input method's")
+        XCTAssertEqual(takes, 0)
+
+        editor.unmarkText()
+        XCTAssertNil(router.handle(Self.down(window: window), in: window), "once confirmed, the list's")
+        XCTAssertEqual(takes, 1)
+        XCTAssertEqual(performed, [])
+    }
+
+    /// One offer at a time: the newest stands, and a view that goes
+    /// withdraws only its own.
+    func testTheNewestOfferStandsUntilItsOwnerWithdraws() {
+        let (first, second) = (UUID(), UUID())
+        var taken: [String] = []
+        handoff.offer(by: first) { taken.append("first"); return true }
+        handoff.offer(by: second) { taken.append("second"); return true }
+        handoff.withdraw(by: first)
+        XCTAssertTrue(handoff.moveDown())
+        handoff.withdraw(by: second)
+        XCTAssertFalse(handoff.moveDown(), "nothing offered")
+        XCTAssertEqual(taken, ["second"])
+    }
+
     // MARK: - Helpers
+
+    /// ↓, which carries the function and keypad flags by itself.
+    private static func down(flags: NSEvent.ModifierFlags = [], window: NSWindow?) -> NSEvent {
+        MacShortcutsTests.key(String(Character(UnicodeScalar(NSDownArrowFunctionKey)!)), code: 125,
+                              flags: flags.union([.function, .numericPad]), window: window)
+    }
+
+    /// A search field being edited, as after ⌘F: the window's field editor
+    /// is first responder, on the field's behalf.
+    private func makeWindowWithSearchField() throws -> (NSWindow, NSSearchField) {
+        let window = makeWindow()
+        let field = NSSearchField(frame: NSRect(x: 20, y: 40, width: 240, height: 24))
+        field.stringValue = "pride"
+        window.contentView?.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView, "the field edits through the field editor")
+        XCTAssertTrue(editor.isFieldEditor)
+        XCTAssertTrue(MacKeyRouter.isSearchFieldEditor(editor))
+        return (window, field)
+    }
 
     /// One space: " ", or the full-width one a CJK input source types for
     /// Space on this Mac.

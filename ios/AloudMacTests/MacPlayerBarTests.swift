@@ -5,9 +5,9 @@ import XCTest
 /// The Mac player bar's layout and focus budget (M9, mac-ux §3.7): a column
 /// that matches the reading column (480-640 pt), the chips on a second row
 /// below a 560 pt column or in the larger chrome bands, and at most nine
-/// focusable controls below the text. Plus the sleep chip's menu: the most
-/// recent choice first, Off only while armed, in the chip's sentence case.
-/// Pure layout, no window.
+/// focusable controls below the text, ten while the natural-voice offer
+/// shows. Plus the sleep chip's menu: the most recent choice first, Off
+/// only while armed, in the chip's sentence case. Pure layout, no window.
 @MainActor
 final class MacPlayerBarTests: XCTestCase {
 
@@ -101,29 +101,46 @@ final class MacPlayerBarTests: XCTestCase {
                        "the quiet bar: line, scrub and the five transport controls")
     }
 
+    /// The budget while the natural-voice offer shows: its Download and Not
+    /// now are one control more than a line's one inline action, and the
+    /// offer shows once, after 60 s of listening, so the bar may hold one
+    /// more then.
+    private static let offerFocusBudget = MacPlayerBarLayout.focusBudget + 1
+
     /// With the chip slot's one chip: still within budget for every line
-    /// with at most one inline action (mac-ux §3.7's count). The natural
-    /// voice offer brings two (Download, Not now), the shared row's design.
+    /// with at most one inline action (mac-ux §3.7's count), both layouts.
+    /// A sleep stop under a chip fills it exactly.
     func testAtMostNineFocusableControlsWithTheOneChip() {
-        let layout = MacPlayerBarLayout(barWidth: 1000, scale: .standard)
-        for message in Self.messages where message != .naturalVoiceOffer {
-            for chip in Self.chips {
-                XCTAssertLessThanOrEqual(layout.focusableControls(message: message, chip: chip).count,
-                                         MacPlayerBarLayout.focusBudget,
-                                         "\(String(describing: message)) with \(String(describing: chip))")
+        for width in [CGFloat(520), 1000] {
+            let layout = MacPlayerBarLayout(barWidth: width, scale: .standard)
+            for message in Self.messages where message != .naturalVoiceOffer {
+                for chip in Self.chips {
+                    XCTAssertLessThanOrEqual(layout.focusableControls(message: message, chip: chip).count,
+                                             MacPlayerBarLayout.focusBudget,
+                                             "\(width) pt: \(String(describing: message)) with \(String(describing: chip))")
+                }
             }
         }
+        XCTAssertEqual(MacPlayerBarLayout(barWidth: 1000, scale: .standard)
+                        .focusableControls(message: .stopped(.sleepTimer), chip: .undoJump).count,
+                       MacPlayerBarLayout.focusBudget)
     }
 
-    /// The one known excess, pinned so it shows in every run until decided:
-    /// the shared natural-voice offer row brings two actions where mac-ux
-    /// §3.7 counts one, so the offer under a chip makes ten. Strict, so the
-    /// fix (in the shared row) fails this test and retires it.
-    func testTheOfferUnderAChipIsTheOneKnownExcess() {
-        let layout = MacPlayerBarLayout(barWidth: 1000, scale: .standard)
-        XCTExpectFailure("the shared offer row's Download and Not now: one action over budget, awaiting a decision") {
-            XCTAssertLessThanOrEqual(layout.focusableControls(message: .naturalVoiceOffer, chip: .undoJump).count,
-                                     MacPlayerBarLayout.focusBudget)
+    /// The decided rule: nine at rest, ten while the offer shows. The offer
+    /// alone keeps to nine; under any one chip it makes exactly ten, never
+    /// more.
+    func testTheOfferShowingAllowsOneMoreControl() {
+        XCTAssertEqual(MacPlayerBarLayout.focusBudget, 9)
+        XCTAssertEqual(Self.offerFocusBudget, 10)
+        for width in [CGFloat(520), 1000] {
+            let layout = MacPlayerBarLayout(barWidth: width, scale: .standard)
+            XCTAssertEqual(layout.focusableControls(message: .naturalVoiceOffer, chip: nil).count,
+                           MacPlayerBarLayout.focusBudget, "\(width) pt: the offer with no chip")
+            for chip in Self.chips.compactMap({ $0 }) {
+                let controls = layout.focusableControls(message: .naturalVoiceOffer, chip: chip)
+                XCTAssertEqual(controls.count, Self.offerFocusBudget, "\(width) pt: the offer with \(chip)")
+                XCTAssertEqual(Set(controls).count, controls.count, "no control counted twice")
+            }
         }
     }
 

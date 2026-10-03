@@ -35,6 +35,11 @@ extension LibraryRouter: NavigationTracking {}
 /// import's overlay or a modal, or tear down a book the user chose while a
 /// slow classic was still being added. So a batch of queued files opens
 /// only the last one.
+///
+/// Several files handed over at once (`importFiles(at:)`, the Mac's
+/// multi-file pick or drop) are a batch of their own (M8): all are added,
+/// none opens, and VoiceOver hears one count when the last ends ("Added 3
+/// books") instead of a line per file.
 @MainActor
 final class DocumentImporter: ObservableObject {
 
@@ -66,8 +71,14 @@ final class DocumentImporter: ObservableObject {
     private let library: any LibraryAdding
     private let announce: (String) -> Void
     /// Files that arrived (Open-in) while another add was running or a
-    /// failure was still on screen; each is imported in turn.
-    private var queued: [URL] = []
+    /// failure was still on screen; each is imported in turn, in the batch
+    /// it came with, if any.
+    private var queued: [(url: URL, batch: Batch?)] = []
+    /// The batch of the file being added now, if it came in one.
+    private var currentBatch: Batch?
+    /// A batch's line when its last file failed: said once the failure is
+    /// dismissed, not over the alert.
+    private var heldBatchLine: String?
     /// Bumped by every import start and by cancel(). A task whose token is
     /// stale finished after the user moved on, so its result is dropped.
     private var token: UInt64 = 0
@@ -95,12 +106,31 @@ final class DocumentImporter: ObservableObject {
     }
 
     func importFile(at url: URL) {
+        start(url, in: nil)
+    }
+
+    /// Several files handed over at once (M8): all are added in order and
+    /// none opens, and the count is announced once, when the last ends. A
+    /// failure among them still shows, and holds the rest, as any failure
+    /// does; when the last one fails, the count waits for its alert to
+    /// close. One file is an ordinary add.
+    func importFiles(at urls: [URL]) {
+        guard urls.count > 1 else {
+            urls.first.map(importFile(at:))
+            return
+        }
+        let batch = Batch(count: urls.count)
+        for url in urls { start(url, in: batch) }
+    }
+
+    private func start(_ url: URL, in batch: Batch?) {
         guard !isBusy else {
-            queued.append(url)
+            queued.append((url, batch))
             return
         }
         token &+= 1
         let mine = token
+        currentBatch = batch
         let startedAt = navigation?.navigationGeneration
         // Snapshot before the add, so a duplicate (the store returns the
         // record already on the shelf) is announced as such.
@@ -124,8 +154,12 @@ final class DocumentImporter: ObservableObject {
                                                    from: url, progress: progress)
                 if token == mine {
                     phase = .idle
-                    announce(Self.completion(for: document, before: before))
-                    if mayOpen(startedAt: startedAt) { onAdded?(document) }
+                    if let batch {
+                        batch.tally(document, isNew: !before.contains(document.id))
+                    } else {
+                        announce(Self.completion(for: document, before: before))
+                        if mayOpen(startedAt: startedAt) { onAdded?(document) }
+                    }
                 }
             } catch is CancellationError {
                 // cancel() already reset the phase and moved the token on.
@@ -136,27 +170,42 @@ final class DocumentImporter: ObservableObject {
             }
             // Inbox cleanup runs on success, failure and cancel alike.
             Self.removeInboxCopy(url)
-            if token == mine { startNextQueued() }
+            if token == mine {
+                currentBatch = nil
+                if let batch { endFile(of: batch) }
+                startNextQueued()
+            }
         }
     }
 
     /// The overlay's Cancel: back to the shelf at once, the queue dropped
     /// with it. A late result is ignored by token, so the book never opens.
+    /// A batch cut short still announces the books it had added.
     func cancel() {
         guard isImporting else { return }
         token &+= 1
         current?.cancel()
         current = nil
-        queued.forEach(Self.removeInboxCopy)
+        queued.forEach { Self.removeInboxCopy($0.url) }
+        let cut = ([currentBatch] + queued.map(\.batch)).compactMap { $0 }
         queued = []
+        currentBatch = nil
         phase = .idle
+        var seen: Set<ObjectIdentifier> = []
+        for batch in cut where seen.insert(ObjectIdentifier(batch)).inserted && batch.added > 0 {
+            announce(ImportCopy.addedBooks(batch.added))
+        }
     }
 
-    /// The user has seen the failure: clear it and resume any files that
-    /// queued up behind it.
+    /// The user has seen the failure: clear it, say the count of a batch
+    /// it ended, and resume any files that queued up behind it.
     func dismissFailure() {
         guard case .failed = phase else { return }
         phase = .idle
+        if let line = heldBatchLine {
+            heldBatchLine = nil
+            announce(line)
+        }
         startNextQueued()
     }
 
@@ -202,7 +251,48 @@ final class DocumentImporter: ObservableObject {
 
     private func startNextQueued() {
         guard !isBusy, !queued.isEmpty else { return }
-        importFile(at: queued.removeFirst())
+        let next = queued.removeFirst()
+        start(next.url, in: next.batch)
+    }
+
+    /// One of `batch`'s files has ended, added or not; the last announces,
+    /// or holds its line while its own failure is on screen.
+    private func endFile(of batch: Batch) {
+        batch.remaining -= 1
+        guard batch.remaining == 0, let line = batch.completion else { return }
+        if failure == nil { announce(line) } else { heldBatchLine = line }
+    }
+
+    /// Several files handed over at once. Its files share this tally rather
+    /// than each announcing or opening on its own.
+    @MainActor
+    private final class Batch {
+        /// Files not yet ended, the one being added included.
+        var remaining: Int
+        private(set) var added = 0
+        /// The books that were already on the shelf, by title, each once.
+        private var alreadyInLibrary: [UUID: String] = [:]
+
+        init(count: Int) {
+            remaining = count
+        }
+
+        func tally(_ document: LibraryDocument, isNew: Bool) {
+            if isNew { added += 1 } else { alreadyInLibrary[document.id] = document.title }
+        }
+
+        /// The batch's one line: the new books, or that what it held was
+        /// already on the shelf, by title when that is one book (the same
+        /// file twice, or the others failed). None when every file failed,
+        /// since each failure was shown and nothing was added.
+        var completion: String? {
+            if added > 0 { return ImportCopy.addedBooks(added) }
+            switch alreadyInLibrary.count {
+            case 0: return nil
+            case 1: return alreadyInLibrary.values.first.map(ImportCopy.alreadyInLibrary)
+            default: return ImportCopy.booksAlreadyInLibrary
+            }
+        }
     }
 
     /// Completion is spoken over whatever VoiceOver was reading: the overlay
