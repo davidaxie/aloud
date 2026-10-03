@@ -8,8 +8,8 @@ import SwiftUI
 /// Voice) reach the same actions from the menus; each tooltip names its key.
 struct MacChipSlot: View {
 
-    /// Where the voice is while the page isn't following it (phase 2's page
-    /// reports it; the phase-1 title page never does).
+    /// Where the voice is while the page isn't following it, as the page
+    /// reports it.
     let voiceOffscreen: ReaderFollowDirection?
     let onFollowVoice: () -> Void
 

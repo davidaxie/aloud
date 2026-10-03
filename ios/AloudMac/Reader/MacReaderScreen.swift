@@ -3,9 +3,12 @@ import SwiftUI
 /// One document in the window (M6, M9, contracts §6). Identity sits in the
 /// toolbar: Contents, the system back button (⌘[), the book's title with its
 /// author as the subtitle, and Aa. Every frequent control sits in the bottom
-/// bar. The page slot holds the title page until wave 2.2 puts the TextKit 2
-/// page there; the Contents panel (M16) sits on its leading edge, docked
-/// beside it in a window 780 pt wide or more and floating over it below.
+/// bar. The page is the TextKit 2 book page (`ReaderColumnView`, M14, M15):
+/// the voice's sentence highlighted, calm follow, click to play, and the
+/// colophon at the end (R24). The Contents panel (M16) sits on its leading
+/// edge, docked beside it in a window 780 pt wide or more and floating over
+/// it below; the page re-lays out around the voice as it comes and goes,
+/// and closing it hands the keyboard back to the text.
 ///
 /// Opening cues the saved sentence and hands the book to `startAutoplay()`,
 /// as the iPhone's reader does (R4): one click from the Library is a voice.
@@ -23,6 +26,7 @@ struct MacReaderScreen: View {
 
     @EnvironmentObject private var store: DocumentStore
     @EnvironmentObject private var playback: PlaybackController
+    @EnvironmentObject private var model: AppModel
     @Environment(MacUIState.self) private var ui
 
     @AppStorage(ReaderTextSize.prefKey) private var textSizeStep = ReaderTextSize.defaultStep
@@ -33,11 +37,19 @@ struct MacReaderScreen: View {
     /// the book.
     @State private var navigation: ReaderNavigation?
     @State private var loadFailed = false
-    /// Where the voice is while the page isn't following it (R16). The
-    /// phase-1 title page never sets it; phase 2's page does.
+    /// Where the voice is while the page isn't following it (R16): the
+    /// Follow chip's arrow, and ⌘J's enabling.
     @State private var voiceOffscreen: ReaderFollowDirection?
-    /// Bumped by Follow the voice; phase 2's page follows on a change.
-    @State private var followRequests = 0
+    /// Bumped by Follow the voice (the chip, ⌘J); part of the page's
+    /// follow request.
+    @State private var followVoiceCount = 0
+    /// How far the chip slot reaches up over the page's foot; calm follow
+    /// measures its band above it (`chipReach(previous:slotHeight:)`).
+    @State private var chipReach: CGFloat = 0
+    /// Text has scrolled up under the toolbar: its hairline shows.
+    @State private var textUnderTopBar = false
+    /// Bumped as Contents closes: the keyboard goes back to the text.
+    @State private var pageFocusRequests = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,8 +75,16 @@ struct MacReaderScreen: View {
         .toolbarBackground(Theme.bg, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbar { toolbarContent }
-        // ⌘J, while the chip offers it.
-        .focusedSceneValue(\.macFollowVoice, voiceOffscreen == nil ? nil : followVoice)
+        // ⌘J, while the voice is off the page.
+        .focusedSceneValue(\.macFollowVoice, Self.followVoiceCommand(voiceOffscreen: voiceOffscreen,
+                                                                      action: followVoice))
+        // Esc closing Contents, or a jump closing its card: the keyboard
+        // goes back to the text, never nowhere (M11).
+        .onChange(of: ui.isContentsShown) { wasShown, isShown in
+            if Self.returnsFocusToPage(contentsWasShown: wasShown, isShown: isShown) {
+                pageFocusRequests &+= 1
+            }
+        }
         .task {
             await load()
         }
@@ -92,6 +112,9 @@ struct MacReaderScreen: View {
                 .overlay(alignment: .bottom) {
                     if content != nil {
                         MacChipSlot(voiceOffscreen: voiceOffscreen, onFollowVoice: followVoice)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                                chipReach = Self.chipReach(previous: chipReach, slotHeight: height)
+                            }
                             .padding(.bottom, Theme.Space.sm)
                     }
                 }
@@ -100,6 +123,8 @@ struct MacReaderScreen: View {
                 MacContentsPanel(content: content, navigation: navigation, layout: layout)
             }
         }
+        // Along the toolbar's edge, the window's width.
+        .overlay(alignment: .top) { topEdgeRule }
     }
 
     /// Shown and loaded: the panel lists the loaded book's chapters.
@@ -109,9 +134,29 @@ struct MacReaderScreen: View {
 
     @ViewBuilder
     private var page: some View {
-        if let document, let navigation, content != nil {
-            MacReaderTitlePage(document: document, navigation: navigation,
-                               playhead: max(playback.currentSentence, 0))
+        if let document, let content, let navigation {
+            ReaderColumnView(
+                content: content,
+                isChapterBook: document.kind == .text,
+                navigation: navigation,
+                fontSize: ReaderTextSize.points(forStep: textSizeStep),
+                activeSentence: playback.currentSentence,
+                // The word-highlight pref is gated once, here at the source.
+                activeWord: model.wordHighlight ? playback.currentWord : -1,
+                // Following resumes on a user Play, every jump and Undo, and
+                // Follow the voice: never by itself.
+                followRequest: ReaderColumnView.followRequest(for: playback, followVoiceCount: followVoiceCount),
+                obscuredBottom: chipReach,
+                colophon: Self.colophon(for: document, content: content, navigation: navigation,
+                                        isAtEnd: playback.isAtEnd, playingID: playback.document?.id,
+                                        rate: playback.rate),
+                focusRequest: pageFocusRequests,
+                voiceOffscreen: $voiceOffscreen,
+                onPlaySentence: { ReaderColumnView.playFromSentence($0, on: playback) },
+                onTextUnderTopBar: { textUnderTopBar = $0 })
+            #if DEBUG
+            .overlay(alignment: .topLeading) { MacReaderFollowProbeOverlay() }
+            #endif
         } else if loadFailed {
             failureState
         }
@@ -165,6 +210,20 @@ struct MacReaderScreen: View {
         .popover(isPresented: $ui.isAppearanceShown, arrowEdge: .bottom) {
             MacAppearancePopover()
         }
+    }
+
+    /// Hairline under the toolbar once text has scrolled beneath it, so the
+    /// clipped first line reads as framed by the bar (the toolbar and the
+    /// page are the same paper). Hidden at the top of the book; a rule, not
+    /// a fade: the theme allows no gradients.
+    private var topEdgeRule: some View {
+        Rectangle()
+            .fill(Theme.Stroke.hairlineColor)
+            .frame(height: Theme.Stroke.hairlineWidth)
+            .opacity(textUnderTopBar ? 1 : 0)
+            .animation(.easeOut(duration: Theme.Motion.crossfade), value: textUnderTopBar)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     #if DEBUG
@@ -230,6 +289,84 @@ struct MacReaderScreen: View {
     }
 
     private func followVoice() {
-        followRequests &+= 1
+        followVoiceCount &+= 1
     }
 }
+
+// MARK: - Wiring (pure, for the tests)
+
+extension MacReaderScreen {
+
+    /// ⌘J's action while the voice is off the page; nil (the menu item
+    /// disabled) while it is in view or followed.
+    static func followVoiceCommand(voiceOffscreen: ReaderFollowDirection?,
+                                   action: @escaping () -> Void) -> (() -> Void)? {
+        voiceOffscreen == nil ? nil : action
+    }
+
+    /// Contents went from shown to hidden: Esc, a card's jump, the toolbar
+    /// button or ⌃⌘S. The keyboard goes back to the page's text.
+    static func returnsFocusToPage(contentsWasShown wasShown: Bool, isShown: Bool) -> Bool {
+        wasShown && !isShown
+    }
+
+    /// How far the chip slot reaches over the page's foot: the tallest chip
+    /// it has shown (`slotHeight`, 0 while empty) and the slot's padding,
+    /// kept while the slot is empty, so a chip coming and going never moves
+    /// the band, and the page with it. The player bar sits below the page
+    /// and covers none of it.
+    static func chipReach(previous: CGFloat, slotHeight: CGFloat) -> CGFloat {
+        guard slotHeight > 0 else { return previous }
+        return max(previous, (slotHeight + Theme.Space.sm).rounded(.up))
+    }
+
+    /// R24: the colophon, only while the listener is at the end of THIS
+    /// book (`playingID`). Its length uses the record's word count (the
+    /// card's figure) and the app-wide speed, as on the iPhone; the word
+    /// total is a prefix-sum lookup, cheap on every body pass.
+    static func colophon(for document: LibraryDocument, content: DocContent, navigation: ReaderNavigation,
+                         isAtEnd: Bool, playingID: UUID?, rate: Double) -> ReaderColophon? {
+        guard isAtEnd, playingID == document.id else { return nil }
+        let words = navigation.wordsRemaining(from: 0, through: max(content.sentences.count - 1, 0))
+        return ReaderColophon.forBook(document, textWords: words, rate: rate)
+    }
+}
+
+#if DEBUG
+/// UI-test probes for calm follow (R16), as on the iPhone: the
+/// programmatic scroll count in an identifier, the active sentence's page
+/// line, and an element framed on the active sentence. Overlaid on the
+/// page, whose bounds the probe's rect is measured in.
+private struct MacReaderFollowProbeOverlay: View {
+    @ObservedObject private var probe = ReaderFollowProbe.shared
+
+    var body: some View {
+        if UITestHooks.isUITestLaunch {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityLabel("Follow scrolls")
+                    .accessibilityIdentifier("reader.followScrolls.\(probe.scrolls)")
+                if let line = probe.activeLine {
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityLabel("Active line")
+                        .accessibilityIdentifier("reader.activeLine.\(line)")
+                }
+                if let rect = probe.activeRect {
+                    Color.clear
+                        .frame(width: max(rect.width, 1), height: max(rect.height, 1))
+                        .accessibilityElement()
+                        .accessibilityLabel("Active sentence")
+                        .accessibilityIdentifier("reader.activeSentence")
+                        .position(x: rect.midX, y: rect.midY)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .allowsHitTesting(false)
+        }
+    }
+}
+#endif

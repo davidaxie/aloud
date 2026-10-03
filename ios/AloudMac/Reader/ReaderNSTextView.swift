@@ -17,6 +17,9 @@ import SwiftUI
 ///   them before the page sees them). Scroll keys move the page as a user
 ///   scroll. `doCommand(by:)` swallows every other selector without passing
 ///   it on, so no key ends at `noResponder(for:)` and the alert sound.
+/// - VoiceOver (M18): a native text area, identifier "reader.text", with
+///   the rotors, the Play from here action, the label and the bounded value
+///   of `MacReaderAccessibility` (R12a, R12e).
 ///
 /// Made through AppKit's `init(usingTextLayoutManager:)`, so every stored
 /// property here starts at zero (nil, false, 0): nothing relies on a Swift
@@ -46,6 +49,9 @@ final class ReaderNSTextView: NSTextView {
     var onLayout: (@MainActor () -> Void)?
     /// The frame changed (TextKit grew or shrank the text, or a resize).
     var onFrameChange: (@MainActor () -> Void)?
+    /// VoiceOver's rotors, action, label and value; nil until the
+    /// coordinator installs them.
+    var readerAccessibility: MacReaderAccessibility?
 
     /// True while AppKit lays out or prepares the text: an offset that
     /// moves then is TextKit keeping its viewport, never the reader
@@ -53,6 +59,9 @@ final class ReaderNSTextView: NSTextView {
     private(set) var isLayingOut = false
     /// The click count of the mouse-down AppKit is tracking; 0 when none.
     private var armedClickCount = 0
+    /// True while an accessibility client sets the selection: the
+    /// selection that moves then is VoiceOver's cursor.
+    private var isPlacingAccessibilityCursor = false
 
     // MARK: Layout
 
@@ -305,6 +314,60 @@ final class ReaderNSTextView: NSTextView {
         #selector(NSResponder.moveParagraphBackwardAndModifySelection(_:)),
         #selector(NSResponder.selectAll(_:)),
     ]
+
+    // MARK: VoiceOver (M18, R12a, R12e)
+
+    /// A native text area, whatever else asks: VoiceOver reads it by line,
+    /// word and character through AppKit's ranged text attributes.
+    override func isAccessibilityElement() -> Bool { true }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+
+    /// Pinned: the UI tests' handle, as on the iPhone.
+    override func accessibilityIdentifier() -> String { MacReaderAccessibility.identifier }
+
+    /// The sentence where VoiceOver is (or the colophon), never the book.
+    override func accessibilityLabel() -> String? {
+        readerAccessibility?.label() ?? super.accessibilityLabel()
+    }
+
+    /// R12e: the passage on screen, bounded; never a text view's own value,
+    /// which is the whole book. Before the coordinator installs its part,
+    /// the passage is measured in the view's own visible rect.
+    override func accessibilityValue() -> String? {
+        readerAccessibility?.value() ?? MacReaderAccessibility.visibleText(of: self, in: visibleRect)
+    }
+
+    /// Chapters (Pages), Paragraphs and Sentences, searched on demand.
+    override func accessibilityCustomRotors() -> [NSAccessibilityCustomRotor] {
+        readerAccessibility?.customRotors() ?? []
+    }
+
+    /// Play from here (VO-⌘-Space).
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        readerAccessibility?.customActions()
+    }
+
+    /// VoiceOver placing its cursor, on a rotor result or in the text.
+    override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+        let outer = isPlacingAccessibilityCursor
+        isPlacingAccessibilityCursor = true
+        super.setAccessibilitySelectedTextRange(range)
+        // However AppKit keeps it, the cursor is the text's selection.
+        if range.location != NSNotFound, NSMaxRange(range) <= textStorage?.length ?? 0, selectedRange() != range {
+            setSelectedRange(range)
+        }
+        isPlacingAccessibilityCursor = outer
+        if !outer { readerAccessibility?.cursorPlaced() }
+    }
+
+    /// Every selection change comes through here; one no accessibility
+    /// client made (a click, a drag, a new build) leaves VoiceOver's
+    /// cursor behind.
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if !isPlacingAccessibilityCursor { readerAccessibility?.selectionMoved() }
+    }
 }
 
 // MARK: - The scroll view
@@ -456,6 +519,13 @@ final class ReaderPageView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override var isFlipped: Bool { true }
+
+    /// Paper, not an element: VoiceOver finds one thing on it, the text
+    /// area, which names the scroll area as its parent. The highlight and
+    /// the veil are drawing, never children.
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func accessibilityChildren() -> [Any]? { [textView] }
 
     /// The text's height and the paper under it, never shorter than the
     /// clip view.

@@ -31,9 +31,22 @@ import SwiftUI
 /// - `obscuredBottom`: chrome drawn over the page's bottom edge, which the
 ///   band stays above.
 /// - `colophon` (R24): at `.ended` the end mark becomes it, fading in.
+/// - `focusRequest`: any change puts the keyboard on the text (Contents
+///   closing, M11).
 /// - Out: `voiceOffscreen`, the Follow chip's arrow while not following;
 ///   `onPlaySentence`, a click or Play from Here (`playFromSentence(_:on:)`);
 ///   and `onTextUnderTopBar`, for the toolbar's hairline.
+///
+/// Re-layout anchoring (M15, the Mac's addition): a window resize (live
+/// too), Contents docking or leaving, full screen, or a new text size
+/// re-lays the column out around an anchor taken BEFORE the change
+/// (`ReaderRelayoutAnchor`). While following, the voice keeps its top at the
+/// same fraction of the viewport; otherwise the reader's own place, the
+/// text at the top of the viewport, stays there. It is put back as one
+/// placement without motion, a move of ours: never a user scroll, never a
+/// follow scroll, and it never re-engages following. The page and the text
+/// view don't autoresize, so the tile that reports a new size still finds
+/// the old layout to measure the anchor on.
 ///
 /// The highlight and underline never touch `textStorage`, so glyph metrics
 /// never change and the layout holds still while reading.
@@ -58,6 +71,9 @@ struct ReaderColumnView: NSViewRepresentable {
     /// R24: the colophon that replaces the "· · ·" end mark at the end of
     /// the book; nil everywhere else.
     var colophon: ReaderColophon? = nil
+    /// Any change puts keyboard focus on the text, a turn later (the
+    /// Contents panel closing hands the keyboard back to the page).
+    var focusRequest = 0
     /// Where the voice is while the page is NOT following it and it is off
     /// screen (the Follow chip's arrow); nil otherwise.
     @Binding var voiceOffscreen: ReaderFollowDirection?
@@ -201,8 +217,34 @@ struct ReaderColumnView: NSViewRepresentable {
         /// Absolute token ranges per sentence (`ReaderColumnLayout.wordRanges`).
         private var wordRangeCache: [Int: [NSRange?]] = [:]
 
+        // Re-layout anchoring (M15, Mac)
+        /// The clip view's size and offset as the page was last laid out
+        /// and placed: a tile at another size is a re-layout, measured
+        /// against these.
+        private(set) var placedViewSize = CGSize.zero
+        private var placedOffset: CGFloat = 0
+        /// The anchor a re-layout puts back, held while TextKit settles
+        /// (and through a live resize, so its frames never drift); nil when
+        /// none is pending.
+        private(set) var relayoutAnchor: ReaderRelayoutAnchor?
+        /// Layout passes the anchor's check may still take, and the text's
+        /// laid-out height at its last pass.
+        private var anchorPassesLeft = 0
+        private var anchorHeight: CGFloat?
+        /// Whether the anchor was last put back on confirmed layout (the
+        /// text laid out through it), not on TextKit's estimates.
+        private var anchorConfirmed = false
+        /// A re-layout's new geometry going in, before its anchor is armed:
+        /// a layout pass then (the text view taking its new width) would
+        /// measure the band at the new size on the old offset, and follow.
+        private var isRelayingOut = false
+
+        /// The last `focusRequest` acted on.
+        private var lastFocusRequest: Int
+
         init(parent: ReaderColumnView) {
             self.parent = parent
+            lastFocusRequest = parent.focusRequest
         }
 
         // MARK: Setup
@@ -226,6 +268,9 @@ struct ReaderColumnView: NSViewRepresentable {
             scrollView.contentView.drawsBackground = false
             scrollView.contentView.postsBoundsChangedNotifications = true
             scrollView.documentView = page
+            // Sized by `updateGeometry` alone, on the tile: autoresized, the
+            // text would re-lay out before the anchor is measured.
+            page.autoresizingMask = []
             self.scrollView = scrollView
             self.page = page
 
@@ -246,6 +291,8 @@ struct ReaderColumnView: NSViewRepresentable {
             page.laidOutTextHeight = { [weak self] in self?.laidOutTextHeight() }
             scrollView.onTile = { [weak self] in self?.tiled() }
             scrollView.onPhaselessWheel = { [weak self] in self?.userScrolledDiscretely() }
+            // Rotors, Play from here, the label and the bounded value (M18).
+            installAccessibility()
 
             let center = NotificationCenter.default
             center.addObserver(self, selector: #selector(liveScrollWillStart(_:)),
@@ -254,6 +301,9 @@ struct ReaderColumnView: NSViewRepresentable {
                                name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
             center.addObserver(self, selector: #selector(clipBoundsDidChange(_:)),
                                name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+            // Any window's: the page's window is known only once it is in one.
+            center.addObserver(self, selector: #selector(windowLiveResizeDidEnd(_:)),
+                               name: NSWindow.didEndLiveResizeNotification, object: nil)
 
             #if DEBUG
             if publishesProbe { ReaderFollowProbe.shared.reset() }
@@ -297,7 +347,8 @@ struct ReaderColumnView: NSViewRepresentable {
             }
             textView.isVerticallyResizable = true
             textView.isHorizontallyResizable = false
-            textView.autoresizingMask = [.width]
+            // The width is `updateGeometry`'s (see `makeScrollView`).
+            textView.autoresizingMask = []
             textView.minSize = .zero
             textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             textView.textContainer?.widthTracksTextView = true
@@ -313,6 +364,7 @@ struct ReaderColumnView: NSViewRepresentable {
             discreteScrollEnd?.cancel()
             discreteScrollEnd = nil
             stopGlideInPlace()
+            endAnchor()
         }
 
         // MARK: Updates
@@ -322,7 +374,16 @@ struct ReaderColumnView: NSViewRepresentable {
             parent = newParent
             guard textView != nil else { return }
 
-            if builtHash != newParent.content.contentHash || builtFontSize != newParent.fontSize {
+            if lastFocusRequest != newParent.focusRequest {
+                lastFocusRequest = newParent.focusRequest
+                focusText()
+            }
+
+            if !builtHash.isEmpty, builtHash == newParent.content.contentHash,
+               builtFontSize != newParent.fontSize {
+                // A text size: the same column re-laid out around its anchor.
+                changeTextSize(to: newParent)
+            } else if builtHash != newParent.content.contentHash || builtFontSize != newParent.fontSize {
                 rebuild(content: newParent.content, fontSize: newParent.fontSize)
                 // A fresh column starts on the voice.
                 lastFollowRequest = newParent.followRequest
@@ -363,6 +424,7 @@ struct ReaderColumnView: NSViewRepresentable {
         func rebuild(content: DocContent, fontSize: CGFloat) {
             guard let textView, let storage = textView.textStorage else { return }
             stopGlideInPlace()
+            endAnchor()
             let appearance = textView.effectiveAppearance
             let built = ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
                                                               isChapterBook: parent.isChapterBook,
@@ -466,14 +528,201 @@ struct ReaderColumnView: NSViewRepresentable {
             lastPageHeight = page.frame.height
         }
 
+        /// A tile: at a new size (the window, Contents, full screen) the
+        /// anchor is measured on the layout as it was, before the new
+        /// geometry re-lays the column out, then put back.
         private func tiled() {
+            guard let scrollView else { return }
+            let size = scrollView.contentView.bounds.size
+            let relaid = !builtHash.isEmpty && placedViewSize != .zero && size != placedViewSize
+            // A tile in a burst (a live resize, full screen's animation)
+            // keeps the anchor the burst began with: its frames never drift.
+            let held = relayoutAnchor
+            var anchor = held
+            if relaid {
+                if anchor == nil { anchor = captureAnchor(offset: placedOffset, viewSize: placedViewSize) }
+                stopGlideInPlace()
+                follow.cachedActiveRect = nil
+            }
+            // The pass at the end of the tile is the anchor's to place.
+            isRelayingOut = relaid
             updateGeometry()
+            isRelayingOut = false
+            if relaid, let anchor { arm(anchor, confirming: held == nil) }
+            placedViewSize = size
+            placedOffset = contentOffsetY
             handleLayout()
         }
 
         private func textFrameChanged() {
             syncPageHeight()
             handleLayout()
+        }
+
+        // MARK: Re-layout anchoring (M15, Mac)
+
+        /// A new text size: the anchor is measured on the old size, the
+        /// column rebuilt (the same characters, so the same ranges), and the
+        /// anchor put back. Following is left as it was: neither ended nor
+        /// re-engaged, and the follow request is untouched.
+        private func changeTextSize(to newParent: ReaderColumnView) {
+            let anchor = relayoutAnchor ?? viewport().flatMap { captureAnchor(offset: $0.minY, viewSize: viewSize) }
+            // The same text at a new size: VoiceOver's cursor stays put.
+            let rebuildPage = { self.rebuild(content: newParent.content, fontSize: newParent.fontSize) }
+            if let access = textView?.readerAccessibility {
+                access.keepingCursor(through: rebuildPage)
+            } else {
+                rebuildPage()
+            }
+            // The anchor places this column, not the landing line.
+            follow.endPlacementCheck()
+            setActiveSentence(newParent.activeSentence, scroll: false)
+            setActiveWord(newParent.activeWord)
+            if let anchor { arm(anchor, confirming: true) }
+            placedViewSize = viewSize
+            placedOffset = contentOffsetY
+        }
+
+        private var viewSize: CGSize {
+            scrollView?.contentView.bounds.size ?? .zero
+        }
+
+        /// The anchor for the page as it stands in a clip view `viewSize`
+        /// tall at `offset`: the voice while following, else the reader's
+        /// place. Measured on the current layout; nil without one.
+        func captureAnchor(offset: CGFloat, viewSize: CGSize) -> ReaderRelayoutAnchor? {
+            let viewport = CGRect(x: 0, y: offset, width: viewSize.width,
+                                  height: max(viewSize.height - parent.obscuredBottom, 0))
+            guard viewport.height > 0 else { return nil }
+            if isFollowing {
+                guard let range = followRange, let rect = activeSentenceRect() else { return nil }
+                return .voice(range: range, rect: rect, in: viewport, isGliding: isGliding)
+            }
+            return readingAnchor(in: viewport)
+        }
+
+        /// The first line visible in `viewport`, by the character at its
+        /// start. The top may sit in a paragraph gap: look a little lower,
+        /// one line at a time.
+        private func readingAnchor(in viewport: CGRect) -> ReaderRelayoutAnchor? {
+            guard let column, let textView, let length = textView.textStorage?.length, length > 0 else { return nil }
+            let origin = textView.textContainerOrigin
+            let line = ReaderPageStyle(fontSize: builtFontSize > 0 ? builtFontSize : parent.fontSize).lineHeight
+            let top = max(viewport.minY, origin.y)
+            for step in 0..<4 {
+                let point = CGPoint(x: origin.x + 1, y: top + 1 + CGFloat(step) * line)
+                guard let location = column.characterOffset(at: point), location < length else { continue }
+                let range = NSRange(location: location, length: 1)
+                guard let rect = boundingRect(for: range) else { continue }
+                return .reading(range: range, lineTop: rect.minY, viewportTop: viewport.minY)
+            }
+            return nil
+        }
+
+        /// Puts `anchor` back now, and checks it on the layout passes that
+        /// follow. The follow placement check gives way: the anchor places
+        /// the page. `confirming` lays the text out through the anchor
+        /// first: a deep pass, so a burst's later frames and a live resize
+        /// place on the layout as it stands, and the check (or the live
+        /// resize's end) confirms it once.
+        private func arm(_ anchor: ReaderRelayoutAnchor, confirming: Bool) {
+            relayoutAnchor = anchor
+            anchorPassesLeft = ReaderFollowEngine.placementPassLimit
+            anchorHeight = nil
+            follow.endPlacementCheck()
+            let confirmed = confirming && scrollView?.inLiveResize != true
+            anchorConfirmed = confirmed
+            restore(anchor, confirmed: confirmed)
+        }
+
+        /// One placement without motion: a move of ours, so never a user
+        /// scroll, and never a follow scroll (not counted for R16). With
+        /// `confirmed`, the text through the anchor is laid out first, so it
+        /// lands on real heights, not estimates.
+        private func restore(_ anchor: ReaderRelayoutAnchor, confirmed: Bool) {
+            guard let viewport = viewport(), viewport.height > 0 else { return }
+            if confirmed { column?.ensureLayout(through: anchor.range) }
+            guard let rect = boundingRect(for: anchor.range) else { return }
+            let y = anchor.offset(forTop: rect.minY, viewportHeight: viewport.height,
+                                  restingRange: anchorRestingRange())
+            if abs(y - contentOffsetY) > 0.5 { setOffset(y) }
+            follow.cachedActiveRect = nil
+            refreshHighlightGeometry()
+            updateFollowChip()
+        }
+
+        /// Where an anchor may rest: `restingOffsets()`, but never short of
+        /// the page as it stands. TextKit's figure for re-laid-out text
+        /// trails until its layout reaches the end, and would clamp the
+        /// anchor short; the checks that follow clamp it on settled heights.
+        private func anchorRestingRange() -> ClosedRange<CGFloat> {
+            let range = restingOffsets()
+            guard let scrollView, let page else { return range }
+            let pageEnd = page.frame.height - scrollView.contentView.bounds.height
+            return range.lowerBound...max(range.upperBound, pageEnd)
+        }
+
+        /// One layout pass's check of the anchor: TextKit settling estimated
+        /// heights moves the text under a still offset, so put it back. Held
+        /// through a live resize; then, once in place on a steady height (or
+        /// after `placementPassLimit` passes), confirmed on laid-out text if
+        /// it was placed on estimates, and over.
+        private func verifyAnchor() {
+            guard let anchor = relayoutAnchor, let scrollView else { return }
+            guard glideTarget == nil, !userHoldsScroll else { return endAnchor() }
+            let height = laidOutHeight()
+            let steady = anchorHeight.map { abs($0 - height) < 0.5 } ?? false
+            anchorHeight = height
+            let before = contentOffsetY
+            restore(anchor, confirmed: false)
+            guard !scrollView.inLiveResize else { return }
+            anchorPassesLeft -= 1
+            if (abs(contentOffsetY - before) <= 0.5 && steady) || anchorPassesLeft <= 0 {
+                if anchorConfirmed { return endAnchor() }
+                // Placed on estimates: once on laid-out text, then checked.
+                confirmAnchor(anchor)
+            } else {
+                requestLayoutPass()
+            }
+        }
+
+        /// The anchor put back on confirmed layout, with a fresh check.
+        private func confirmAnchor(_ anchor: ReaderRelayoutAnchor) {
+            anchorPassesLeft = ReaderFollowEngine.placementPassLimit
+            anchorHeight = nil
+            anchorConfirmed = true
+            restore(anchor, confirmed: true)
+            requestLayoutPass()
+        }
+
+        private func endAnchor() {
+            relayoutAnchor = nil
+            anchorHeight = nil
+            anchorPassesLeft = 0
+            anchorConfirmed = false
+        }
+
+        /// A live resize is over: put the anchor back on confirmed layout,
+        /// then check it until it holds.
+        @objc func windowLiveResizeDidEnd(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow, window === scrollView?.window,
+                  let anchor = relayoutAnchor else { return }
+            confirmAnchor(anchor)
+            placedOffset = contentOffsetY
+        }
+
+        /// Puts keyboard focus on the text, a turn later: after SwiftUI has
+        /// taken the closed Contents panel, and its focus, out of the window.
+        func focusText() {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, let textView = self.textView, let window = textView.window,
+                          window.firstResponder !== textView else { return }
+                    // Taking focus never scrolls the page; were AppKit to,
+                    // it would be a move of ours.
+                    self.movingProgrammatically { _ = window.makeFirstResponder(textView) }
+                }
+            }
         }
 
         // MARK: End of the book (R24)
@@ -748,6 +997,8 @@ struct ReaderColumnView: NSViewRepresentable {
         /// budget counts them all.
         private func scroll(toY y: CGFloat, animated: Bool) {
             follow.noteScroll()
+            // The page moves on purpose: the anchor's hold is over.
+            endAnchor()
             #if DEBUG
             if publishesProbe { ReaderFollowProbe.shared.noteScroll() }
             #endif
@@ -835,6 +1086,7 @@ struct ReaderColumnView: NSViewRepresentable {
         /// A gesture, the scroller, a key or VoiceOver: stop following.
         func userTookOverScroll() {
             stopGlideInPlace()
+            endAnchor()
             follow.takeOver()   // and drops pending checks: don't fight the user
             updateFollowChip()
         }
@@ -896,14 +1148,16 @@ struct ReaderColumnView: NSViewRepresentable {
         /// either way), and a change of the visible height re-checks the
         /// band. Then a pending placement is verified.
         func handleLayout() {
-            guard let textView, !isHandlingLayout, !isEditingText else { return }
+            guard let textView, !isHandlingLayout, !isEditingText, !isRelayingOut else { return }
             isHandlingLayout = true
             defer { isHandlingLayout = false }
             let height = textView.frame.height
+            // A re-layout's anchor places the page while it holds.
+            let anchored = relayoutAnchor != nil
             if height != lastContentHeight {
                 follow.cachedActiveRect = nil
                 refreshHighlightGeometry()
-                if isFollowing, !follow.pendingPlacement, lastContentHeight > 0 {
+                if isFollowing, !follow.pendingPlacement, !anchored, lastContentHeight > 0 {
                     followIfNeeded(animated: false)
                 }
                 lastContentHeight = height
@@ -913,13 +1167,14 @@ struct ReaderColumnView: NSViewRepresentable {
             if viewportHeight != lastViewportHeight {
                 let resized = lastViewportHeight > 0
                 lastViewportHeight = viewportHeight
-                if resized, isFollowing, !follow.pendingPlacement {
+                if resized, isFollowing, !follow.pendingPlacement, !anchored {
                     followIfNeeded(animated: !reduceMotion())
                 }
             }
 
             reframeColophonVeil()
             verifyPlacement()
+            verifyAnchor()
         }
 
         /// Ends a placement or rotor-stop check and shows the chip it held.
@@ -1022,6 +1277,8 @@ struct ReaderColumnView: NSViewRepresentable {
             defer {
                 lastClipBounds = bounds
                 lastPageHeight = pageHeight
+                // Not mid-resize: the tile measures the anchor at the old offset.
+                if bounds.size == placedViewSize { placedOffset = bounds.minY }
             }
             updateFollowChip()
             updateTextUnderTopBar(offset: bounds.minY)
@@ -1149,8 +1406,7 @@ struct ReaderColumnView: NSViewRepresentable {
             return ReaderColumnLayout(textLayoutManager: manager, origin: CGPoint(x: origin.x, y: origin.y))
         }
 
-        /// Sentence `id`'s laid-out rect in page coordinates (tests, and the
-        /// screen's anchoring in wave 2.2).
+        /// Sentence `id`'s laid-out rect in page coordinates (tests).
         func rect(forSentence id: Int) -> CGRect? {
             guard sentenceRanges.indices.contains(id) else { return nil }
             return boundingRect(for: sentenceRanges[id])
@@ -1191,5 +1447,58 @@ struct ReaderColumnView: NSViewRepresentable {
         private func boundingRect(for range: NSRange) -> CGRect? {
             column?.boundingRect(for: range)
         }
+    }
+}
+
+// MARK: - Re-layout anchoring (M15, Mac)
+
+/// What a re-layout holds still (mac-ux §3.5): a window resize, Contents
+/// docking or leaving, full screen, or a new text size. While following,
+/// the voice (the follow target) keeps its top at the same fraction of the
+/// viewport, the band's own measure; otherwise the reader's place, the line
+/// at the top of the viewport, keeps its distance from the viewport's top.
+/// Pure: the page measures `range` before and after, and this says where
+/// the page then rests.
+struct ReaderRelayoutAnchor: Equatable {
+
+    /// The text held in place: the follow target, or the first character
+    /// of the reader's top line.
+    let range: NSRange
+    let placement: Placement
+
+    enum Placement: Equatable {
+        /// The text's top at this fraction of the viewport's height.
+        case fraction(CGFloat)
+        /// The text's top this far below the viewport's top (less than 0
+        /// while the line is clipped).
+        case points(CGFloat)
+    }
+
+    /// While following: the voice at its own fraction of the viewport. A
+    /// voice outside the band, or gliding to the landing line, takes the
+    /// landing line, where following puts it.
+    static func voice(range: NSRange, rect: CGRect, in viewport: CGRect, isGliding: Bool) -> Self {
+        guard !isGliding, viewport.height > 0, FollowBand.contains(rect, in: viewport) else {
+            return Self(range: range, placement: .fraction(FollowBand.landing))
+        }
+        return Self(range: range, placement: .fraction((rect.minY - viewport.minY) / viewport.height))
+    }
+
+    /// Not following: the reader's top line, whose top is at `lineTop` in a
+    /// viewport whose top is at `viewportTop`.
+    static func reading(range: NSRange, lineTop: CGFloat, viewportTop: CGFloat) -> Self {
+        Self(range: range, placement: .points(lineTop - viewportTop))
+    }
+
+    /// The offset that puts the anchor back, its text's top now laid out at
+    /// `top` in a viewport `height` tall, clamped to where the page can rest.
+    func offset(forTop top: CGFloat, viewportHeight height: CGFloat,
+                restingRange: ClosedRange<CGFloat>) -> CGFloat {
+        let y: CGFloat
+        switch placement {
+        case .fraction(let fraction): y = top - fraction * height
+        case .points(let points): y = top - points
+        }
+        return min(max(y, restingRange.lowerBound), restingRange.upperBound)
     }
 }

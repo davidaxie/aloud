@@ -2,7 +2,7 @@ import XCTest
 
 /// M11's keyboard matrix for phase 1: every shortcut in the one table
 /// (`MacKey`, which mirrors `MacShortcuts`) pressed in six focus states: the
-/// window background, a bar button, the scrub, a Library card, the Classics
+/// page text, a bar button, the scrub, a Library card, the Classics
 /// search field and the Listening popover. Each press gives its expected
 /// effect or its expected no-op, then the state is put back for the next
 /// key, so no combination is dead. The debug beep counter (`debug.beeps`,
@@ -36,16 +36,19 @@ final class MacKeyboardMatrixUITests: XCTestCase {
 
     // MARK: - The six states
 
-    func testWindowBackground() {
+    func testThePageText() {
         run(FocusState(
-            name: "window background",
+            name: "the page text",
             arguments: MacSuite.chapterReader,
             isIn: { suite in suite.place == .reader && !suite.isPopoverShown && suite.modals == 0 },
             enter: { suite, test in
                 guard suite.openReader(test) else { return }
-                // The phase-1 title page is plain text: a click on it takes
-                // focus from any control and does nothing else.
-                suite.element("reader.titlePage.title").click()
+                // Contents shown, then closed: the page's text takes the
+                // keys (a click on it would play from there). Read-only
+                // text, so Space and the arrows run their commands at once.
+                test.press(.contents, in: suite.app)
+                test.press(.contents, in: suite.app)
+                XCTAssertTrue(suite.poll(timeout: 5) { suite.focus == "text.selectable" }, "the page has the keys")
             },
             keys: Self.readerKeys(space: .toggles, left: .moves(forward: false), right: .moves(forward: true))))
     }
