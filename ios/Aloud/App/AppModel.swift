@@ -72,8 +72,12 @@ final class AppModel: ObservableObject {
 
     private var cancellables: Set<AnyCancellable> = []
     private var didRunLaunchTasks = false
+    /// M19's launch interval: open from the first line of `init` until the
+    /// Library's first appearance runs `performLaunchTasks`.
+    private(set) var launchInterval: BudgetSignposts.Interval?
 
     init() {
+        launchInterval = BudgetSignposts.live.begin(.launch)
         // UI-test hook (compiled out of Release): start from an empty shelf so
         // leftover container state never leaks into a test run. Destructive,
         // so it happens here at the composition root — before the store is
@@ -219,6 +223,8 @@ final class AppModel: ObservableObject {
     func performLaunchTasks() async {
         guard !didRunLaunchTasks else { return }
         didRunLaunchTasks = true
+        // The Library is up and taking input (iPhone and Mac roots alike).
+        BudgetSignposts.live.end(&launchInterval)
         await UITestLaunchActions.run(self)
         sceneBecameActive()
     }

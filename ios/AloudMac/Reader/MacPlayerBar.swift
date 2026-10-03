@@ -323,7 +323,7 @@ struct MacPlayerBarLayout: Equatable {
 
     /// The chapter line's row: the shared line's 44, or in the Largest
     /// band, where the line may wrap (mac-ux §10.4), room for its title on
-    /// two lines over its detail, at the band's sizes as AppKit sets them.
+    /// two lines over its detail, at the band's sizes as SwiftUI sets them.
     static func chapterLineHeight(for scale: ChromeScale) -> CGFloat {
         guard scale == .largest else { return chapterLineMinHeight }
         let wrapped = 2 * lineHeight(.subhead, scale: scale) + Theme.Space.xxs + lineHeight(.footnote, scale: scale)
@@ -333,7 +333,9 @@ struct MacPlayerBarLayout: Equatable {
     /// One line of the system face at `style`'s size in `scale`'s band.
     static func lineHeight(_ style: Theme.TypeStyle, scale: ChromeScale) -> CGFloat {
         let font = NSFont.systemFont(ofSize: PlatformTypeRamp.points(style, scale: scale))
-        return (font.ascender - font.descender + font.leading).rounded(.up)
+        // As SwiftUI sets a line: ascender and descender each rounded out
+        // to a whole point (19 pt at 15, where AppKit's sum gives 18).
+        return (font.ascender.rounded(.up) - font.descender.rounded(.down) + font.leading).rounded(.up)
     }
 
     /// The room either chip has beside the cluster on one row, or in its

@@ -11,7 +11,8 @@
 #      refuses an unsigned Mac build: unsigned means unsandboxed.
 #   3. Checks the result as the release hygiene does: the shipping bundle id
 #      (com.davidxie.Aloud.mac), no test hooks in the binary, sandboxed with
-#      no temporary exception, and a signature that verifies.
+#      no temporary exception and no get-task-allow, and a signature that
+#      verifies.
 #   4. Prints where Aloud.app is. With --install, it also copies the app to
 #      ~/Applications/Aloud.app.
 #
@@ -138,6 +139,16 @@ codesign -d --entitlements - --xml "$APP" > "$WORK/entitlements.plist" 2>/dev/nu
 sandbox=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.app-sandbox' "$WORK/entitlements.plist" 2>/dev/null || true)
 if [[ $sandbox == true ]]; then ok "sandboxed"; else bad "not sandboxed"; fi
 if grep -q 'temporary-exception' "$WORK/entitlements.plist"; then bad "a temporary exception in Release"; else ok "no temporary exception"; fi
+# get-task-allow lets any process attach a debugger. Xcode injects it when
+# it signs ad hoc unless CODE_SIGN_INJECT_BASE_ENTITLEMENTS is NO, as
+# project.yml sets it for Release. Absent or false passes; an unreadable
+# plist fails (PlistBuddy prints its error on stdout).
+task_allow=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "$WORK/entitlements.plist" 2>/dev/null || true)
+case $task_allow in
+  ""|false) ok "no get-task-allow" ;;
+  true)     bad "get-task-allow in Release" ;;
+  *)        bad "couldn't read get-task-allow: $task_allow" ;;
+esac
 
 if codesign --verify --deep --strict "$APP" 2>&1; then ok "codesign verifies"; else bad "codesign does not verify"; fi
 # "flags=0x10002(adhoc,runtime)": signed ad hoc, with the hardened runtime.

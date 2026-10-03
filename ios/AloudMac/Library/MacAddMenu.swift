@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 import UniformTypeIdentifiers
@@ -41,7 +42,7 @@ struct MacAddMenu: View {
 /// window, Finder's Open With, a drop on the Dock icon and ⌘V in the
 /// Library, ends here and then in the shared `DocumentImporter`, which
 /// deduplicates by content hash, extracts and opens (M8). Pasted text goes
-/// straight to the importer (`admitPaste(_:)`): it has no file to copy.
+/// straight to the importer (`admitPasteboard(_:)`): it has no file to copy.
 ///
 /// Two Mac rules sit in front of the importer:
 /// - **The coordinated copy.** Each file is read through `NSFileCoordinator`
@@ -177,32 +178,101 @@ final class MacFileIntake: ObservableObject {
     /// What Edit ▸ Paste (⌘V) takes in the Library: files, or else text.
     nonisolated static let pasteTypes: [UTType] = [.fileURL, .plainText]
 
-    /// ⌘V in the Library (M8, phase 4). Files on the pasteboard (copied in
-    /// Finder) are admitted as the same files dropped would be: one opens
-    /// playing, several are one batch. With no file among them, the text
-    /// becomes a book of its own, titled from its first line
-    /// (`DocumentImporter.importText`), for an article copied before a
-    /// flight. A Finder copy carries each file's name as text too, so files
-    /// win: a copied photo adds nothing, never a book of its name. Several
-    /// text items make one book, in order, a blank line apart.
+    /// What one paste is, by what its items carry.
+    enum PasteKind: Equatable {
+        case files
+        case text
+    }
+
+    /// ⌘V's rule in the Library (M8, phase 4), the one decision behind
+    /// both pastes (`admitPasteboard(_:)` and `admitPaste(_:)`). Files on
+    /// the pasteboard (copied in Finder) are admitted as the same files
+    /// dropped would be: one opens playing, several are one batch. With no
+    /// file among them, the text becomes a book of its own, titled from its
+    /// first line (`DocumentImporter.importText`), for an article copied
+    /// before a flight. A Finder copy carries each file's name as text too,
+    /// so files win: a copied photo adds nothing, never a book of its name.
+    /// Several text items make one book, in order, a blank line apart.
+    nonisolated static func pasteKind(carriesFiles: Bool, carriesText: Bool) -> PasteKind? {
+        if carriesFiles { return .files }
+        return carriesText ? .text : nil
+    }
+
+    /// Edit ▸ Paste in the Library, from the window's key tail
+    /// (`MacPasteTarget`): the pasteboard is read as the user pastes.
+    func admitPasteboard(_ pasteboard: NSPasteboard) {
+        let items = pasteboard.pasteboardItems ?? []
+        switch Self.pasteKind(in: items) {
+        case .files: admit(Self.pastedFileURLs(in: items))
+        case .text: admitPastedText(Self.pastedTexts(in: items))
+        case nil: return
+        }
+    }
+
+    /// Whether `pasteboard` holds what Paste takes, a file or text, which
+    /// keeps Edit ▸ Paste grey otherwise. Judged by the items' types alone:
+    /// reading a file's URL or the text is reading the pasteboard, which
+    /// macOS 15.4 and later put to the user unless it is a paste, and Paste
+    /// is validated each time the Edit menu opens. So a copied photo leaves
+    /// Paste on, and pasting it adds nothing (`admit(_:)` leaves it out).
+    static func canAdmitPasteboard(_ pasteboard: NSPasteboard) -> Bool {
+        pasteKind(in: pasteboard.pasteboardItems ?? []) != nil
+    }
+
+    /// The same paste as SwiftUI's paste command hands it over, while a
+    /// Library view has keyboard focus: item providers, read in turn.
     func admitPaste(_ providers: [NSItemProvider]) async {
         let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
-        if !files.isEmpty {
+        let texts = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) }
+        switch Self.pasteKind(carriesFiles: !files.isEmpty, carriesText: !texts.isEmpty) {
+        case .files:
             var urls: [URL] = []
             for provider in files {
                 if let url = await Self.pastedFileURL(from: provider) { urls.append(url) }
             }
             admit(urls)
+        case .text:
+            var parts: [String] = []
+            for provider in texts {
+                if let text = await Self.pastedText(from: provider) { parts.append(text) }
+            }
+            admitPastedText(parts)
+        case nil:
             return
         }
-        let texts = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) }
-        guard !texts.isEmpty else { return }
-        var parts: [String] = []
-        for provider in texts {
-            if let text = await Self.pastedText(from: provider) { parts.append(text) }
-        }
-        // Text that couldn't be read is no text: the empty text's failure.
+    }
+
+    /// One book of every text item. Text that couldn't be read is no text:
+    /// the empty text's failure.
+    private func admitPastedText(_ parts: [String]) {
         importer.importText(parts.joined(separator: "\n\n"))
+    }
+
+    private static func pasteKind(in items: [NSPasteboardItem]) -> PasteKind? {
+        pasteKind(carriesFiles: items.contains { firstType(conformingTo: .fileURL, in: $0) != nil },
+                  carriesText: items.contains { firstType(conformingTo: .plainText, in: $0) != nil })
+    }
+
+    /// The first of `item`'s types that is a `type`.
+    private static func firstType(conformingTo type: UTType, in item: NSPasteboardItem) -> NSPasteboard.PasteboardType? {
+        item.types.first { UTType($0.rawValue)?.conforms(to: type) == true }
+    }
+
+    /// Each item's file, as a path: Finder copies a file by reference
+    /// ("file:///.file/id=…"), which names no file and has no extension.
+    private static func pastedFileURLs(in items: [NSPasteboardItem]) -> [URL] {
+        items.compactMap { item in
+            guard let fileType = firstType(conformingTo: .fileURL, in: item),
+                  let string = item.string(forType: fileType),
+                  let url = NSURL(string: string), url.isFileURL else { return nil }
+            return url.filePathURL
+        }
+    }
+
+    private static func pastedTexts(in items: [NSPasteboardItem]) -> [String] {
+        items.compactMap { item in
+            firstType(conformingTo: .plainText, in: item).flatMap { item.string(forType: $0) }
+        }
     }
 
     private nonisolated static func pastedFileURL(from provider: NSItemProvider) async -> URL? {

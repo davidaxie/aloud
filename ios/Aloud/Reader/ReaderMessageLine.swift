@@ -9,7 +9,8 @@ import SwiftUI
 /// sleep stop adds Back 5 min. Only a change of slot crossfades, so
 /// time-left and download ticks never animate the line. Every arm is
 /// reader.chapterLine (the offer row carries its own identifiers), and each
-/// label starts with the visible text.
+/// label starts with the visible text. On the Mac its type follows the
+/// reader's chrome band (M18), and in the Largest band the title may wrap.
 struct ReaderMessageLine: View {
 
     let message: ReaderMessage?
@@ -19,6 +20,9 @@ struct ReaderMessageLine: View {
     let onBackFiveMinutes: () -> Void
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Set by the Mac's reader; `.standard` on the iPhone, where the band
+    /// changes nothing.
+    @Environment(\.chromeScale) private var chromeScale
 
     private static let contentsHint = "Opens contents and search"
 
@@ -60,7 +64,7 @@ struct ReaderMessageLine: View {
     private var positionLine: some View {
         Button(action: onOpenContents) {
             Group {
-                if dynamicTypeSize.isAccessibilitySize {
+                if Self.stacksPosition(dynamicTypeSize: dynamicTypeSize, scale: chromeScale) {
                     VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                         positionTitle
                             .lineLimit(2)
@@ -75,7 +79,7 @@ struct ReaderMessageLine: View {
                             .fixedSize()
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.up")
-                            .font(Theme.font(.caption))
+                            .font(Theme.font(.caption, scale: chromeScale))
                             .foregroundStyle(Theme.textFaint)
                             .accessibilityHidden(true)
                     }
@@ -94,14 +98,14 @@ struct ReaderMessageLine: View {
 
     private var positionTitle: some View {
         Text(position.title)
-            .font(Theme.font(.subhead))
+            .font(Self.titleFont(chromeScale))
             .foregroundStyle(Theme.text)
             .truncationMode(.tail)
     }
 
     private func positionDetail(_ text: String) -> some View {
         Text(text)
-            .font(Theme.font(.footnote))
+            .font(Self.detailFont(chromeScale))
             .monospacedDigit()
             .foregroundStyle(Theme.textMuted)
             .numericReadout(Double(position.minutesLeft ?? 0))
@@ -120,7 +124,7 @@ struct ReaderMessageLine: View {
                     .foregroundStyle(Theme.text)
                 Spacer(minLength: 0)
             }
-            .font(Theme.font(.footnote))
+            .font(Self.detailFont(chromeScale))
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -163,7 +167,7 @@ struct ReaderMessageLine: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            .font(Theme.font(.footnote))
+            .font(Self.detailFont(chromeScale))
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -177,7 +181,7 @@ struct ReaderMessageLine: View {
     private var backFiveMinutesButton: some View {
         Button(action: onBackFiveMinutes) {
             Text(StopCopy.backFiveMinutes)
-                .font(Theme.font(.subhead))
+                .font(Self.titleFont(chromeScale))
                 .foregroundStyle(Theme.accentStrong)
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
@@ -199,7 +203,7 @@ struct ReaderMessageLine: View {
         if case .downloadProgress(let value) = message { progress = value } else { progress = nil }
         return Button(action: onOpenContents) {
             Text(message.text)
-                .font(Theme.font(.footnote))
+                .font(Self.detailFont(chromeScale))
                 .foregroundStyle(message == .preparingVoice ? Theme.textMuted : Theme.text)
                 .numericReadout(progress ?? 0)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -210,5 +214,24 @@ struct ReaderMessageLine: View {
         .accessibilityHint(Self.contentsHint)
         .accessibilityAddTraits(progress != nil ? .updatesFrequently : [])
         .accessibilityIdentifier("reader.chapterLine")
+    }
+}
+
+extension ReaderMessageLine {
+    /// The title, and Back 5 min, in `scale`'s band: the Mac's ramp steps it
+    /// up per band; the iPhone's follows Dynamic Type whatever the band.
+    nonisolated static func titleFont(_ scale: ChromeScale) -> Font {
+        Theme.font(.subhead, scale: scale)
+    }
+
+    /// The detail, and every stop and notice, in `scale`'s band.
+    nonisolated static func detailFont(_ scale: ChromeScale) -> Font {
+        Theme.font(.footnote, scale: scale)
+    }
+
+    /// Whether the position line sets its title, on up to two lines, over its
+    /// detail: at the accessibility sizes, and in the Mac's Largest band.
+    nonisolated static func stacksPosition(dynamicTypeSize: DynamicTypeSize, scale: ChromeScale) -> Bool {
+        dynamicTypeSize.isAccessibilitySize || PlatformTypeRamp.wrapsChapterLine(in: scale)
     }
 }

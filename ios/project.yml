@@ -141,6 +141,7 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.davidxie.Aloud.mac
           CODE_SIGN_ENTITLEMENTS: AloudMac/AloudMac.entitlements
           ENABLE_HARDENED_RUNTIME: YES
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO   # no get-task-allow in what ships; Debug keeps it for the hosted tests and the debugger
     info:
       path: AloudMac/Info.plist
       properties:

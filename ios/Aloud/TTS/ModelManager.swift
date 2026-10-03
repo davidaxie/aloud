@@ -291,6 +291,9 @@ final class ModelManager: ObservableObject {
     /// every failure. Tests replace it.
     var announce: (String) -> Void = { ModelManager.postAnnouncement($0) }
 
+    /// M19's check and verify intervals. Tests replace it.
+    var budgetSignposts = BudgetSignposts.live
+
     /// Queued, so it never cuts off VoiceOver; never posted in a muted
     /// (test) process.
     static func postAnnouncement(_ text: String) {
@@ -458,6 +461,8 @@ final class ModelManager: ObservableObject {
     /// vouch for (pre-pin installs have no record; a touched or replaced
     /// file has a new stamp) is hashed once in the background first.
     func detectExisting() {
+        let check = budgetSignposts.begin(.modelCheck)
+        defer { budgetSignposts.end(check) }
         epoch &+= 1
         endVerification()
         let present = Self.remoteFiles.allSatisfy { file in
@@ -495,6 +500,8 @@ final class ModelManager: ObservableObject {
         let generation = epoch
         let directory = installDirectory
         let hasher = self.hasher
+        let signposts = budgetSignposts
+        let verify = signposts.begin(.modelVerify)
         isVerifying = true
         verification = Task { [weak self] in
             var intact = true
@@ -502,6 +509,9 @@ final class ModelManager: ObservableObject {
                 intact = await Self.hashMatches(file, at: directory.appendingPathComponent(file.name),
                                                 hasher: hasher)
             }
+            // Before any guard: a mismatch, an unreadable file or a newer
+            // detection all end it here.
+            signposts.end(verify)
             guard let self, self.epoch == generation else { return }
             self.endVerification()
             guard intact else {
@@ -716,8 +726,11 @@ final class ModelManager: ObservableObject {
         let file = Self.remoteFiles[index]
         let generation = epoch
         let hasher = self.hasher
+        let signposts = budgetSignposts
+        let verify = signposts.begin(.modelVerify)
         verification = Task { [weak self] in
             let failure = await Self.checkStagedFile(file, at: url, hasher: hasher)
+            signposts.end(verify)
             // A cancel, delete or new run while it hashed wins.
             guard let self, self.epoch == generation, self.isInFlight,
                   self.currentFileIndex == index else { return }

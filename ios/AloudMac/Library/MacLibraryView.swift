@@ -30,6 +30,8 @@ struct MacLibraryView: View {
     @FocusState private var focusedCard: UUID?
     /// The shelf's scroll view width, scroller excluded; nil until measured.
     @State private var shelfWidth: CGFloat?
+    /// Whose Paste the window's key tail serves: this screen's, until it goes.
+    @State private var pasteOwner = UUID()
 
     private var continuePlayback: ContinuePlayback { model.continuePlayback }
 
@@ -61,9 +63,17 @@ struct MacLibraryView: View {
         // Edit ▸ Paste (⌘V), empty or not (M8): copied files are added as
         // a drop's are, and copied text becomes a book titled from its
         // first line. Only here: Classics and the reader paste nothing.
+        // SwiftUI asks its paste command only while a Library view has
+        // keyboard focus; with none (Full Keyboard Access off, a mouse),
+        // the window's key tail takes Paste and hands it here. AppKit sends
+        // one Paste to one responder, the first in the chain that takes it,
+        // so a paste is one book either way.
         .onPasteCommand(of: MacFileIntake.pasteTypes) { providers in
             Task { await MacFileIntake.shared.admitPaste(providers) }
         }
+        .onAppear { offerPaste(router.path.isEmpty) }
+        .onChange(of: router.path.isEmpty) { _, atRoot in offerPaste(atRoot) }
+        .onDisappear { offerPaste(false) }
         .onReceive(store.$documents) { documents in
             shelf = ShelfLayout(for: documents, loadedID: loadedID)
         }
@@ -92,6 +102,17 @@ struct MacLibraryView: View {
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
             Text("This removes the document and its listening progress.")
+        }
+    }
+
+    /// Offers Paste to the window's key tail (`MacPasteTarget`) while the
+    /// Library shows, or withdraws it. The root stays in the stack under
+    /// Classics and the reader, which paste nothing, so it goes with them.
+    private func offerPaste(_ shows: Bool) {
+        if shows {
+            MacPasteTarget.shared.offer(by: pasteOwner) { MacFileIntake.shared.admitPasteboard($0) }
+        } else {
+            MacPasteTarget.shared.withdraw(by: pasteOwner)
         }
     }
 

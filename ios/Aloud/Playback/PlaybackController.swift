@@ -23,6 +23,7 @@ final class PlaybackController: ObservableObject {
 
     @Published private(set) var status: PlayerStatus = .idle {
         didSet {
+            settleFirstAudio()   // M19's first-audio signpost
             wordTimingStatusChanged(status)   // M3 karaoke frame ticker
             let wasActive = oldValue == .playing || oldValue == .buffering
             if !wasActive, isActive {
@@ -314,6 +315,10 @@ final class PlaybackController: ObservableObject {
     private var activity: PlatformActivity.Token?
     /// The armed idle stop (M19), while one is.
     private var idleEngineStopItem: DispatchWorkItem?
+    /// M19's first-audio interval: open from Play while the status buffers.
+    private var firstAudio: BudgetSignposts.Interval?
+    /// M19's budget signposts. Tests replace it.
+    var budgetSignposts = BudgetSignposts.live
     /// The engine-configuration and system-sleep observers, with the
     /// center each was added to.
     private var systemObservers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
@@ -636,6 +641,13 @@ final class PlaybackController: ObservableObject {
         // The listener took over: an interruption's later end resumes nothing.
         if userInitiated { resumeAfterInterruption = false }
         guard let content, !content.sentences.isEmpty else { return }
+        // M19: Play to the first buffer on the started node; cold when the
+        // neural model loads first. A path that leaves the status as it was
+        // (a sample already speaking) settles on the way out.
+        budgetSignposts.end(&firstAudio, gaveUp: true)
+        firstAudio = budgetSignposts.begin(.firstAudio,
+                                           voice.engine == .kokoro && kokoro?.isWarm == false ? .cold : .warm)
+        defer { settleFirstAudio() }
         // Resume rewind: a USER play after a real break backs up a couple of
         // sentences to rebuild context. Programmatic resumes (interruption
         // end, route-change recovery) never rewind. Read from the listener's
@@ -684,6 +696,14 @@ final class PlaybackController: ObservableObject {
             return
         }
         startPlayback(at: max(currentSentence, 0))
+    }
+
+    /// Ends the first-audio interval once the status leaves `.buffering`:
+    /// `.playing` is the first buffer on the started node (a warm resume's
+    /// included), any other status a start that gave up.
+    private func settleFirstAudio() {
+        guard status != .buffering else { return }
+        budgetSignposts.end(&firstAudio, gaveUp: status != .playing)
     }
 
     /// A user pause (R20): `.paused` publishes at once — chrome, Now Playing

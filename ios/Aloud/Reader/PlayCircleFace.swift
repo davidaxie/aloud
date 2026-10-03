@@ -63,7 +63,7 @@ struct PlayCircleFace: View {
     var body: some View {
         ZStack {
             Image(systemName: state.glyph.rawValue)
-                .font(diameter >= Theme.PlayCircle.diameter ? .title2.weight(.bold) : .title3.weight(.semibold))
+                .font(Self.glyphFont(diameter: diameter))
                 .foregroundStyle(Theme.bg)
                 .opacity(state.glyphOpacity)
                 // Optical centering: the triangle's mass sits left of its box.
@@ -119,6 +119,15 @@ private struct BusyRing: View {
 }
 
 extension PlayCircleFace {
+    /// The glyph's font: on the iPhone, title2 bold in the bar's 54 pt circle
+    /// and title3 semibold in the Continue card's 44, following Dynamic Type;
+    /// on the Mac, sized from the circle (`PlatformTypeRamp.playGlyphFont`),
+    /// so each band's circle gets its own glyph.
+    nonisolated static func glyphFont(diameter: CGFloat) -> Font {
+        PlatformTypeRamp.playGlyphFont(diameter: diameter)
+            ?? (diameter >= Theme.PlayCircle.diameter ? .title2.weight(.bold) : .title3.weight(.semibold))
+    }
+
     /// The arc's angle: one turn per `Motion.arcTurn`, starting at 12 o'clock.
     nonisolated static func arcDegrees(at seconds: TimeInterval) -> Double {
         let turn = Theme.Motion.arcTurn

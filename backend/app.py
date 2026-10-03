@@ -254,7 +254,7 @@ _PLACEHOLDER_HTML = """<!doctype html>
 <body><div class="card">
   <h1>Aloud backend is running</h1>
   <p>The frontend hasn't been built yet, so there's nothing to show here.</p>
-  <p>Build it with <code>./build_app.sh</code> (or <code>cd frontend &amp;&amp; npm run build</code>),
+  <p>Build it with <code>legacy/build_web_app.sh</code> (or <code>cd frontend &amp;&amp; npm run build</code>),
      then reload.</p>
 </div></body></html>
 """
@@ -291,7 +291,7 @@ if os.path.isfile(_INDEX_HTML):
 else:
     logger.warning(
         "frontend/dist not found at %s — serving a placeholder page. "
-        "Run ./build_app.sh (or 'cd frontend && npm run build') to build the UI.",
+        "Run legacy/build_web_app.sh (or 'cd frontend && npm run build') to build the UI.",
         _DIST_DIR,
     )
 

@@ -20,6 +20,9 @@ final class NeuralPrewarm {
 
     var isWarming: Bool { warmTask != nil }
 
+    /// M19's warm-up interval. Tests replace it.
+    var budgetSignposts = BudgetSignposts.live
+
     private let playback: PlaybackController
     private let kokoro: any WarmableTtsEngine
     private let isModelInstalled: @MainActor () -> Bool
@@ -105,9 +108,16 @@ final class NeuralPrewarm {
         warmGeneration &+= 1
         let generation = warmGeneration
         let kokoro = kokoro
+        let signposts = budgetSignposts
         warmTask = Task { [weak self] in
             // Cancelled before it began (a memory warning): never load.
-            if !Task.isCancelled { try? await kokoro.warmUp() }
+            if !Task.isCancelled {
+                // Ends however the load comes back: warm, thrown, or after
+                // a memory warning's cancel.
+                let warmup = signposts.begin(.kokoroWarmup)
+                try? await kokoro.warmUp()
+                signposts.end(warmup)
+            }
             guard let self, self.warmGeneration == generation else { return }
             self.warmTask = nil
         }

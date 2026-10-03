@@ -53,8 +53,9 @@ No accounts, no cloud and no tracking. Your books never leave your device.
 `build_app.sh` builds the `AloudMac` scheme in Release through `ios/xcb.sh`.
 It then checks the result: the shipping bundle id
 (`com.davidxie.Aloud.mac`), no test hooks in the binary, the App Sandbox
-with no temporary exception, and a signature that verifies. It never
-launches the app. Open Aloud yourself from Finder or Spotlight.
+with no temporary exception, no debugger entitlement (get-task-allow), and
+a signature that verifies. It never launches the app. Open Aloud yourself
+from Finder or Spotlight.
 
 - **Where it installs:** `--install` copies the app to `~/Applications`.
   That needs no administrator, unlike `/Applications`. It never installs
@@ -160,6 +161,10 @@ source, `ios/AloudMac/Commands/MacShortcuts.swift`, and a lint
   with the focus uses the key itself: a text field types it, a focused
   button presses on Space, and a slider takes the arrows. For that reason
   the menus don't show them beside their items; the tooltips do.
+- ⌘V (Edit › Paste) in the Library adds what you copied, with or without a
+  focused control: a PDF or text file copied in Finder, or copied text,
+  which becomes a book titled from its first line. In a search field it
+  pastes into the field.
 - Play/pause and the 15-second skips also answer to the media keys (F7, F8
   and F9), AirPods, Control Center and the Dock menu.
 

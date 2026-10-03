@@ -1,3 +1,4 @@
+import AppKit
 import UniformTypeIdentifiers
 import XCTest
 @testable import Aloud
@@ -7,10 +8,13 @@ import XCTest
 /// Copied text becomes one book titled from its first line and opens; text
 /// that is only whitespace fails as an empty text file does; copied files
 /// are admitted as a drop's are, several as one batch; a file wins over the
-/// name Finder copies with it.
+/// name Finder copies with it. With nothing focused, Paste reaches the
+/// window's key tail, which reads the pasteboard by the same rule
+/// (`MacPasteTarget`, `admitPasteboard(_:)`), and one paste is one book.
 ///
-/// Every provider is built here: no test reads or writes the system
-/// pasteboard. Fixtures sit in the host's own temporary folder.
+/// Every provider is built here, and every pasteboard is a private named
+/// one: no test reads or writes the system pasteboard. Fixtures sit in the
+/// host's own temporary folder, and test windows are never ordered in.
 @MainActor
 final class MacPasteTests: XCTestCase {
 
@@ -295,5 +299,272 @@ final class MacPasteTests: XCTestCase {
         XCTAssertEqual(h.library.importedNames, [])
         XCTAssertNil(h.importer.failure)
         XCTAssertEqual(h.importer.phase, .idle)
+    }
+
+    // MARK: The tail and the pasteboard
+
+    /// The rule both pastes share: files win, then text, else nothing.
+    func testFilesWinOverTextAndNeitherIsNothing() {
+        XCTAssertEqual(MacFileIntake.pasteKind(carriesFiles: true, carriesText: true), .files)
+        XCTAssertEqual(MacFileIntake.pasteKind(carriesFiles: true, carriesText: false), .files)
+        XCTAssertEqual(MacFileIntake.pasteKind(carriesFiles: false, carriesText: true), .text)
+        XCTAssertNil(MacFileIntake.pasteKind(carriesFiles: false, carriesText: false))
+    }
+
+    /// The tail turns Paste on only while the Library offers it and the
+    /// pasteboard holds what it takes: text, or a file. No Library, a copied
+    /// picture (no file, no text) or nothing copied keep it grey, and Paste
+    /// then does nothing. Judged by type alone, never by reading the
+    /// pasteboard, which macOS would put to the user: a copied photo leaves
+    /// it on, and its paste adds nothing (the photo test below). Another
+    /// view's withdrawal leaves the Library's offer.
+    func testTheTailOffersPasteOnlyForALibraryWithSomethingToAdd() throws {
+        let folder = try makeFolder()
+        let pasteboard = makePasteboard()
+        let target = MacPasteTarget(pasteboard: { pasteboard })
+        let keys = MacKeyRouter(searchHandoff: MacSearchHandoff(), pasteTarget: target) { _ in true }
+        let item = Self.pasteItem()
+        var pasted: [NSPasteboard] = []
+        Self.copy([Self.textEntry("An article copied before a flight")], to: pasteboard)
+
+        XCTAssertFalse(keys.tail.validateMenuItem(item), "no Library on screen")
+        keys.tail.paste(nil)
+        XCTAssertTrue(pasted.isEmpty)
+
+        let library = UUID()
+        target.offer(by: library) { pasted.append($0) }
+        XCTAssertTrue(keys.tail.validateMenuItem(item), "text, with the Library on screen")
+        XCTAssertTrue(keys.tail.validateUserInterfaceItem(item))
+
+        let pdf = try writeFile("Field Notes.pdf", in: folder)
+        Self.copy([Self.fileEntry(pdf)], to: pasteboard)
+        XCTAssertTrue(keys.tail.validateMenuItem(item), "a PDF copied in Finder")
+
+        let photo = try writeFile("Beach.jpg", in: folder)
+        Self.copy([Self.fileEntry(photo)], to: pasteboard)
+        XCTAssertTrue(keys.tail.validateMenuItem(item), "a copied file, by type: its URL is read only as it pastes")
+
+        Self.copy([Self.imageEntry()], to: pasteboard)
+        XCTAssertFalse(keys.tail.validateMenuItem(item), "a copied picture: no file, no text")
+        keys.tail.paste(nil)
+        XCTAssertTrue(pasted.isEmpty, "Paste off is Paste ignored")
+
+        pasteboard.clearContents()
+        XCTAssertFalse(keys.tail.validateMenuItem(item), "nothing copied")
+
+        Self.copy([Self.textEntry("Another article")], to: pasteboard)
+        target.withdraw(by: UUID())
+        XCTAssertTrue(keys.tail.validateMenuItem(item), "the Library's offer stands")
+        keys.tail.paste(nil)
+        XCTAssertEqual(pasted.count, 1)
+        XCTAssertTrue(pasted.first === pasteboard, "read as the user pastes")
+
+        target.withdraw(by: library)
+        XCTAssertFalse(keys.tail.validateMenuItem(item), "the Library gone")
+    }
+
+    /// With nothing focused (a mouse, Full Keyboard Access off) the tail is
+    /// the responder Paste reaches. A focused search field (Classics', the
+    /// Contents panel's) pastes for itself: its editor comes first.
+    func testAFocusedSearchFieldPastesForItselfAndTheTailTakesTheRest() throws {
+        let pasteboard = makePasteboard()
+        let target = MacPasteTarget(pasteboard: { pasteboard })
+        let keys = MacKeyRouter(searchHandoff: MacSearchHandoff(), pasteTarget: target) { _ in true }
+        target.offer(by: UUID()) { _ in }
+        let window = makeWindow(tailOf: keys)
+        XCTAssertTrue(Self.pasteResponder(in: window) === keys.tail, "nothing focused: the tail")
+
+        let field = NSSearchField(frame: NSRect(x: 20, y: 40, width: 240, height: 24))
+        window.contentView?.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView, "the field edits through the field editor")
+        XCTAssertTrue(Self.pasteResponder(in: window) === editor, "the field's own Paste, before the tail")
+        XCTAssertTrue(Self.chain(of: window).contains { $0 === keys.tail }, "the tail still ends the chain")
+    }
+
+    /// A PDF copied in Finder, read off the pasteboard: admitted through the
+    /// intake as a PDF, and opened. Its name, copied with it, is no book.
+    func testAFileURLOnThePasteboardIsAdmittedThroughTheIntake() async throws {
+        let folder = try makeFolder()
+        let pasteboard = makePasteboard()
+        let h = Harness()
+        let pdf = try writeFile("Field Notes.pdf", in: folder)
+        Self.copy([Self.fileEntry(pdf)], to: pasteboard)
+
+        h.intake.admitPasteboard(pasteboard)
+        let added = await waitUntil { h.library.documents.count == 1 && h.importer.phase == .idle }
+
+        XCTAssertTrue(added)
+        XCTAssertEqual(h.library.pdfNames, ["Field Notes.pdf"])
+        XCTAssertEqual(h.library.textTitles, [], "its name, copied with it, is no book of its own")
+        XCTAssertEqual(h.router.path.count, 1, "one file opens playing")
+        XCTAssertNil(h.intake.failure)
+    }
+
+    /// Two files copied in Finder are one batch, as two dropped would be.
+    func testTwoFilesOnThePasteboardAreOneBatch() async throws {
+        let folder = try makeFolder()
+        let pasteboard = makePasteboard()
+        let h = Harness()
+        let files = try ["one.txt", "two.txt"].map { try writeFile($0, in: folder) }
+        Self.copy(files.map(Self.fileEntry), to: pasteboard)
+
+        h.intake.admitPasteboard(pasteboard)
+        let added = await waitUntil { h.library.documents.count == 2 && h.importer.phase == .idle }
+        XCTAssertTrue(added)
+        let settled = await waitUntil { !h.intake.holdsOpens }
+        XCTAssertTrue(settled)
+
+        XCTAssertEqual(h.library.importedNames, ["one.txt", "two.txt"], "in the order copied")
+        XCTAssertEqual(h.router.path, [], "none of them opens")
+        XCTAssertEqual(h.announcements, ["Added 2 books"])
+    }
+
+    /// A photo copied in Finder, pasted anyway: nothing, by the same rule.
+    func testAPhotoOnThePasteboardAddsNothing() async throws {
+        let folder = try makeFolder()
+        let pasteboard = makePasteboard()
+        let h = Harness()
+        let photo = try writeFile("Beach.jpg", in: folder)
+        Self.copy([Self.fileEntry(photo)], to: pasteboard)
+
+        h.intake.admitPasteboard(pasteboard)
+        _ = await waitUntil(0.3) { false }
+
+        XCTAssertEqual(h.library.importedNames, [])
+        XCTAssertNil(h.importer.failure)
+        XCTAssertNil(h.intake.failure)
+        XCTAssertEqual(h.importer.phase, .idle)
+    }
+
+    /// Copied text, read off the pasteboard: one book titled from its first
+    /// line, opened and announced, the words as copied.
+    func testTextOnThePasteboardImportsOneBook() async throws {
+        let pasteboard = makePasteboard()
+        let h = Harness()
+        let article = "\n  \n  Flying   Light:\tNotes for a Long Trip  \nThe first paragraph.\n\nThe second."
+        Self.copy([Self.textEntry(article)], to: pasteboard)
+
+        h.intake.admitPasteboard(pasteboard)
+        let added = await waitUntil { h.library.documents.count == 1 && h.importer.phase == .idle }
+
+        XCTAssertTrue(added)
+        XCTAssertEqual(h.library.textTitles, ["Flying Light: Notes for a Long Trip"])
+        XCTAssertEqual(h.library.textBodies, [article], "the text as copied, whitespace and all")
+        let book = try XCTUnwrap(h.library.documents.first)
+        XCTAssertEqual(h.router.path, [.reader(book.id)], "one paste opens playing")
+        XCTAssertEqual(h.announcements, ["Added Flying Light: Notes for a Long Trip"])
+    }
+
+    /// One ⌘V is one book: AppKit sends Paste to the first responder in the
+    /// chain that takes it. With nothing focused that is the tail, which
+    /// adds the copied text once. A focused view that takes Paste itself
+    /// (SwiftUI's paste command, for a focused Library view) takes it
+    /// instead, and the tail is never asked.
+    func testOnePasteAddsOneBook() async throws {
+        let pasteboard = makePasteboard()
+        let h = Harness()
+        let target = MacPasteTarget(pasteboard: { pasteboard })
+        let keys = MacKeyRouter(searchHandoff: MacSearchHandoff(), pasteTarget: target) { _ in true }
+        target.offer(by: UUID()) { h.intake.admitPasteboard($0) }
+        let window = makeWindow(tailOf: keys)
+        Self.copy([Self.textEntry("Pasted Once\nThis article is pasted once.")], to: pasteboard)
+        let paste = #selector(NSText.paste(_:))
+
+        XCTAssertEqual(Self.chain(of: window).filter { $0.responds(to: paste) }.count, 1, "only the tail takes Paste")
+        let first = try XCTUnwrap(window.firstResponder)
+        XCTAssertTrue(first.tryToPerform(paste, with: nil))
+        let added = await waitUntil { h.library.documents.count == 1 && h.importer.phase == .idle }
+        XCTAssertTrue(added)
+        _ = await waitUntil(0.3) { false }
+        XCTAssertEqual(h.library.documents.count, 1, "one paste, one book")
+        XCTAssertEqual(h.library.textTitles, ["Pasted Once"])
+        XCTAssertEqual(h.announcements, ["Added Pasted Once"])
+
+        let focused = PasteTakingView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        window.contentView?.addSubview(focused)
+        XCTAssertTrue(window.makeFirstResponder(focused))
+        XCTAssertTrue(focused.tryToPerform(paste, with: nil))
+        XCTAssertEqual(focused.pastes, 1)
+        _ = await waitUntil(0.3) { false }
+        XCTAssertEqual(h.library.documents.count, 1, "the tail was never asked")
+    }
+
+    // MARK: Pasteboard fixtures
+
+    /// A pasteboard of this test's own, released after it.
+    private func makePasteboard() -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.davidxie.AloudMacTests.paste.\(UUID().uuidString)"))
+        addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
+        return pasteboard
+    }
+
+    /// Puts `items` on `pasteboard` in place of what was there, as a copy does.
+    private static func copy(_ items: [NSPasteboardItem], to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects(items))
+    }
+
+    /// Copied text: one item of plain text.
+    private static func textEntry(_ text: String) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        return item
+    }
+
+    /// A copied picture, as from Preview: image data, with no file and no text.
+    private static func imageEntry() -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setData(Data([0x4D, 0x4D, 0x00, 0x2A]), forType: .tiff)
+        return item
+    }
+
+    /// A Finder copy of one file: its file URL, and its name as text.
+    private static func fileEntry(_ url: URL) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(url.absoluteString, forType: .fileURL)
+        item.setString(url.lastPathComponent, forType: .string)
+        return item
+    }
+
+    /// Edit ▸ Paste as the system's Edit menu has it: `paste:`, sent to the
+    /// first responder that takes it.
+    private static func pasteItem() -> NSMenuItem {
+        NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    }
+
+    /// A window, closed after the test, with the router's tail ending its chain.
+    private func makeWindow(tailOf keys: MacKeyRouter) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { @MainActor in window.close() }
+        keys.ensureTail(on: window)
+        return window
+    }
+
+    /// `window`'s responder chain, from its first responder.
+    private static func chain(of window: NSWindow) -> [NSResponder] {
+        var chain: [NSResponder] = []
+        var next = window.firstResponder
+        while let responder = next, chain.count < 64 {
+            chain.append(responder)
+            next = responder.nextResponder
+        }
+        return chain
+    }
+
+    /// Where AppKit sends Paste in `window`: the first responder in its
+    /// chain that answers it.
+    private static func pasteResponder(in window: NSWindow) -> NSResponder? {
+        chain(of: window).first { $0.responds(to: #selector(NSText.paste(_:))) }
+    }
+
+    /// A focused view that takes Paste itself, as SwiftUI's paste command
+    /// does for a focused Library view.
+    private final class PasteTakingView: NSView {
+        private(set) var pastes = 0
+        override var acceptsFirstResponder: Bool { true }
+        @objc func paste(_ sender: Any?) { pastes += 1 }
     }
 }

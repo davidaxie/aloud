@@ -8,10 +8,12 @@ import XCTest
 /// below a 560 pt column or in the larger chrome bands, and at most nine
 /// focusable controls below the text, ten while the natural-voice offer
 /// shows. The bands (M18, mac-ux §10.4): the bar follows the reader's text
-/// size, and fits the 520 × 480 window at 40 pt. Plus the sleep chip's
+/// size, the shared chapter line and Play glyph with it, and fits the
+/// 520 × 480 window at 40 pt. Plus the sleep chip's
 /// menu: the most recent choice first, Off only while armed, in the chip's
 /// sentence case. Pure layout, no window; text is measured with AppKit's
-/// own metrics.
+/// own metrics, and the shared chapter line as SwiftUI sets it, through
+/// `NSHostingView`.
 @MainActor
 final class MacPlayerBarTests: XCTestCase {
 
@@ -268,6 +270,129 @@ final class MacPlayerBarTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(MacPlayerBarLayout.chapterLineHeight(for: .largest), wrapped)
         XCTAssertGreaterThan(MacPlayerBarLayout.chapterLineHeight(for: .largest), MacPlayerBarLayout.chapterLineMinHeight,
                              "two lines and a detail need more than the one-line row")
+    }
+
+    /// The shared chapter line reads the band: its title 11, 13 and 15 pt
+    /// semibold, its detail and every message 11, 13 and 15 pt, and only
+    /// the Largest band stacks the title over the detail.
+    func testTheChapterLineSetsEachBandsType() {
+        let table: [(ChromeScale, points: CGFloat)] = [(.standard, 11), (.large, 13), (.largest, 15)]
+        XCTAssertEqual(table.map(\.0), ChromeScale.allCases)
+        for (scale, points) in table {
+            XCTAssertEqual(ReaderMessageLine.titleFont(scale), .system(size: points, weight: .semibold), "\(scale)")
+            XCTAssertEqual(ReaderMessageLine.detailFont(scale), .system(size: points), "\(scale)")
+            XCTAssertEqual(ReaderMessageLine.stacksPosition(dynamicTypeSize: .large, scale: scale), scale == .largest,
+                           "\(scale)")
+        }
+    }
+
+    /// The line as the bar draws it, in the narrowest column, with a title
+    /// far too long for one line: the one 44 pt row in the Default and Large
+    /// bands (the title truncates), and in the Largest band the title on
+    /// exactly two lines over its detail, with the bar still inside half the
+    /// minimum window. SwiftUI sets a 15 pt line 19 pt high where
+    /// `MacPlayerBarLayout.lineHeight` counts AppKit's 18, so the line is
+    /// 61 pt against the bar's 58: expected to fail until MacPlayerBar.swift
+    /// measures SwiftUI's line (strict, so the fix flags this for removal).
+    func testTheChapterLineWrapsOnlyInTheLargestBandWithinTheBarsRoom() {
+        let position = ReaderPositionLine(
+            kind: .chapter(number: 24, count: 61),
+            title: "Chapter XXIV. In Which the Travellers, Having Crossed the Frozen Sea, Come at Last to the Northern Shore",
+            minutesLeft: 8)
+        for scale in ChromeScale.allCases {
+            let height = measuredChapterLineHeight(position, scale: scale)
+            guard scale == .largest else {
+                XCTAssertEqual(height, MacPlayerBarLayout.chapterLineMinHeight, accuracy: 0.5, "\(scale): one line")
+                continue
+            }
+            let stacked = 2 * measuredLineHeight(ReaderMessageLine.titleFont(scale)) + Theme.Space.xxs
+                + measuredLineHeight(ReaderMessageLine.detailFont(scale))
+            XCTAssertGreaterThan(height, MacPlayerBarLayout.chapterLineMinHeight, "the title wraps")
+            XCTAssertEqual(height, stacked, accuracy: 0.5, "two title lines over the detail, no more")
+            let minimum = MacWindowConfigurator.minimumSize
+            let bar = MacPlayerBarLayout(barWidth: minimum.width, scale: scale)
+            XCTAssertLessThanOrEqual(bar.height - MacPlayerBarLayout.chapterLineHeight(for: scale) + height,
+                                     minimum.height / 2, "the bar, with the line as drawn, in half the window")
+            XCTAssertLessThanOrEqual(height, MacPlayerBarLayout.chapterLineHeight(for: scale) + 0.5,
+                                     "inside the bar's room for it")
+        }
+    }
+
+    /// One line of `font` as SwiftUI sets it.
+    private func measuredLineHeight(_ font: Font) -> CGFloat {
+        NSHostingView(rootView: Text("Ag").font(font)).fittingSize.height
+    }
+
+    /// The natural-voice offer that takes the line's place reads the band
+    /// too: its one-line form widens with each band, and in the narrowest
+    /// column it stays the one 44 pt row. Its own defaults and directory,
+    /// network tasks off; nothing downloads.
+    func testTheOfferRowFollowsTheBandInOneRow() throws {
+        let suite = "aloud.tests.macPlayerBarOffer.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacPlayerBarTests-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let path = FixedNetworkPath(isExpensiveOrConstrained: false)
+        let manager = ModelManager(pathSource: path, installDirectory: directory, defaults: defaults,
+                                   freeSpace: { 2_000_000_000 }, hasher: { _ in "" })
+        manager.startsNetworkTasks = false
+        manager.announce = { _ in }
+        let offer = NaturalVoiceOffer(defaults: defaults, deviceSupported: true, now: { 0 },
+                                      pathSource: path, watchesDownloadPath: false)
+        func row(_ scale: ChromeScale) -> some View {
+            NaturalVoiceOfferRow(onOpenContents: {})
+                .environmentObject(offer)
+                .environmentObject(manager)
+                .environment(\.chromeScale, scale)
+        }
+        let widths = ChromeScale.allCases.map { NSHostingView(rootView: row($0)).fittingSize.width }
+        XCTAssertEqual(widths, widths.sorted(), "\(widths)")
+        XCTAssertEqual(Set(widths).count, widths.count, "each band sets it larger: \(widths)")
+        for scale in ChromeScale.allCases {
+            let height = NSHostingView(rootView: row(scale).frame(width: MacPlayerBarLayout.minColumnWidth))
+                .fittingSize.height
+            XCTAssertEqual(height, MacPlayerBarLayout.chapterLineMinHeight, accuracy: 0.5, "\(scale): one row")
+        }
+    }
+
+    /// The shared line's height in a bar at the minimum column, with
+    /// `scale` in its environment as `MacReaderScreen` sets it.
+    private func measuredChapterLineHeight(_ position: ReaderPositionLine, scale: ChromeScale) -> CGFloat {
+        let line = ReaderMessageLine(message: nil, position: position,
+                                     onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {})
+            .environment(\.chromeScale, scale)
+            .frame(width: MacPlayerBarLayout.minColumnWidth + 2 * Theme.Space.screenGutter)
+        return NSHostingView(rootView: line).fittingSize.height
+    }
+
+    /// The Play glyph is sized from its circle (the iPhone's 22 pt in 54):
+    /// 18, 21 and 24 pt bold in the 44, 52 and 60 pt circles, where the
+    /// system's text styles gave 44 and 52 the same glyph. Every glyph the
+    /// circle shows sits inside it.
+    func testThePlayGlyphGrowsWithEachBandsCircle() throws {
+        let table: [(ChromeScale, points: CGFloat)] = [(.standard, 18), (.large, 21), (.largest, 24)]
+        XCTAssertEqual(table.map(\.0), ChromeScale.allCases)
+        var previous: CGFloat = 0
+        for (scale, points) in table {
+            let diameter = scale.playCircleDiameter
+            XCTAssertEqual(PlatformTypeRamp.playGlyphPoints(diameter: diameter), points, "\(scale)")
+            XCTAssertEqual(PlayCircleFace.glyphFont(diameter: diameter), .system(size: points, weight: .bold), "\(scale)")
+            XCTAssertGreaterThan(points, previous, "\(scale): a larger circle, a larger glyph")
+            previous = points
+            let config = NSImage.SymbolConfiguration(pointSize: points, weight: .bold)
+            for glyph in [PlayButtonState.Glyph.play, .pause, .retry, .listenAgain] {
+                let size = try XCTUnwrap(NSImage(systemSymbolName: glyph.rawValue, accessibilityDescription: nil)?
+                    .withSymbolConfiguration(config)?.size, glyph.rawValue)
+                XCTAssertLessThanOrEqual(max(size.width, size.height), diameter / CGFloat(2).squareRoot(),
+                                         "\(scale): \(glyph.rawValue) inside the circle, corners and all")
+            }
+        }
+        XCTAssertNotEqual(PlayCircleFace.glyphFont(diameter: ChromeScale.standard.playCircleDiameter),
+                          PlayCircleFace.glyphFont(diameter: ChromeScale.large.playCircleDiameter))
     }
 
     /// Nothing clips at 40 pt in the narrowest window, nor in one row at

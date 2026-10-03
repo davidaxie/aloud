@@ -117,4 +117,34 @@ enum PlatformTypeRamp {
         return nil
         #endif
     }
+
+    /// Whether the reader's chapter line may set its title on two lines in
+    /// `scale`'s band: the Largest band on the Mac (mac-ux §10.4), where the
+    /// bar keeps the room (`MacPlayerBarLayout.chapterLineHeight`). Never on
+    /// the iPhone, whose line wraps at the accessibility sizes instead.
+    static func wrapsChapterLine(in scale: ChromeScale) -> Bool {
+        #if os(macOS)
+        return scale == .largest
+        #else
+        return false
+        #endif
+    }
+
+    /// The Mac's Play glyph for a circle `diameter` across: the iPhone's
+    /// proportion (its 22 pt title2 glyph in the 54 pt circle) to the whole
+    /// point, so each band's circle gets its own glyph: 18, 21 and 24 pt in
+    /// the 44, 52 and 60 pt circles.
+    static func playGlyphPoints(diameter: CGFloat) -> CGFloat {
+        (diameter * 22 / Theme.PlayCircle.diameter).rounded()
+    }
+
+    /// The Play glyph at `playGlyphPoints`, bold. nil on the iPhone, where
+    /// `PlayCircleFace` keeps its Dynamic Type styles.
+    static func playGlyphFont(diameter: CGFloat) -> Font? {
+        #if os(macOS)
+        return .system(size: playGlyphPoints(diameter: diameter), weight: .bold)
+        #else
+        return nil
+        #endif
+    }
 }

@@ -17,6 +17,9 @@ import AppKit
 /// search field goes to the list under it when that list offers to take
 /// it (`MacSearchHandoff`), and to the field otherwise. Every other key
 /// passes through untouched. Installed once, by the app delegate.
+///
+/// The tail also answers Edit ▸ Paste that nothing earlier in the chain
+/// took, for the Library (`MacPasteTarget`).
 @MainActor
 final class MacKeyRouter {
 
@@ -26,6 +29,8 @@ final class MacKeyRouter {
     private let perform: Perform
     /// Where ↓ in a search field goes: the app's one, or a test's own.
     let searchHandoff: MacSearchHandoff
+    /// Where Paste that reaches the tail goes: the app's one, or a test's own.
+    let pasteTarget: MacPasteTarget
     private var monitor: Any?
     /// The plain key on its way through a window's chain, while it is, and
     /// whether it already ran its command there: one press, one command,
@@ -35,9 +40,11 @@ final class MacKeyRouter {
     /// One tail, appended to each window the router sends a key to.
     let tail = MacKeyTail()
 
-    init(searchHandoff: MacSearchHandoff? = nil, perform: @escaping Perform) {
+    init(searchHandoff: MacSearchHandoff? = nil, pasteTarget: MacPasteTarget? = nil,
+         perform: @escaping Perform) {
         self.perform = perform
         self.searchHandoff = searchHandoff ?? .shared
+        self.pasteTarget = pasteTarget ?? .shared
         tail.router = self
     }
 
@@ -201,6 +208,59 @@ final class MacSearchHandoff {
     }
 }
 
+/// ⌘V in the Library (M8), at the end of the window's chain. A paste
+/// command on the Library's views is asked only while one of them has
+/// keyboard focus, and with Full Keyboard Access off (the default) none
+/// does, so Edit ▸ Paste would stay grey for a mouse. The tail answers
+/// Paste for any chain that reaches it (a focused text field, a search
+/// field's included, pastes for itself first) and asks here. One offer at
+/// a time, as `MacSearchHandoff`'s: the Library makes it as it appears and
+/// withdraws it as it goes, and a withdrawal by a view whose offer was
+/// since replaced leaves the newer one.
+@MainActor
+final class MacPasteTarget {
+    /// Adds what the pasteboard holds.
+    typealias Paste = @MainActor (NSPasteboard) -> Void
+
+    /// The app's one: the Library offers, the tail asks.
+    static let shared = MacPasteTarget()
+
+    /// The pasteboard Paste looks at (its types) as it validates and reads
+    /// as it pastes: the system's, or a test's own.
+    private let pasteboard: @MainActor () -> NSPasteboard
+    private var owner: UUID?
+    private var paste: Paste?
+
+    init(pasteboard: @escaping @MainActor () -> NSPasteboard = { .general }) {
+        self.pasteboard = pasteboard
+    }
+
+    func offer(by owner: UUID, _ paste: @escaping Paste) {
+        self.owner = owner
+        self.paste = paste
+    }
+
+    func withdraw(by owner: UUID) {
+        guard self.owner == owner else { return }
+        self.owner = nil
+        paste = nil
+    }
+
+    /// The Library is on screen, and the pasteboard holds what it takes: a
+    /// file, or text, by type alone (`MacFileIntake.canAdmitPasteboard(_:)`).
+    var canPaste: Bool {
+        paste != nil && MacFileIntake.canAdmitPasteboard(pasteboard())
+    }
+
+    /// Hands the pasteboard to the Library; false when Paste is off.
+    @discardableResult
+    func pasteNow() -> Bool {
+        guard canPaste, let paste else { return false }
+        paste(pasteboard())
+        return true
+    }
+}
+
 /// An event, handed from AppKit's monitor callback to the main actor it
 /// already runs on.
 private struct EventBox: @unchecked Sendable {
@@ -214,8 +274,9 @@ private extension MacCommand {
 
 /// The last link of a window's responder chain. A key that reaches it was
 /// handled by no one: a plain key runs its command, and any other key is
-/// swallowed rather than beeped (M11).
-final class MacKeyTail: NSResponder {
+/// swallowed rather than beeped (M11). Paste that reaches it is the
+/// Library's (M8).
+final class MacKeyTail: NSResponder, NSMenuItemValidation, NSUserInterfaceValidations {
     fileprivate weak var router: MacKeyRouter?
 
     override func keyDown(with event: NSEvent) {
@@ -244,4 +305,34 @@ final class MacKeyTail: NSResponder {
 
     /// Nothing past the tail: an unhandled key ends here in silence.
     override func noResponder(for eventSelector: Selector) {}
+
+    // MARK: Paste (M8)
+
+    /// Edit ▸ Paste (⌘V) that no responder before the tail took: the
+    /// Library adds what was copied, while it offers (`MacPasteTarget`).
+    @objc func paste(_ sender: Any?) {
+        guard Self.isUnobstructed else { return }
+        router?.pasteTarget.pasteNow()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        validateUserInterfaceItem(menuItem)
+    }
+
+    /// Paste only with the Library on screen and something on the
+    /// pasteboard it takes. The tail's other actions stay as AppKit leaves
+    /// an unvalidated one: on.
+    func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        guard item.action == #selector(paste(_:)) else { return true }
+        return Self.isUnobstructed && router?.pasteTarget.canPaste == true
+    }
+
+    /// No alert, sheet or modal panel is up: Paste is theirs to ignore,
+    /// never a book added behind them (the plain keys' rule).
+    private static var isUnobstructed: Bool {
+        guard NSApp.modalWindow == nil else { return false }
+        return [NSApp.keyWindow, NSApp.mainWindow].allSatisfy { window in
+            window?.attachedSheet == nil && window?.isSheet != true
+        }
+    }
 }

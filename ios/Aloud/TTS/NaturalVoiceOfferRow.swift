@@ -4,11 +4,14 @@ import SwiftUI
 /// "Natural voice · 353 MB, once" with [Download] and [Not now]. After a
 /// Download that found too little space it reads "Natural voice · not
 /// enough space · need 707 MB free" (R21) until Download finds room or Not
-/// now answers.
+/// now answers. On the Mac its type follows the reader's chrome band (M18),
+/// as the line it replaces does.
 struct NaturalVoiceOfferRow: View {
 
     @EnvironmentObject private var offer: NaturalVoiceOffer
     @EnvironmentObject private var manager: ModelManager
+    /// `.standard` on the iPhone, where the band changes nothing.
+    @Environment(\.chromeScale) private var chromeScale
 
     private let onOpenContents: () -> Void
 
@@ -51,7 +54,7 @@ struct NaturalVoiceOfferRow: View {
     private func offerText(wraps: Bool) -> some View {
         Button(action: onOpenContents) {
             Text(line)
-                .font(Theme.font(.subhead))
+                .font(Theme.font(.subhead, scale: chromeScale))
                 .foregroundStyle(Theme.text)
                 // Never truncated: at its full width on one line (the row
                 // only picks this form when that fits), else wrapped.
@@ -75,7 +78,7 @@ struct NaturalVoiceOfferRow: View {
             } label: {
                 // Text only, never filled: Play keeps the one accent fill.
                 Text(NaturalVoiceCopy.download)
-                    .font(Theme.font(.callout).weight(.semibold))
+                    .font(Theme.font(.callout, scale: chromeScale).weight(.semibold))
                     .foregroundStyle(Theme.accentStrong)
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
@@ -89,7 +92,7 @@ struct NaturalVoiceOfferRow: View {
                 offer.notNow()
             } label: {
                 Text(NaturalVoiceCopy.notNow)
-                    .font(Theme.font(.callout))
+                    .font(Theme.font(.callout, scale: chromeScale))
                     .foregroundStyle(Theme.textMuted)
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
