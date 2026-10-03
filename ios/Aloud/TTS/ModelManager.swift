@@ -1081,10 +1081,21 @@ struct ModelInstallRecord: Codable, Equatable {
         let result = directory.appendingPathComponent(remote.name).withUnsafeFileSystemRepresentation { path in
             path.map { stat($0, &info) } ?? -1
         }
-        guard result == 0 else { return nil }
-        let mtime = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
+        guard result == 0,
+              let mtime = nanoseconds(seconds: Int64(info.st_mtimespec.tv_sec),
+                                      nanoseconds: Int64(info.st_mtimespec.tv_nsec)) else { return nil }
         return File(name: remote.name, bytes: Int64(info.st_size), sha256: remote.sha256,
                     inode: UInt64(info.st_ino), mtime: mtime)
+    }
+
+    /// A file time in nanoseconds, or nil when it doesn't fit: APFS clamps
+    /// a time before 1677 to Int64.min nanoseconds, whose seconds overflow
+    /// the product. Nil means the record vouches for nothing, so the file
+    /// is hashed again; never a trap at launch.
+    static func nanoseconds(seconds: Int64, nanoseconds: Int64) -> Int64? {
+        let (scaled, overflowedScale) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        let (total, overflowedSum) = scaled.addingReportingOverflow(nanoseconds)
+        return overflowedScale || overflowedSum ? nil : total
     }
 
     /// True while `remote` is still the file this record verified: the

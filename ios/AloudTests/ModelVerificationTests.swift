@@ -76,6 +76,32 @@ final class ModelVerificationTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// A file time APFS can hold at either end of its range: after 2262 it
+    /// clamps to Int64.max nanoseconds, which fits; before 1677 to
+    /// Int64.min, whose seconds overflow. The record then vouches for
+    /// nothing and the file is hashed again, never a trap at launch.
+    func testFileTimesAtAPFSsClampsNeverTrap() {
+        XCTAssertEqual(ModelInstallRecord.nanoseconds(seconds: 1_759_500_000, nanoseconds: 5),
+                       1_759_500_000_000_000_005)
+        XCTAssertEqual(ModelInstallRecord.nanoseconds(seconds: 9_223_372_036, nanoseconds: 854_775_807), .max)
+        XCTAssertNil(ModelInstallRecord.nanoseconds(seconds: -9_223_372_037, nanoseconds: 145_224_192))
+        XCTAssertNil(ModelInstallRecord.nanoseconds(seconds: .max, nanoseconds: 0))
+    }
+
+    /// The same, through a real file dated 1500: no entry, no vouching.
+    func testAModelFileDatedBefore1677IsHashedAgain() throws {
+        let file = directory.appendingPathComponent(model.name)
+        try writeSparse(file, size: model.expectedBytes)
+        var times = [timeval(tv_sec: -14_831_769_600, tv_usec: 0), timeval(tv_sec: -14_831_769_600, tv_usec: 0)]
+        XCTAssertEqual(file.withUnsafeFileSystemRepresentation { path in path.map { utimes($0, &times) } ?? -1 }, 0)
+        XCTAssertNil(ModelInstallRecord.entry(for: model, in: directory))
+        // A record with the file in it, so vouching reaches the file's time.
+        let recorded = ModelInstallRecord.File(name: model.name, bytes: model.expectedBytes, sha256: model.sha256,
+                                               inode: 0, mtime: 0)
+        let record = ModelInstallRecord(revision: ModelManager.revision, files: [recorded])
+        XCTAssertFalse(record.vouches(for: model, in: directory))
+    }
+
     private func makeManager(_ hasher: CountingHasher) -> ModelManager {
         let manager = ModelManager(pathSource: FixedNetworkPath(isExpensiveOrConstrained: false),
                                    installDirectory: directory,
