@@ -218,8 +218,13 @@ final class ModelManager: ObservableObject {
 
     /// Two background sessions rather than one toggled config: a background
     /// session's configuration is fixed at creation, and the Wi-Fi-only one
-    /// must never be able to touch cellular.
-    nonisolated static func sessionConfiguration(allowingCellular: Bool) -> URLSessionConfiguration {
+    /// must never be able to touch cellular. `-uitest-offline` (DEBUG) gets
+    /// in-process sessions whose every request `OfflineURLProtocol` refuses.
+    nonisolated static func sessionConfiguration(allowingCellular: Bool,
+                                                 offline: Bool = UITestHooks.offline) -> URLSessionConfiguration {
+        #if DEBUG
+        if offline { return OfflineURLProtocol.sessionConfiguration(allowingCellular: allowingCellular) }
+        #endif
         let config = URLSessionConfiguration.background(
             withIdentifier: allowingCellular
                 ? "com.davidxie.aloud.kokoro-model.cellular"
@@ -231,7 +236,12 @@ final class ModelManager: ObservableObject {
         return config
     }
 
-    nonisolated static func defaultPathSource() -> any NetworkPathSource {
+    /// `-uitest-offline` wins over `-uitest-expensive-network`: on a plane
+    /// there is no path at all, costly or not.
+    nonisolated static func defaultPathSource(offline: Bool = UITestHooks.offline) -> any NetworkPathSource {
+        if offline {
+            return FixedNetworkPath.unsatisfied
+        }
         if UITestHooks.forceExpensiveNetwork {
             return FixedNetworkPath(isExpensiveOrConstrained: true)
         }
@@ -357,6 +367,9 @@ final class ModelManager: ObservableObject {
         self.defaults = defaults
         self.freeSpace = freeSpace
         self.hasher = hasher
+        #if DEBUG
+        OfflineURLProtocol.registerIfOffline()
+        #endif
         let directory: URL
         let owns: Bool
         if let explicit {
@@ -1157,3 +1170,56 @@ private final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, @
         onFailure?(id, .classify(error))
     }
 }
+
+// MARK: - Offline (DEBUG)
+
+#if DEBUG
+/// `-uitest-offline`, as on a plane: every network request fails at once
+/// with "not connected to the internet", before a lookup, a socket or a
+/// byte, while a file or data URL still loads. The download's sessions
+/// carry it, and it is registered for any other loading in the process. A
+/// background session runs outside the process and ignores protocol
+/// classes, so an offline launch's sessions are in-process and ephemeral.
+/// Release has no such class and no such launch.
+final class OfflineURLProtocol: URLProtocol {
+
+    /// Registered once, and only for an offline launch.
+    private static let registration: Void = {
+        if UITestHooks.offline { URLProtocol.registerClass(OfflineURLProtocol.self) }
+    }()
+
+    static func registerIfOffline() {
+        _ = registration
+    }
+
+    /// The download's configuration with this protocol alone, so no network
+    /// request reaches a built-in loader. The cost rules match the live
+    /// sessions'.
+    static func sessionConfiguration(allowingCellular: Bool) -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.ephemeral
+        config.allowsExpensiveNetworkAccess = allowingCellular
+        config.allowsConstrainedNetworkAccess = allowingCellular
+        config.protocolClasses = [OfflineURLProtocol.self]
+        return config
+    }
+
+    /// Registered for the whole process, so it takes only what would leave
+    /// the device: a refused file or data URL would fail a check that a real
+    /// plane passes.
+    override class func canInit(with request: URLRequest) -> Bool {
+        guard let scheme = request.url?.scheme?.lowercased() else { return true }
+        return !localSchemes.contains(scheme)
+    }
+
+    private static let localSchemes: Set<String> = ["file", "data"]
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+
+    /// Nothing started, so nothing to stop.
+    override func stopLoading() {}
+}
+#endif

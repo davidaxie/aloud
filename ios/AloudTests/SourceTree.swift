@@ -52,6 +52,7 @@ enum SourceTree {
     /// prefixed "AloudMac/". A missing ios/AloudMac contributes nothing beside
     /// iOS, and asked for alone it skips ("AloudMac not created yet").
     static func appSources(platforms: Set<Platform> = [.iOS, .macOS]) throws -> [String: String] {
+        try requireCheckoutAccess()
         var merged: [String: String] = [:]
         if platforms.contains(.iOS) {
             merged = try sources(in: appRoot)
@@ -91,10 +92,21 @@ enum SourceTree {
         }
     }
 
+    /// The sandboxed Mac test host never reads the checkout: it sits in
+    /// OneDrive, and the first read raises a system prompt for OneDrive
+    /// access that waits on the user. Source lints run in the iOS suite,
+    /// whose simulator host reads the checkout directly.
+    static func requireCheckoutAccess() throws {
+        #if os(macOS)
+        throw XCTSkip("Source lints run in the iOS suite; the sandboxed Mac host never reads the checkout")
+        #endif
+    }
+
     /// Relative path → text of every .swift file under `root`, or only those
     /// at or under `subpaths` (files like "Reader/PlayerBarView.swift" or
     /// folders like "Settings"). Throws XCTSkip when nothing is readable.
     static func sources(in root: URL = appRoot, only subpaths: [String]? = nil) throws -> [String: String] {
+        try requireCheckoutAccess()
         // The path form yields paths relative to `root`.
         guard let enumerator = FileManager.default.enumerator(atPath: root.path) else {
             throw XCTSkip("Can't read \(root.path) from this test host")

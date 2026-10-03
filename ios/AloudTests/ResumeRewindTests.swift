@@ -104,7 +104,7 @@ final class ResumeRewindTests: XCTestCase {
                                   defaultVoice: voice,
                                   scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                   cache: cache,
-                                  audioSession: AudioSessionManager(),
+                                  audioSession: PlatformAudioOutput.makeMonitor(),
                                   anchorStore: store,
                                   // A fresh stop slot per controller: a "launch" here never
                                   // inherits the last one's live session.

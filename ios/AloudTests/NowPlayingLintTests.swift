@@ -9,10 +9,15 @@ final class NowPlayingLintTests: XCTestCase {
 
     func testOneOwnerOfTheSystemsNowPlayingState() throws {
         let sources = try SourceTree.sources()
-        for needle in ["MPNowPlayingInfoCenter", "MPRemoteCommandCenter"] {
-            XCTAssertEqual(SourceTree.files(containing: needle, in: sources), ["NowPlaying/NowPlayingManager.swift"],
-                           "'\(needle)' belongs only to the manager")
-        }
+        // The seam's Mac half sets the info center's playback state (macOS's
+        // media keys read it); only the manager reaches the seam.
+        XCTAssertEqual(SourceTree.files(containing: "MPNowPlayingInfoCenter", in: sources),
+                       ["NowPlaying/NowPlayingManager.swift", "Platform/PlatformNowPlaying.swift"],
+                       "the info center belongs only to the manager and its seam")
+        XCTAssertEqual(SourceTree.files(containing: "MPRemoteCommandCenter", in: sources),
+                       ["NowPlaying/NowPlayingManager.swift"], "remote commands belong only to the manager")
+        XCTAssertEqual(SourceTree.files(containing: "PlatformNowPlaying.", in: sources),
+                       ["NowPlaying/NowPlayingManager.swift"], "only the manager calls the seam")
     }
 
     func testTheScrubberIsOn() throws {

@@ -36,6 +36,20 @@ import SwiftUI
 /// sleep-<raw>` runs that App Shortcut's action as the last launch step, the
 /// way the system would, but muted. No test runs a real intent.
 ///
+/// The Mac's hooks (each also mutes and suppresses autoplay; the Mac app
+/// reads them):
+/// - `-uitest-window-size <w>x<h>` sizes the main window before it shows.
+/// - `-uitest-force-light` / `-uitest-force-dark` (above) set the app's
+///   appearance before the first window draws.
+/// - `-uitest-offline`: the network path reads as unsatisfied and every
+///   request is refused, as on a plane.
+/// - `-uitest-kokoro-model-path <dir>` (above) reads the natural voice from
+///   /Users/Shared/AloudKokoroModel, so no test downloads it.
+/// - `-uitest-reduce-motion` / `-uitest-increase-contrast` stand in for the
+///   system settings, which tests never flip.
+/// - `-uitest-open <absolute path>` opens that file as Finder's Open With
+///   would.
+///
 /// Adding a hook means adding an accessor here (inside the DEBUG block) and a
 /// matching no-op in the Release block; call sites never touch ProcessInfo.
 enum UITestHooks {
@@ -166,7 +180,38 @@ enum UITestHooks {
     /// `-uitest-shortcut <name>`: the shortcut action this launch runs.
     static var shortcut: UITestShortcut? { shortcut(in: arguments) }
 
+    /// `-uitest-window-size <w>x<h>`: the Mac's main window size, in points.
+    static var windowSize: CGSize? { windowSize(in: arguments) }
+
+    /// Work as on a plane: no path, and no request leaves the process.
+    static var offline: Bool { arguments.contains("-uitest-offline") }
+
+    /// Reduce Motion on, whatever the system says.
+    static var forceReduceMotion: Bool { arguments.contains("-uitest-reduce-motion") }
+
+    /// Increase Contrast on, whatever the system says.
+    static var forceIncreaseContrast: Bool { arguments.contains("-uitest-increase-contrast") }
+
+    /// `-uitest-open <absolute path>`: the file this launch opens.
+    static var openPath: URL? { openPath(in: arguments) }
+
     // MARK: - Parsing (argument-injectable for unit tests)
+
+    /// "1280x800" → 1280 × 800. Anything else (a missing side, a zero,
+    /// negative or infinite one, the flag last) is nil.
+    static func windowSize(in arguments: [String]) -> CGSize? {
+        guard let value = value(after: "-uitest-window-size", in: arguments) else { return nil }
+        let sides = value.split(separator: "x", omittingEmptySubsequences: false).compactMap { Double($0) }
+        guard sides.count == 2, sides.allSatisfy({ $0 > 0 && $0.isFinite }) else { return nil }
+        return CGSize(width: sides[0], height: sides[1])
+    }
+
+    /// Only an absolute path counts, so a following flag or a path relative
+    /// to wherever the runner started is never opened.
+    static func openPath(in arguments: [String]) -> URL? {
+        guard let path = value(after: "-uitest-open", in: arguments), path.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: path)
+    }
 
     /// "continue" → Continue listening; "sleep-<raw>" → Set sleep timer with
     /// the SleepTimerChoice of that raw value ("sleep-30", "sleep-chapter",
@@ -275,6 +320,11 @@ enum UITestHooks {
     static var forceLowDiskSpace: Bool { false }
     static var damagedModel: Bool { false }
     static var shortcut: UITestShortcut? { nil }
+    static var windowSize: CGSize? { nil }
+    static var offline: Bool { false }
+    static var forceReduceMotion: Bool { false }
+    static var forceIncreaseContrast: Bool { false }
+    static var openPath: URL? { nil }
 
     #endif
 }

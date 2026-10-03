@@ -32,4 +32,18 @@ extension ReaderTextSize {
         seedIfNeeded(defaults, step: seededStep(for: category))
     }
 }
+#elseif os(macOS)
+import Foundation
+
+/// The reader's first-launch text size, per platform. macOS gives apps no
+/// system text size to follow, so the Mac starts at 19 pt (step 2): about
+/// 66 characters a line in the 33 em column. `ReaderTextSize.seedIfNeeded`
+/// stores it once.
+extension ReaderTextSize {
+
+    /// The step a first launch stores.
+    @MainActor static var platformDefaultStep: Int {
+        2
+    }
+}
 #endif

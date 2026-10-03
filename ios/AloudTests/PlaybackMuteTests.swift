@@ -19,7 +19,7 @@ final class PlaybackMuteTests: XCTestCase {
                                             defaultVoice: PlaybackTestRig.voiceA,
                                             scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                             cache: cache,
-                                            audioSession: AudioSessionManager(),
+                                            audioSession: PlatformAudioOutput.makeMonitor(),
                                             anchorStore: ResumeAnchorStore(defaults: PlaybackTestRig.freshDefaults()),
                                             stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()))
         XCTAssertTrue(controller.isOutputMuted, "the default comes from UITestHooks.muteAudio")
@@ -61,7 +61,7 @@ final class PlaybackMuteTests: XCTestCase {
                                             defaultVoice: PlaybackTestRig.voiceA,
                                             scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                             cache: cache,
-                                            audioSession: AudioSessionManager(),
+                                            audioSession: PlatformAudioOutput.makeMonitor(),
                                             anchorStore: ResumeAnchorStore(defaults: PlaybackTestRig.freshDefaults()),
                                             stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()),
                                             outputMuted: false)
@@ -87,12 +87,21 @@ final class PlaybackMuteTests: XCTestCase {
 
     // MARK: - Muted output modes
 
+    #if os(iOS)
     /// The iPhone keeps today's mute: the real device, mixer at zero.
     func testIPhoneMutesOnTheDeviceAtZeroVolume() {
         XCTAssertEqual(PlatformAudio.mutedOutputMode, .deviceAtZeroVolume)
         XCTAssertFalse(PlaybackTestRig().controller.rendersOffline)
         XCTAssertTrue(PlaybackTestRig(mutedOutputMode: .manualRendering).controller.rendersOffline)
     }
+    #else
+    /// A muted Mac process renders offline and never opens a device. No
+    /// Mac test forces the device mode, so none builds a device-bound rig.
+    func testMacMutesByRenderingOffline() {
+        XCTAssertEqual(PlatformAudio.mutedOutputMode, .manualRendering)
+        XCTAssertTrue(PlaybackTestRig().controller.rendersOffline)
+    }
+    #endif
 
     /// Manual rendering plays in real time with no device: the render clock
     /// keeps wall time, a buffer's completion moves playback on, and no

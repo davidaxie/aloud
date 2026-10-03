@@ -1,0 +1,134 @@
+import SwiftUI
+
+/// One book in the Library grid: the shared card (the 2:3 cover, the serif
+/// title, the author and the listening line) as a button. One click opens
+/// the book and plays it (R4); Return or Space does the same for a card
+/// with keyboard focus. Hover draws a Theme.bgTint plate behind it and
+/// nothing moves. Right-click gives Open, Rename…, Mark as Finished and
+/// Delete…, and ⌘⌫ deletes a focused card's book after the confirmation;
+/// VoiceOver gets the same three management actions under the
+/// iPhone's names (R12g).
+struct MacLibraryCard: View {
+    let document: LibraryDocument
+    let rate: Double
+    let coverWidth: CGFloat
+    let onOpen: () -> Void
+    let perform: (DocumentAction) -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            DocumentCardView(document: document, rate: rate)
+                .frame(width: coverWidth, alignment: .leading)
+        }
+        .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.md, outset: MacGridMetrics.plateOutset))
+        // A focused button takes Space; Return opens it too (mac-ux §3.2).
+        .onKeyPress(.return) {
+            onOpen()
+            return .handled
+        }
+        // A Finished book opens paused at its end, so it promises nothing.
+        .accessibilityHint(document.isFinished ? "" : "Opens and starts reading aloud")
+        .accessibilityIdentifier("library.card")
+        .accessibilityActions {
+            ForEach(DocumentAction.available(for: document), id: \.self) { action in
+                Button(action.title) { perform(action) }
+            }
+        }
+        .contextMenu {
+            MacDocumentMenu(document: document, onOpen: onOpen, perform: perform)
+        }
+        // Edit ▸ Delete Book… (⌘⌫) acts on the card with keyboard focus.
+        .focusedValue(\.macDeleteBook) { perform(.delete) }
+    }
+}
+
+// MARK: - Menu
+
+extension DocumentAction {
+    /// The Mac's menu wording of `title`: Apple's title case, with an
+    /// ellipsis where the item asks something before it acts.
+    var menuTitle: String {
+        switch self {
+        case .rename: return "Rename\u{2026}"
+        case .markFinished: return "Mark as Finished"
+        case .delete: return "Delete\u{2026}"
+        }
+    }
+}
+
+/// A book's context menu, on a grid card and the Continue card alike: Open,
+/// then the shared `DocumentAction` list, with Delete… set apart.
+struct MacDocumentMenu: View {
+    let document: LibraryDocument
+    let onOpen: () -> Void
+    let perform: (DocumentAction) -> Void
+
+    var body: some View {
+        Button("Open", action: onOpen)
+        ForEach(DocumentAction.available(for: document), id: \.self) { action in
+            if action == .delete { Divider() }
+            Button(action.menuTitle, role: action.role) { perform(action) }
+        }
+    }
+}
+
+// MARK: - Hover plate
+
+/// The Mac's hover for a card or a row: a Theme.bgTint plate fades in
+/// behind the label over Motion.press, reaching `outset` past it, and a
+/// press deepens it to surface2. No lift, no shadow, no scale: hover never
+/// moves layout. The whole label is the click target, and the system draws
+/// the focus ring under keyboard navigation.
+struct MacHoverPlateStyle: ButtonStyle {
+    var radius: CGFloat
+    var outset: CGFloat = 0
+
+    func makeBody(configuration: Configuration) -> some View {
+        Plated(configuration: configuration, radius: radius, outset: outset)
+    }
+
+    private struct Plated: View {
+        let configuration: Configuration
+        let radius: CGFloat
+        let outset: CGFloat
+
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .contentShape(Rectangle())
+                .background {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(configuration.isPressed ? Theme.surface2 : Theme.bgTint)
+                        .padding(-outset)
+                        .opacity(isHovered || configuration.isPressed ? 1 : 0)
+                        .accessibilityHidden(true)
+                }
+                .onHover { isHovered = $0 }
+                .animation(.easeOut(duration: Theme.Motion.press), value: isHovered)
+                .animation(.easeOut(duration: Theme.Motion.press), value: configuration.isPressed)
+        }
+    }
+}
+
+/// The same plate behind a view that isn't itself one button (the Continue
+/// card holds two).
+struct MacHoverPlate: ViewModifier {
+    var radius: CGFloat
+    var outset: CGFloat = 0
+
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Theme.bgTint)
+                    .padding(-outset)
+                    .opacity(isHovered ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+            .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: Theme.Motion.press), value: isHovered)
+    }
+}

@@ -18,6 +18,15 @@ final class ThermalGuardTests: XCTestCase {
     private static let michael = PlaybackTestRig.michael
     private static let system = PlaybackTestRig.voiceA
 
+    /// What VoiceOver hears, letter for letter on each platform (M12).
+    #if os(iOS)
+    private static let tooHotSpoken = "Paused, iPhone is too hot"
+    private static let coolingSpoken = "Using the System voice while iPhone cools"
+    #else
+    private static let tooHotSpoken = "Paused, your Mac is too hot"
+    private static let coolingSpoken = "Using the System voice while your Mac cools"
+    #endif
+
     private var selections: [String] = []
     private var subscriptions: Set<AnyCancellable> = []
 
@@ -79,7 +88,7 @@ final class ThermalGuardTests: XCTestCase {
         XCTAssertTrue(queued.filter { $0.voiceID == Self.michael.id }.allSatisfy { $0.sentence < firstSystem.sentence },
                       "the System voice starts on a sentence of its own, after Michael's last")
         XCTAssertEqual(rig.controller.notice, .coolingDown)
-        XCTAssertEqual(rig.announcements, ["Using the System voice while iPhone cools"])
+        XCTAssertEqual(rig.announcements, [Self.coolingSpoken])
         XCTAssertNil(rig.controller.stopped)
         XCTAssertEqual(selections, [], "heat is never persisted as a pick")
     }
@@ -183,7 +192,7 @@ final class ThermalGuardTests: XCTestCase {
         XCTAssertEqual(rig.controller.status, .paused)
         XCTAssertEqual(rig.controller.stopped?.reason, .tooHot)
         XCTAssertEqual(rig.controller.stopReason(for: rig.document.id), .tooHot)
-        XCTAssertEqual(rig.announcements, ["Paused, iPhone is too hot"])
+        XCTAssertEqual(rig.announcements, [Self.tooHotSpoken])
         XCTAssertEqual(rig.nodePauseTimes().count, 1, "the audio cuts at once, never ramped")
         XCTAssertEqual(rig.controller.mixerOutputVolume, 0)
         XCTAssertEqual(rig.controller.currentSentence, sentence)
@@ -208,8 +217,7 @@ final class ThermalGuardTests: XCTestCase {
         XCTAssertEqual(rig.controller.status, .paused)
         XCTAssertEqual(rig.controller.stopped?.reason, .tooHot)
         XCTAssertEqual(rig.controller.voice, Self.system, "paused, the pending switch lands at once")
-        XCTAssertEqual(rig.announcements, ["Paused, iPhone is too hot",
-                                           "Using the System voice while iPhone cools"],
+        XCTAssertEqual(rig.announcements, [Self.tooHotSpoken, Self.coolingSpoken],
                        "the stop is heard first")
         let released = await rig.waitUntil(1) { !neural.isWarm }
         XCTAssertTrue(released, "no Kokoro work is left, so the engine gives back its memory")
@@ -246,7 +254,7 @@ final class ThermalGuardTests: XCTestCase {
 
         XCTAssertEqual(rig.controller.stopped?.reason, .tooHot)
         XCTAssertEqual(rig.controller.voice, Self.michael, "a pick made while hot is never undone")
-        XCTAssertEqual(rig.announcements, ["Paused, iPhone is too hot"], "no second cooling switch")
+        XCTAssertEqual(rig.announcements, [Self.tooHotSpoken], "no second cooling switch")
         let released = await rig.waitUntil(1) { !neural.isWarm }
         XCTAssertTrue(released, "stopped, the engine is still freed")
         XCTAssertEqual(selections, [Self.michael.id], "only the listener's pick is persisted")
@@ -347,7 +355,7 @@ final class ThermalGuardTests: XCTestCase {
 
         XCTAssertEqual(rig.controller.status, .playing)
         XCTAssertNil(rig.controller.stopped, "Play cleared the reason")
-        XCTAssertEqual(rig.announcements, ["Paused, iPhone is too hot"], "announced once")
+        XCTAssertEqual(rig.announcements, [Self.tooHotSpoken], "announced once")
     }
 
     // MARK: - Hot before anything plays

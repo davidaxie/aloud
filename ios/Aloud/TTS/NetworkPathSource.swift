@@ -116,4 +116,13 @@ final class FixedNetworkPath: NetworkPathSource {
 
     /// Nor is there anything to watch.
     func start() {}
+
+    /// No usable network at all, as on a plane (`-uitest-offline`): the
+    /// answers `SystemNetworkPath` gives for an unsatisfied path, known from
+    /// the start. Nothing reads as costly, so nothing asks, and the
+    /// Wi-Fi-only download can't move a byte, so it waits rather than
+    /// claiming progress.
+    static var unsatisfied: FixedNetworkPath {
+        FixedNetworkPath(isExpensiveOrConstrained: false, wifiAvailable: false)
+    }
 }

@@ -12,7 +12,13 @@ final class ImportFailureCopyTests: XCTestCase {
 
     /// Every row as the iPhone reads it, letter for letter. The device noun
     /// now comes from `DeviceNoun`, and the words around it must not move.
+    /// The Mac's one different row is pinned letter for letter too.
     func testEveryRowReadsAsItAlwaysHas() {
+        #if os(iOS)
+        let outOfSpace = "iPhone is out of space."
+        #else
+        let outOfSpace = "Your Mac is out of space."
+        #endif
         let table: [ImportFailure: (title: String, nextStep: String)] = [
             .pdfNoText: ("This PDF has no readable text.", "Try a PDF with selectable text."),
             .pdfLocked: ("This PDF is locked with a password.", "Remove the password, then add it again."),
@@ -20,7 +26,7 @@ final class ImportFailureCopyTests: XCTestCase {
             .pdfNoPages: ("This PDF has no pages.", "Try another PDF."),
             .textNoText: ("This file has no readable text.", "Try a PDF or a plain-text file."),
             .textUnreadable: ("This text file can't be read.", "Save it as UTF-8 plain text, then add it again."),
-            .outOfSpace: ("iPhone is out of space.", "Free up some space, then add it again."),
+            .outOfSpace: (outOfSpace, "Free up some space, then add it again."),
             .couldNotOpen: ("This file couldn't be opened.", "Try adding it again from Files."),
             .classicMissing: ("This classic is missing from Aloud.", "Try another one from Classics."),
             .notDownloaded: ("This file isn't downloaded yet.", "Connect, then add it again."),

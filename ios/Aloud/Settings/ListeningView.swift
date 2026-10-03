@@ -314,11 +314,11 @@ struct ListeningSettingsPage: View {
             .background(Theme.surface.ignoresSafeArea())
             // An opaque bar on the page's own ground, never a hard scroll
             // edge on a pushed screen (see `ShelfScrollEdge`).
-            .modifier(ShelfScrollEdge(ground: Theme.surface))
+            .shelfScrollEdge(ground: Theme.surface)
             .inlineTitleOnPhone()
             // The bar's system content follows the app's scheme, not the
             // phone's (an in-app Dark override on a Light phone).
-            .toolbarColorScheme(colorScheme, for: .navigationBar)
+            .toolbarColorSchemeOnPhone(colorScheme)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Text(ListeningCopy.title)

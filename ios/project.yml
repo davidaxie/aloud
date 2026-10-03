@@ -1,7 +1,7 @@
 name: Aloud
 options:
   bundleIdPrefix: com.davidxie
-  deploymentTarget: { iOS: "17.0" }   # PRD phase 1: iOS 17 (drops only iPhone 8/8 Plus/X, which cannot run the neural voice)
+  deploymentTarget: { iOS: "17.0", macOS: "14.0" }   # iOS 17 drops only iPhone 8/8 Plus/X (no neural voice); the Mac app needs Observation (macOS 14)
   createIntermediateGroups: true
 packages:
   SherpaOnnx:
@@ -71,7 +71,187 @@ targets:
     settings:
       base:
         TEST_TARGET_NAME: Aloud
+  AloudMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Aloud
+        excludes:                                   # THE Mac exclusion list (MacExclusions.swift pins it)
+          - "Info.plist"
+          - "Resources/**"                          # iOS asset catalog; data folders re-added below
+          - "App/AloudApp.swift"
+          - "App/RootView.swift"
+          - "Bookshelf/BookshelfView.swift"
+          - "Library/LibraryView.swift"
+          - "Playback/AudioSessionManager.swift"
+          - "Reader/AppearanceSheet.swift"
+          - "Reader/ContentsSheet.swift"
+          - "Reader/PlayerBarView.swift"
+          - "Reader/ReaderHighlightLayer.swift"
+          - "Reader/ReaderScreen.swift"
+          - "Reader/ReaderTextView.swift"
+          - "Settings/ListeningSheet.swift"
+          - "Settings/SettingsView.swift"
+          - "Theme/SheetGrabber.swift"
+      - path: AloudMac
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Aloud/Resources/Bookshelf               # the Classics shelf, as on the iPhone
+        type: folder
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/espeak-ng-data
+        type: folder
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/tokens.txt
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/lexicon-us-en.txt
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/lexicon-gb-en.txt
+        buildPhase: resources
+      - path: Aloud/Resources/KokoroAssets/LICENSE-kokoro.txt
+        buildPhase: resources
+    dependencies:
+      - package: SherpaOnnx
+        product: sherpa-onnx          # resolves SherpaOnnxMacOS + onnxruntime static xcframeworks (verify under ARCHS=arm64)
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_MODULE_NAME: Aloud    # shared tests keep `@testable import Aloud`
+        SWIFT_VERSION: "5.9"
+        ARCHS: arm64
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"       # ad hoc "Sign to Run Locally": entitlements apply, so the sandbox is real
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+      configs:
+        Debug:
+          PRODUCT_NAME: "Aloud Dev"
+          PRODUCT_BUNDLE_IDENTIFIER: com.davidxie.Aloud.mac.dev   # tests can never reach the shipping app (testing D1)
+          CODE_SIGN_ENTITLEMENTS: AloudMac/AloudMac-Debug.entitlements
+          ENABLE_HARDENED_RUNTIME: NO   # library validation would refuse the ad hoc test bundle in the hosted run
+        Release:
+          PRODUCT_NAME: Aloud
+          PRODUCT_BUNDLE_IDENTIFIER: com.davidxie.Aloud.mac
+          CODE_SIGN_ENTITLEMENTS: AloudMac/AloudMac.entitlements
+          ENABLE_HARDENED_RUNTIME: YES
+    info:
+      path: AloudMac/Info.plist
+      properties:
+        NSSupportsSuddenTermination: false          # applicationWillTerminate must clear the live-session marker
+        # Finder's Open With and a drop on the Dock icon; Alternate keeps Preview the default.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.adobe.pdf]
+          - CFBundleTypeName: Plain Text
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.plain-text]
+  AloudMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: AloudTests
+        excludes:                                   # shared tests a sandboxed Mac host can't build or run (§3.3)
+          - "*LintTests.swift"                      # source lints read the checkout: iOS suite only (testing D6)
+          - "SwiftLiteralsTests.swift"
+          - "SourceTreeReachabilityTests.swift"
+          - "ColophonColumnTests.swift"             # the UIKit reader host (UITextView)
+          - "ReaderFollowCoordinatorTests.swift"
+          - "ReaderHighlightLayerTests.swift"
+          - "ReaderTextAccessibilityTests.swift"
+          - "FollowBandTests.swift"                 # its glide timing is the UIKit host's UICubicTimingParameters
+          - "PlayerBarLayoutTests.swift"            # the iPhone player bar and Contents sheet
+          - "ScrubAccessibilityTests.swift"
+          - "ContentsResultSnippetTests.swift"
+          - "RenderedPixels.swift"                  # UIKit renderers, and the tests measuring through them
+          - "BookCoverRenderingTests.swift"
+          - "CardCopyTests.swift"
+          - "NowPlayingArtworkTests.swift"
+          - "FixturePDFTests.swift"
+          - "ContinueCardStateTests.swift"          # UIHostingController sizing
+          - "DocumentCardLayoutTests.swift"
+          - "ModelDownloadStateTests.swift"
+          - "NaturalVoiceOfferRowLayoutTests.swift"
+          - "PlatformSeamTests.swift"               # the seam's iOS halves (UITraitCollection, UIFont, UIImage)
+          - "ReaderColumnTextTests.swift"
+          - "ReaderColophonTests.swift"
+          - "ReaderPageStyleTests.swift"
+          - "ReaderTypographyTests.swift"
+          - "ThemeTokenContrastTests.swift"
+          - "UITestFaultsTests.swift"               # AVAudioSession, which the Mac doesn't have
+          - "DocumentImporterTests.swift"           # names RootView (iOS-only) for the failure alert
+      - path: AloudMacTests
+    dependencies: [{ target: AloudMac }]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidxie.AloudMacTests
+        GENERATE_INFOPLIST_FILE: YES
+        ARCHS: arm64
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+      configs:
+        Debug:
+          TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Aloud Dev.app/Contents/MacOS/Aloud Dev"
+          BUNDLE_LOADER: "$(TEST_HOST)"
+        Release:
+          TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Aloud.app/Contents/MacOS/Aloud"
+          BUNDLE_LOADER: "$(TEST_HOST)"
+  AloudMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources: [AloudMacUITests]
+    dependencies: [{ target: AloudMac }]
+    settings:
+      base:
+        TEST_TARGET_NAME: AloudMac
+        PRODUCT_BUNDLE_IDENTIFIER: com.davidxie.AloudMacUITests
+        GENERATE_INFOPLIST_FILE: YES
+        ARCHS: arm64
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
 schemes:
   Aloud:
     build: { targets: { Aloud: all } }
     test: { targets: [AloudTests, AloudUITests] }
+  AloudMac:
+    build:
+      targets: { AloudMac: all }
+      preActions:
+        # onnxruntime-libs' macOS framework arrives without its symlinks;
+        # repair it before Xcode plans the build (tools/repair_static_frameworks.sh).
+        - name: Repair package frameworks
+          settingsTarget: AloudMac
+          script: |
+            "${PROJECT_DIR}/tools/repair_static_frameworks.sh" "${BUILD_DIR%/Build/*}/SourcePackages/artifacts"
+    run:
+      config: Debug
+      environmentVariables:
+        ALOUD_AUDIBLE: "1"            # the ONLY audible Debug launch (testing D3); never in a test action
+    test:
+      config: Debug
+      targets: [AloudMacTests]        # hosted, windowless, silent; never a UI target (MacProjectLintTests)
+      environmentVariables:
+        ALOUD_MUTE: "1"               # its own environment, so it never takes the Run action's
+    archive: { config: Release }
+  AloudMacUI:
+    build:
+      targets: { AloudMac: all }
+      preActions:
+        # onnxruntime-libs' macOS framework arrives without its symlinks;
+        # repair it before Xcode plans the build (tools/repair_static_frameworks.sh).
+        - name: Repair package frameworks
+          settingsTarget: AloudMac
+          script: |
+            "${PROJECT_DIR}/tools/repair_static_frameworks.sh" "${BUILD_DIR%/Build/*}/SourcePackages/artifacts"
+    test:
+      config: Debug
+      targets: [AloudMacUITests]      # run only with the user's go-ahead for that run
+      environmentVariables:
+        ALOUD_MUTE: "1"

@@ -11,7 +11,10 @@ final class ColophonUITest: XCTestCase {
     private static let reset = "-uitest-reset-library"
     private static let hapticLog = "-uitest-haptic-log"
     private static let systemVoice = "-uitest-temp-model-dir"
-    private static let reopenFinished = [reset, "-uitest-seed-finished", hapticLog, systemVoice]
+    /// The offer counts listening across launches, so earlier tests in a run
+    /// can leave it due; the card would then show the offer, not "finished".
+    private static let freshOffer = "-uitest-reset-natural-voice-offer"
+    private static let reopenFinished = [reset, freshOffer, "-uitest-seed-finished", hapticLog, systemVoice]
     private static let speaking = ["playing", "buffering"]
 
     override func setUp() {
@@ -65,7 +68,8 @@ final class ColophonUITest: XCTestCase {
 
     /// The 4-sentence text fixture opens playing and runs to its end.
     func testTheEndOfABookShowsTheColophon() {
-        let app = XCUIApplication.aloud([Self.reset, Self.hapticLog, "-uitest-open-fixture", "text", Self.systemVoice],
+        let app = XCUIApplication.aloud([Self.reset, Self.freshOffer, Self.hapticLog, "-uitest-open-fixture", "text",
+                                         Self.systemVoice],
                                         allowAutoplay: true)
         app.launch()
 

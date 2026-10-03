@@ -116,7 +116,11 @@ final class ReaderMessageTests: XCTestCase {
 
     func testText() {
         XCTAssertEqual(ReaderMessage.stopped(.sleepTimer).text, "Paused by sleep timer")
+        #if os(iOS)
         XCTAssertEqual(ReaderMessage.stopped(.playbackError).text, "Playback stopped · tap to try again")
+        #else
+        XCTAssertEqual(ReaderMessage.stopped(.playbackError).text, "Playback stopped")
+        #endif
         for reason in StopReason.allCases {
             XCTAssertEqual(ReaderMessage.stopped(reason).text, reason.text)
             XCTAssertEqual(ReaderMessage.stopped(reason).spokenText, reason.spokenText)
@@ -124,7 +128,11 @@ final class ReaderMessageTests: XCTestCase {
         XCTAssertEqual(ReaderMessage.notice(michael).text, "Now reading in Michael")
         XCTAssertEqual(ReaderMessage.naturalVoiceOffer.text, NaturalVoiceCopy.offer)
         XCTAssertEqual(ReaderMessage.downloadProgress(0.42).text, "Downloading natural voice · 42%")
+        #if os(iOS)
         XCTAssertEqual(ReaderMessage.downloadWaiting.text, "Download paused · waiting for Wi-Fi")
+        #else
+        XCTAssertEqual(ReaderMessage.downloadWaiting.text, "Download paused · waiting for Wi-Fi or Ethernet")
+        #endif
         XCTAssertEqual(ReaderMessage.preparingVoice.text, "Preparing voice…")
     }
 
@@ -138,8 +146,13 @@ final class ReaderMessageTests: XCTestCase {
             XCTAssertFalse(message.spokenText.contains("·"), "\(message): \(message.spokenText)")
             XCTAssertFalse(message.spokenText.hasSuffix("…"), "\(message): \(message.spokenText)")
         }
+        #if os(iOS)
         XCTAssertEqual(ReaderMessage.stopped(.playbackError).spokenText, "Playback stopped, tap to try again")
         XCTAssertEqual(ReaderMessage.downloadWaiting.spokenText, "Download paused, waiting for Wi-Fi")
+        #else
+        XCTAssertEqual(ReaderMessage.stopped(.playbackError).spokenText, "Playback stopped")
+        XCTAssertEqual(ReaderMessage.downloadWaiting.spokenText, "Download paused, waiting for Wi-Fi or Ethernet")
+        #endif
         XCTAssertEqual(ReaderMessage.preparingVoice.spokenText, "Preparing voice")
     }
 

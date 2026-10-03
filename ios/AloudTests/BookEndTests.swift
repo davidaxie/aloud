@@ -257,7 +257,7 @@ final class BookEndTests: XCTestCase {
                                             defaultVoice: PlaybackTestRig.voiceA,
                                             scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                             cache: cache,
-                                            audioSession: AudioSessionManager(),
+                                            audioSession: PlatformAudioOutput.makeMonitor(),
                                             anchorStore: rig.anchorStore,
                                             stopStore: rig.stopStore,
                                             outputMuted: true)

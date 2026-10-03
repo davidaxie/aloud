@@ -2,6 +2,8 @@ import Combine
 import Foundation
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 // The app-wide state the shared core asks the system about: whether the app
@@ -15,6 +17,12 @@ enum PlatformApp {
     /// natural voice.
     @MainActor static var isActive: Bool {
         UIApplication.shared.applicationState == .active
+    }
+    #elseif os(macOS)
+    /// Whether Aloud is the frontmost app. No app (a bare test process)
+    /// reads as not.
+    @MainActor static var isActive: Bool {
+        NSApp?.isActive ?? false
     }
     #endif
 }
@@ -46,6 +54,21 @@ enum PlatformLifecycle {
             case .systemWillSleep: return Notification.Name("AloudSystemWillSleep")
             }
         }
+        #elseif os(macOS)
+        /// The notification this event arrives as.
+        var name: Notification.Name {
+            switch self {
+            case .willTerminate: return NSApplication.willTerminateNotification
+            // A Mac app never goes to the background: losing the front is
+            // the last reliable moment to save before a force quit or a
+            // flat battery.
+            case .didEnterBackground: return NSApplication.didResignActiveNotification
+            // AppKit has no memory warning; the kernel's pressure source
+            // posts this one.
+            case .memoryWarning: return MemoryPressureRelay.name
+            case .systemWillSleep: return NSWorkspace.willSleepNotification
+            }
+        }
         #endif
     }
 
@@ -53,6 +76,17 @@ enum PlatformLifecycle {
     /// Where `event` is posted when the caller doesn't inject a center.
     static func center(for event: Event) -> NotificationCenter {
         .default
+    }
+    #elseif os(macOS)
+    /// Where `event` is posted when the caller doesn't inject a center:
+    /// sleep on the workspace's own center, the rest on the default one.
+    static func center(for event: Event) -> NotificationCenter {
+        switch event {
+        case .systemWillSleep:
+            return NSWorkspace.shared.notificationCenter
+        case .memoryWarning, .willTerminate, .didEnterBackground:
+            return .default
+        }
     }
     #endif
 
@@ -64,15 +98,29 @@ enum PlatformLifecycle {
                         in center: NotificationCenter? = nil,
                         queue: OperationQueue? = nil,
                         using block: @escaping @Sendable (Notification) -> Void) -> NSObjectProtocol {
-        (center ?? self.center(for: event)).addObserver(forName: event.name, object: nil,
-                                                        queue: queue, using: block)
+        observed(center, for: event).addObserver(forName: event.name, object: nil, queue: queue, using: block)
     }
 
     /// The same event as a Combine publisher, for the observers that keep
     /// their subscriptions in a cancellable set.
     static func publisher(for event: Event,
                           in center: NotificationCenter? = nil) -> NotificationCenter.Publisher {
-        (center ?? self.center(for: event)).publisher(for: event.name)
+        observed(center, for: event).publisher(for: event.name)
+    }
+
+    /// The center an observer of `event` listens on: the injected one, or
+    /// the event's own.
+    private static func observed(_ center: NotificationCenter?, for event: Event) -> NotificationCenter {
+        let center = center ?? self.center(for: event)
+        #if os(macOS)
+        // The Mac's memory warning exists only while the kernel's pressure
+        // source runs. An observer on the default center (the app's, which
+        // passes `.default` itself) starts it; a test's own center doesn't.
+        if event == .memoryWarning, center === NotificationCenter.default {
+            MemoryPressureRelay.start()
+        }
+        #endif
+        return center
     }
 
     #if DEBUG
@@ -97,5 +145,49 @@ enum PlatformActivity {
     }
 
     static func end(_ token: Token?) {}
+    #elseif os(macOS)
+    /// User-initiated, so App Nap leaves look-ahead synthesis alone in a
+    /// hidden window; idle sleep stays allowed (the audio device already
+    /// holds it off while sound flows).
+    static func begin(reason: String) -> Token? {
+        ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: reason)
+    }
+
+    static func end(_ token: Token?) {
+        guard let token else { return }
+        ProcessInfo.processInfo.endActivity(token)
+    }
     #endif
 }
+
+#if os(macOS)
+/// The Mac's memory warning: the kernel's memory-pressure source, posted on
+/// the default center as `PlatformLifecycle.Event.memoryWarning`.
+enum MemoryPressureRelay {
+
+    static let name = Notification.Name("AloudMemoryWarning")
+
+    /// Made and resumed on first use (a static's initializer runs once) and
+    /// kept for the life of the process.
+    private static let source: DispatchSourceMemoryPressure = {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler {
+            NotificationCenter.default.post(name: name, object: nil)
+        }
+        source.resume()
+        return source
+    }()
+
+    static func start() {
+        _ = source
+        #if DEBUG
+        isRunning = true
+        #endif
+    }
+
+    #if DEBUG
+    /// Whether the pressure source runs in this process.
+    private(set) static var isRunning = false
+    #endif
+}
+#endif

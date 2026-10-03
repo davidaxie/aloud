@@ -13,7 +13,10 @@ final class PlaybackCopyTests: XCTestCase {
 
     // MARK: - Visible text
 
+    /// The Mac's table differs in the device and the lines `DeviceCopy`
+    /// words per platform; each is pinned letter for letter (M12).
     func testEveryStoppedReasonReadsExactly() {
+        #if os(iOS)
         let expected: [StopReason: String] = [
             .headphonesDisconnected: "Paused · headphones disconnected",
             .interrupted: "Paused by a call or another app",
@@ -23,6 +26,17 @@ final class PlaybackCopyTests: XCTestCase {
             .closedByIOS: "Stopped when iOS closed Aloud",
             .macSlept: "Paused · iPhone went to sleep",
         ]
+        #else
+        let expected: [StopReason: String] = [
+            .headphonesDisconnected: "Paused · headphones disconnected",
+            .interrupted: "Paused by a call or another app",
+            .sleepTimer: "Paused by sleep timer",
+            .playbackError: "Playback stopped",
+            .tooHot: "Paused · your Mac is too hot",
+            .closedByIOS: "Stopped when Aloud quit unexpectedly",
+            .macSlept: "Paused · your Mac went to sleep",
+        ]
+        #endif
         XCTAssertEqual(Set(expected.keys), Set(StopReason.allCases), "one row per reason")
         for reason in StopReason.allCases {
             XCTAssertEqual(reason.text, expected[reason], "\(reason)")
@@ -44,7 +58,11 @@ final class PlaybackCopyTests: XCTestCase {
         XCTAssertEqual(PlaybackNotice.nowReadingIn(voiceName: "Michael").text, "Now reading in Michael")
         XCTAssertEqual(PlaybackNotice.backedUp(sentences: 2).text, "Backed up 2 sentences")
         XCTAssertEqual(PlaybackNotice.skippedSentence.text, "Skipped a sentence the voice couldn't read")
+        #if os(iOS)
         XCTAssertEqual(PlaybackNotice.coolingDown.text, "Using the System voice while iPhone cools")
+        #else
+        XCTAssertEqual(PlaybackNotice.coolingDown.text, "Using the System voice while your Mac cools")
+        #endif
         XCTAssertEqual(PlaybackNotice.displaySeconds, 8)
     }
 
@@ -76,9 +94,15 @@ final class PlaybackCopyTests: XCTestCase {
             XCTAssertFalse(line.contains("·"), "'\(line)'")
         }
         XCTAssertEqual(StopReason.headphonesDisconnected.spokenText, "Paused, headphones disconnected")
+        #if os(iOS)
         XCTAssertEqual(StopReason.playbackError.spokenText, "Playback stopped, tap to try again")
         XCTAssertEqual(StopReason.tooHot.spokenText, "Paused, iPhone is too hot")
         XCTAssertEqual(StopReason.macSlept.spokenText, "Paused, iPhone went to sleep")
+        #else
+        XCTAssertEqual(StopReason.playbackError.spokenText, "Playback stopped")
+        XCTAssertEqual(StopReason.tooHot.spokenText, "Paused, your Mac is too hot")
+        XCTAssertEqual(StopReason.macSlept.spokenText, "Paused, your Mac went to sleep")
+        #endif
         XCTAssertEqual(StopReason.sleepTimer.spokenText, "Paused by sleep timer")
         XCTAssertEqual(PlaybackNotice.fellBackToSystem.spokenText, "Natural voice unavailable, using System")
     }

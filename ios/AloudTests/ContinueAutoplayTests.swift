@@ -26,7 +26,7 @@ final class ContinueAutoplayTests: XCTestCase {
                                   defaultVoice: voice,
                                   scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                   cache: cache,
-                                  audioSession: AudioSessionManager(),
+                                  audioSession: PlatformAudioOutput.makeMonitor(),
                                   anchorStore: ResumeAnchorStore(defaults: PlaybackTestRig.freshDefaults()),
                                   stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()),
                                   outputMuted: true)

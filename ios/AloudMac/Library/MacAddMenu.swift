@@ -1,0 +1,248 @@
+import Combine
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// R10 on the Mac: the toolbar's "+" pull-down, with exactly the iPhone's
+/// two items, "Classics" and "From Files…", mirrored by File ▸ Add a
+/// Classic… and Add from Files…. It shows only once a book exists; the
+/// empty Library's own links are the way in until then. Drawn in Theme.text:
+/// the Library's one accent fill belongs to the Continue card.
+struct MacAddMenu: View {
+    @EnvironmentObject private var router: LibraryRouter
+
+    var body: some View {
+        Menu {
+            ForEach(LibraryAddMenuItem.allCases, id: \.self) { item in
+                Button {
+                    choose(item)
+                } label: {
+                    Label(item.title, systemImage: item.systemImage)
+                }
+            }
+        } label: {
+            Label("Add", systemImage: "plus")
+        }
+        .help("Add a classic or a file")
+        .accessibilityLabel("Add")
+        .accessibilityIdentifier("library.add")
+    }
+
+    private func choose(_ item: LibraryAddMenuItem) {
+        switch item {
+        case .classics: router.showBookshelf()
+        case .files: router.rootPresentation = .filePicker
+        }
+    }
+}
+
+// MARK: - Every route in
+
+/// Every way a file reaches the Mac app, Add from Files…, a drop on the
+/// window, Finder's Open With and a drop on the Dock icon, ends here and
+/// then in the shared `DocumentImporter`, which deduplicates by content
+/// hash, extracts and opens (M8).
+///
+/// Two Mac rules sit in front of the importer:
+/// - **The coordinated copy.** Each file is read through `NSFileCoordinator`
+///   into a staging copy, so a cloud placeholder (iCloud Drive, or a File
+///   Provider such as OneDrive) is fetched before it is read. A coordinator
+///   that can't fetch it, offline, fails as `notDownloaded`, and nothing is
+///   stored. The copy sits in `Documents/Inbox`, where the importer already
+///   deletes its file once the add ends, whatever the outcome.
+/// - **Several files open none.** The importer opens the last file of a
+///   queue; here, a batch of two or more is added quietly and the user stays
+///   where they are. One file opens playing (R4), unless the user moved on
+///   while it was still copying.
+@MainActor
+final class MacFileIntake: ObservableObject {
+
+    /// A file that never reached the importer. Shown in the importer's
+    /// failure alert, before the importer's own failure, one at a time.
+    @Published private(set) var failure: ImportFailure?
+
+    /// Copies a file to where the importer reads it. Tests replace it.
+    typealias Stage = @Sendable (URL) async throws -> URL
+
+    /// The app's one intake, over the app's one importer. Finder's Open With
+    /// and the Dock reach it from the app delegate.
+    static let shared = MacFileIntake(importer: AppModel.shared.importer)
+
+    private let importer: DocumentImporter
+    private let stage: Stage
+    /// While set, a finished add never opens its book: a batch is in flight.
+    private(set) var holdsOpens = false
+    /// Files still being copied, so a batch's hold outlasts a quick first add.
+    private var staging = 0
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(importer: DocumentImporter, stage: @escaping Stage = MacFileIntake.coordinatedCopy) {
+        self.importer = importer
+        self.stage = stage
+        // The importer's open goes through the hold. The router's open stays
+        // the one way into the reader; a held add only declines to use it.
+        let open = importer.onAdded
+        importer.onAdded = { [weak self] document in
+            guard self?.holdsOpens != true else { return }
+            open?(document)
+        }
+        // Published values arrive before they're set, and a queued file
+        // starts in the same turn the last one ended, so the hold is
+        // checked a turn later, when the importer has settled.
+        importer.$phase.map { _ in () }
+            .merge(with: importer.$addingClassicID.map { _ in () })
+            .sink { [weak self] in
+                Task { @MainActor in self?.releaseHoldIfSettled() }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The types any route accepts: the Files panel's and the drop's.
+    nonisolated static let contentTypes: [UTType] = [.pdf, .plainText]
+
+    /// Adds `urls` in order. Anything but a PDF or plain-text file is left
+    /// out (a folder, say): the panel and Info.plist already ask for only
+    /// these, and the drop lights up only when one is among them.
+    func admit(_ urls: [URL]) {
+        let files = urls.filter(Self.isAddable)
+        guard !files.isEmpty else { return }
+        if staging == 0 { Self.sweepStagingFolders() }
+        staging += files.count
+        let stage = stage
+        // The open rule's clock starts here, not at the handoff: a user who
+        // moves on while a cloud file downloads stays where they went.
+        let startedAt = importer.navigation?.navigationGeneration
+        Task {
+            var staged: [URL] = []
+            var firstFailure: ImportFailure?
+            for file in files {
+                do {
+                    staged.append(try await stage(file))
+                } catch {
+                    firstFailure = firstFailure ?? Self.failure(for: error, isPDF: Self.isPDF(file))
+                }
+            }
+            // Held from the handoff, not the admit: a classic clicked while
+            // a batch copies still opens. All at once, so the importer
+            // queues the batch behind its first file. A single file whose
+            // user moved on is added quietly, as the importer's rule would.
+            let movedOn = startedAt != importer.navigation?.navigationGeneration
+            if files.count > 1 || movedOn, !staged.isEmpty { holdsOpens = true }
+            staged.forEach(importer.importFile(at:))
+            staging -= files.count
+            if failure == nil { failure = firstFailure }
+            releaseHoldIfSettled()
+        }
+    }
+
+    /// The user has seen this file's failure.
+    func dismissFailure() {
+        failure = nil
+    }
+
+    /// The batch is over once nothing is copying and the importer is idle
+    /// (a failure on screen holds the queue, and so the hold).
+    private func releaseHoldIfSettled() {
+        guard holdsOpens, staging == 0, importer.phase == .idle,
+              importer.addingClassicID == nil else { return }
+        holdsOpens = false
+    }
+
+    // MARK: Rules
+
+    /// By name alone, so a drag can be judged before its files are readable.
+    nonisolated static func isAddable(_ url: URL) -> Bool {
+        // Lowercased, as the importer reads "SCAN.PDF".
+        guard url.isFileURL, !url.hasDirectoryPath,
+              let type = UTType(filenameExtension: url.pathExtension.lowercased()) else { return false }
+        return contentTypes.contains { type.conforms(to: $0) }
+    }
+
+    /// The importer's own test: anything not a PDF is read as text.
+    static func isPDF(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "pdf"
+    }
+
+    /// The table row for a file that failed before the importer saw it. A
+    /// coordinator that couldn't fetch the file, or a cloud file the system
+    /// reports unavailable, is `notDownloaded`; anything else reads as the
+    /// importer would read it (out of space, couldn't open).
+    nonisolated static func failure(for error: any Error, isPDF: Bool) -> ImportFailure {
+        if error is CoordinationError { return .notDownloaded }
+        if let cocoa = error as? CocoaError, cocoa.code == .ubiquitousFileUnavailable { return .notDownloaded }
+        return ImportFailure(error, isPDF: isPDF)
+    }
+
+    // MARK: The coordinated copy
+
+    /// The coordinator refused the read: the file is a placeholder it
+    /// couldn't fetch. Never shown; `failure(for:isPDF:)` maps it.
+    struct CoordinationError: Error {
+        let underlying: any Error
+    }
+
+    /// Reads `url` through a coordinator, handing `body` a readable URL, or
+    /// throws `CoordinationError` when the read can't be coordinated.
+    typealias CoordinatedRead = @Sendable (URL, (URL) throws -> Void) throws -> Void
+
+    /// Where staged copies wait for the importer: the folder whose files it
+    /// deletes once their add ends (`DocumentImporter.isInboxCopy`).
+    nonisolated static var stagingRoot: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Inbox", isDirectory: true)
+    }
+
+    /// The real stage: off the main actor, since a coordinated read of a
+    /// cloud file waits for its download.
+    @Sendable nonisolated static func coordinatedCopy(of url: URL) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            try stageCopy(of: url, into: stagingRoot, read: systemCoordinatedRead)
+        }.value
+    }
+
+    /// Copies `url` into its own folder under `root`, keeping its name: the
+    /// importer titles a text file, and an untitled PDF, by that name. The
+    /// source's security scope (a Files panel pick) is held for the read.
+    nonisolated static func stageCopy(of url: URL, into root: URL,
+                                      read: CoordinatedRead) throws -> URL {
+        let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let destination = folder.appendingPathComponent(url.lastPathComponent)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try read(url) { readable in
+                try FileManager.default.copyItem(at: readable, to: destination)
+            }
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+    }
+
+    /// `NSFileCoordinator`'s read, which fetches a placeholder first.
+    @Sendable nonisolated static func systemCoordinatedRead(_ url: URL, _ body: (URL) throws -> Void) throws {
+        var coordinatorError: NSError?
+        var bodyError: (any Error)?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [.withoutChanges],
+                                       error: &coordinatorError) { readable in
+            do { try body(readable) } catch { bodyError = error }
+        }
+        if let coordinatorError { throw CoordinationError(underlying: coordinatorError) }
+        if let bodyError { throw bodyError }
+    }
+
+    /// The importer deletes each staged file, not its folder: the empty
+    /// folders go before the next batch, while nothing is being copied.
+    private static func sweepStagingFolders() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: stagingRoot,
+                                                        includingPropertiesForKeys: [.isDirectoryKey])
+        else { return }
+        for folder in entries where (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            if (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+                try? fm.removeItem(at: folder)
+            }
+        }
+    }
+}

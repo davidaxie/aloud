@@ -13,6 +13,8 @@ final class FrameTicker {
 
     #if os(iOS)
     private var link: CADisplayLink?
+    #elseif os(macOS)
+    private var timer: Timer?
     #endif
 
     init(framesPerSecond: Int = 30, tick: @escaping () -> Void) {
@@ -44,10 +46,31 @@ final class FrameTicker {
         link?.invalidate()
         link = nil
     }
+    #elseif os(macOS)
+    /// Starts ticking; a second call while running does nothing.
+    func start() {
+        guard timer == nil else { return }
+        // A Mac's display link belongs to a view or a screen; word timing
+        // needs neither, so a run-loop timer at the same 30 fps. It too
+        // retains its target, so it gets the proxy, never the ticker.
+        let interval = 1 / TimeInterval(framesPerSecond)
+        let timer = Timer(timeInterval: interval, target: FrameTickerTarget(tick),
+                          selector: #selector(FrameTickerTarget.fire), userInfo: nil, repeats: true)
+        // A little slack lets the system coalesce wakeups; the timer keeps
+        // its 30 fps grid.
+        timer.tolerance = interval / 10
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    /// Stops ticking. Safe to call when stopped; `start()` begins again.
+    func invalidate() {
+        timer?.invalidate()
+        timer = nil
+    }
     #endif
 }
 
-#if os(iOS)
 private final class FrameTickerTarget: NSObject {
     private let tick: () -> Void
 
@@ -59,4 +82,3 @@ private final class FrameTickerTarget: NSObject {
         tick()
     }
 }
-#endif

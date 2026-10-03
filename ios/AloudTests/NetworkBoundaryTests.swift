@@ -8,6 +8,10 @@ import XCTest
 /// blocking the main thread for it. The source scan is
 /// NetworkBoundaryLintTests.
 ///
+/// `-uitest-offline` (DEBUG) is the plane: the path reads as unsatisfied and
+/// every network request is refused. Those tests drive the refusal directly
+/// and never register it, since this host isn't offline.
+///
 /// SAFETY: no test here creates a URLSession or starts a live monitor.
 /// Built managers get a spy path (or the live one, never started), their
 /// own directory and defaults suite, a hasher that never reads, and
@@ -254,5 +258,88 @@ final class NetworkBoundaryTests: XCTestCase {
         XCTAssertEqual(path.starts, 0)
         XCTAssertFalse(manager.pathMonitorStarted)
         XCTAssertFalse(manager.hasCreatedSession)
+    }
+
+    // MARK: - Offline (`-uitest-offline`)
+
+    /// Records what a loader tells the URL loading system. The loader calls
+    /// it synchronously, on the test's own thread.
+    private final class LoaderSpy: NSObject, URLProtocolClient, @unchecked Sendable {
+        private(set) var failures: [URLError.Code] = []
+        private(set) var responses = 0
+        private(set) var bytes = 0
+        private(set) var finishes = 0
+        private(set) var redirects = 0
+        func urlProtocol(_ loader: URLProtocol, didFailWithError error: any Error) {
+            failures.append((error as? URLError)?.code ?? .unknown)
+        }
+        func urlProtocol(_ loader: URLProtocol, didReceive response: URLResponse,
+                         cacheStoragePolicy policy: URLCache.StoragePolicy) { responses += 1 }
+        func urlProtocol(_ loader: URLProtocol, didLoad data: Data) { bytes += data.count }
+        func urlProtocolDidFinishLoading(_ loader: URLProtocol) { finishes += 1 }
+        func urlProtocol(_ loader: URLProtocol, wasRedirectedTo request: URLRequest,
+                         redirectResponse: URLResponse) { redirects += 1 }
+        func urlProtocol(_ loader: URLProtocol, cachedResponseIsValid cachedResponse: CachedURLResponse) {
+            responses += 1
+        }
+        func urlProtocol(_ loader: URLProtocol, didReceive challenge: URLAuthenticationChallenge) {}
+        func urlProtocol(_ loader: URLProtocol, didCancel challenge: URLAuthenticationChallenge) {}
+    }
+
+    /// Offline reports a path at once, and it is the unsatisfied one: nothing
+    /// costly to ask about, and the Wi-Fi-only download waits. No monitor
+    /// is made for it.
+    func testOfflineReportsAnUnsatisfiedPath() {
+        let path = ModelManager.defaultPathSource(offline: true)
+        XCTAssertFalse(path is SystemNetworkPath, "nothing to watch on a plane")
+        XCTAssertTrue(path.hasPath, "known from the start, so a Download never waits to decide")
+        XCTAssertFalse(path.isExpensiveOrConstrained, "no path costs nothing: no cellular prompt")
+        XCTAssertFalse(path.allowsWiFiOnlyTransfer, "no path moves no bytes")
+        XCTAssertEqual(ModelManager.inFlightState(progress: 0.3, allowsCellular: false,
+                                                  wifiAvailable: path.allowsWiFiOnlyTransfer),
+                       .waitingForWiFi(0.3), "an in-flight download reads as waiting")
+        // This host isn't offline: it keeps the live, unstarted path.
+        XCTAssertTrue(ModelManager.defaultPathSource() is SystemNetworkPath)
+    }
+
+    /// The refusal itself: a request for the model fails as "not connected"
+    /// the moment it starts, with no response, no byte and no redirect. A
+    /// file or data URL is left to load, as it would on a plane.
+    func testOfflineRefusesARequest() throws {
+        for file in ModelManager.remoteFiles {
+            XCTAssertTrue(OfflineURLProtocol.canInit(with: URLRequest(url: file.url)), file.name)
+        }
+        for local in [URL(fileURLWithPath: NSTemporaryDirectory()), try XCTUnwrap(URL(string: "data:,a"))] {
+            XCTAssertFalse(OfflineURLProtocol.canInit(with: URLRequest(url: local)), "\(local.scheme ?? "")")
+        }
+        let request = URLRequest(url: try XCTUnwrap(ModelManager.remoteFiles.first).url)
+        let spy = LoaderSpy()
+        let loader = OfflineURLProtocol(request: request, cachedResponse: nil, client: spy)
+        loader.startLoading()
+        XCTAssertEqual(spy.failures, [.notConnectedToInternet])
+        XCTAssertEqual(spy.responses, 0)
+        XCTAssertEqual(spy.bytes, 0)
+        XCTAssertEqual(spy.redirects, 0)
+        XCTAssertEqual(spy.finishes, 0)
+        loader.stopLoading()
+        XCTAssertEqual(ModelManager.DownloadFailure.classify(URLError(.notConnectedToInternet)), .interrupted,
+                       "a refused download fails as interrupted, never with an error's text")
+    }
+
+    /// Offline sessions are in-process, since a background session ignores
+    /// protocol classes, and carry the refusal alone, so no built-in loader
+    /// ever sees a request. The cost rules are the live sessions'. This
+    /// host's sessions stay the background ones.
+    func testOfflineSessionsCarryOnlyTheRefusal() {
+        for cellular in [false, true] {
+            let config = ModelManager.sessionConfiguration(allowingCellular: cellular, offline: true)
+            XCTAssertNil(config.identifier, "not a background session")
+            XCTAssertEqual(config.protocolClasses?.map { ObjectIdentifier($0) },
+                           [ObjectIdentifier(OfflineURLProtocol.self)])
+            XCTAssertEqual(config.allowsExpensiveNetworkAccess, cellular)
+            XCTAssertEqual(config.allowsConstrainedNetworkAccess, cellular)
+        }
+        XCTAssertEqual(ModelManager.sessionConfiguration(allowingCellular: false).identifier,
+                       "com.davidxie.aloud.kokoro-model")
     }
 }

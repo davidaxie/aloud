@@ -81,7 +81,8 @@ enum Theme {
     /// The named text styles (R2's ten plus R21's aside). Every one scales
     /// with Dynamic Type (serif styles through `relativeTo:`, sans styles are
     /// system text styles), so no view sets a point size. Pair `.eyebrow`
-    /// with `.eyebrowTracking()`.
+    /// with `.eyebrowTracking()`. The sizes below are the iPhone's; the Mac
+    /// sets each style from its fixed ramp in `PlatformTypeRamp`.
     enum TypeStyle: CaseIterable {
         /// Serif 28, relative to .largeTitle — the wordmark, big titles.
         case display
@@ -110,6 +111,15 @@ enum Theme {
     }
 
     static func font(_ style: TypeStyle) -> Font {
+        font(style, scale: .standard)
+    }
+
+    /// `style` for chrome that grows with the reader's text size. The Mac
+    /// sets a fixed ramp (`PlatformTypeRamp`) and steps it up per band; the
+    /// iPhone's styles already follow Dynamic Type, so `scale` leaves them
+    /// as they are.
+    static func font(_ style: TypeStyle, scale: ChromeScale) -> Font {
+        if let fixed = PlatformTypeRamp.font(for: style, scale: scale) { return fixed }
         switch style {
         case .display:  return .custom(serifFamilyName, size: 28, relativeTo: .largeTitle)
         case .title:    return .custom(serifFamilyName, size: 22, relativeTo: .title2)

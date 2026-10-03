@@ -9,8 +9,15 @@ rounding is done here.
 
 Usage:  python3 ios/tools/render_app_icon.py            # write the icon set
         python3 ios/tools/render_app_icon.py --check    # verify, write nothing
+        python3 ios/tools/render_app_icon.py --mac      # the Mac set (--check too)
 Output: ios/Aloud/Resources/Assets.xcassets/AppIcon.appiconset/
         icon-light.png, icon-dark.png, icon-tinted.png
+        ios/AloudMac/Resources/Assets.xcassets/AppIcon.appiconset/ (--mac)
+        icon_16x16.png ... icon_512x512@2x.png
+
+The Mac draws no mask of its own on macOS 14, so the Mac set carries its
+shape: the same light artwork on an 824-pt rounded plate centred on the
+1024 canvas, with the grid's soft drop shadow (Apple's macOS icon template).
 
 The committed PNGs are binary blobs no diff review can read, so this script
 refuses to render anything it cannot render exactly: the font is resolved by
@@ -23,7 +30,7 @@ import argparse
 import io
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 CANVAS = 1024
 SS = 4  # supersample factor for crisp serif edges
@@ -45,6 +52,16 @@ GLYPH_TARGET_HEIGHT = round(CANVAS * 0.55)  # ~563 px visual cap height
 GLYPH_CENTER_Y = 448                         # slightly above optical center
 RULE_W, RULE_H = 200, 8
 RULE_GAP = 56                                # gap between glyph bottom and rule
+
+# The macOS icon grid (in 1024-space): the plate, its corner radius, and the
+# shadow beneath it (30% black, 10 down, 10 blur). Every size the Mac asks
+# for is a downsample of one master, at 1x and 2x.
+MAC_PLATE = 824
+MAC_RADIUS = 185.4
+MAC_SHADOW = (0, 0, 0, 77)
+MAC_SHADOW_OFFSET = 10
+MAC_SHADOW_BLUR = 10
+MAC_SIZES = (16, 32, 128, 256, 512)
 
 # The shipped icon IS this face. A different one changes the committed PNGs in
 # a way no diff review can see (they are binary blobs), so the fallback is
@@ -112,26 +129,34 @@ def fit_font(target_glyph_height: int) -> ImageFont.FreeTypeFont:
     )
 
 
-def render(paper, ink, rule, *, transparent_ground: bool) -> Image.Image:
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0) if transparent_ground else paper)
+def draw_mark(img: Image.Image, ink, rule, *, unit: float) -> None:
+    """The capital and its rule, centred on the square `img`, with the
+    1024-space geometry scaled by `unit` pixels per point."""
+    side = img.width
     draw = ImageDraw.Draw(img)
 
-    font = fit_font(GLYPH_TARGET_HEIGHT * SS)
+    font = fit_font(round(GLYPH_TARGET_HEIGHT * unit))
     left, top, right, bottom = font.getbbox("A")
     glyph_w = right - left
     glyph_h = bottom - top
 
-    x = (S - glyph_w) // 2 - left
-    y = GLYPH_CENTER_Y * SS - glyph_h // 2 - top
+    x = (side - glyph_w) // 2 - left
+    y = round(GLYPH_CENTER_Y * unit) - glyph_h // 2 - top
     draw.text((x, y), "A", font=font, fill=ink)
 
     glyph_bottom = y + top + glyph_h  # baseline-independent visual bottom
-    rule_top = glyph_bottom + RULE_GAP * SS
-    rx0 = (S - RULE_W * SS) // 2
+    rule_top = glyph_bottom + round(RULE_GAP * unit)
+    rule_w, rule_h = round(RULE_W * unit), round(RULE_H * unit)
+    rx0 = (side - rule_w) // 2
     draw.rectangle(
-        [rx0, rule_top, rx0 + RULE_W * SS - 1, rule_top + RULE_H * SS - 1],
+        [rx0, rule_top, rx0 + rule_w - 1, rule_top + rule_h - 1],
         fill=rule,
     )
+
+
+def render(paper, ink, rule, *, transparent_ground: bool) -> Image.Image:
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0) if transparent_ground else paper)
+    draw_mark(img, ink, rule, unit=SS)
 
     out = img.resize((CANVAS, CANVAS), Image.LANCZOS)
     if not transparent_ground:
@@ -155,6 +180,42 @@ def variants() -> dict:
     }
 
 
+def render_mac_master() -> Image.Image:
+    """The Mac icon at the supersampled size: the light artwork on the
+    grid's rounded plate, over its shadow, on transparency."""
+    plate_side = MAC_PLATE * SS
+    art = Image.new("RGBA", (plate_side, plate_side), PAPER_LIGHT)
+    draw_mark(art, INK_LIGHT, RULE_LIGHT, unit=SS * MAC_PLATE / CANVAS)
+
+    mask = Image.new("L", (plate_side, plate_side), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, plate_side - 1, plate_side - 1], radius=round(MAC_RADIUS * SS), fill=255
+    )
+    origin = (S - plate_side) // 2
+
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    drop = origin + MAC_SHADOW_OFFSET * SS
+    shadow.paste(MAC_SHADOW, (origin, drop, origin + plate_side, drop + plate_side), mask)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(MAC_SHADOW_BLUR * SS / 2))
+
+    plate = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    plate.paste(art, (origin, origin), mask)
+    return Image.alpha_composite(shadow, plate)
+
+
+def mac_variants() -> dict:
+    """filename → rendered image, for every macOS size at 1x and 2x (the
+    asset catalog's own names; 16@2x and 32@1x are the same pixels)."""
+    master = render_mac_master()
+    out = {}
+    for points in MAC_SIZES:
+        for scale in (1, 2):
+            suffix = "" if scale == 1 else "@2x"
+            pixels = points * scale
+            out[f"icon_{points}x{points}{suffix}.png"] = master.resize((pixels, pixels), Image.LANCZOS)
+    return out
+
+
 def main() -> None:
     global ALLOW_FALLBACK
     parser = argparse.ArgumentParser(description=__doc__)
@@ -164,6 +225,11 @@ def main() -> None:
         help="re-render and compare against the committed PNGs; write nothing",
     )
     parser.add_argument(
+        "--mac",
+        action="store_true",
+        help="the macOS set (ios/AloudMac) instead of the iOS one",
+    )
+    parser.add_argument(
         "--allow-fallback",
         action="store_true",
         help="render in Georgia when Iowan Old Style is missing (changes the icon)",
@@ -171,11 +237,12 @@ def main() -> None:
     args = parser.parse_args()
     ALLOW_FALLBACK = args.allow_fallback
 
+    catalog = "AloudMac" if args.mac else "Aloud"
     out_dir = (
         Path(__file__).resolve().parent.parent
-        / "Aloud/Resources/Assets.xcassets/AppIcon.appiconset"
+        / catalog / "Resources/Assets.xcassets/AppIcon.appiconset"
     )
-    rendered = variants()
+    rendered = mac_variants() if args.mac else variants()
 
     if args.check:
         drift = []

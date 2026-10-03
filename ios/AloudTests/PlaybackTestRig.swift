@@ -164,7 +164,7 @@ final class PlaybackTestRig {
         var decision: RouteDecision = .ignore
         private(set) var decisionsAsked = 0
         private(set) var bindings = 0
-        private let session = AudioSessionManager()
+        private let session = PlatformAudioOutput.makeMonitor()
 
         func activate() throws { try session.activate() }
         func deactivate() { session.deactivate() }

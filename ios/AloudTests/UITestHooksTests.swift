@@ -239,6 +239,49 @@ final class UITestHooksTests: XCTestCase {
         XCTAssertTrue(UITestHooks.suppressAutoplay(in: arguments))
     }
 
+    // MARK: - The Mac's hooks
+
+    func testWindowSizeParses() {
+        XCTAssertEqual(UITestHooks.windowSize(in: ["app", "-uitest-window-size", "1280x800"]),
+                       CGSize(width: 1280, height: 800))
+        XCTAssertEqual(UITestHooks.windowSize(in: ["-uitest-window-size", "520.5x480"]),
+                       CGSize(width: 520.5, height: 480))
+    }
+
+    func testMalformedWindowSizesAreNil() {
+        for value in ["1280", "1280x", "x800", "1280x800x2", "0x800", "1280x-1", "infx800", "nanx800", "wide",
+                      "1280X800", ""] {
+            XCTAssertNil(UITestHooks.windowSize(in: ["-uitest-window-size", value]), value)
+        }
+        XCTAssertNil(UITestHooks.windowSize(in: ["app", "-uitest-window-size"]), "flag last")
+        XCTAssertNil(UITestHooks.windowSize(in: ["app"]), "flag absent")
+    }
+
+    func testOpenPathTakesOnlyAnAbsolutePath() {
+        XCTAssertEqual(UITestHooks.openPath(in: ["app", "-uitest-open", "/Users/Shared/fixture.pdf"]),
+                       URL(fileURLWithPath: "/Users/Shared/fixture.pdf"))
+        XCTAssertNil(UITestHooks.openPath(in: ["-uitest-open", "fixture.pdf"]), "relative")
+        XCTAssertNil(UITestHooks.openPath(in: ["-uitest-open", "-uitest-mute"]), "a flag, not a path")
+        XCTAssertNil(UITestHooks.openPath(in: ["app", "-uitest-open"]), "flag last")
+    }
+
+    /// `-uitest-open` is matched whole: the older hooks that start with it
+    /// open nothing.
+    func testOpenPathIgnoresTheLongerOpenHooks() {
+        XCTAssertNil(UITestHooks.openPath(in: ["-uitest-open-first-doc", "/Users/Shared/a.pdf"]))
+        XCTAssertNil(UITestHooks.openPath(in: ["-uitest-open-fixture", "pdf"]))
+    }
+
+    func testEveryMacHookMutesAndSuppressesAutoplay() {
+        let flags = ["-uitest-window-size", "-uitest-offline", "-uitest-kokoro-model-path",
+                     "-uitest-reduce-motion", "-uitest-increase-contrast", "-uitest-open",
+                     "-uitest-force-light", "-uitest-force-dark"]
+        for flag in flags {
+            XCTAssertTrue(mute(["app", flag]), flag)
+            XCTAssertTrue(UITestHooks.suppressAutoplay(in: ["app", flag]), flag)
+        }
+    }
+
     // MARK: - This process
 
     /// The unit-test host loads XCTest, so every sound it could make is muted.
@@ -255,5 +298,14 @@ final class UITestHooksTests: XCTestCase {
     /// The unit-test host runs no shortcut at launch.
     func testThisTestHostRunsNoShortcut() {
         XCTAssertNil(UITestHooks.shortcut)
+    }
+
+    /// The unit-test host passes none of the Mac's hooks.
+    func testThisTestHostPassesNoMacHook() {
+        XCTAssertNil(UITestHooks.windowSize)
+        XCTAssertFalse(UITestHooks.offline)
+        XCTAssertFalse(UITestHooks.forceReduceMotion)
+        XCTAssertFalse(UITestHooks.forceIncreaseContrast)
+        XCTAssertNil(UITestHooks.openPath)
     }
 }

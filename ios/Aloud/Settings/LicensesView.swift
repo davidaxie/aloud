@@ -72,13 +72,13 @@ struct LicensesView: View {
             }
             .padding(Theme.Space.screenGutter)
         }
-        .modifier(ShelfScrollEdge(ground: Theme.bgTint))
+        .shelfScrollEdge(ground: Theme.bgTint)
         .background(Theme.bgTint.ignoresSafeArea())
         .inlineTitleOnPhone()
         // The bar's system content (back chevron, title rendering) follows
         // the app's scheme, not the phone's: under an in-app Dark override
         // on a Light phone it otherwise drew dark-on-dark.
-        .toolbarColorScheme(colorScheme, for: .navigationBar)
+        .toolbarColorSchemeOnPhone(colorScheme)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text("Licenses")

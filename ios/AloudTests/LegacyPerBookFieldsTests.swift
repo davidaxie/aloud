@@ -99,7 +99,7 @@ final class LegacyPerBookFieldsTests: XCTestCase {
                                   defaultVoice: Self.voiceA,
                                   scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                   cache: cache,
-                                  audioSession: AudioSessionManager(),
+                                  audioSession: PlatformAudioOutput.makeMonitor(),
                                   anchorStore: ResumeAnchorStore(defaults: defaults),
                                   // The suite, never the host app's stop slot: init
                                   // takes (and removes) any live-session marker it finds.

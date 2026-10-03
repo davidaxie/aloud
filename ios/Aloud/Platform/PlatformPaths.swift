@@ -20,5 +20,24 @@ enum PlatformPaths {
     private static var documents: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
+    #elseif os(macOS)
+    /// Application Support/Aloud/Library, inside the sandbox container,
+    /// out of the listener's way. The store creates it on first use.
+    static var libraryRoot: URL {
+        appFolder.appendingPathComponent("Library", isDirectory: true)
+    }
+
+    #if DEBUG
+    /// Application Support/Aloud: the UI-test fixtures go into its Inbox,
+    /// beside the library, never into the listener's own folders.
+    static var fixtureRoot: URL {
+        appFolder
+    }
+    #endif
+
+    private static var appFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Aloud", isDirectory: true)
+    }
     #endif
 }

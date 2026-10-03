@@ -33,6 +33,10 @@ enum PlatformAudioOutput {
     @MainActor static func makeMonitor() -> any AudioOutputMonitoring {
         AudioSessionManager()
     }
+    #elseif os(macOS)
+    @MainActor static func makeMonitor() -> any AudioOutputMonitoring {
+        MacAudioOutputMonitor()
+    }
     #endif
 }
 
@@ -74,6 +78,18 @@ enum AudioOutputFaults {
                 info[AVAudioSessionInterruptionOptionKey] = AVAudioSession.InterruptionOptions.shouldResume.rawValue
             }
             return (AVAudioSession.interruptionNotification, info)
+        }
+    }
+    #elseif os(macOS)
+    /// A lost route goes through the live monitor as a private device
+    /// giving way to a public one. A Mac never takes an app's audio, so an
+    /// interruption fault is a test bug.
+    @MainActor static func post(_ fault: Fault) {
+        switch fault {
+        case .routeLost:
+            MacAudioOutputMonitor.current?.simulate(.privateToPublic)
+        case .interruptionBegan, .interruptionEnded:
+            assertionFailure("a Mac has no audio interruptions: \(fault)")
         }
     }
     #endif

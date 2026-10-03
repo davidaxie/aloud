@@ -260,7 +260,12 @@ final class StopReasonTests: XCTestCase {
         XCTAssertTrue(errored)
         XCTAssertEqual(rig.controller.stopped, stop(.playbackError, rig))
         XCTAssertEqual(rig.stopStore.load(), stop(.playbackError, rig))
-        XCTAssertEqual(rig.announcements.filter { $0 == "Playback stopped, tap to try again" }.count, 1)
+        #if os(iOS)
+        let spoken = "Playback stopped, tap to try again"
+        #else
+        let spoken = "Playback stopped"
+        #endif
+        XCTAssertEqual(rig.announcements.filter { $0 == spoken }.count, 1)
     }
 
     /// A voice that fails every sentence while `isOn`: HonestStopsUITest's
@@ -437,7 +442,11 @@ final class StopReasonTests: XCTestCase {
         XCTAssertEqual(spoken, [])
 
         next.sceneDidBecomeActive()
+        #if os(iOS)
         XCTAssertEqual(spoken, ["Stopped when iOS closed Aloud"])
+        #else
+        XCTAssertEqual(spoken, ["Stopped when Aloud quit unexpectedly"])
+        #endif
         next.sceneDidBecomeActive()
         XCTAssertEqual(spoken.count, 1)
 

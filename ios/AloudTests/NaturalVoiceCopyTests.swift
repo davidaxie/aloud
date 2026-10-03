@@ -11,23 +11,34 @@ final class NaturalVoiceCopyTests: XCTestCase {
     }
 
     func testCellularPromptAndPrivacyLine() {
+        #if os(iOS)
         XCTAssertEqual(NaturalVoiceCopy.cellularPrompt, "Download 353 MB on cellular?")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt, "Download 353 MB on a metered connection?")
+        #endif
         XCTAssertEqual(NaturalVoiceCopy.privacyLine,
                        "Downloads once from Hugging Face. Nothing about you is sent.")
     }
 
     /// C1: the lines that name the device or its network come from the
     /// platform's copy, and on the iPhone read exactly as they always have.
-    /// The prompt's message is the privacy line alone, since "cellular"
-    /// already names the network.
+    /// The iPhone prompt's message is the privacy line alone, since
+    /// "cellular" already names the network; the Mac's names it first.
     func testDeviceLinesComeFromThePlatformCopy() {
         XCTAssertEqual(NaturalVoiceCopy.cellularPrompt, DeviceCopy.meteredPrompt)
         XCTAssertEqual(NaturalVoiceCopy.waitingForWiFi, DeviceCopy.waitingForNetwork)
         XCTAssertEqual(NaturalVoiceCopy.unsupported,
                        "The natural voice needs \(DeviceNoun.withArticle) with more memory.")
+        #if os(iOS)
         XCTAssertNil(DeviceCopy.meteredDetail)
         XCTAssertEqual(NaturalVoiceCopy.cellularPromptMessage,
                        "Downloads once from Hugging Face. Nothing about you is sent.")
+        #else
+        XCTAssertEqual(DeviceCopy.meteredDetail, "Your Mac is using a Personal Hotspot or Low Data Mode.")
+        XCTAssertEqual(NaturalVoiceCopy.cellularPromptMessage,
+                       "Your Mac is using a Personal Hotspot or Low Data Mode. "
+                       + "Downloads once from Hugging Face. Nothing about you is sent.")
+        #endif
     }
 
     func testDownloadingTruncatesAndClamps() {
@@ -40,14 +51,23 @@ final class NaturalVoiceCopyTests: XCTestCase {
     }
 
     func testUnsupported() {
+        #if os(iOS)
         XCTAssertEqual(NaturalVoiceCopy.unsupported,
                        "The natural voice needs an iPhone with more memory.")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.unsupported,
+                       "The natural voice needs a Mac with more memory.")
+        #endif
     }
 
     // MARK: - R21
 
     func testDownloadStateCopy() {
+        #if os(iOS)
         XCTAssertEqual(NaturalVoiceCopy.waitingForWiFi, "Download paused · waiting for Wi-Fi")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.waitingForWiFi, "Download paused · waiting for Wi-Fi or Ethernet")
+        #endif
         XCTAssertEqual(NaturalVoiceCopy.installed, "Natural voice installed")
         XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on device · works offline")
     }
@@ -94,8 +114,13 @@ final class NaturalVoiceCopyTests: XCTestCase {
     }
 
     func testSpokenForms() {
+        #if os(iOS)
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi),
                        "Download paused, waiting for Wi-Fi")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi),
+                       "Download paused, waiting for Wi-Fi or Ethernet")
+        #endif
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.notEnoughSpace)),
                        "Not enough space, need 707 MB free")
         XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.interrupted)),

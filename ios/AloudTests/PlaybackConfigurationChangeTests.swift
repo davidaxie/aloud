@@ -111,7 +111,9 @@ final class PlaybackConfigurationChangeTests: XCTestCase {
                        .scheduled(sentence: cue, voiceID: PlaybackTestRig.voiceA.id),
                        "rescheduled from the current sentence")
         XCTAssertEqual(rig.controller.wordTiming.clip(for: cue)?.start, 0, "from the sentence's start")
-        XCTAssertEqual(rig.audioSession.bindings, bindings + 1, "the restart binds the new output")
+        // A process rendering offline (the muted Mac) has no output to bind.
+        XCTAssertEqual(rig.audioSession.bindings, bindings + (rig.controller.rendersOffline ? 0 : 1),
+                       "the restart binds the new output")
         XCTAssertNil(rig.controller.stopped)
         XCTAssertNil(rig.controller.notice)
         XCTAssertEqual(rig.announcements, [], "the listener chose the device: no notice")

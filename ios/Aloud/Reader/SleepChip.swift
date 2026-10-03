@@ -24,7 +24,8 @@ struct SleepChip: View {
 
     // MARK: - Armed or off
 
-    /// The most recent option sits nearest the chip (`.priority`), Off last.
+    /// The most recent option sits nearest the chip (`.priority` on the
+    /// iPhone), Off last.
     private var menu: some View {
         Menu {
             Section(SleepTimer.Copy.section) {
@@ -39,7 +40,7 @@ struct SleepChip: View {
         } label: {
             chipLabel
         }
-        .menuOrder(.priority)
+        .menuOrderNearestFirst()
         .menuIndicator(.hidden)
         .accessibilityLabel(sleepTimer.isArmed ? "\(sleepTimer.chipText), sleep timer" : SleepTimer.Copy.section)
         .accessibilityValue(sleepTimer.isArmed ? "" : "Off")

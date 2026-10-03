@@ -149,7 +149,7 @@ final class VoicePreferenceTests: XCTestCase {
             defaultVoice: systemDefault,
             scheduler: SynthesisScheduler(engine: engine, cache: cache),
             cache: cache,
-            audioSession: AudioSessionManager(),
+            audioSession: PlatformAudioOutput.makeMonitor(),
             anchorStore: ResumeAnchorStore(defaults: PlaybackTestRig.freshDefaults()),
             stopStore: PlaybackStopStore(defaults: PlaybackTestRig.freshDefaults()),
             outputMuted: true)
