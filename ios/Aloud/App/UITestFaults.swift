@@ -1,5 +1,4 @@
 #if DEBUG
-import AVFoundation
 import Combine
 import Foundation
 import SwiftUI
@@ -69,8 +68,8 @@ final class UITestFaultEngine: TtsEngine {
 /// voice from launch; every other kind fires once playback has been
 /// `.playing` for the delay. Synthesis faults switch themselves off once
 /// they have done their job, so one tap can recover. Route changes and
-/// interruptions are posted as the system would post them, so they travel
-/// AudioSessionManager's real path.
+/// interruptions are posted as the system would post them
+/// (`AudioOutputFaults`), so they travel the output monitor's real path.
 @MainActor
 enum UITestFaultInjector {
 
@@ -105,9 +104,7 @@ enum UITestFaultInjector {
         let playback = model.playback
         switch kind {
         case .route:
-            post(AVAudioSession.routeChangeNotification, [
-                AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue,
-            ])
+            AudioOutputFaults.post(.routeLost)
         case .interruption:
             interrupt(resuming: false)
         case .interruptionResume:
@@ -130,23 +127,11 @@ enum UITestFaultInjector {
     /// A call that takes the audio and ends a second later, giving it back
     /// only when `resuming`.
     private static func interrupt(resuming: Bool) {
-        post(AVAudioSession.interruptionNotification, [
-            AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue,
-        ])
+        AudioOutputFaults.post(.interruptionBegan)
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1))
-            var info: [AnyHashable: Any] = [
-                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
-            ]
-            if resuming {
-                info[AVAudioSessionInterruptionOptionKey] = AVAudioSession.InterruptionOptions.shouldResume.rawValue
-            }
-            post(AVAudioSession.interruptionNotification, info)
+            AudioOutputFaults.post(.interruptionEnded(shouldResume: resuming))
         }
-    }
-
-    private static func post(_ name: Notification.Name, _ userInfo: [AnyHashable: Any]) {
-        NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
     }
 
     private static func switchOff<Value>(when publisher: Published<Value>.Publisher,

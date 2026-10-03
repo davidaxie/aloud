@@ -129,7 +129,7 @@ struct ContinueListeningCard<Actions: View>: View {
         .accessibilityLabel(playState.label)
         .accessibilityValue(playState.value)
         .accessibilityIdentifier("library.continue.play")
-        .accessibilityShowsLargeContentViewer {
+        .largeContentViewerIfAvailable {
             Label(playState.label, systemImage: playState.glyph.rawValue)
         }
     }

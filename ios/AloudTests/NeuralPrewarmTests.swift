@@ -1,5 +1,4 @@
 import Combine
-import UIKit
 import XCTest
 @testable import Aloud
 
@@ -35,7 +34,7 @@ final class NeuralPrewarmTests: XCTestCase {
 
     /// Michael is the voice unless `neuralVoice` is false; no book is loaded.
     /// The scene starts as `sceneActive` says, never as the test host's
-    /// UIApplication happens to be.
+    /// app happens to be.
     private func makeHarness(neuralVoice: Bool = true, sceneActive: Bool = true) -> Harness {
         let neural = FakeNeuralEngine()
         let rig = PlaybackTestRig(neural: neural)
@@ -234,7 +233,7 @@ final class NeuralPrewarmTests: XCTestCase {
         harness.card.send(true)
         await warm(harness)
 
-        harness.center.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        PlatformLifecycle.post(.memoryWarning, to: harness.center)
         let released = await rig.waitUntil(2) { !harness.neural.isWarm }
         XCTAssertTrue(released, "an idle engine gives its memory back")
 
@@ -261,7 +260,7 @@ final class NeuralPrewarmTests: XCTestCase {
         let asked = await harness.rig.waitUntil(2) { harness.neural.warmUpCalls == 1 }
         XCTAssertTrue(asked)
 
-        harness.center.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        PlatformLifecycle.post(.memoryWarning, to: harness.center)
         let cancelled = await harness.rig.waitUntil(2) { !harness.prewarm.isWarming }
         XCTAssertTrue(cancelled)
         harness.neural.finishWarmUp()   // never leave the warm-up parked

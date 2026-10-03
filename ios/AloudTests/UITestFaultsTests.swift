@@ -1,9 +1,12 @@
+import AVFoundation
 import XCTest
 @testable import Aloud
 
 /// The `-uitest-fault` synthesis switch and the engine it gates (R11's
 /// fault-injection UI tests depend on both). Each test builds its own switch,
-/// never the shared one, and the base engine returns silence.
+/// never the shared one, and the base engine returns silence. The output
+/// faults are read back, never posted: the host app observes the real
+/// notifications.
 @MainActor
 final class UITestFaultsTests: XCTestCase {
 
@@ -72,5 +75,45 @@ final class UITestFaultsTests: XCTestCase {
         _ = try? await engine.synthesize("Line1 word.", voice: Self.system)
 
         XCTAssertEqual(base.requestedTexts, ["Line1 word."], "a failed request never reaches the base")
+    }
+
+    // MARK: - Output faults (S8)
+
+    /// Each output fault reads back, through the iPhone monitor's own
+    /// parsing, as the event it stands for.
+    func testOutputFaultsReadBackAsTheirEvents() {
+        let (routeName, routeInfo) = AudioOutputFaults.notification(for: .routeLost)
+        XCTAssertEqual(routeName, AVAudioSession.routeChangeNotification)
+        XCTAssertTrue(AudioSessionManager.routeRequiresPause(routeInfo))
+        XCTAssertNil(AudioSessionManager.interruption(from: routeInfo))
+
+        let interruptions: [(AudioOutputFaults.Fault, AudioInterruption)] = [
+            (.interruptionBegan, .began),
+            (.interruptionEnded(shouldResume: true), .ended(shouldResume: true)),
+            (.interruptionEnded(shouldResume: false), .ended(shouldResume: false)),
+        ]
+        for (fault, event) in interruptions {
+            let (name, info) = AudioOutputFaults.notification(for: fault)
+            XCTAssertEqual(name, AVAudioSession.interruptionNotification, "\(fault)")
+            XCTAssertEqual(AudioSessionManager.interruption(from: info), event, "\(fault)")
+            XCTAssertFalse(AudioSessionManager.routeRequiresPause(info), "\(fault)")
+        }
+    }
+
+    /// Only the playing device going away pauses: a device arriving doesn't.
+    func testOnlyALostDeviceRequiresAPause() {
+        XCTAssertFalse(AudioSessionManager.routeRequiresPause([
+            AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue,
+        ]))
+        XCTAssertFalse(AudioSessionManager.routeRequiresPause(nil))
+        XCTAssertNil(AudioSessionManager.interruption(from: nil))
+    }
+
+    /// The iPhone's monitor is the session manager, and it leaves an engine
+    /// configuration change alone (S7b), as playback always has.
+    func testIPhoneMonitorIgnoresConfigurationChanges() {
+        let monitor = PlatformAudioOutput.makeMonitor()
+        XCTAssertTrue(monitor is AudioSessionManager)
+        XCTAssertEqual(monitor.decisionAfterConfigurationChange(), .ignore)
     }
 }

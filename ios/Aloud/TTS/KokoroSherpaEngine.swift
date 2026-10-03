@@ -140,7 +140,7 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
             dictDir: "",
             lexicon: lexiconUS + "," + lexiconGB)
         let model = sherpaOnnxOfflineTtsModelConfig(kokoro: kokoro,
-                                                    numThreads: 2,
+                                                    numThreads: PlatformTuning.kokoroThreads,
                                                     provider: "cpu")
         var config = sherpaOnnxOfflineTtsConfig(model: model, maxNumSentences: 1)
         let wrapper = SherpaOnnxOfflineTtsWrapper(config: &config)

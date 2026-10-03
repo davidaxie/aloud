@@ -1,4 +1,6 @@
-import CoreText
+import Foundation
+// Only for the trait-taking `ruleImage` the iOS column still calls; the
+// faces and the drawing go through the Platform seam.
 import UIKit
 
 /// The book-page typesetting rules for the reading column, as pure values so
@@ -77,52 +79,37 @@ struct ReaderPageStyle {
 
     /// The reading serif. `bold` (the system Bold Text setting, i.e.
     /// `legibilityWeight == .bold`) swaps in the family's bold face, derived
-    /// through the descriptor's `.traitBold`; a family without one keeps
-    /// its regular face.
-    static func serif(size: CGFloat, bold: Bool = false) -> UIFont {
-        let regular = UIFont(name: Theme.serifFamilyName, size: size) ?? .systemFont(ofSize: size)
-        guard bold,
-              let descriptor = regular.fontDescriptor.withSymbolicTraits(
-                  regular.fontDescriptor.symbolicTraits.union(.traitBold))
-        else { return regular }
-        return UIFont(descriptor: descriptor, size: size)
+    /// through the descriptor's bold trait; a family without one keeps its
+    /// regular face.
+    static func serif(size: CGFloat, bold: Bool = false) -> PlatformFont {
+        let regular = PlatformFont.named(Theme.serifFamilyName, size: size) ?? .systemFont(ofSize: size)
+        guard bold else { return regular }
+        return PlatformFontTraits.bold(regular) ?? regular
     }
 
     /// The serif's italic (Iowan Old Style Italic, or Bold Italic under Bold
     /// Text; Georgia Italic where Iowan is missing), for R24's colophon
     /// heading.
-    /// Derived through the descriptor's `.traitItalic`, like `serif`'s
-    /// bold; a family without an italic keeps its upright face.
-    static func italicSerif(size: CGFloat, bold: Bool = false) -> UIFont {
+    /// Derived through the descriptor's italic trait, like `serif`'s bold;
+    /// a family without an italic keeps its upright face.
+    static func italicSerif(size: CGFloat, bold: Bool = false) -> PlatformFont {
         let upright = serif(size: size, bold: bold)
-        guard let descriptor = upright.fontDescriptor.withSymbolicTraits(
-            upright.fontDescriptor.symbolicTraits.union(.traitItalic))
-        else { return upright }
-        return UIFont(descriptor: descriptor, size: size)
+        return PlatformFontTraits.italic(upright) ?? upright
     }
 
     /// Serif with lowercase set in small caps (numerals and capitals stay
     /// full size, so "Chapter IV" keeps its numeral).
-    static func smallCapsSerif(size: CGFloat, bold: Bool = false) -> UIFont {
-        let base = serif(size: size, bold: bold)
-        let features: [[UIFontDescriptor.FeatureKey: Int]] = [[
-            .type: kLowerCaseType,
-            .selector: kLowerCaseSmallCapsSelector,
-        ]]
-        let descriptor = base.fontDescriptor.addingAttributes([.featureSettings: features])
-        return UIFont(descriptor: descriptor, size: size)
+    static func smallCapsSerif(size: CGFloat, bold: Bool = false) -> PlatformFont {
+        PlatformFontTraits.smallCaps(serif(size: size, bold: bold))
     }
 
     /// A solid rule image for text attachments, resolved for `traits` (the
     /// reader rebuilds on light/dark flips, so a resolved color is safe).
-    static func ruleImage(size: CGSize, color: UIColor, traits: UITraitCollection) -> UIImage {
-        let resolved = color.resolvedColor(with: traits)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = max(traits.displayScale, 1)
-        return UIGraphicsImageRenderer(size: size, format: format).image { context in
-            resolved.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-        }
+    /// The iOS column's entry point (`ReaderInk(traits:)`); the drawing is
+    /// `PlatformRuleImage`'s, which a shared caller uses directly.
+    static func ruleImage(size: CGSize, color: PlatformColor, traits: UITraitCollection) -> PlatformImage {
+        PlatformRuleImage.make(size: size, color: color.resolvedColor(with: traits),
+                               scale: traits.displayScale)
     }
 
     /// UTF-16 length of the first `count` words of `text`, including the

@@ -1,4 +1,4 @@
-import UIKit
+import Foundation
 import PDFKit
 
 /// Loads document cover thumbnails: memory cache → disk cache → regenerate
@@ -8,9 +8,9 @@ final class ThumbnailProvider: @unchecked Sendable {
 
     static let shared = ThumbnailProvider()
 
-    private let memory = NSCache<NSString, UIImage>()
+    private let memory = NSCache<NSString, PlatformImage>()
 
-    func thumbnail(for document: LibraryDocument) async -> UIImage? {
+    func thumbnail(for document: LibraryDocument) async -> PlatformImage? {
         guard document.kind == .pdf else { return nil }
 
         let key = document.id.uuidString as NSString
@@ -19,9 +19,9 @@ final class ThumbnailProvider: @unchecked Sendable {
         let fileURL = await DocumentStore.fileURL(for: document)
         let thumbURL = await DocumentStore.thumbnailURL(for: document.id)
 
-        let image = await Task.detached(priority: .utility) { () -> UIImage? in
+        let image = await Task.detached(priority: .utility) { () -> PlatformImage? in
             if let data = try? Data(contentsOf: thumbURL),
-               let cached = UIImage(data: data) {
+               let cached = PlatformImage(data: data) {
                 return cached
             }
             guard let pdf = PDFDocument(url: fileURL),
@@ -32,7 +32,7 @@ final class ThumbnailProvider: @unchecked Sendable {
                 ? width * bounds.height / bounds.width
                 : width * 4 / 3
             let rendered = page.thumbnail(of: CGSize(width: width, height: height), for: .cropBox)
-            try? rendered.pngData()?.write(to: thumbURL, options: .atomic)
+            try? rendered.pngDataRepresentation()?.write(to: thumbURL, options: .atomic)
             return rendered
         }.value
 

@@ -7,8 +7,8 @@ import XCTest
 /// didn't ask for is a notice while audio continues.
 ///
 /// All silent: muted rigs on their own defaults suites; route loss and
-/// interruptions are driven through the rig's AudioSessionManager callbacks,
-/// never the global notifications. A test whose audio engine can't start in
+/// interruptions are driven through the rig's fake output monitor's
+/// callbacks, never the global notifications. A test whose audio engine can't start in
 /// the host is skipped, not failed.
 @MainActor
 final class StopReasonTests: XCTestCase {
@@ -40,7 +40,7 @@ final class StopReasonTests: XCTestCase {
                                             defaultVoice: PlaybackTestRig.voiceA,
                                             scheduler: SynthesisScheduler(engine: engine, cache: cache),
                                             cache: cache,
-                                            audioSession: AudioSessionManager(),
+                                            audioSession: PlaybackTestRig.FakeAudioOutput(),
                                             anchorStore: rig.anchorStore,
                                             stopStore: rig.stopStore,
                                             outputMuted: true)

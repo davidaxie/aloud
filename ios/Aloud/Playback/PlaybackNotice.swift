@@ -7,17 +7,25 @@ import Foundation
 ///
 /// A stopped reason is why playback stopped without the listener asking. It
 /// persists (one app-wide slot, `PlaybackStopStore`) until the next Play.
+/// The raw values are persisted: `closedByIOS` keeps its name on every
+/// platform, where it means the process ended mid-speech.
 enum StopReason: String, Codable, CaseIterable, Sendable {
     case headphonesDisconnected, interrupted, sleepTimer, playbackError, tooHot, closedByIOS
+    /// The Mac went to sleep mid-speech. Never raised on an iPhone, whose
+    /// lock screen keeps the audio playing.
+    case macSlept
 
+    /// The device is named through `DeviceNoun`, and a line worded
+    /// differently per platform comes whole from `DeviceCopy`.
     var text: String {
         switch self {
         case .headphonesDisconnected: return "Paused · headphones disconnected"
         case .interrupted: return "Paused by a call or another app"
         case .sleepTimer: return "Paused by sleep timer"
         case .playbackError: return "Playback stopped · tap to try again"
-        case .tooHot: return "Paused · iPhone is too hot"
-        case .closedByIOS: return "Stopped when iOS closed Aloud"
+        case .tooHot: return "Paused · \(DeviceNoun.subject) is too hot"
+        case .closedByIOS: return DeviceCopy.closedUnexpectedly
+        case .macSlept: return "Paused · \(DeviceNoun.subject) went to sleep"
         }
     }
 
@@ -40,7 +48,7 @@ enum PlaybackNotice: Equatable, Sendable {
         case .backedUp(let sentences):
             return sentences == 1 ? "Backed up 1 sentence" : "Backed up \(sentences) sentences"
         case .skippedSentence: return "Skipped a sentence the voice couldn't read"
-        case .coolingDown: return "Using the System voice while iPhone cools"
+        case .coolingDown: return "Using the System voice while \(DeviceNoun.subject) cools"
         }
     }
 

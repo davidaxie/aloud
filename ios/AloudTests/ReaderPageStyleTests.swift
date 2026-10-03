@@ -45,6 +45,62 @@ final class ReaderPageStyleTests: XCTestCase {
                        "  Lead  space".utf16.count)
     }
 
+    // MARK: - Faces (R2)
+
+    /// The faces come through the Platform seam now; each is the face the
+    /// UIKit derivation gave before, spelled out here directly.
+    func testFacesAreTheOnesUIKitDerived() throws {
+        let regular = try XCTUnwrap(UIFont(name: Theme.serifFamilyName, size: 19))
+        XCTAssertEqual(ReaderPageStyle.serif(size: 19), regular)
+
+        let boldDescriptor = try XCTUnwrap(regular.fontDescriptor.withSymbolicTraits(
+            regular.fontDescriptor.symbolicTraits.union(.traitBold)))
+        let bold = UIFont(descriptor: boldDescriptor, size: 19)
+        XCTAssertEqual(ReaderPageStyle.serif(size: 19, bold: true).fontDescriptor, bold.fontDescriptor)
+        XCTAssertEqual(ReaderPageStyle.serif(size: 19, bold: true).pointSize, 19)
+
+        // Bold Italic under Bold Text: the italic is derived from the bold face.
+        let italicDescriptor = try XCTUnwrap(bold.fontDescriptor.withSymbolicTraits(
+            bold.fontDescriptor.symbolicTraits.union(.traitItalic)))
+        XCTAssertEqual(ReaderPageStyle.italicSerif(size: 19, bold: true).fontDescriptor,
+                       UIFont(descriptor: italicDescriptor, size: 19).fontDescriptor)
+
+        let features: [[UIFontDescriptor.FeatureKey: Int]] = [[
+            .type: kLowerCaseType, .selector: kLowerCaseSmallCapsSelector,
+        ]]
+        let smallCaps = ReaderPageStyle.smallCapsSerif(size: 23)
+        XCTAssertEqual(smallCaps.pointSize, 23)
+        XCTAssertEqual(smallCaps.fontDescriptor,
+                       UIFont(descriptor: try XCTUnwrap(UIFont(name: Theme.serifFamilyName, size: 23))
+                                  .fontDescriptor.addingAttributes([.featureSettings: features]),
+                              size: 23).fontDescriptor)
+    }
+
+    /// The rule image is today's: the color resolved for the traits'
+    /// appearance, drawn at their display scale. Asked of the iOS column's
+    /// ink, so it holds whichever helper draws the rule.
+    func testRuleImageResolvesForTheTraits() {
+        let size = ReaderPageStyle.ruleSize
+        let color = UIColor { $0.userInterfaceStyle == .dark ? .blue : .red }
+        let traits = UITraitCollection { traits in
+            traits.userInterfaceStyle = .dark
+            traits.displayScale = 3
+        }
+        let image = ReaderInk(traits: traits).ruleImage(size, color)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        let expected = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.blue.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        // The renderer rounds to whole pixels (1.5 pt × 3 → 5 px), so the size
+        // is the reference's, not the requested 1.5 pt.
+        XCTAssertEqual(image.size, expected.size)
+        XCTAssertEqual(image.scale, 3)
+        XCTAssertEqual(image.pngData(), expected.pngData())
+    }
+
     // MARK: - Attributed string
 
     private func chaptered() -> DocContent {
@@ -71,7 +127,7 @@ final class ReaderPageStyleTests: XCTestCase {
 
     @MainActor
     func testBodyParagraphsUseBookMetrics() {
-        let built = ReaderTextView.Coordinator.makeAttributedString(
+        let built = ReaderColumnText.makeAttributedString(
             content: chaptered(), fontSize: 19, isChapterBook: true)
         let body = style(built, sentence: 2)   // an ordinary paragraph mid-chapter
         XCTAssertEqual(body?.minimumLineHeight, 29)
@@ -84,13 +140,13 @@ final class ReaderPageStyleTests: XCTestCase {
 
     @MainActor
     func testParagraphAfterOpeningIsUnindentedWithSmallCapsLead() {
-        let built = ReaderTextView.Coordinator.makeAttributedString(
+        let built = ReaderColumnText.makeAttributedString(
             content: chaptered(), fontSize: 19, isChapterBook: true)
         let first = style(built, sentence: 6)   // first paragraph of chapter II
         XCTAssertEqual(first?.firstLineHeadIndent, 0)
 
         let lead = built.string.attribute(.font, at: built.sentenceRanges[6].location,
-                                          effectiveRange: nil) as? UIFont
+                                          effectiveRange: nil) as? PlatformFont
         let settings = lead?.fontDescriptor.object(forKey: .featureSettings) as? [[UIFontDescriptor.FeatureKey: Int]]
         XCTAssertNotNil(settings, "opening words carry the small-caps feature")
 
@@ -98,14 +154,14 @@ final class ReaderPageStyleTests: XCTestCase {
         let range = built.sentenceRanges[6]
         let fourth = (built.string.string as NSString)
             .range(of: "more", options: [], range: range)
-        let plain = built.string.attribute(.font, at: fourth.location, effectiveRange: nil) as? UIFont
+        let plain = built.string.attribute(.font, at: fourth.location, effectiveRange: nil) as? PlatformFont
         XCTAssertNil(plain?.fontDescriptor.object(forKey: .featureSettings))
     }
 
     @MainActor
     func testOpeningAddsRuleWithoutTouchingSentenceText() {
         let content = chaptered()
-        let built = ReaderTextView.Coordinator.makeAttributedString(
+        let built = ReaderColumnText.makeAttributedString(
             content: content, fontSize: 19, isChapterBook: true)
         let rendered = built.string.string as NSString
         for sentence in content.sentences {

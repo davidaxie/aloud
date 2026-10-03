@@ -1,7 +1,6 @@
 import Combine
 import CryptoKit
 import Foundation
-import UIKit
 
 /// Owns the on-device Kokoro model files (`model.onnx` + `voices.bin`):
 /// detection, resumable background download from Hugging Face, verification,
@@ -23,6 +22,10 @@ import UIKit
 /// kept on disk beside the staged files; a record lets a relaunch reattach
 /// to the background session and show its progress at once; and every stop
 /// is one of three classified failures, announced, never an error's text.
+///
+/// Nothing here touches the network until a download is asked for or
+/// reattached (M4): both sessions and the path monitor are made on first
+/// use, so a launch with no download in flight opens no network API.
 ///
 /// Dev/test seeding: copy both pinned files into the container's
 /// Application Support/KokoroModel/ — `detectExisting()` (run at init)
@@ -261,15 +264,22 @@ final class ModelManager: ObservableObject {
     /// (test) process.
     static func postAnnouncement(_ text: String) {
         guard !UITestHooks.muteAudio else { return }
-        UIAccessibility.post(notification: .announcement,
-                             argument: NSAttributedString(string: text, attributes: [
-                                 .accessibilitySpeechQueueAnnouncement: true,
-                             ]))
+        A11yAnnounce.post(text, queued: true)
     }
+
+    #if DEBUG
+    /// M4 probes, read by NetworkBoundaryTests: a session exists only once
+    /// a download started or reattached, and the path is watched only once
+    /// one was asked for.
+    private(set) var hasCreatedSession = false
+    var pathMonitorStarted: Bool { isWatchingPath }
+    #endif
 
     // MARK: - Private state
 
     private let pathSource: any NetworkPathSource
+    /// Set by the first `watchPath`; the source is started once.
+    private var isWatchingPath = false
     private let defaults: UserDefaults
     private let freeSpace: @Sendable () -> Int64?
     private let hasher: FileHasher
@@ -290,12 +300,8 @@ final class ModelManager: ObservableObject {
 
     private let wifiCoordinator: DownloadCoordinator
     private let cellularCoordinator: DownloadCoordinator
-    private lazy var wifiSession = URLSession(
-        configuration: Self.sessionConfiguration(allowingCellular: false),
-        delegate: wifiCoordinator, delegateQueue: nil)
-    private lazy var cellularSession = URLSession(
-        configuration: Self.sessionConfiguration(allowingCellular: true),
-        delegate: cellularCoordinator, delegateQueue: nil)
+    private lazy var wifiSession = makeSession(allowingCellular: false)
+    private lazy var cellularSession = makeSession(allowingCellular: true)
 
     private var allowsCellularThisRun = false
     private var activeTask: URLSessionDownloadTask?
@@ -501,6 +507,9 @@ final class ModelManager: ObservableObject {
         }
         // There is room now, so the space line would be stale under the prompt.
         if state == .failed(.notEnoughSpace) { state = .notInstalled }
+        // The first Download is where the path starts being watched, so wait
+        // for it: the cellular question must not be answered blind.
+        watchPath(waitingUpTo: Self.firstPathWait)
         if pathSource.isExpensiveOrConstrained { return .needsCellularConfirmation }
         startDownload(allowingCellular: false)
         return .started
@@ -518,6 +527,7 @@ final class ModelManager: ObservableObject {
             return
         }
         allowsCellularThisRun = allowingCellular
+        watchPath()
         do {
             try FileManager.default.createDirectory(at: stagingDirectory,
                                                     withIntermediateDirectories: true)
@@ -751,6 +761,7 @@ final class ModelManager: ObservableObject {
     private func reattachIfNeeded() {
         guard let record = ModelDownloadRecord.load(from: defaults, directory: installDirectory),
               Self.remoteFiles.indices.contains(record.fileIndex) else { return }
+        watchPath()
         allowsCellularThisRun = record.allowsCellular
         currentFileIndex = record.fileIndex
         completedBytes = Self.remoteFiles[..<record.fileIndex].reduce(0) { $0 + $1.expectedBytes }
@@ -807,6 +818,31 @@ final class ModelManager: ObservableObject {
                 self.fileFailed(failure)
             }
         }
+    }
+
+    // MARK: - Network, on first use (M4)
+
+    /// How long the first Download waits for the path it just started
+    /// watching. The first path usually lands within milliseconds.
+    private static let firstPathWait: TimeInterval = 0.25
+
+    /// Starts the path source once. Reached only from a Download or a
+    /// reattach after relaunch, so a launch with no record never watches.
+    private func watchPath(waitingUpTo timeout: TimeInterval = 0) {
+        guard !isWatchingPath else { return }
+        isWatchingPath = true
+        pathSource.start(waitingUpTo: timeout)
+    }
+
+    /// Made on first use by the lazy `wifiSession` and `cellularSession`,
+    /// so only a started or reattached download creates one.
+    private func makeSession(allowingCellular: Bool) -> URLSession {
+        #if DEBUG
+        hasCreatedSession = true
+        #endif
+        return URLSession(configuration: Self.sessionConfiguration(allowingCellular: allowingCellular),
+                          delegate: allowingCellular ? cellularCoordinator : wifiCoordinator,
+                          delegateQueue: nil)
     }
 
     // MARK: - Helpers

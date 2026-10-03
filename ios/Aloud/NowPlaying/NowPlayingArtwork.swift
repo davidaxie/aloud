@@ -19,9 +19,9 @@ enum NowPlayingArtwork {
 
     /// An opaque `side`-point square at `scale`: 900×900 px by default.
     @MainActor
-    static func image(title: String, author: String?, page: UIImage?,
+    static func image(title: String, author: String?, page: PlatformImage?,
                       side: CGFloat = CoverGeometry.artworkSide,
-                      scale: CGFloat = CoverGeometry.artworkScale) -> UIImage? {
+                      scale: CGFloat = CoverGeometry.artworkScale) -> PlatformImage? {
         let renderer = ImageRenderer(content: NowPlayingArtworkView(title: title, author: author,
                                                                     page: page, side: side))
         renderer.scale = scale
@@ -29,12 +29,12 @@ enum NowPlayingArtwork {
         // No trait wrapper needed: the view's light colorScheme reaches
         // Theme's trait-resolved colors, and the renderer ignores the
         // current trait collection (a dark phone renders the same square).
-        return renderer.uiImage
+        return renderer.platformImage
     }
 
     /// Serves the textless render to requests under `textlessSide`, the
     /// full one otherwise.
-    static func artwork(large: UIImage, small: UIImage) -> MPMediaItemArtwork {
+    static func artwork(large: PlatformImage, small: PlatformImage) -> MPMediaItemArtwork {
         MPMediaItemArtwork(boundsSize: large.size) { size in
             min(size.width, size.height) < textlessSide ? small : large
         }
@@ -44,7 +44,7 @@ enum NowPlayingArtwork {
     /// one, else its typographic cover. nil when a render fails.
     @MainActor
     static func artwork(for document: LibraryDocument) async -> MPMediaItemArtwork? {
-        var page: UIImage?
+        var page: PlatformImage?
         if document.kind == .pdf {
             page = await ThumbnailProvider.shared.thumbnail(for: document)
         }
@@ -62,7 +62,7 @@ enum NowPlayingArtwork {
 struct NowPlayingArtworkView: View {
     let title: String
     let author: String?
-    let page: UIImage?
+    let page: PlatformImage?
     var side: CGFloat = CoverGeometry.artworkSide
 
     var body: some View {

@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// Semantic design tokens. Views consume these exclusively — never raw colors.
 /// Single-hue discipline ("Bronze", hue ~35°): the accent family is aged brass
@@ -133,7 +132,7 @@ enum Theme {
     }
 
     static let serifFamilyName: String = {
-        UIFont(name: "Iowan Old Style", size: 17) != nil ? "Iowan Old Style" : "Georgia"
+        PlatformFont.exists(named: "Iowan Old Style") ? "Iowan Old Style" : "Georgia"
     }()
 
     // MARK: Spacing (R3)
@@ -157,7 +156,7 @@ enum Theme {
 
     enum Stroke {
         /// One physical pixel of `lineStrong`: dividers, the top-edge rule.
-        static var hairlineWidth: CGFloat { 1 / max(UIScreen.main.scale, 1) }
+        static var hairlineWidth: CGFloat { PlatformScreen.hairline }
         static let hairlineColor = Theme.lineStrong
         /// 1pt of `line`: card and chip borders.
         static let borderWidth: CGFloat = 1
@@ -232,15 +231,13 @@ enum Theme {
                                     lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1,
                                     highContrastAlpha: CGFloat? = nil,
                                     highContrast: (light: UInt32, dark: UInt32)? = nil) -> Color {
-        Color(uiColor: UIColor { trait in
-            let isDark = trait.userInterfaceStyle == .dark
-            let isHighContrast = trait.accessibilityContrast == .high
+        PlatformColor.dynamic { isDark, isHighContrast in
             var alpha = isDark ? darkAlpha : lightAlpha
             if isHighContrast, let highContrastAlpha { alpha = highContrastAlpha }
             var rgb = isDark ? dark : light
             if isHighContrast, let highContrast { rgb = isDark ? highContrast.dark : highContrast.light }
-            return UIColor(rgb: rgb, alpha: alpha)
-        })
+            return PlatformColor(rgb: rgb, alpha: alpha)
+        }
     }
 }
 
@@ -321,7 +318,7 @@ struct AccentCircleButtonStyle: ButtonStyle {
     }
 }
 
-private extension UIColor {
+private extension PlatformColor {
     convenience init(rgb: UInt32, alpha: CGFloat) {
         self.init(red: CGFloat((rgb >> 16) & 0xFF) / 255,
                   green: CGFloat((rgb >> 8) & 0xFF) / 255,

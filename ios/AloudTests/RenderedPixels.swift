@@ -1,5 +1,8 @@
+import ImageIO
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
+@testable import Aloud
 
 /// RGBA8 sRGB pixels of a SwiftUI view or an image, read in memory: covers
 /// and lock-screen art are measured as drawn, with no window, screen or
@@ -11,19 +14,26 @@ struct RenderedPixels {
     /// Premultiplied RGBA, 4 bytes per pixel, row-major from the top-left.
     let bytes: [UInt8]
 
-    /// `view` framed at `size` points and rendered at `scale`.
+    /// `view` framed at `size` points and rendered at `scale`, read straight
+    /// from the renderer's bitmap (the same one its platform image wraps).
     init?(_ view: some View, size: CGSize, scale: CGFloat = 2) {
         let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height))
         renderer.scale = scale
-        guard let image = renderer.uiImage else { return nil }
-        self.init(image: image)
+        guard let cgImage = renderer.cgImage else { return nil }
+        self.init(cgImage: cgImage)
     }
 
-    /// `image`'s bitmap, redrawn into an RGBA8 sRGB context so every source
-    /// format reads the same way.
-    init?(image: UIImage) {
-        guard let cgImage = image.cgImage,
-              cgImage.width > 0, cgImage.height > 0,
+    /// `image`'s bitmap. (UIImage's `cgImage`: the seam has no accessor for
+    /// a platform image's bitmap yet.)
+    init?(image: PlatformImage) {
+        guard let cgImage = image.cgImage else { return nil }
+        self.init(cgImage: cgImage)
+    }
+
+    /// `cgImage` redrawn into an RGBA8 sRGB context so every source format
+    /// reads the same way.
+    init?(cgImage: CGImage) {
+        guard cgImage.width > 0, cgImage.height > 0,
               let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         let width = cgImage.width
         let height = cgImage.height
@@ -76,7 +86,7 @@ struct RenderedPixels {
 
     /// An opaque, solid `rgb` (0xRRGGBB) image of `size` pixels at scale 1:
     /// a stand-in PDF page whose every pixel is known.
-    static func solidImage(rgb: UInt32, size: CGSize) -> UIImage {
+    static func solidImage(rgb: UInt32, size: CGSize) -> PlatformImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
@@ -89,6 +99,17 @@ struct RenderedPixels {
             color.setFill()
             context.fill(CGRect(origin: .zero, size: size))
         }
+    }
+
+    /// `cgImage` as PNG bytes, through ImageIO rather than either platform's
+    /// image type: equal bitmaps give equal bytes.
+    static func pngData(_ cgImage: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, cgImage, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 
     /// Whether `pixel`'s colour is `rgb` (0xRRGGBB) within `tolerance` per channel.

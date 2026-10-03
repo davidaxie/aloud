@@ -21,11 +21,22 @@ final class PlaybackCopyTests: XCTestCase {
             .playbackError: "Playback stopped · tap to try again",
             .tooHot: "Paused · iPhone is too hot",
             .closedByIOS: "Stopped when iOS closed Aloud",
+            .macSlept: "Paused · iPhone went to sleep",
         ]
         XCTAssertEqual(Set(expected.keys), Set(StopReason.allCases), "one row per reason")
         for reason in StopReason.allCases {
             XCTAssertEqual(reason.text, expected[reason], "\(reason)")
         }
+    }
+
+    /// C1: the device in a stop or notice is `DeviceNoun`'s, and a line
+    /// worded per platform is `DeviceCopy`'s, so the Mac's copy changes in
+    /// one file.
+    func testPlatformWordingComesFromDeviceNoun() {
+        XCTAssertEqual(StopReason.closedByIOS.text, DeviceCopy.closedUnexpectedly)
+        XCTAssertEqual(StopReason.tooHot.text, "Paused · \(DeviceNoun.subject) is too hot")
+        XCTAssertEqual(StopReason.macSlept.text, "Paused · \(DeviceNoun.subject) went to sleep")
+        XCTAssertEqual(PlaybackNotice.coolingDown.text, "Using the System voice while \(DeviceNoun.subject) cools")
     }
 
     func testEveryNoticeReadsExactly() {
@@ -67,6 +78,7 @@ final class PlaybackCopyTests: XCTestCase {
         XCTAssertEqual(StopReason.headphonesDisconnected.spokenText, "Paused, headphones disconnected")
         XCTAssertEqual(StopReason.playbackError.spokenText, "Playback stopped, tap to try again")
         XCTAssertEqual(StopReason.tooHot.spokenText, "Paused, iPhone is too hot")
+        XCTAssertEqual(StopReason.macSlept.spokenText, "Paused, iPhone went to sleep")
         XCTAssertEqual(StopReason.sleepTimer.spokenText, "Paused by sleep timer")
         XCTAssertEqual(PlaybackNotice.fellBackToSystem.spokenText, "Natural voice unavailable, using System")
     }
@@ -123,6 +135,15 @@ final class PlaybackCopyTests: XCTestCase {
 
         defaults.set(Data("not json".utf8), forKey: PlaybackStopStore.stopKey)
         XCTAssertNil(store.load(), "an undecodable stop reads as none")
+    }
+
+    /// The persisted names: a stop saved before the Mac work (or by the
+    /// other platform) still reads back.
+    func testStopReasonRawValuesAreStable() throws {
+        XCTAssertEqual(StopReason.closedByIOS.rawValue, "closedByIOS")
+        XCTAssertEqual(StopReason.macSlept.rawValue, "macSlept")
+        let saved = Data(#"{"reason":"closedByIOS","documentID":"6B1F4E2A-3C5D-4E6F-8A9B-0C1D2E3F4A5B"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(PlaybackStop.self, from: saved).reason, .closedByIOS)
     }
 
     func testStoreKeys() {

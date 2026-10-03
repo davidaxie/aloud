@@ -1,7 +1,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import UIKit
 
 enum PlayerStatus: String, Sendable {
     case idle, buffering, playing, paused, ended, error
@@ -24,10 +23,17 @@ final class PlaybackController: ObservableObject {
 
     @Published private(set) var status: PlayerStatus = .idle {
         didSet {
-            wordTimingStatusChanged(status)   // M3 karaoke display link
+            wordTimingStatusChanged(status)   // M3 karaoke frame ticker
             let wasActive = oldValue == .playing || oldValue == .buffering
-            if !wasActive, isActive { didEnterActivePlayback() }
+            if !wasActive, isActive {
+                // Playing or synthesizing ahead: a hidden window's look-ahead
+                // isn't throttled (S13; nothing to hold on an iPhone).
+                activity = PlatformActivity.begin(reason: "Reading aloud")
+                didEnterActivePlayback()
+            }
             if wasActive, !isActive {
+                PlatformActivity.end(activity)
+                activity = nil
                 // Every transition out of active playback (pause, stop, error,
                 // interruption, route-change pause, end of book) anchors the
                 // resume-rewind clock and ends the live session.
@@ -133,7 +139,7 @@ final class PlaybackController: ObservableObject {
 
     /// Whether VoiceOver can hear an announcement now; a stop recorded in the
     /// background waits for `sceneDidBecomeActive`. Tests replace it.
-    var isAppActive: () -> Bool = { UIApplication.shared.applicationState == .active }
+    var isAppActive: () -> Bool = { PlatformApp.isActive }
 
     /// How long an "Undo jump" offer stays up. Tests shorten it.
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
@@ -146,10 +152,7 @@ final class PlaybackController: ObservableObject {
         UITestAnnouncementLog.shared.record(text)
         #endif
         guard !muted else { return }
-        UIAccessibility.post(notification: .announcement,
-                             argument: NSAttributedString(string: text, attributes: [
-                                 .accessibilitySpeechQueueAnnouncement: true,
-                             ]))
+        A11yAnnounce.post(text)
     }
 
     /// Unit-test seam: every buffer handed to the player node, and every
@@ -177,6 +180,11 @@ final class PlaybackController: ObservableObject {
     /// Zero when this controller was built muted (UI tests, hosted unit
     /// tests, previews, ALOUD_MUTE=1). Fixed for the controller's lifetime.
     let isOutputMuted: Bool
+    /// A muted controller in `.manualRendering` has no output device: the
+    /// engine renders offline, paced in real time by `MutedRenderPump`, and
+    /// the mixer still sits at zero. Fixed for the controller's lifetime.
+    /// Always false in Release, where a mute is the device at zero.
+    let rendersOffline: Bool
     /// True in a UI-test launch without `-uitest-allow-autoplay`.
     let isAutoplaySuppressed: Bool
 
@@ -221,7 +229,7 @@ final class PlaybackController: ObservableObject {
     var isListenerPlaying: Bool { audition == nil && isActive }
 
     /// Mirrored from the word-highlight pref (AppModel). The 30 fps karaoke
-    /// display link exists only to feed the reader's word tint, so it runs
+    /// frame ticker exists only to feed the reader's word tint, so it runs
     /// only while this is on — the default-off configuration pays zero
     /// per-frame cost. Word windows are still recorded at schedule time, so
     /// flipping the pref on mid-sentence lights up immediately.
@@ -264,7 +272,7 @@ final class PlaybackController: ObservableObject {
     private let fallbackVoice: TtsVoice
     private let scheduler: SynthesisScheduler
     private let cache: AudioClipCache
-    private let audioSession: AudioSessionManager
+    private let audioOutput: any AudioOutputMonitoring
     private let anchorStore: ResumeAnchorStore
     private let stopStore: PlaybackStopStore
 
@@ -272,10 +280,30 @@ final class PlaybackController: ObservableObject {
     private let player = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
     private var graphFormat: AVAudioFormat?
+    #if DEBUG
+    /// When a scheduled clip counts as finished: once heard through the
+    /// device, or, rendering offline with no device to present it, once
+    /// rendered (`.dataPlayedBack` never fires there).
+    private var completionCallbackType: AVAudioPlayerNodeCompletionCallbackType {
+        rendersOffline ? .dataRendered : .dataPlayedBack
+    }
+
+    /// Pulls the offline render along in real time (`rendersOffline`).
+    private var renderPump: MutedRenderPump?
+    /// Every real-time `audioEngine.start()`: one that renders offline
+    /// never makes any.
+    private(set) var realtimeEngineStarts = 0
+    #endif
+
+    /// Held while active (`PlatformActivity`).
+    private var activity: PlatformActivity.Token?
+    /// The engine-configuration and system-sleep observers, with the
+    /// center each was added to.
+    private var systemObservers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
 
     // MARK: - Scheduling state
 
-    /// M3 word karaoke: clip windows + display link (PlaybackController+WordTiming.swift).
+    /// M3 word karaoke: clip windows + frame ticker (PlaybackController+WordTiming.swift).
     let wordTiming = WordKaraokeState()
 
     private var playToken: UInt64 = 0
@@ -361,25 +389,37 @@ final class PlaybackController: ObservableObject {
 
     // MARK: - Init
 
+    /// `audioSession` is the platform's output monitor
+    /// (`PlatformAudioOutput.makeMonitor()`), labelled as before the Mac.
+    /// A muted controller stays silent the platform's way
+    /// (`mutedOutputMode`). `lifecycle` is where the system-sleep event
+    /// arrives: the platform's center, or a private one in tests.
     init(engine: any TtsEngine,
          kokoro: (any WarmableTtsEngine)? = nil,
          defaultVoice: TtsVoice,
          scheduler: SynthesisScheduler,
          cache: AudioClipCache,
-         audioSession: AudioSessionManager,
+         audioSession audioOutput: any AudioOutputMonitoring,
          anchorStore: ResumeAnchorStore = ResumeAnchorStore(),
          stopStore: PlaybackStopStore = PlaybackStopStore(),
          outputMuted: Bool = UITestHooks.muteAudio,
-         autoplaySuppressed: Bool = UITestHooks.suppressAutoplay) {
+         mutedOutputMode: MutedOutputMode = PlatformAudio.mutedOutputMode,
+         autoplaySuppressed: Bool = UITestHooks.suppressAutoplay,
+         lifecycle: NotificationCenter? = nil) {
         self.engine = engine
         self.kokoro = kokoro
         self.fallbackVoice = defaultVoice
         self.scheduler = scheduler
         self.cache = cache
-        self.audioSession = audioSession
+        self.audioOutput = audioOutput
         self.anchorStore = anchorStore
         self.stopStore = stopStore
         self.isOutputMuted = outputMuted
+        #if DEBUG
+        self.rendersOffline = outputMuted && mutedOutputMode == .manualRendering
+        #else
+        self.rendersOffline = false
+        #endif
         self.isAutoplaySuppressed = autoplaySuppressed
         self.voice = defaultVoice
 
@@ -407,13 +447,33 @@ final class PlaybackController: ObservableObject {
         }
         stopped = stopStore.load()
 
-        audioSession.onInterruption = { [weak self] event in
+        audioOutput.onInterruption = { [weak self] event in
             self?.handleInterruption(event)
         }
-        audioSession.onRouteRequiresPause = { [weak self] in
+        audioOutput.onRouteRequiresPause = { [weak self] in
             self?.stop(because: .headphonesDisconnected)
         }
+        // S7b: the engine stopped itself over an output change. Posted on
+        // whichever thread noticed it.
+        systemObservers.append((.default, NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.outputConfigurationChanged() }
+        }))
+        // S11: synchronous, on the main thread that posts it, so the stop is
+        // recorded before the machine sleeps. An iPhone never posts it.
+        let sleepCenter = lifecycle ?? PlatformLifecycle.center(for: .systemWillSleep)
+        systemObservers.append((sleepCenter, PlatformLifecycle.observe(.systemWillSleep, in: sleepCenter) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemWillSleep() }
+        }))
         configureWordTiming()
+    }
+
+    deinit {
+        for observer in systemObservers {
+            observer.center.removeObserver(observer.token)
+        }
+        PlatformActivity.end(activity)
     }
 
     // MARK: - Word-timing hooks (implementation in PlaybackController+WordTiming.swift)
@@ -422,7 +482,10 @@ final class PlaybackController: ObservableObject {
     /// `playerTime` counts source frames, so the time-pitch rate is already
     /// folded in — word windows laid out at natural duration map directly.
     var playerMediaSeconds: TimeInterval? {
+        // A render time with neither clock valid (offline rendering before its
+        // first pull) makes playerTime(forNodeTime:) raise, not return nil.
         guard let nodeTime = player.lastRenderTime,
+              nodeTime.isSampleTimeValid || nodeTime.isHostTimeValid,
               let time = player.playerTime(forNodeTime: nodeTime),
               time.sampleRate > 0, time.sampleTime >= 0 else { return nil }
         return Double(time.sampleTime) / time.sampleRate
@@ -440,7 +503,7 @@ final class PlaybackController: ObservableObject {
         return wordTiming.pausedPlayhead
     }
 
-    /// Publishes `currentWord` on change only (called by the display link).
+    /// Publishes `currentWord` on change only (called by the frame ticker).
     func updateCurrentWord(_ index: Int) {
         if currentWord != index { currentWord = index }
     }
@@ -1358,7 +1421,7 @@ final class PlaybackController: ObservableObject {
         }
 
         player.scheduleBuffer(buffer, at: nil, options: [],
-                              completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                              completionCallbackType: completionCallbackType) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.sentenceFinished(index, token: token)
             }
@@ -1436,7 +1499,7 @@ final class PlaybackController: ObservableObject {
         // A boundary inside a pause's ramp: the frozen time was the sentence
         // just finished; of this one, at most the ramp's tail was heard.
         if frozenSentenceElapsed != nil { frozenSentenceElapsed = 0 }
-        // The display link prunes only while the word tint is on.
+        // The frame ticker prunes only while the word tint is on.
         wordTiming.prune(before: currentSentence)
         // The first clip in the incoming voice is now the one playing.
         if let splice = handoff?.spliceAt, currentSentence >= splice { commitHandoff() }
@@ -1776,7 +1839,7 @@ final class PlaybackController: ObservableObject {
             if !self.isRampingVolume { self.setOutputVolume(1) }   // a hard start
             do { try self.startAudioHardware() } catch { return }
             self.player.scheduleBuffer(buffer, at: nil, options: [],
-                                       completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                                       completionCallbackType: self.completionCallbackType) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, token == self.playToken else { return }
                     self.player.stop()
@@ -1800,6 +1863,9 @@ final class PlaybackController: ObservableObject {
             audioEngine.mainMixerNode.outputVolume = Self.effectiveOutputVolume(volume, muted: isOutputMuted)
         }
         onAudioEdge?(.volume(volume))
+        #if DEBUG
+        if graphFormat != nil { checkMuteTripwire() }
+        #endif
     }
 
     /// Moves the level linearly to `target` over `duration`, by elapsed time,
@@ -1898,8 +1964,15 @@ final class PlaybackController: ObservableObject {
                                          sampleRate: sampleRate,
                                          channels: 1,
                                          interleaved: false) else { return }
-        audioEngine.connect(player, to: timePitch, format: format)
-        audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
+        #if DEBUG
+        // Before anything reaches the output: offline, it never has a device.
+        if rendersOffline, !audioEngine.isInManualRenderingMode { enterOfflineRendering() }
+        #endif
+        let (engine, player, timePitch) = (audioEngine, self.player, self.timePitch)
+        withEngineHeld {
+            engine.connect(player, to: timePitch, format: format)
+            engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+        }
         graphFormat = format
         // A reconnect re-asserts the requested level (never louder than the
         // mute, never a jump out of a fade).
@@ -1909,12 +1982,69 @@ final class PlaybackController: ObservableObject {
     /// Starts the engine; the level is the caller's (`applyColdStartLevel`,
     /// the warm resume's ramp).
     private func startAudioHardware() throws {
-        try? audioSession.activate()   // session failure alone shouldn't block simulator playback
+        // Offline there is no session or device to claim.
+        if !rendersOffline {
+            try? audioOutput.activate()   // session failure alone shouldn't block simulator playback
+        }
         if !audioEngine.isRunning {
+            if !rendersOffline { audioOutput.bindOutput(of: audioEngine) }
             audioEngine.prepare()
+            #if DEBUG
+            try willStartEngine()
+            #endif
             try audioEngine.start()
+            #if DEBUG
+            if rendersOffline { startRenderPump() }
+            #endif
         }
     }
+
+    /// Runs a graph change where no offline render is in flight (on the
+    /// pump's queue), or in place when nothing renders offline.
+    private func withEngineHeld(_ change: () -> Void) {
+        #if DEBUG
+        if let renderPump {
+            renderPump.exclusively(change)
+            return
+        }
+        #endif
+        change()
+    }
+
+    #if DEBUG
+    /// The tripwire: a muted controller's mixer is at zero whenever the
+    /// engine may run. A DEBUG build traps rather than make a sound.
+    private func checkMuteTripwire() {
+        precondition(!isOutputMuted || audioEngine.mainMixerNode.outputVolume.isZero,
+                     "a muted controller's mixer left zero")
+    }
+
+    private struct OfflineRenderingUnavailable: Error {}
+
+    /// The fences before every engine start: the mute tripwire, and a
+    /// controller meant to render offline never falling back to a device.
+    private func willStartEngine() throws {
+        checkMuteTripwire()
+        guard !audioEngine.isInManualRenderingMode else { return }
+        if rendersOffline { throw OfflineRenderingUnavailable() }
+        realtimeEngineStarts += 1
+    }
+
+    /// Takes the engine off the device, while it is stopped and before the
+    /// mixer is connected. 48 kHz stereo, like a typical device: the mixer
+    /// converts each voice's rate. On failure the engine stays on the device
+    /// and `willStartEngine` refuses to start it.
+    private func enterOfflineRendering() {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2) else { return }
+        try? audioEngine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+    }
+
+    private func startRenderPump() {
+        let pump = renderPump ?? MutedRenderPump(engine: audioEngine)
+        renderPump = pump
+        pump.start()
+    }
+    #endif
 
     /// Builds a PCM buffer in the graph's format, resampling when a clip's
     /// rate differs from the established connection (keeps gapless scheduling).
@@ -1956,7 +2086,7 @@ final class PlaybackController: ObservableObject {
     /// unattended stop; if the audio comes back on its own (shouldResume),
     /// playback resumes and the stop clears unannounced, otherwise the
     /// reason is announced now.
-    private func handleInterruption(_ event: AudioSessionManager.Interruption) {
+    private func handleInterruption(_ event: AudioInterruption) {
         switch event {
         case .began:
             // Stopping nothing, this interruption may resume nothing either.
@@ -1976,6 +2106,50 @@ final class PlaybackController: ObservableObject {
             }
             resumeAfterInterruption = false
         }
+    }
+
+    // MARK: - Output changes and sleep (S7b, S11)
+
+    /// The engine stopped itself because its output device or format
+    /// changed. The monitor decides what playback does: an iPhone ignores
+    /// it, as it always has (an unplug arrives as `onRouteRequiresPause`); a
+    /// Mac stops with the honest reason, or follows the new device.
+    func outputConfigurationChanged() {
+        switch audioOutput.decisionAfterConfigurationChange() {
+        case .ignore:
+            return
+        case .stop(let reason):
+            stop(because: reason)
+            // Nothing queued for the old output plays into the new one: the
+            // next Play schedules afresh from the sentence start.
+            if hasActiveSchedule, !isActive {
+                invalidateSchedule()
+                cuePrefetch()
+            }
+        case .follow:
+            followNewOutput()
+        }
+    }
+
+    /// Rewires the graph for the output as it is now and, when playback was
+    /// active, restarts it from the current sentence's start. No notice:
+    /// the listener chose the device. The restart rebinds the output
+    /// (`startAudioHardware`); a pause rebinds at the next Play.
+    private func followNewOutput() {
+        let wasActive = isActive
+        if hasActiveSchedule { invalidateSchedule() }   // stops the player
+        if audioEngine.isRunning {   // it is not, after a real change
+            let engine = audioEngine
+            withEngineHeld { engine.stop() }
+        }
+        if let rate = graphFormat?.sampleRate { connectGraph(sampleRate: rate) }
+        if wasActive { startPlayback(at: max(currentSentence, 0)) }
+    }
+
+    /// The machine is about to sleep, and the audio with it: an honest stop
+    /// now, resumable with one Play. Nothing when not playing.
+    func systemWillSleep() {
+        stop(because: .macSlept)
     }
 
     // MARK: - Progress & notices
@@ -2019,3 +2193,66 @@ final class PlaybackController: ObservableObject {
         }
     }
 }
+
+#if DEBUG
+// MARK: - Test seams (DEBUG)
+
+extension PlaybackController {
+
+    /// How far the engine has really rendered, in seconds, by the main
+    /// mixer's clock: through the device or offline. Nil before the graph
+    /// exists (reading it never builds the output).
+    var renderedSeconds: TimeInterval? {
+        guard graphFormat != nil, let time = audioEngine.mainMixerNode.lastRenderTime,
+              time.isSampleTimeValid, time.sampleRate > 0 else { return nil }
+        return Double(time.sampleTime) / time.sampleRate
+    }
+
+    /// Delivers `.AVAudioEngineConfigurationChange` for this controller's
+    /// engine, as the system would after an output change.
+    func postEngineConfigurationChange() {
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: audioEngine)
+    }
+
+    /// A rendered buffer's absolute peak and how long it lasts.
+    typealias PeakReport = @Sendable (_ peak: Float, _ seconds: TimeInterval) -> Void
+
+    /// Reports every rendered buffer where the time-pitch unit feeds the
+    /// main mixer (`premix`) and at the mixer's output, what the device or
+    /// the offline render receives. False before the graph is connected,
+    /// when there is nothing to tap.
+    func installPeakTaps(premix: @escaping PeakReport, mixerOutput: @escaping PeakReport) -> Bool {
+        guard graphFormat != nil else { return false }
+        let (engine, timePitch) = (audioEngine, self.timePitch)
+        withEngineHeld {
+            timePitch.installTap(onBus: 0, bufferSize: 1024, format: nil, block: Self.peakTap(premix))
+            engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil, block: Self.peakTap(mixerOutput))
+        }
+        return true
+    }
+
+    func removePeakTaps() {
+        let (engine, timePitch) = (audioEngine, self.timePitch)
+        withEngineHeld {
+            timePitch.removeTap(onBus: 0)
+            engine.mainMixerNode.removeTap(onBus: 0)
+        }
+    }
+
+    /// Built off the main actor: the block runs on the render thread.
+    private nonisolated static func peakTap(_ report: @escaping PeakReport) -> AVAudioNodeTapBlock {
+        { buffer, _ in report(peak(of: buffer), Double(buffer.frameLength) / buffer.format.sampleRate) }
+    }
+
+    nonisolated static func peak(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let channels = buffer.floatChannelData else { return 0 }
+        var peak: Float = 0
+        for channel in 0..<Int(buffer.format.channelCount) {
+            for frame in 0..<Int(buffer.frameLength) {
+                peak = max(peak, abs(channels[channel][frame]))
+            }
+        }
+        return peak
+    }
+}
+#endif

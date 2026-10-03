@@ -81,10 +81,10 @@ final class ReaderMessageTests: XCTestCase {
             }
         }
 
-        // 7 stops × 3 notices × 2 offers × 5 model states × 2 preparing
-        // × 2 undo × 3 follow.
-        XCTAssertEqual(checked, 2520)
-        XCTAssertEqual(messagesByInput.count, 420)
+        // 8 stops (with the Mac's sleep) × 3 notices × 2 offers × 5 model
+        // states × 2 preparing × 2 undo × 3 follow.
+        XCTAssertEqual(checked, 2880)
+        XCTAssertEqual(messagesByInput.count, 480)
         XCTAssertEqual(chipsByInput.count, 6)
         for (input, messages) in messagesByInput {
             XCTAssertEqual(messages.count, 1, "the chip inputs changed the message for \(input): \(messages)")

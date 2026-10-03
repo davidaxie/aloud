@@ -13,16 +13,16 @@ final class NowPlayingArtworkTests: XCTestCase {
     /// Theme.bgTint in the light palette.
     private static let lightGround: UInt32 = 0xF3EDE1
 
-    private func renderLarge(_ title: String, _ author: String?, page: UIImage? = nil) throws -> UIImage {
+    private func renderLarge(_ title: String, _ author: String?, page: PlatformImage? = nil) throws -> PlatformImage {
         try XCTUnwrap(NowPlayingArtwork.image(title: title, author: author, page: page), "large render")
     }
 
-    private func renderSmall(_ title: String, _ author: String?) throws -> UIImage {
+    private func renderSmall(_ title: String, _ author: String?) throws -> PlatformImage {
         try XCTUnwrap(NowPlayingArtwork.image(title: title, author: author, page: nil,
                                               side: NowPlayingArtwork.smallSide), "small render")
     }
 
-    private func pixels(_ image: UIImage) throws -> RenderedPixels {
+    private func pixels(_ image: PlatformImage) throws -> RenderedPixels {
         try XCTUnwrap(RenderedPixels(image: image), "pixels")
     }
 
@@ -47,7 +47,7 @@ final class NowPlayingArtworkTests: XCTestCase {
     /// corners and the strip above the cover are bgTint's light value.
     func testTheGroundIsLightEvenInDarkMode() throws {
         let plain = try renderLarge("Pride and Prejudice", "Jane Austen")
-        var darkRender: UIImage?
+        var darkRender: PlatformImage?
         UITraitCollection(userInterfaceStyle: .dark).performAsCurrent {
             darkRender = NowPlayingArtwork.image(title: "Pride and Prejudice", author: "Jane Austen", page: nil)
         }
@@ -122,7 +122,7 @@ final class NowPlayingArtworkTests: XCTestCase {
         }
         let folder = URL(fileURLWithPath: directory, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try XCTUnwrap(large.pngData()).write(to: folder.appendingPathComponent("artwork.png"))
-        try XCTUnwrap(compact.pngData()).write(to: folder.appendingPathComponent("artwork-compact-72.png"))
+        try XCTUnwrap(large.pngDataRepresentation()).write(to: folder.appendingPathComponent("artwork.png"))
+        try XCTUnwrap(compact.pngDataRepresentation()).write(to: folder.appendingPathComponent("artwork-compact-72.png"))
     }
 }

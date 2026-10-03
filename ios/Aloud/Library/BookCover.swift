@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 // MARK: - Geometry
 
@@ -58,7 +57,7 @@ enum CoverGeometry {
 struct BookCover: View {
     enum Art {
         case typographic
-        case page(UIImage)
+        case page(PlatformImage)
         /// A PDF whose page is still loading: a plain face, so no title flashes.
         case pending
     }
@@ -98,7 +97,7 @@ struct BookCover: View {
         } else {
             switch art {
             case .page(let image):
-                Color.clear.overlay(Image(uiImage: image).resizable().scaledToFill())
+                Color.clear.overlay(Image(platformImage: image).resizable().scaledToFill())
             case .typographic:
                 TypographicFace(title: title, author: author, width: size.width)
             case .pending:
@@ -231,7 +230,7 @@ struct DocumentCoverView: View {
             }
     }
 
-    static func art(kind: DocKind, page: UIImage?, pageLoaded: Bool) -> BookCover.Art {
+    static func art(kind: DocKind, page: PlatformImage?, pageLoaded: Bool) -> BookCover.Art {
         switch kind {
         case .text:
             return .typographic
@@ -249,7 +248,7 @@ struct DocumentCoverView: View {
 /// - a failed load (typographic) is retried on the next appear, in place.
 struct CoverPage {
     private(set) var documentID: UUID?
-    private(set) var page: UIImage?
+    private(set) var page: PlatformImage?
     private(set) var loaded = false
 
     /// At the start of a load for `id`: forgets another record's page, and
@@ -265,7 +264,7 @@ struct CoverPage {
 
     /// A finished load for `id`; dropped when the state now belongs to
     /// another record.
-    mutating func land(_ page: UIImage?, for id: UUID) {
+    mutating func land(_ page: PlatformImage?, for id: UUID) {
         guard documentID == id else { return }
         self.page = page
         loaded = true

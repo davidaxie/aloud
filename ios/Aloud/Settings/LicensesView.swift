@@ -74,7 +74,7 @@ struct LicensesView: View {
         }
         .modifier(ShelfScrollEdge(ground: Theme.bgTint))
         .background(Theme.bgTint.ignoresSafeArea())
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineTitleOnPhone()
         // The bar's system content (back chevron, title rendering) follows
         // the app's scheme, not the phone's: under an in-app Dark override
         // on a Light phone it otherwise drew dark-on-dark.
@@ -86,7 +86,7 @@ struct LicensesView: View {
                     .foregroundStyle(Theme.text)
                     // The bar caps text scaling; at accessibility sizes a
                     // long press shows the title large instead.
-                    .accessibilityShowsLargeContentViewer()
+                    .largeContentViewerIfAvailable()
             }
         }
     }

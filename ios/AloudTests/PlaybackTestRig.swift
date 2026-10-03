@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import XCTest
 @testable import Aloud
@@ -151,6 +152,30 @@ final class PlaybackTestRig {
         var requests: [(text: String, voiceID: String)] { lock.withLock { log } }
     }
 
+    /// The output monitor, driven by hand: `onRouteRequiresPause` and
+    /// `onInterruption` are fired directly, a configuration change gets
+    /// `decision` (`.ignore`, as on an iPhone, unless a test sets it), and
+    /// what the controller asked is counted. Activation still goes to the
+    /// real session, as the app's does, so the engine starts as it always has.
+    @MainActor
+    final class FakeAudioOutput: AudioOutputMonitoring {
+        var onInterruption: ((AudioInterruption) -> Void)?
+        var onRouteRequiresPause: (() -> Void)?
+        var decision: RouteDecision = .ignore
+        private(set) var decisionsAsked = 0
+        private(set) var bindings = 0
+        private let session = AudioSessionManager()
+
+        func activate() throws { try session.activate() }
+        func deactivate() { session.deactivate() }
+        func bindOutput(of engine: AVAudioEngine) { bindings += 1 }
+
+        func decisionAfterConfigurationChange() -> RouteDecision {
+            decisionsAsked += 1
+            return decision
+        }
+    }
+
     static let voiceA = TtsVoice(id: "test:a", name: "Alpha", lang: "en-US",
                                  gender: "f", engine: .avSpeech, quality: 1)
     static let voiceB = TtsVoice(id: "test:b", name: "Bravo", lang: "en-US",
@@ -167,7 +192,10 @@ final class PlaybackTestRig {
     let cache: AudioClipCache
     /// Drive `onRouteRequiresPause` / `onInterruption` directly; never post
     /// the global AVAudioSession notifications (the host app observes them).
-    let audioSession: AudioSessionManager
+    let audioSession: FakeAudioOutput
+    /// Where the controller's lifecycle events (system sleep) arrive, so a
+    /// test never posts them to the host app.
+    let lifecycle = NotificationCenter()
     /// The rig's own suite: both stores live here.
     let defaults: UserDefaults
     let anchorStore: ResumeAnchorStore
@@ -192,6 +220,7 @@ final class PlaybackTestRig {
          wordsPerSentence: Int = 3,
          clipDuration: TimeInterval = 0.25,
          autoplaySuppressed: Bool = false,
+         mutedOutputMode: MutedOutputMode = PlatformAudio.mutedOutputMode,
          kokoro: (any WarmableTtsEngine)? = nil,
          extraRoutes: [String: any TtsEngine] = [:],
          failing: (@Sendable (String) -> Bool)? = nil) {
@@ -212,7 +241,7 @@ final class PlaybackTestRig {
         stopStore = PlaybackStopStore(defaults: defaults)
 
         cache = AudioClipCache()
-        audioSession = AudioSessionManager()
+        audioSession = FakeAudioOutput()
         scheduler = SynthesisScheduler(engine: router, cache: cache)
         controller = PlaybackController(engine: router,
                                         kokoro: kokoro,
@@ -223,7 +252,9 @@ final class PlaybackTestRig {
                                         anchorStore: anchorStore,
                                         stopStore: stopStore,
                                         outputMuted: true,
-                                        autoplaySuppressed: autoplaySuppressed)
+                                        mutedOutputMode: mutedOutputMode,
+                                        autoplaySuppressed: autoplaySuppressed,
+                                        lifecycle: lifecycle)
         content = Self.makeContent(hash: "rig-hash", count: sentences, wordsPerSentence: wordsPerSentence)
         document = Self.makeDocument(hash: "rig-hash", sentences: sentences)
 

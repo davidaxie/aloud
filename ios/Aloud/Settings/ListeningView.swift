@@ -315,7 +315,7 @@ struct ListeningSettingsPage: View {
             // An opaque bar on the page's own ground, never a hard scroll
             // edge on a pushed screen (see `ShelfScrollEdge`).
             .modifier(ShelfScrollEdge(ground: Theme.surface))
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineTitleOnPhone()
             // The bar's system content follows the app's scheme, not the
             // phone's (an in-app Dark override on a Light phone).
             .toolbarColorScheme(colorScheme, for: .navigationBar)
@@ -327,7 +327,7 @@ struct ListeningSettingsPage: View {
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityIdentifier("listening.title")
                         // The bar caps its text size; long-press shows it large.
-                        .accessibilityShowsLargeContentViewer()
+                        .largeContentViewerIfAvailable()
                 }
             }
     }

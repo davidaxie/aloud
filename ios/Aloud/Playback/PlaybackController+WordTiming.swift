@@ -1,10 +1,9 @@
 import AVFoundation
 import Foundation
-import QuartzCore
 
 /// M3 word karaoke state, owned by `PlaybackController` (see the small hooks
 /// in PlaybackController.swift). Holds per-sentence word windows laid out in
-/// the player node's media timeline and drives a 30 fps `CADisplayLink` that
+/// the player node's media timeline and drives a 30 fps `FrameTicker` that
 /// maps the playhead to a word index while audio is playing.
 ///
 /// Timeline model: clips are scheduled gaplessly on one `AVAudioPlayerNode`,
@@ -16,7 +15,7 @@ import QuartzCore
 /// frames faster at higher rates — so the position read each frame is already
 /// in 1× media seconds and windows never need re-deriving on speed changes.
 @MainActor
-final class WordKaraokeState: NSObject {
+final class WordKaraokeState {
 
     struct Clip {
         let start: TimeInterval      // media-timeline offset of the clip's first frame
@@ -24,7 +23,7 @@ final class WordKaraokeState: NSObject {
         let windows: [WordWindow]    // empty for silence / skipped sentences
     }
 
-    /// Fires ~30×/s while the link runs; the controller maps time → word.
+    /// Fires ~30×/s while the ticker runs; the controller maps time → word.
     var onTick: (() -> Void)?
 
     /// Last (sentence, word) pair pushed to `currentWord`; publishing only on
@@ -33,7 +32,7 @@ final class WordKaraokeState: NSObject {
 
     private(set) var clips: [Int: Clip] = [:]
     private var scheduledSeconds: TimeInterval = 0
-    private var displayLink: CADisplayLink?
+    private var ticker: FrameTicker?
 
     /// The playhead a paused node stopped at, where it resumes: set by
     /// `PlaybackController.pauseNode`, cleared on resume and by `reset`.
@@ -71,25 +70,24 @@ final class WordKaraokeState: NSObject {
         stopLink()
     }
 
-    // MARK: Display link
+    // MARK: Frame ticker
 
     func startLink() {
-        guard displayLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(tick))
+        guard ticker == nil else { return }
         // 30 fps is plenty for word-boundary resolution and halves the wakeups.
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
+        let ticker = FrameTicker(framesPerSecond: 30) { [weak self] in self?.tick() }
+        ticker.start()
+        self.ticker = ticker
     }
 
     func stopLink() {
-        displayLink?.invalidate()
-        displayLink = nil
+        ticker?.invalidate()
+        ticker = nil
     }
 
-    @objc private func tick() {
+    private func tick() {
         guard let onTick else {
-            stopLink()   // owner gone: break the link's retain on self
+            stopLink()   // owner gone: stop ticking
             return
         }
         onTick()
@@ -100,12 +98,12 @@ final class WordKaraokeState: NSObject {
 
 extension PlaybackController {
 
-    /// Called once from `init` — wires the display link back into the controller.
+    /// Called once from `init` — wires the frame ticker back into the controller.
     func configureWordTiming() {
         wordTiming.onTick = { [weak self] in self?.wordTimingTick() }
     }
 
-    /// Hook from `status.didSet` and `wordHighlightEnabled.didSet`: the link
+    /// Hook from `status.didSet` and `wordHighlightEnabled.didSet`: the ticker
     /// runs only while audio actually plays AND the word tint is on — its sole
     /// consumer. (Lock-screen elapsed time rides the once-per-sentence
     /// `currentSentence` heartbeat, not this link.) Pausing freezes the
@@ -145,7 +143,7 @@ extension PlaybackController {
                                    playhead: schedulingPlayhead)
     }
 
-    /// Display-link body: playhead media time − clip start → word index,
+    /// Ticker body: playhead media time − clip start → word index,
     /// published ONLY on change. O(log words) per frame, zero allocation.
     private func wordTimingTick() {
         guard status == .playing else { return }

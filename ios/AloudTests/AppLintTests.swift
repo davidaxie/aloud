@@ -16,12 +16,28 @@ final class AppLintTests: XCTestCase {
 
     /// R11: every stopped reason and notice is spelled once, in the fixed
     /// table, so what the line shows and what VoiceOver says never drift.
+    /// C1: a line worded per platform is spelled whole in DeviceNoun.swift,
+    /// and the device a line names comes from `DeviceNoun`, so the table is
+    /// PlaybackNotice.swift plus DeviceNoun.swift and nothing else.
     func testStopAndNoticeCopyLivesOnlyInTheTable() throws {
         let sources = try SourceTree.sources()
-        for copy in ["Paused by sleep timer", "headphones disconnected", "while iPhone cools",
-                     "Skipped a sentence", "Backed up", "Now reading in", "iOS closed Aloud"] {
-            XCTAssertEqual(SourceTree.files(containing: copy, in: sources), ["Playback/PlaybackNotice.swift"],
+        let notice = "Playback/PlaybackNotice.swift"
+        let deviceNoun = "Platform/DeviceNoun.swift"
+        let homes = [
+            "Paused by sleep timer": notice, "headphones disconnected": notice,
+            "Using the System voice while": notice, "went to sleep": notice,
+            "Skipped a sentence": notice, "Backed up": notice, "Now reading in": notice,
+            "iOS closed Aloud": deviceNoun,
+        ]
+        for (copy, home) in homes {
+            XCTAssertEqual(SourceTree.files(containing: copy, in: sources), [home],
                            "'\(copy)' belongs only to the copy table")
+        }
+        // The iPhone's lines as they read: written out nowhere but beside
+        // the noun itself.
+        for spelled in ["while iPhone cools", "iPhone is too hot", "iPhone went to sleep"] {
+            XCTAssertEqual(SourceTree.files(containing: spelled, in: sources).filter { $0 != deviceNoun }, [],
+                           "'\(spelled)' takes its device from DeviceNoun")
         }
     }
 
@@ -72,10 +88,12 @@ final class AppLintTests: XCTestCase {
         }
     }
 
-    /// Fault injection and the announcement log never reach a Release build.
+    /// Fault injection, the announcement log and the muted render pump never
+    /// reach a Release build.
     func testTestPlumbingIsDebugOnly() throws {
-        let sources = try SourceTree.sources(only: ["App/UITestFaults.swift", "App/UITestAnnouncementLog.swift"])
-        XCTAssertEqual(sources.keys.sorted(), ["App/UITestAnnouncementLog.swift", "App/UITestFaults.swift"])
+        let plumbing = ["App/UITestAnnouncementLog.swift", "App/UITestFaults.swift", "Playback/MutedRenderPump.swift"]
+        let sources = try SourceTree.sources(only: plumbing)
+        XCTAssertEqual(sources.keys.sorted(), plumbing)
         for (path, text) in sources {
             XCTAssertTrue(text.hasPrefix("#if DEBUG"), "\(path) should begin with #if DEBUG")
         }

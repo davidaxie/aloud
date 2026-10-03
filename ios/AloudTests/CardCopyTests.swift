@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import XCTest
 @testable import Aloud
 
@@ -181,9 +182,10 @@ final class CardCopyTests: XCTestCase {
             for state in states {
                 let name = "card-\(state.name)-\(schemeName)"
                 let image = try XCTUnwrap(Self.render(state.document, scheme: scheme), name)
-                XCTAssertGreaterThan(image.size.height, 0, name)
-                pngs.append(try XCTUnwrap(image.pngData(), name))
-                let attachment = XCTAttachment(image: image)
+                XCTAssertGreaterThan(image.height, 0, name)
+                let png = try XCTUnwrap(RenderedPixels.pngData(image), name)
+                pngs.append(png)
+                let attachment = XCTAttachment(data: png, uniformTypeIdentifier: UTType.png.identifier)
                 attachment.name = name
                 attachment.lifetime = .keepAlways
                 add(attachment)
@@ -195,7 +197,7 @@ final class CardCopyTests: XCTestCase {
     /// A grid card as the shelf lays it out, on the paper of `scheme`. The
     /// trait pin reaches Theme's UIColor providers as well as SwiftUI.
     @MainActor
-    private static func render(_ document: LibraryDocument, scheme: ColorScheme) -> UIImage? {
+    private static func render(_ document: LibraryDocument, scheme: ColorScheme) -> CGImage? {
         let card = DocumentCardView(document: document, rate: 1)
             .frame(width: 170)
             .padding(Theme.Space.sm)
@@ -203,9 +205,9 @@ final class CardCopyTests: XCTestCase {
             .environment(\.colorScheme, scheme)
         let renderer = ImageRenderer(content: card)
         renderer.scale = 2
-        var image: UIImage?
+        var image: CGImage?
         UITraitCollection(userInterfaceStyle: scheme == .dark ? .dark : .light).performAsCurrent {
-            image = renderer.uiImage
+            image = renderer.cgImage
         }
         return image
     }

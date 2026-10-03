@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import UIKit
 
 /// R18: the neural engine loads while the Library shows the Continue card,
 /// so a tap on it speaks in about the time a System sentence takes rather
@@ -51,7 +50,7 @@ final class NeuralPrewarm {
         self.isModelInstalled = isModelInstalled
         self.isLowPowerMode = isLowPowerMode
         // Here, not as the default argument, which isn't on the main actor.
-        self.sceneActive = sceneActive ?? (UIApplication.shared.applicationState == .active)
+        self.sceneActive = sceneActive ?? PlatformApp.isActive
 
         cardVisible
             .sink { [weak self] visible in
@@ -79,7 +78,7 @@ final class NeuralPrewarm {
             .sink { [weak self] _ in self?.reevaluate() }
             .store(in: &subscriptions)
 
-        notifications.publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+        PlatformLifecycle.publisher(for: .memoryWarning, in: notifications)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.memoryWarning() }
             .store(in: &subscriptions)

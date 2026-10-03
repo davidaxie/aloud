@@ -4,10 +4,11 @@ import XCTest
 @testable import Aloud
 
 /// R23's manager on the muted rig: what it pushes and when, the lock-screen
-/// scrub and skips. Every manager is built with init(publish:renderArtwork:)
-/// and observe(...) only, never configure: no test writes the system's
-/// now-playing info or adds a remote-command target. Only the pause and
-/// remote Play tests play, on the muted mixer.
+/// scrub and skips. No manager is configured, and every observed one pushes
+/// into a recorder or a dropping sink: no test writes the system's
+/// now-playing info or adds a remote-command target (the muted-process
+/// tests read it, never write it). Only the pause and remote Play tests
+/// play, on the muted mixer.
 @MainActor
 final class NowPlayingManagerTests: XCTestCase {
 
@@ -342,5 +343,66 @@ final class NowPlayingManagerTests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(harness.recorder.renders, 2, "exactly once more")
         XCTAssertEqual(harness.manager.snapshot?.title, "Renamed")
+    }
+
+    // MARK: - Muted processes (S10)
+
+    /// The iPhone takes the system's Now Playing even in a muted process, as
+    /// it always has; only a muted process on a platform that says so stays
+    /// off it.
+    func testOnlyAMutedProcessOnAQuietPlatformStaysOffTheSystem() {
+        let table: [(muted: Bool, publishesWhenMuted: Bool, takes: Bool)] = [
+            (false, false, true), (false, true, true), (true, true, true), (true, false, false),
+        ]
+        for row in table {
+            let label = "muted \(row.muted), publishes when muted \(row.publishesWhenMuted)"
+            XCTAssertEqual(NowPlayingManager.takesSystemNowPlaying(outputMuted: row.muted,
+                                                                   publishesWhenMuted: row.publishesWhenMuted),
+                           row.takes, label)
+            // Built, never observed: nothing is pushed.
+            let manager = NowPlayingManager(renderArtwork: { _ in nil }, outputMuted: row.muted,
+                                            publishesWhenMuted: row.publishesWhenMuted)
+            XCTAssertEqual(manager.takesSystemNowPlaying, row.takes, label)
+        }
+        // The defaults read the platform, so this holds on both hosts; the
+        // iPhone's `true` is pinned by PlatformSeamTests.
+        XCTAssertTrue(UITestHooks.muteAudio, "this hosted run is muted")
+        XCTAssertEqual(NowPlayingManager(renderArtwork: { _ in nil }).takesSystemNowPlaying,
+                       PlatformNowPlaying.publishesWhenMuted,
+                       "the defaults follow the platform: the iPhone still takes the system's Now Playing")
+    }
+
+    /// A manager kept off the system pushes into nothing: its snapshot
+    /// follows the book, and the system's info never names it.
+    func testAManagerKeptOffTheSystemDropsEveryPush() async {
+        let rig = PlaybackTestRig()
+        let manager = NowPlayingManager(renderArtwork: { _ in nil }, outputMuted: true, publishesWhenMuted: false)
+        manager.observe(playback: rig.controller)
+        let hash = "np-muted-\(UUID().uuidString)"
+        let document = PlaybackTestRig.makeDocument(hash: hash, sentences: 3, progressSentence: 1)
+        rig.controller.load(document: document,
+                            content: PlaybackTestRig.makeContent(hash: hash, count: 3, wordsPerSentence: 4))
+        let refreshed = await rig.waitUntil(2) { manager.snapshot?.duration != nil }
+        XCTAssertTrue(refreshed, "the manager never refreshed")
+        XCTAssertEqual(manager.snapshot?.title, document.title)
+        let published = MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] as? String
+        XCTAssertNotEqual(published, document.title, "a muted push reached the system")
+    }
+
+    /// The transport state set beside the info (on the Mac; a no-op on the
+    /// iPhone) reads the published rate, the same signal the lock screen
+    /// reads: stopped with nothing published, playing while the rate moves,
+    /// paused otherwise, the end of the book included.
+    func testThePublishedStateFollowsThePublishedRate() {
+        XCTAssertEqual(NowPlayingManager.state(for: nil), .stopped)
+        let table: [(status: PlayerStatus, state: NowPlayingState)] = [
+            (.playing, .playing), (.paused, .paused), (.ended, .paused),
+            (.buffering, .paused), (.idle, .paused), (.error, .paused),
+        ]
+        for row in table {
+            let info = NowPlayingSnapshot(title: "T", author: nil, navigation: nil, sentence: 0,
+                                          status: row.status, rate: 1.25, sentenceElapsed: 0).nowPlayingInfo
+            XCTAssertEqual(NowPlayingManager.state(for: info), row.state, "\(row.status)")
+        }
     }
 }

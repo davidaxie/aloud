@@ -1,7 +1,6 @@
 import Combine
 import Foundation
 import MediaPlayer
-import UIKit
 
 /// Lock screen, Control Center and Dynamic Island (R23): tells the system
 /// the truth about what is playing, and routes its transport back.
@@ -24,7 +23,10 @@ import UIKit
 ///   any other is a scrub jump that keeps play or pause and offers Undo
 ///   jump. No haptic: nothing was touched in the app.
 /// - It is the app's only writer of the system's now-playing info, and its
-///   deinit removes only its own command targets.
+///   deinit removes only its own command targets. A muted process where
+///   the platform forbids it (`PlatformNowPlaying.publishesWhenMuted`)
+///   writes nothing and takes no commands, so a test run never becomes the
+///   system's Now Playing app.
 @MainActor
 final class NowPlayingManager {
 
@@ -36,6 +38,10 @@ final class NowPlayingManager {
 
     private let publish: Publish
     private let renderArtwork: ArtworkRenderer
+    /// Whether this manager writes the system's now-playing info and takes
+    /// its transport commands; false only in a muted process on a platform
+    /// that keeps those quiet.
+    let takesSystemNowPlaying: Bool
     private weak var playback: PlaybackController?
     /// The store's records, so a rename reaches the title before the
     /// controller's copy of the document hears of it.
@@ -58,19 +64,32 @@ final class NowPlayingManager {
     private var artworkKey: ArtworkKey?
     private var artworkTask: Task<Void, Never>?
 
-    init(publish: @escaping Publish = NowPlayingManager.publishToInfoCenter,
-         renderArtwork: @escaping ArtworkRenderer = NowPlayingArtwork.artwork(for:)) {
-        self.publish = publish
+    /// `publish` nil is the system's info center, or a sink that drops
+    /// every push when `outputMuted` and the platform doesn't publish then.
+    init(publish: Publish? = nil,
+         renderArtwork: @escaping ArtworkRenderer = NowPlayingArtwork.artwork(for:),
+         outputMuted: Bool = UITestHooks.muteAudio,
+         publishesWhenMuted: Bool = PlatformNowPlaying.publishesWhenMuted) {
+        let takesSystem = Self.takesSystemNowPlaying(outputMuted: outputMuted,
+                                                     publishesWhenMuted: publishesWhenMuted)
+        takesSystemNowPlaying = takesSystem
+        self.publish = publish ?? (takesSystem ? Self.publishToInfoCenter : { _ in })
         self.renderArtwork = renderArtwork
     }
 
+    /// Everything takes the system's Now Playing except a muted process on
+    /// a platform where publishing would capture the user's media keys.
+    static func takesSystemNowPlaying(outputMuted: Bool, publishesWhenMuted: Bool) -> Bool {
+        !outputMuted || publishesWhenMuted
+    }
+
     /// The app's wiring, once: observe the controller and the library, then
-    /// take the system's transport commands.
+    /// take the system's transport commands (unless kept off the system).
     func configure(playback: PlaybackController, store: DocumentStore) {
         guard !configured else { return }
         configured = true
         observe(playback: playback, documents: store.$documents.eraseToAnyPublisher())
-        registerCommands()
+        if takesSystemNowPlaying { registerCommands() }
     }
 
     /// Mirrors `playback` (and `documents`, for renames) into pushes. Tests
@@ -183,9 +202,19 @@ final class NowPlayingManager {
         return playback.currentSentence
     }
 
-    /// The app's only write of the system's now-playing info.
+    /// The app's only write of the system's now-playing info, and the
+    /// transport state beside it where the platform reads one.
     static func publishToInfoCenter(_ info: [String: Any]?) {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        PlatformNowPlaying.setState(state(for: info))
+    }
+
+    /// Stopped when nothing is published; playing while the published rate
+    /// moves (the snapshot pushes 0 whenever it isn't playing); else paused.
+    static func state(for info: [String: Any]?) -> NowPlayingState {
+        guard let info else { return .stopped }
+        let rate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0
+        return rate > 0 ? .playing : .paused
     }
 
     private func registerCommands() {

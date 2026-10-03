@@ -17,9 +17,10 @@ enum DeviceNoun {
 
 /// Whole lines whose wording, not just the noun, differs by platform.
 enum DeviceCopy {
-    // `closedUnexpectedly` arrives with the PlaybackNotice change that reads
-    // it: until then AppLintTests holds that line to PlaybackNotice.swift.
     #if os(iOS)
+    /// The stop recorded when the process ended mid-speech
+    /// (`StopReason.closedByIOS`).
+    static let closedUnexpectedly = "Stopped when iOS closed Aloud"
     /// The confirmation before the natural voice downloads on a costly
     /// network.
     static var meteredPrompt: String { "Download \(ModelManager.downloadSizeText) on cellular?" }
