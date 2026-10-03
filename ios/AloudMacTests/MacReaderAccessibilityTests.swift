@@ -314,6 +314,47 @@ final class MacReaderAccessibilityTests: XCTestCase {
         XCTAssertEqual(page.played.ids, [5, 9])
     }
 
+    /// A crash a hosted run found: VoiceOver's cursor kept through a
+    /// text-size step, then the colophon shown. The label's visible range
+    /// asked TextKit for a point off its lines, TextKit answered NSNotFound,
+    /// and adding that to the line's start overflowed. The label is now
+    /// asked in exactly that state.
+    func testTheLabelSurvivesACursorKeptIntoTheColophon() throws {
+        let book = Self.book(chapters: 1, paragraphs: 4, perParagraph: 3, hash: "a11y-colophon-cursor")
+        let page = try makePage(content: book, active: 5)
+        page.textView.setAccessibilitySelectedTextRange(NSRange(location: page.ranges[9].location, length: 0))
+        page.update(activeSentence: 5, fontSize: 23)
+        let colophon = ReaderColophon(title: "Rotors", author: "A. Writer", words: 900, rate: 1)
+        page.update(activeSentence: 11, colophon: colophon)
+        let label = try XCTUnwrap(page.textView.accessibilityLabel())
+        XCTAssertTrue(label == book.sentences[9].text || label == colophon.spokenText, "got '\(label)'")
+        XCTAssertNotNil(page.textView.accessibilityValue())
+    }
+
+    /// Every point on the page, beside, below and between the lines, the
+    /// colophon's included, maps to a character in the text or to none:
+    /// never past the end, and never a trap.
+    func testEveryPointOnThePageMapsInsideTheTextOrToNothing() throws {
+        let book = Self.book(chapters: 2, paragraphs: 3, perParagraph: 3, hash: "a11y-point-sweep")
+        let page = try makePage(content: book, active: 2)
+        let colophon = ReaderColophon(title: "Sweep", author: "A. Writer", words: 600, rate: 1)
+        page.update(activeSentence: 17, colophon: colophon)
+        let textView = page.textView
+        let manager = try XCTUnwrap(textView.textLayoutManager)
+        let length = try XCTUnwrap(textView.textStorage?.length)
+        let layout = ReaderColumnLayout(textLayoutManager: manager, origin: textView.textContainerOrigin)
+        let bounds = textView.bounds
+        var placed = 0
+        for y in stride(from: -40, through: bounds.maxY + 200, by: 7) {
+            for x in stride(from: -60, through: bounds.maxX + 300, by: 23) {
+                guard let offset = layout.characterOffset(at: CGPoint(x: x, y: y)) else { continue }
+                placed += 1
+                XCTAssertTrue((0...length).contains(offset), "(\(x), \(y)) gave \(offset) of \(length)")
+            }
+        }
+        XCTAssertGreaterThan(placed, 0, "the sweep lands on the text")
+    }
+
     /// VoiceOver's cursor at the very start of the text is a cursor, though
     /// a fresh build leaves the selection there too.
     func testACursorPlacedAtTheStartIsACursor() throws {

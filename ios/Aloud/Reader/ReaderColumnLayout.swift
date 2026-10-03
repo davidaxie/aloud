@@ -30,6 +30,7 @@ struct ReaderColumnLayout {
         let local = CGPoint(x: containerPoint.x - frame.minX, y: containerPoint.y - frame.minY)
         let fragmentStart = contentManager.offset(
             from: textLayoutManager.documentRange.location, to: fragment.rangeInElement.location)
+        guard fragmentStart != NSNotFound, fragmentStart >= 0 else { return nil }
 
         for line in fragment.textLineFragments {
             let bounds = line.typographicBounds
@@ -39,8 +40,11 @@ struct ReaderColumnLayout {
             // centered headings), so offset by the line's own origin.
             let index = line.characterIndex(for: CGPoint(x: local.x - bounds.minX,
                                                          y: local.y - bounds.minY))
-            guard index >= 0 else { return nil }
-            return fragmentStart + index
+            // A point TextKit can't place answers NSNotFound (Int.max): no
+            // character, and never an offset, which adding would overflow.
+            guard index >= 0, index != NSNotFound else { return nil }
+            let (offset, overflowed) = fragmentStart.addingReportingOverflow(index)
+            return overflowed ? nil : offset
         }
         return nil
     }
