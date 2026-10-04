@@ -110,6 +110,12 @@ final class PlaybackController: ObservableObject {
     @Published private(set) var document: LibraryDocument?
     /// True while the neural engine is loading its model ("Preparing voice…").
     @Published private(set) var isPreparingVoice = false
+
+    /// Every write goes through here: a publish that changes nothing still
+    /// re-renders every view watching playback.
+    private func setPreparingVoice(_ preparing: Bool) {
+        if isPreparingVoice != preparing { isPreparingVoice = preparing }
+    }
     /// Bumped when the USER starts playback from a non-active state (play
     /// button, lock-screen play, restart after the end) — never on internal
     /// status flips, buffering blips, or interruption auto-resume. The reader
@@ -317,6 +323,9 @@ final class PlaybackController: ObservableObject {
     private var idleEngineStopItem: DispatchWorkItem?
     /// M19's first-audio interval: open from Play while the status buffers.
     private var firstAudio: BudgetSignposts.Interval?
+    /// Open while reading has run dry: a sentence ended before the next
+    /// one's clip was on the node. Status shows `.buffering` meanwhile.
+    private var catchingUp: BudgetSignposts.Interval?
     /// M19's budget signposts. Tests replace it.
     var budgetSignposts = BudgetSignposts.live
     /// The engine-configuration and system-sleep observers, with the
@@ -406,6 +415,11 @@ final class PlaybackController: ObservableObject {
     private var isSettingVoiceQuietly = false
 
     private static let lookAhead = 2
+    /// Spoken seconds of a sentence at 1x, from its characters: Kokoro's
+    /// measured fit (0.94 s + 50.4 ms per character).
+    nonisolated static func estimatedSeconds(characters: Int) -> TimeInterval {
+        0.94 + 0.0504 * Double(max(characters, 0))
+    }
     private static let synthesisAttempts = 3   // 1 try + 2 retries per sentence
     private static let skippedClipDuration = 0.05
 
@@ -522,7 +536,9 @@ final class PlaybackController: ObservableObject {
     /// of the queue (`WordKaraokeState.appendScheduled`).
     var schedulingPlayhead: TimeInterval? {
         guard hasActiveSchedule else { return nil }
-        if status == .playing || isRampingToPause { return playerMediaSeconds }
+        // Running dry counts as playing here: the node runs on in silence,
+        // so the clip that ends it starts at the playhead.
+        if status == .playing || isRampingToPause || catchingUp != nil { return playerMediaSeconds }
         return wordTiming.pausedPlayhead
     }
 
@@ -704,6 +720,9 @@ final class PlaybackController: ObservableObject {
     private func settleFirstAudio() {
         guard status != .buffering else { return }
         budgetSignposts.end(&firstAudio, gaveUp: status != .playing)
+        // A dry spell ends however buffering does: its clip landed
+        // (`.playing`), or a pause, seek or stop took it over.
+        budgetSignposts.end(&catchingUp, gaveUp: status != .playing)
     }
 
     /// A user pause (R20): `.paused` publishes at once — chrome, Now Playing
@@ -1305,7 +1324,7 @@ final class PlaybackController: ObservableObject {
         invalidateSchedule()
         status = .buffering
         if voice.engine == .kokoro, let kokoro, !kokoro.isWarm {
-            isPreparingVoice = true   // first synthesis pays the model load
+            setPreparingVoice(true)   // first synthesis pays the model load
         }
         currentSentence = target
         lastScheduled = target - 1
@@ -1324,14 +1343,40 @@ final class PlaybackController: ObservableObject {
         }
     }
 
-    /// Keeps the player node loaded `lookAhead` sentences past the playhead.
+    /// How many sentences past the playhead stay queued: the platform's
+    /// listening time at `rate`, within its sentence range
+    /// (`PlatformPlaybackTuning`), or a fixed `lookAhead` where it has none.
+    nonisolated static func lookAheadCount(characterCounts: [Int], rate: Double,
+                                           seconds: TimeInterval?, range: ClosedRange<Int>) -> Int {
+        guard let seconds else { return lookAhead }
+        let speed = max(rate, 0.1)
+        var queued: TimeInterval = 0
+        var count = 0
+        for characters in characterCounts where count < range.upperBound {
+            if queued >= seconds, count >= range.lowerBound { break }
+            queued += estimatedSeconds(characters: characters) / speed
+            count += 1
+        }
+        return min(max(count, range.lowerBound), range.upperBound)
+    }
+
+    /// The last sentence the node should hold now.
+    private func lookAheadHorizon(in content: DocContent) -> Int {
+        let range = PlatformPlaybackTuning.lookAheadSentences
+        let ahead = content.sentences.dropFirst(currentSentence + 1).prefix(range.upperBound).map(\.text.count)
+        return currentSentence + Self.lookAheadCount(characterCounts: ahead, rate: rate,
+                                                     seconds: PlatformPlaybackTuning.lookAheadSeconds,
+                                                     range: range)
+    }
+
+    /// Keeps the player node loaded past the playhead (`lookAheadHorizon`).
     /// The current sentence rides the `now` lane; look-ahead uses `prefetch`.
     private func topUpSchedule(token: UInt64) async {
         while token == playToken, let content {
             let lastIndex = content.sentences.count - 1
             // An audition speaks its one sentence and nothing after it; a
             // sleep stop's sentence is the last one queued.
-            let horizon = min(currentSentence + Self.lookAhead, lastIndex,
+            let horizon = min(lookAheadHorizon(in: content), lastIndex,
                               audition?.stopAfter ?? lastIndex,
                               max(sleepStopAfter ?? lastIndex, currentSentence))
             guard lastScheduled < horizon else { return }
@@ -1469,7 +1514,7 @@ final class PlaybackController: ObservableObject {
         wordTimingRecordScheduled(sentence: index,
                                   frameLength: buffer.frameLength,
                                   sampleRate: format.sampleRate)
-        isPreparingVoice = false   // first clip through means the engine is warm
+        setPreparingVoice(false)   // first clip through means the engine is warm
 
         if !hasActiveSchedule {
             // Only a live start may start the hardware: a clip landing after a
@@ -1481,6 +1526,10 @@ final class PlaybackController: ObservableObject {
             hasActiveSchedule = true
             if status == .buffering { status = .playing }
             if let fadeIn { rampOutputVolume(to: 1, over: fadeIn) }
+        } else if catchingUp != nil, status == .buffering, index >= currentSentence {
+            // The sentence reading waited for is on the node: the voice
+            // goes on (the node never stopped, so no fade and no restart).
+            status = .playing
         }
     }
 
@@ -1541,6 +1590,13 @@ final class PlaybackController: ObservableObject {
         wordTiming.prune(before: currentSentence)
         // The first clip in the incoming voice is now the one playing.
         if let splice = handoff?.spliceAt, currentSentence >= splice { commitHandoff() }
+        // Synthesis fell behind: this sentence's clip isn't on the node, so
+        // the voice is silent. Say so (the busy ring) rather than show it
+        // reading; `scheduleClip` resumes `.playing` when the clip lands.
+        if status == .playing, lastScheduled < currentSentence {
+            catchingUp = budgetSignposts.begin(.catchingUp)
+            status = .buffering
+        }
         chainTopUp(token: token)
     }
 
@@ -1558,6 +1614,9 @@ final class PlaybackController: ObservableObject {
     }
 
     private func invalidateSchedule() {
+        // A restart (a seek, a skip, a voice change) takes a dry spell over:
+        // it ends here, given up, never carried into the new start's wait.
+        budgetSignposts.end(&catchingUp, gaveUp: true)
         // A primed splice that never played: the restarted schedule (seek,
         // pause from buffering, book switch) speaks the new voice from its
         // first clip. A handoff still warming survives in the old voice.
@@ -1568,7 +1627,7 @@ final class PlaybackController: ObservableObject {
         playToken &+= 1
         scheduleTask?.cancel()
         hasActiveSchedule = false
-        isPreparingVoice = false
+        setPreparingVoice(false)
         frozenSentenceElapsed = nil
         player.stop()
         onAudioScheduleEvent?(.stopped)
@@ -1577,7 +1636,7 @@ final class PlaybackController: ObservableObject {
 
     private func failPlayback() {
         invalidateSchedule()
-        isPreparingVoice = false
+        setPreparingVoice(false)
         pendingFadeIn = nil
         status = .error
         audition = nil
@@ -1770,22 +1829,22 @@ final class PlaybackController: ObservableObject {
             // never the old voice resumed until the reload cuts it off.
             invalidateSchedule()
         }
-        isPreparingVoice = true   // after invalidate, which clears the flag
+        setPreparingVoice(true)   // after invalidate, which clears the flag
         Task { [weak self] in
             do {
                 try await kokoro.warmUp()
                 guard let self, self.voice == expected else {
-                    self?.isPreparingVoice = false
+                    self?.setPreparingVoice(false)
                     return
                 }
-                self.isPreparingVoice = false
+                self.setPreparingVoice(false)
                 self.reloadCurrent()
             } catch {
                 guard let self, self.voice == expected else {
-                    self?.isPreparingVoice = false
+                    self?.setPreparingVoice(false)
                     return
                 }
-                self.isPreparingVoice = false
+                self.setPreparingVoice(false)
                 self.fallBackToSystemVoice()
             }
         }
@@ -1793,7 +1852,7 @@ final class PlaybackController: ObservableObject {
 
     /// Global neural failure: keep reading with the system default voice.
     private func fallBackToSystemVoice() {
-        isPreparingVoice = false
+        setPreparingVoice(false)
         postNotice(.fellBackToSystem)
         if voice != fallbackVoice {
             voice = fallbackVoice   // didSet re-runs applyVoiceOrSkipChange
@@ -1853,7 +1912,7 @@ final class PlaybackController: ObservableObject {
         invalidateSchedule()
         let token = playToken
         if voice.engine == .kokoro, let kokoro, !kokoro.isWarm {
-            isPreparingVoice = true
+            setPreparingVoice(true)
         }
         Task { [weak self] in
             guard let self else { return }
@@ -1864,11 +1923,11 @@ final class PlaybackController: ObservableObject {
                 clip = try await self.scheduler.synthesize(Self.sampleLine, voice: voice,
                                                            key: "sample|\(voice.id)", priority: .now)
             } catch {
-                if token == self.playToken { self.isPreparingVoice = false }
+                if token == self.playToken { self.setPreparingVoice(false) }
                 return
             }
             guard token == self.playToken, self.content == nil else { return }
-            self.isPreparingVoice = false
+            self.setPreparingVoice(false)
             if self.graphFormat == nil || self.graphFormat?.sampleRate != clip.sampleRate {
                 self.connectGraph(sampleRate: clip.sampleRate)
             }

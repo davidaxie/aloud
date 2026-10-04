@@ -82,6 +82,72 @@ final class AVSpeechEngine: TtsEngine {
         }
     }
 
+    /// `bestSystemVoice`, ranked once and kept until the installed voices
+    /// change: ranking scans every voice (about 47 ms with 180 installed),
+    /// and synthesis asks for every sentence.
+    static func cachedBestSystemVoice() -> AVSpeechSynthesisVoice? {
+        // The ranking breaks ties by the system's English default, which
+        // can change in System Settings without a voice coming or going.
+        let defaultID = AVSpeechSynthesisVoice(language: "en-US")?.identifier
+        if let id = bestVoiceCache.identifier(rankedWith: defaultID),
+           let voice = AVSpeechSynthesisVoice(identifier: id) {
+            return voice
+        }
+        let generation = bestVoiceCache.generation
+        let best = bestSystemVoice()
+        bestVoiceCache.store(best?.identifier, rankedWith: defaultID, ifStill: generation)
+        return best
+    }
+
+    private static let bestVoiceCache = BestVoiceCache()
+
+    /// The best voice's identifier and the English default it was ranked
+    /// with, forgotten when a voice is added or removed (System Settings ›
+    /// Spoken Content). A pick ranked across such a change is never kept.
+    final class BestVoiceCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: (identifier: String, defaultID: String?)?
+        private var changes = 0
+        private let center: NotificationCenter
+        private var observer: NSObjectProtocol?
+
+        init(center: NotificationCenter = .default) {
+            self.center = center
+            observer = center.addObserver(forName: AVSpeechEngine.installedVoicesDidChange, object: nil,
+                                          queue: nil) { [weak self] _ in
+                self?.forget()
+            }
+        }
+
+        deinit {
+            if let observer { center.removeObserver(observer) }
+        }
+
+        /// Bumped by every change of the installed voices.
+        var generation: Int { lock.withLock { changes } }
+
+        /// The kept pick, if it was ranked with `defaultID`.
+        func identifier(rankedWith defaultID: String?) -> String? {
+            lock.withLock { stored.flatMap { $0.defaultID == defaultID ? $0.identifier : nil } }
+        }
+
+        /// Keeps `identifier` unless the voices changed since `generation`
+        /// was read, when the ranking may describe a list that's gone.
+        func store(_ identifier: String?, rankedWith defaultID: String?, ifStill generation: Int) {
+            lock.withLock {
+                guard changes == generation else { return }
+                stored = identifier.map { ($0, defaultID) }
+            }
+        }
+
+        func forget() {
+            lock.withLock {
+                changes += 1
+                stored = nil
+            }
+        }
+    }
+
     // MARK: - The System row's name (M10)
 
     /// The voice the System row speaks in right now, as the Mac's row names
@@ -89,7 +155,8 @@ final class AVSpeechEngine: TtsEngine {
     /// resolves it, so it never names a voice other than the one heard. Nil
     /// with no installed voice.
     static func resolvedVoiceDisplayName() -> String? {
-        bestSystemVoice().map { displayName(of: VoiceCandidate($0, localeDefaultID: nil)) }
+        // The same pick synthesis speaks with, cached or ranked now.
+        cachedBestSystemVoice().map { displayName(of: VoiceCandidate($0, localeDefaultID: nil)) }
     }
 
     /// A voice's name with its tier, as System Settings lists it: "Ava
@@ -126,7 +193,7 @@ final class AVSpeechEngine: TtsEngine {
         let concrete = voice.id == Self.systemVoiceID
             ? nil : AVSpeechSynthesisVoice(identifier: voice.id)
         utterance.voice = concrete
-            ?? Self.bestSystemVoice()
+            ?? Self.cachedBestSystemVoice()
             ?? AVSpeechSynthesisVoice(language: voice.lang)
 
         let session = WriteSession()

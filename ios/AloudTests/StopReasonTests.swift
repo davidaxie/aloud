@@ -303,19 +303,26 @@ final class StopReasonTests: XCTestCase {
         let read = rig.engineA.requestedTexts
         XCTAssertTrue((0..<stoppedAt).allSatisfy { index in read.contains { $0.hasPrefix("Line\(index) ") } },
                       "every sentence before the stop was read")
-        XCTAssertFalse(read.contains { $0.hasPrefix("Line\(stoppedAt) ") },
-                       "the stop waits on the first sentence the voice didn't read")
+        // The stop waits on the first sentence not heard. The look-ahead
+        // the voice read before it failed (deep on a Mac) is still to come:
+        // Try again reads it from the clip cache, then asks for the rest.
 
         fault.isOn = false
-        let asked = rig.engineA.requests.count
         let mark = rig.statuses.count
+        let eventMark = rig.events.count
         rig.controller.play()
         XCTAssertEqual(rig.controller.currentSentence, stoppedAt, "one tap, at the same sentence")
         try await rig.waitUntilPlayingOrSkip(after: mark)
-        let reading = await rig.waitUntil(5) { rig.engineA.requests.count > asked }
+        let scheduled = { () -> [Int] in
+            rig.events[eventMark...].compactMap {
+                if case .scheduled(let sentence, _) = $0 { return sentence }
+                return nil
+            }
+        }
+        let reading = await rig.waitUntil(5) { !scheduled().isEmpty }
         XCTAssertTrue(reading)
-        let first = rig.engineA.requestedTexts[asked]
-        XCTAssertTrue(first.hasPrefix("Line\(stoppedAt) "), "Try again reads sentence \(stoppedAt) first, got '\(first)'")
+        XCTAssertEqual(scheduled().first, stoppedAt,
+                       "Try again reads sentence \(stoppedAt) first, never a beat past it")
         XCTAssertEqual(rig.controller.skippedSentences, [])
     }
 

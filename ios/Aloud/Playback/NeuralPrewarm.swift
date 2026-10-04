@@ -3,18 +3,23 @@ import Foundation
 
 /// R18: the neural engine loads while the Library shows the Continue card,
 /// so a tap on it speaks in about the time a System sentence takes rather
-/// than after a multi-second model load.
+/// than after a multi-second model load. On a Mac
+/// (`PlatformTuning.prewarmsBeyondTheContinueCard`) a book loaded in the
+/// neural voice asks for it too, and so does the launch, until a warm-up
+/// first starts: a Mac's reader often opens with no card ever showing.
 ///
 /// It warms only for the neural voice with the model installed, while the
 /// app is in the foreground, and never under Low Power Mode (the system's
 /// own setting, on a Mac as on an iPhone: M19). A memory warning cancels a
-/// load and keeps the engine cold until the card next appears; it frees an
-/// idle engine, and at `.critical` a paused one too (`releasesEngine`).
-/// Hiding the card or turning on Low Power Mode never releases a warm
-/// engine: the next tap would only pay for the load again.
+/// load and keeps the engine cold until the card next appears (or, on a
+/// Mac, another book loads); it frees an idle engine, and at `.critical` a
+/// paused one too (`releasesEngine`). Hiding the card or turning on Low
+/// Power Mode never releases a warm engine: the next tap would only pay
+/// for the load again.
 ///
 /// It warms Kokoro directly and never touches the controller's status,
-/// "Preparing voice…", the schedule or the mixer.
+/// "Preparing voice…", the schedule or the mixer. A load holds
+/// `PlatformActivity`, so App Nap doesn't stretch it behind a hidden window.
 @MainActor
 final class NeuralPrewarm {
 
@@ -23,12 +28,28 @@ final class NeuralPrewarm {
     /// M19's warm-up interval. Tests replace it.
     var budgetSignposts = BudgetSignposts.live
 
+    /// Held from a load's start to its end. Tests replace it.
+    var activity = Activity.platform
+
+    struct Activity {
+        let begin: (_ reason: String) -> PlatformActivity.Token?
+        let end: (PlatformActivity.Token?) -> Void
+
+        static let platform = Activity(begin: { PlatformActivity.begin(reason: $0) },
+                                       end: { PlatformActivity.end($0) })
+    }
+
     private let playback: PlaybackController
     private let kokoro: any WarmableTtsEngine
     private let isModelInstalled: @MainActor () -> Bool
     private let isLowPowerMode: () -> Bool
+    /// A loaded book and the launch ask for a warm-up too (a Mac).
+    private let warmsBeyondTheCard: Bool
 
     private var cardVisible = false
+    private var loadedBookID: UUID?
+    /// The launch asks until a warm-up first starts.
+    private var launchPending: Bool
     /// Set at creation, then kept by RootView's scene phase.
     private var sceneActive: Bool
     private var suppressedByMemoryWarning = false
@@ -43,17 +64,23 @@ final class NeuralPrewarm {
     /// load the 800 MB model for nobody. A foreground launch may not be
     /// `.active` yet here, so RootView reports its scene phase from its
     /// first appearance.
+    /// `loadedBook` is the id of the book playback holds; only a Mac
+    /// (`warmsBeyondTheCard`) warms for it.
     init(playback: PlaybackController,
          kokoro: any WarmableTtsEngine,
          cardVisible: AnyPublisher<Bool, Never>,
+         loadedBook: AnyPublisher<UUID?, Never> = Just(nil).eraseToAnyPublisher(),
          isModelInstalled: @escaping @MainActor () -> Bool,
          isLowPowerMode: @escaping () -> Bool = { ProcessInfo.processInfo.isLowPowerModeEnabled },
          sceneActive: Bool? = nil,
+         warmsBeyondTheCard: Bool = PlatformTuning.prewarmsBeyondTheContinueCard,
          notifications: NotificationCenter = .default) {
         self.playback = playback
         self.kokoro = kokoro
         self.isModelInstalled = isModelInstalled
         self.isLowPowerMode = isLowPowerMode
+        self.warmsBeyondTheCard = warmsBeyondTheCard
+        launchPending = warmsBeyondTheCard
         // Here, not as the default argument, which isn't on the main actor.
         self.sceneActive = sceneActive ?? PlatformApp.isActive
 
@@ -64,6 +91,20 @@ final class NeuralPrewarm {
                 // warning's hold ends there.
                 if visible, !self.cardVisible { self.suppressedByMemoryWarning = false }
                 self.cardVisible = visible
+                self.reevaluate()
+            }
+            .store(in: &subscriptions)
+
+        loadedBook
+            .removeDuplicates()
+            .sink { [weak self] id in
+                guard let self else { return }
+                // Another book is the listener returning too, where it asks
+                // for a warm-up.
+                if self.warmsBeyondTheCard, let id, id != self.loadedBookID {
+                    self.suppressedByMemoryWarning = false
+                }
+                self.loadedBookID = id
                 self.reevaluate()
             }
             .store(in: &subscriptions)
@@ -98,39 +139,57 @@ final class NeuralPrewarm {
     /// Starts a warm-up when every condition holds and none is warm or in
     /// flight. Never cancels or releases.
     func reevaluate() {
-        guard Self.shouldWarm(cardVisible: cardVisible,
+        let asked = Self.asksForWarmUp(cardVisible: cardVisible,
+                                       bookLoaded: loadedBookID != nil,
+                                       launchPending: launchPending,
+                                       warmsBeyondTheCard: warmsBeyondTheCard)
+        guard Self.shouldWarm(asked: asked,
                               sceneActive: sceneActive,
                               modelInstalled: isModelInstalled(),
                               voiceIsNeural: playback.voice.engine == .kokoro,
                               lowPowerMode: isLowPowerMode(),
                               suppressedByMemoryWarning: suppressedByMemoryWarning),
               !kokoro.isWarm, warmTask == nil else { return }
+        launchPending = false
         warmGeneration &+= 1
         let generation = warmGeneration
         let kokoro = kokoro
         let signposts = budgetSignposts
+        let activity = activity
         warmTask = Task { [weak self] in
             // Cancelled before it began (a memory warning): never load.
             if !Task.isCancelled {
-                // Ends however the load comes back: warm, thrown, or after
-                // a memory warning's cancel.
+                // Both end however the load comes back: warm, thrown, or
+                // after a memory warning's cancel.
+                let held = activity.begin("Loading the natural voice")
                 let warmup = signposts.begin(.kokoroWarmup)
                 try? await kokoro.warmUp()
                 signposts.end(warmup)
+                activity.end(held)
             }
             guard let self, self.warmGeneration == generation else { return }
             self.warmTask = nil
         }
     }
 
-    nonisolated static func shouldWarm(cardVisible: Bool,
+    /// `asked`: something wants the engine (`asksForWarmUp`).
+    nonisolated static func shouldWarm(asked: Bool,
                                        sceneActive: Bool,
                                        modelInstalled: Bool,
                                        voiceIsNeural: Bool,
                                        lowPowerMode: Bool,
                                        suppressedByMemoryWarning: Bool) -> Bool {
-        cardVisible && sceneActive && modelInstalled && voiceIsNeural
+        asked && sceneActive && modelInstalled && voiceIsNeural
             && !lowPowerMode && !suppressedByMemoryWarning
+    }
+
+    /// The Continue card asks everywhere; where the platform warms beyond
+    /// it, so do a loaded book and the launch.
+    nonisolated static func asksForWarmUp(cardVisible: Bool,
+                                          bookLoaded: Bool,
+                                          launchPending: Bool,
+                                          warmsBeyondTheCard: Bool) -> Bool {
+        cardVisible || (warmsBeyondTheCard && (bookLoaded || launchPending))
     }
 
     /// The Library is the root of the stack and has a Continue card to show.

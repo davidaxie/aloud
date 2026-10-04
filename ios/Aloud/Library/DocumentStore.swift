@@ -404,12 +404,15 @@ final class DocumentStore: ObservableObject {
 
     /// Updates in-memory progress immediately; the disk write follows within
     /// `saveInterval` (2 s), even while progress keeps coming, and is forced
-    /// through on background and termination.
+    /// through on background and termination. One element write, so one
+    /// publish of `documents` per tick, not one per field.
     func saveProgress(id: UUID, sentence: Int, fraction: Double) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
-        documents[index].progressSentence = sentence
-        documents[index].progressFraction = fraction
-        documents[index].lastOpenedAt = Date()
+        var document = documents[index]
+        document.progressSentence = sentence
+        document.progressFraction = fraction
+        document.lastOpenedAt = Date()
+        documents[index] = document
         scheduleDebouncedSave()
     }
 

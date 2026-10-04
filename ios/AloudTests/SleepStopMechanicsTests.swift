@@ -18,10 +18,15 @@ final class SleepStopMechanicsTests: XCTestCase {
         }
     }
 
+    /// `capAt` is set before Play: a Mac synthesizes about 12 s of
+    /// listening ahead (`PlatformPlaybackTuning`), so a cap set once
+    /// playing could land behind sentences already queued.
     private func playingRig(sentences: Int = 12,
-                            clipDuration: TimeInterval = 0.25) async throws -> PlaybackTestRig {
+                            clipDuration: TimeInterval = 0.25,
+                            capAt cap: Int? = nil) async throws -> PlaybackTestRig {
         let rig = PlaybackTestRig(sentences: sentences, clipDuration: clipDuration)
         rig.loadDefault()
+        if let cap { rig.controller.scheduleStop(afterSentence: cap) }
         rig.controller.play()
         try await rig.waitUntilPlayingOrSkip()
         return rig
@@ -30,8 +35,7 @@ final class SleepStopMechanicsTests: XCTestCase {
     // MARK: - The scheduled stop
 
     func testAScheduledStopCapsTheQueueAndStopsCuedAfterIt() async throws {
-        let rig = try await playingRig()
-        rig.controller.scheduleStop(afterSentence: 3)
+        let rig = try await playingRig(capAt: 3)
         XCTAssertEqual(rig.controller.scheduledStopSentence, 3)
 
         let stopped = await rig.waitUntil(5) { rig.controller.status == .paused }
@@ -48,8 +52,7 @@ final class SleepStopMechanicsTests: XCTestCase {
     }
 
     func testRaisingTheCapResumesTheTopUp() async throws {
-        let rig = try await playingRig()
-        rig.controller.scheduleStop(afterSentence: 2)
+        let rig = try await playingRig(capAt: 2)
         let atOne = await rig.waitUntil(2) { rig.controller.currentSentence >= 1 }
         XCTAssertTrue(atOne)
         XCTAssertFalse(scheduledSentences(rig).contains(3), "held at the cap")
@@ -66,8 +69,7 @@ final class SleepStopMechanicsTests: XCTestCase {
     }
 
     func testCancellingTheCapResumesTheTopUp() async throws {
-        let rig = try await playingRig()
-        rig.controller.scheduleStop(afterSentence: 2)
+        let rig = try await playingRig(capAt: 2)
         let atOne = await rig.waitUntil(2) { rig.controller.currentSentence >= 1 }
         XCTAssertTrue(atOne)
 
@@ -158,7 +160,14 @@ final class SleepStopMechanicsTests: XCTestCase {
         XCTAssertTrue(ends.allSatisfy { $0.sentence >= current })
         XCTAssertTrue(ends.allSatisfy { $0.secondsFromNow >= 0 })
         XCTAssertTrue(zip(ends, ends.dropFirst()).allSatisfy { $0.secondsFromNow < $1.secondsFromNow })
-        XCTAssertLessThanOrEqual(ends.last?.secondsFromNow ?? 0, 0.5 * 3 + 0.1, "at most the look-ahead")
+        // The current sentence and the platform's look-ahead (two on an
+        // iPhone; about 12 s of listening, within 3...10, on a Mac).
+        let ahead = PlaybackController.lookAheadCount(
+            characterCounts: rig.content.sentences.map(\.text.count),
+            rate: 1, seconds: PlatformPlaybackTuning.lookAheadSeconds,
+            range: PlatformPlaybackTuning.lookAheadSentences)
+        XCTAssertLessThanOrEqual(ends.last?.secondsFromNow ?? 0, 0.5 * Double(ahead + 1) + 0.1,
+                                 "at most the look-ahead")
 
         let first = try XCTUnwrap(ends.first)
         let until = try XCTUnwrap(rig.controller.secondsUntilEnd(ofSentence: first.sentence))

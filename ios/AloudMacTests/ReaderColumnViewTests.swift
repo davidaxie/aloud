@@ -261,6 +261,16 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(page.played.ids, [])
     }
 
+    /// Lets one turn of the main queue run: a follow glide sets off one turn
+    /// after the update that asks for it (`startGlide`), outside SwiftUI's
+    /// pass, and a new page's opening placement runs on a task. Queued
+    /// behind them, so they have run by then.
+    func nextMainTurn() {
+        let turn = expectation(description: "a turn of the main queue")
+        DispatchQueue.main.async { turn.fulfill() }
+        wait(for: [turn], timeout: 2)
+    }
+
     // MARK: - The right-click menu (M14)
 
     /// Exactly Play from Here, Copy and Look Up: no Speech, no submenus.
@@ -442,6 +452,7 @@ final class ReaderColumnViewTests: XCTestCase {
             let page = try makePage(sentences: 300, active: 100, size: NSSize(width: 800, height: 500),
                                     reduceMotion: reduceMotion)
             let coordinator = page.coordinator
+            nextMainTurn()   // the opening placement runs first, as when a book opens
             XCTAssertTrue(page.activeSentenceIsInTheBand())
             let next = try page.firstSentenceBelowTheBand(after: 100)
             let scrolls = coordinator.programmaticScrollCount
@@ -449,6 +460,7 @@ final class ReaderColumnViewTests: XCTestCase {
 
             page.update(activeSentence: next)
             XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "one follow scroll")
+            nextMainTurn()   // a glide sets off one turn after the update asking for it
             if reduceMotion {
                 XCTAssertEqual(coordinator.glideCount, glides, "Reduce Motion never glides")
                 XCTAssertFalse(coordinator.isGliding)
@@ -492,9 +504,11 @@ final class ReaderColumnViewTests: XCTestCase {
     func testAWheelWithoutPhasesStopsAGlideAndDetachesFollowing() throws {
         let page = try makePage(sentences: 300, active: 100, size: NSSize(width: 800, height: 500))
         let coordinator = page.coordinator
+        nextMainTurn()   // the opening placement runs first
         let next = try page.firstSentenceBelowTheBand(after: 100)
         let glides = coordinator.glideCount
         page.update(activeSentence: next)
+        nextMainTurn()
         XCTAssertEqual(coordinator.glideCount, glides + 1, "a follow glide set off")
 
         page.scrollView.scrollWheel(with: try Self.wheel(lines: -2))

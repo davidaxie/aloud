@@ -242,7 +242,10 @@ final class ShortcutActionsTests: XCTestCase {
         XCTAssertEqual(h.rig.controller.currentSentence, 3, "past sentence 2's beat of silence")
         XCTAssertEqual(h.rig.controller.skippedSentences, [2])
         XCTAssertEqual(engine.parkedCount, 1, "sentence 3 is still being synthesized")
-        XCTAssertEqual(h.rig.controller.status, .playing)
+        // Reading ran dry waiting on sentence 3: the voice is silent, and
+        // the controller says so (the busy ring) instead of showing itself
+        // reading.
+        XCTAssertEqual(h.rig.controller.status, .buffering)
         XCTAssertNil(settled.outcome, "nothing has been heard yet, so nothing is reported")
         return (h, engine, book, run)
     }

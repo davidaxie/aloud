@@ -17,8 +17,9 @@ struct MacLibraryView: View {
     @EnvironmentObject private var router: LibraryRouter
     @EnvironmentObject private var importer: DocumentImporter
 
-    /// Hero and grid, split once per store or loaded-book publish.
-    @State private var shelf = ShelfLayout.empty
+    /// Hero and grid, split once per store or loaded-book publish while
+    /// the Library shows (`MacShelfFeed`).
+    @State private var shelfFeed = MacShelfFeed()
     /// The book the controller holds: always the hero (R18).
     @State private var loadedID: UUID?
     // Whether Rename or Delete is up lives on the router, so Open With can
@@ -72,15 +73,22 @@ struct MacLibraryView: View {
             Task { await MacFileIntake.shared.admitPaste(providers) }
         }
         .onAppear { offerPaste(router.path.isEmpty) }
-        .onChange(of: router.path.isEmpty) { _, atRoot in offerPaste(atRoot) }
+        .onChange(of: router.path.isEmpty) { _, atRoot in
+            offerPaste(atRoot)
+            // Back from the reader or Classics: the saves made meanwhile, once.
+            if atRoot { feedShelf { $0.libraryShown(store.documents, loadedID: loadedID) } }
+        }
         .onDisappear { offerPaste(false) }
         .onReceive(store.$documents) { documents in
-            shelf = ShelfLayout(for: documents, loadedID: loadedID)
+            let shows = router.path.isEmpty
+            feedShelf { $0.publish(documents, loadedID: loadedID, libraryShows: shows) }
         }
         .onReceive(model.playback.$document) { document in
             guard document?.id != loadedID else { return }
-            loadedID = document?.id
-            shelf = ShelfLayout(for: store.documents, loadedID: loadedID)
+            let id = document?.id
+            loadedID = id
+            let shows = router.path.isEmpty
+            feedShelf { $0.publish(store.documents, loadedID: id, libraryShows: shows) }
         }
         .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)
@@ -114,6 +122,16 @@ struct MacLibraryView: View {
         } else {
             MacPasteTarget.shared.withdraw(by: pasteOwner)
         }
+    }
+
+    /// The shelf as the feed has it.
+    private var shelf: ShelfLayout { shelfFeed.layout }
+
+    /// `change` on a copy of the feed, written back only when it changed:
+    /// a publish under the reader writes no state at all.
+    private func feedShelf(_ change: (inout MacShelfFeed) -> Bool) {
+        var feed = shelfFeed
+        if change(&feed) { shelfFeed = feed }
     }
 
     /// One root modal's flag, read from and written to the router.
@@ -246,6 +264,43 @@ struct MacLibraryView: View {
             deleteTarget = document
             router.rootPresentation = .deleteConfirmation
         }
+    }
+}
+
+// MARK: - Shelf feed
+
+/// The Library's shelf (`ShelfLayout`), rebuilt only while the Library
+/// shows. Under the reader (or Classics) the Library stays in the window's
+/// stack, and the controller saves progress every sentence: a hidden shelf
+/// rebuilt for each save is work nobody sees. A publish while covered marks
+/// the shelf stale; the Library showing again rebuilds it once, from the
+/// store as it is then.
+struct MacShelfFeed {
+    private(set) var layout = ShelfLayout.empty
+    /// A publish arrived while the Library was covered.
+    private(set) var isStale = false
+    /// Layouts built (tests).
+    private(set) var builds = 0
+
+    /// A publish of the store or of the loaded book. False when the feed is
+    /// unchanged (covered and already stale), so the view writes no state.
+    mutating func publish(_ documents: [LibraryDocument], loadedID: UUID?, libraryShows: Bool) -> Bool {
+        guard libraryShows else {
+            guard !isStale else { return false }
+            isStale = true
+            return true
+        }
+        layout = ShelfLayout(for: documents, loadedID: loadedID)
+        isStale = false
+        builds += 1
+        return true
+    }
+
+    /// The Library shows again: a stale shelf is rebuilt, once; a current
+    /// one is left alone.
+    mutating func libraryShown(_ documents: [LibraryDocument], loadedID: UUID?) -> Bool {
+        guard isStale else { return false }
+        return publish(documents, loadedID: loadedID, libraryShows: true)
     }
 }
 

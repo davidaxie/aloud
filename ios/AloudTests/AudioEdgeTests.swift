@@ -275,12 +275,10 @@ final class AudioEdgeTests: XCTestCase {
         }
     }
 
-    /// When sentence 2 reached the node, and whether a pause's ramp was
-    /// still running then.
+    /// Whether sentence 2 reached the node.
     @MainActor
     private final class LandingProbe {
         var landed = false
-        var insideTheRamp = false
     }
 
     /// Sentences 0 and 1 (0.5 s each) heard and sentence 2 held at the gate,
@@ -305,74 +303,39 @@ final class AudioEdgeTests: XCTestCase {
         rig.controller.onAudioScheduleEvent = { [weak controller = rig.controller] event in
             record?(event)
             guard case .scheduled(2, _) = event, !probe.landed, let controller else { return }
+            _ = controller
             probe.landed = true
-            probe.insideTheRamp = controller.status == .paused && controller.isRampingVolume
         }
         return (rig, gate, probe)
     }
 
-    /// Resumes once the node has paused, and reads sentence 2 a moment in:
-    /// about 0.3 s heard, never the dry stretch before it too. Placed where
-    /// the queue ran dry (1 s), a skip would count the silence as heard
-    /// (Back's 3 s rule, R14) and the sleep landing would come early (R19).
-    private func resumeAndReadSentenceTwo(_ rig: PlaybackTestRig, after mark: Int) async throws {
-        let paused = await rig.waitUntil(1) { !rig.nodePauseTimes(from: mark).isEmpty }
-        XCTAssertTrue(paused)
-        let clip = try XCTUnwrap(rig.controller.wordTiming.clip(for: 2))
+    /// A pause while the queue is dry (reading waits on sentence 2, the busy
+    /// ring up) is a pause from buffering: the wait is dropped, so sentence
+    /// 2 never lands on a timeline that ran on in silence, and Play reads it
+    /// from its start, a fresh schedule. The dry stretch is never counted
+    /// as heard: Back's 3 s rule (R14) and the sleep landing (R19) read
+    /// sentence 2's own time.
+    func testAPauseWhileTheQueueIsDryDropsTheWaitAndPlayReadsTheSentenceFromItsStart() async throws {
+        let (rig, gate, probe) = try await playingPastADryQueue()
+        XCTAssertEqual(rig.controller.status, .buffering, "the voice is silent, waiting on sentence 2")
+
+        rig.controller.pause()
+        XCTAssertEqual(rig.controller.status, .paused)
+        gate.open()
+        let landed = await rig.waitUntil(0.6) { probe.landed }
+        XCTAssertFalse(landed, "a dropped wait never reaches the node")
+        XCTAssertEqual(rig.controller.currentSentence, 2, "Play resumes at the sentence reading waited for")
 
         rig.controller.play()
-
+        try await rig.waitUntilPlayingOrSkip(after: rig.statuses.count)
+        let clip = try XCTUnwrap(rig.controller.wordTiming.clip(for: 2))
         let moved = await rig.waitUntil(2) { (rig.controller.playerMediaSeconds ?? 0) >= clip.start + 0.3 }
-        XCTAssertTrue(moved, "the node resumed")
+        XCTAssertTrue(moved, "the node plays sentence 2")
         XCTAssertEqual(rig.controller.currentSentence, 2)
         XCTAssertLessThan(rig.controller.currentSentenceElapsed, 0.7, "a fraction of sentence 2 heard")
         let toEnd = try XCTUnwrap(rig.controller.secondsUntilEnd(ofSentence: 2))
         XCTAssertGreaterThan(toEnd, 2.3, "most of the 3 s clip is still to come")
         XCTAssertEqual(rig.controller.mixerOutputVolume, 0)
-    }
-
-    /// Sentence 2 lands inside a pause's 120 ms ramp, the queue dry: the
-    /// node still runs, so the clip starts at its playhead.
-    func testAClipLandingInsideThePauseRampAfterADryQueueStartsAtThePlayhead() async throws {
-        let (rig, gate, probe) = try await playingPastADryQueue()
-        let playheadAtPause = try XCTUnwrap(rig.controller.playerMediaSeconds)
-        let mark = rig.edges.count
-
-        rig.controller.pause()
-        gate.open()
-
-        let landed = await rig.waitUntil(2) { probe.landed }
-        XCTAssertTrue(landed, "sentence 2 reached the node")
-        if !probe.insideTheRamp {
-            throw XCTSkip("the main actor was too busy to land inside the 120 ms ramp")
-        }
-        let clip = try XCTUnwrap(rig.controller.wordTiming.clip(for: 2))
-        XCTAssertGreaterThanOrEqual(clip.start, playheadAtPause - 0.001,
-                                    "at the playhead, not where the queue ran dry (1 s)")
-        try await resumeAndReadSentenceTwo(rig, after: mark)
-    }
-
-    /// Sentence 2 lands once the node has paused, the queue dry: it starts
-    /// where the node will resume.
-    func testAClipLandingWhilePausedAfterADryQueueStartsWhereTheNodeResumes() async throws {
-        let (rig, gate, probe) = try await playingPastADryQueue()
-        let playheadAtPause = try XCTUnwrap(rig.controller.playerMediaSeconds)
-        let mark = rig.edges.count
-
-        rig.controller.pause()
-        let paused = await rig.waitUntil(1) { !rig.nodePauseTimes(from: mark).isEmpty }
-        XCTAssertTrue(paused)
-        gate.open()
-
-        let landed = await rig.waitUntil(2) { probe.landed }
-        XCTAssertTrue(landed, "sentence 2 reached the node")
-        XCTAssertFalse(probe.insideTheRamp)
-        XCTAssertEqual(rig.controller.status, .paused)
-        let clip = try XCTUnwrap(rig.controller.wordTiming.clip(for: 2))
-        XCTAssertGreaterThanOrEqual(clip.start, playheadAtPause - 0.001,
-                                    "where the node stopped, not where the queue ran dry (1 s)")
-        XCTAssertLessThan(clip.start, playheadAtPause + 0.5, "the pause's ramp is all the node played on")
-        try await resumeAndReadSentenceTwo(rig, after: mark)
     }
 
     /// An audition is a hard start: full level before it is heard, no ramp,

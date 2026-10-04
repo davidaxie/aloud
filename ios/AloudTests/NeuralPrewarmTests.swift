@@ -27,6 +27,7 @@ final class NeuralPrewarmTests: XCTestCase {
         let rig: PlaybackTestRig
         let neural: FakeNeuralEngine
         let card: PassthroughSubject<Bool, Never>
+        let book: PassthroughSubject<UUID?, Never>
         let conditions: Conditions
         let center: NotificationCenter
         let prewarm: NeuralPrewarm
@@ -34,22 +35,28 @@ final class NeuralPrewarmTests: XCTestCase {
 
     /// Michael is the voice unless `neuralVoice` is false; no book is loaded.
     /// The scene starts as `sceneActive` says, never as the test host's
-    /// app happens to be.
-    private func makeHarness(neuralVoice: Bool = true, sceneActive: Bool = true) -> Harness {
+    /// app happens to be. Only the card asks for a warm-up unless
+    /// `warmsBeyondTheCard` (a Mac's rule, pinned here rather than taken
+    /// from the host, so each test reads the same on both).
+    private func makeHarness(neuralVoice: Bool = true, sceneActive: Bool = true,
+                             warmsBeyondTheCard: Bool = false) -> Harness {
         let neural = FakeNeuralEngine()
         let rig = PlaybackTestRig(neural: neural)
         if neuralVoice { rig.controller.voice = PlaybackTestRig.michael }
         let card = PassthroughSubject<Bool, Never>()
+        let book = PassthroughSubject<UUID?, Never>()
         let conditions = Conditions()
         let center = NotificationCenter()
         let prewarm = NeuralPrewarm(playback: rig.controller,
                                     kokoro: neural,
                                     cardVisible: card.eraseToAnyPublisher(),
+                                    loadedBook: book.eraseToAnyPublisher(),
                                     isModelInstalled: { conditions.modelInstalled },
                                     isLowPowerMode: { conditions.lowPowerMode },
                                     sceneActive: sceneActive,
+                                    warmsBeyondTheCard: warmsBeyondTheCard,
                                     notifications: center)
-        return Harness(rig: rig, neural: neural, card: card, conditions: conditions,
+        return Harness(rig: rig, neural: neural, card: card, book: book, conditions: conditions,
                        center: center, prewarm: prewarm)
     }
 
@@ -73,7 +80,7 @@ final class NeuralPrewarmTests: XCTestCase {
         for bits in 0..<64 {
             let flag = { (bit: Int) in bits & (1 << bit) != 0 }
             let expected = flag(0) && flag(1) && flag(2) && flag(3) && !flag(4) && !flag(5)
-            XCTAssertEqual(NeuralPrewarm.shouldWarm(cardVisible: flag(0),
+            XCTAssertEqual(NeuralPrewarm.shouldWarm(asked: flag(0),
                                                     sceneActive: flag(1),
                                                     modelInstalled: flag(2),
                                                     voiceIsNeural: flag(3),
@@ -83,6 +90,18 @@ final class NeuralPrewarmTests: XCTestCase {
             rows += 1
         }
         XCTAssertEqual(rows, 64)
+    }
+
+    /// The card asks everywhere; a loaded book and the launch ask only
+    /// where the platform warms beyond the card (a Mac).
+    func testWhatAsksForAWarmUp() {
+        for bits in 0..<16 {
+            let flag = { (bit: Int) in bits & (1 << bit) != 0 }
+            let expected = flag(0) || (flag(3) && (flag(1) || flag(2)))
+            XCTAssertEqual(NeuralPrewarm.asksForWarmUp(cardVisible: flag(0), bookLoaded: flag(1),
+                                                       launchPending: flag(2), warmsBeyondTheCard: flag(3)),
+                           expected, "row \(bits)")
+        }
     }
 
     func testContinueCardVisibility() {
@@ -223,6 +242,57 @@ final class NeuralPrewarmTests: XCTestCase {
         harness.card.send(false)
         await elapse(0.3)
         XCTAssertTrue(harness.neural.isWarm)
+    }
+
+    // MARK: - Beyond the card (a Mac)
+
+    /// Where the platform warms beyond the card, the launch asks once (no
+    /// card ever shows when a book opens straight into the reader), and a
+    /// different book loaded after a memory warning asks again.
+    func testTheLaunchAndALoadedBookWarmBeyondTheCard() async {
+        let harness = makeHarness(warmsBeyondTheCard: true)
+        let rig = harness.rig
+        harness.prewarm.reevaluate()
+        await warm(harness)
+
+        PlatformLifecycle.post(.memoryWarning, to: harness.center)
+        let released = await rig.waitUntil(2) { !harness.neural.isWarm }
+        XCTAssertTrue(released, "an idle engine gives its memory back")
+        harness.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 1, "the launch asks once, never again behind a warning")
+
+        harness.book.send(UUID())
+        await warm(harness, call: 2)
+        XCTAssertEqual(rig.statuses, [.idle], "playback never moved")
+        XCTAssertFalse(rig.controller.isPreparingVoice)
+    }
+
+    /// Where only the card asks (an iPhone), neither the launch nor a loaded
+    /// book warms the engine.
+    func testOnlyTheCardWarmsWhereThePlatformDoesNotWarmBeyondIt() async {
+        let harness = makeHarness(warmsBeyondTheCard: false)
+        harness.prewarm.reevaluate()
+        harness.book.send(UUID())
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0)
+    }
+
+    /// A load holds the platform activity from its start to its end.
+    func testAWarmUpHoldsTheActivityWhileItLoads() async {
+        let harness = makeHarness()
+        var begun: [String] = []
+        var ended = 0
+        harness.prewarm.activity = .init(begin: { reason in begun.append(reason); return nil },
+                                         end: { _ in ended += 1 })
+        harness.card.send(true)
+        let asked = await harness.rig.waitUntil(2) { harness.neural.warmUpCalls == 1 }
+        XCTAssertTrue(asked)
+        XCTAssertEqual(begun.count, 1)
+        XCTAssertEqual(ended, 0, "held while it loads")
+        harness.neural.finishWarmUp()
+        let done = await harness.rig.waitUntil(2) { ended == 1 }
+        XCTAssertTrue(done, "let go when it's loaded")
     }
 
     // MARK: - Memory warnings

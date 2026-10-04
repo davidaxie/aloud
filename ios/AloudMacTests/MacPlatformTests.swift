@@ -28,8 +28,20 @@ final class MacPlatformTests: XCTestCase {
     }
 
     func testTuningIsTheMacs() {
-        XCTAssertEqual(PlatformTuning.kokoroThreads, 2)
+        XCTAssertEqual(PlatformTuning.kokoroThreads,
+                       PlatformTuning.kokoroThreadCount(performanceCores: PlatformTuning.performanceCoreCount))
+        XCTAssertTrue((4...6).contains(PlatformTuning.kokoroThreads))
+        XCTAssertTrue(PlatformTuning.kokoroStopsThreadSpinning)
+        XCTAssertTrue(PlatformTuning.prewarmsBeyondTheContinueCard)
         XCTAssertFalse(PlatformTuning.releasesNeuralOnBackground)
+    }
+
+    /// All but two performance cores, never fewer than 4 (an M1's four
+    /// P-cores still get four) nor more than 6 (an M4 Pro's ten get six).
+    func testTheThreadCountFollowsThePerformanceCores() {
+        let counts = [2, 4, 6, 8, 10, 12, 16].map { PlatformTuning.kokoroThreadCount(performanceCores: $0) }
+        XCTAssertEqual(counts, [4, 4, 4, 6, 6, 6, 6])
+        XCTAssertGreaterThan(PlatformTuning.performanceCoreCount, 0)
     }
 
     // MARK: S6 · paths

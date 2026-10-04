@@ -156,16 +156,29 @@ struct ReaderColumnView: NSViewRepresentable {
             get { follow.lastFollowRequest }
             set { follow.lastFollowRequest = newValue }
         }
-        /// Where the one in-flight glide is going; nil when none. A click or
-        /// a user scroll stops it where it is.
-        private var glideTarget: CGFloat?
+        /// Where the one glide asked for (set off or about to be) is going;
+        /// nil when none. A click or a user scroll stops it where it is.
+        private(set) var glideTarget: CGFloat?
         /// Tells a finished glide from one stopped and replaced since.
         private var glideSerial = 0
-        /// Whether a follow glide is moving the page right now.
+        /// The glide asked for and not yet set off: it starts one turn of
+        /// the main queue after the request, never inside the sentence
+        /// update (SwiftUI's pass) that asked for it. A newer request or a
+        /// stop cancels it.
+        private var pendingGlide: DispatchWorkItem?
+        /// The text's height changed under a glide: the glide's end checks
+        /// the band once, as that layout pass would have.
+        private var followCheckAfterGlide = false
+        /// Whether a follow glide is moving the page, or sets off on the
+        /// next turn.
         var isGliding: Bool { glideTarget != nil }
-        /// Every glide started, of `programmaticScrollCount`'s scrolls
-        /// (Reduce Motion makes none).
+        /// Every glide set off, of `programmaticScrollCount`'s scrolls
+        /// (Reduce Motion makes none); one replaced before its turn never
+        /// sets off.
         private(set) var glideCount = 0
+        /// Whether a placement or rotor stop is still being checked on the
+        /// layout passes (tests).
+        var isCheckingPlacement: Bool { follow.isCheckingPlacement }
         /// Set when a click lands: a click that began on moving text only
         /// stops it (R15).
         private var clickBeganWhileScrolling = false
@@ -1023,18 +1036,38 @@ struct ReaderColumnView: NSViewRepresentable {
             lastPageHeight = page.frame.height
         }
 
-        /// One 0.45 s glide on the (0.4, 0, 0.2, 1) curve. A click or a user
-        /// scroll stops it where it is.
+        /// One 0.45 s glide on the (0.4, 0, 0.2, 1) curve, set off one turn
+        /// of the main queue later: the sentence update that asks for it is
+        /// SwiftUI's pass, and the animation group is no work for it. A
+        /// newer request before then replaces it; a click or a user scroll
+        /// stops it, set off or not.
         private func startGlide(toY y: CGFloat) {
-            guard let scrollView, let page else { return }
+            guard scrollView != nil, page != nil else { return }
             stopGlideInPlace()
+            glideSerial &+= 1
+            let serial = glideSerial
+            glideTarget = y
+            let start = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.glideSerial == serial, self.glideTarget != nil else { return }
+                    self.pendingGlide = nil
+                    self.setOffGlide(toY: y, serial: serial)
+                }
+            }
+            pendingGlide = start
+            DispatchQueue.main.async(execute: start)
+        }
+
+        /// The glide `startGlide` asked for, on its turn.
+        private func setOffGlide(toY y: CGFloat, serial: Int) {
+            guard let scrollView, let page else {
+                glideTarget = nil
+                return
+            }
             let clip = scrollView.contentView
             page.ensureRoom(forOffset: y, visibleHeight: clip.bounds.height)
             lastPageHeight = page.frame.height
             glideCount += 1
-            glideSerial &+= 1
-            let serial = glideSerial
-            glideTarget = y
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = FollowBand.glideDuration
                 context.timingFunction = FollowBand.mediaTimingFunction()
@@ -1042,20 +1075,41 @@ struct ReaderColumnView: NSViewRepresentable {
             } completionHandler: { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.glideSerial == serial, self.glideTarget != nil else { return }
-                    self.glideTarget = nil
-                    if let scrollView = self.scrollView {
-                        scrollView.reflectScrolledClipView(scrollView.contentView)
-                    }
-                    self.updateFollowChip()
+                    self.glideLanded()
                 }
             }
         }
 
-        /// Stops a glide where the page is on screen right now.
+        /// The glide reached its target. When the text's height changed
+        /// under it, the band is checked once now, as that layout pass
+        /// would have (`handleLayout`).
+        private func glideLanded() {
+            glideTarget = nil
+            if let scrollView {
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+            if followCheckAfterGlide {
+                followCheckAfterGlide = false
+                if isFollowing, !follow.pendingPlacement, relayoutAnchor == nil {
+                    followIfNeeded(animated: false)
+                }
+            }
+            updateFollowChip()
+        }
+
+        /// Stops a glide where the page is on screen right now; one not set
+        /// off yet never moves.
         private func stopGlideInPlace() {
             guard glideTarget != nil else { return }
             glideTarget = nil
             glideSerial &+= 1
+            // Whatever moves the page next measures the text as it is now.
+            followCheckAfterGlide = false
+            if let pending = pendingGlide {
+                pending.cancel()
+                pendingGlide = nil
+                return
+            }
             guard let scrollView else { return }
             let clip = scrollView.contentView
             let here = clip.bounds.origin
@@ -1144,8 +1198,9 @@ struct ReaderColumnView: NSViewRepresentable {
 
         /// One layout pass: a change of the text's height means TextKit
         /// swapped estimated line heights under a still offset (while
-        /// following, that re-checks the band; the cached rect is stale
-        /// either way), and a change of the visible height re-checks the
+        /// following, that re-checks the band, or under a glide, the
+        /// glide's end does; the cached rect is stale either way), and a
+        /// change of the visible height re-checks the
         /// band. Then a pending placement is verified.
         func handleLayout() {
             guard let textView, !isHandlingLayout, !isEditingText, !isRelayingOut else { return }
@@ -1157,8 +1212,12 @@ struct ReaderColumnView: NSViewRepresentable {
             if height != lastContentHeight {
                 follow.cachedActiveRect = nil
                 refreshHighlightGeometry()
-                if isFollowing, !follow.pendingPlacement, !anchored, lastContentHeight > 0 {
+                if isFollowing, glideTarget == nil, !follow.pendingPlacement, !anchored, lastContentHeight > 0 {
                     followIfNeeded(animated: false)
+                } else if isFollowing, glideTarget != nil {
+                    // A jump now would snap the page out of its glide: the
+                    // glide's end checks the band instead.
+                    followCheckAfterGlide = true
                 }
                 lastContentHeight = height
             }

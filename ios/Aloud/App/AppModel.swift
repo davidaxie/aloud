@@ -174,6 +174,10 @@ final class AppModel: ObservableObject {
                 .map { NeuralPrewarm.continueCardVisible(pathIsEmpty: $0, documents: $1, loadedID: $2) }
                 .removeDuplicates()
                 .eraseToAnyPublisher(),
+            // A Mac also warms for the book loaded in the natural voice
+            // (PlatformTuning.prewarmsBeyondTheContinueCard); an iPhone
+            // ignores it.
+            loadedBook: playback.$document.map { $0?.id }.eraseToAnyPublisher(),
             isModelInstalled: { [unowned modelManager] in modelManager.isInstalled })
 
         let defaults = UserDefaults.standard

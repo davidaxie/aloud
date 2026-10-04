@@ -31,6 +31,10 @@ struct BudgetSignposts: Sendable {
         /// Play to the first buffer on the started player node: ≤ 1.0 s
         /// warm, ≤ 3.5 s cold.
         case firstAudio
+        /// A dry spell while reading: a sentence ended before the next was
+        /// ready, so the listener heard silence. Its budget is none; each
+        /// one is a stall M19 counts.
+        case catchingUp
 
         /// The interval's name as Instruments lists it (`rawValue`, as the
         /// static string the signposter takes).
@@ -41,6 +45,7 @@ struct BudgetSignposts: Sendable {
             case .modelVerify: return "modelVerify"
             case .kokoroWarmup: return "kokoroWarmup"
             case .firstAudio: return "firstAudio"
+            case .catchingUp: return "catchingUp"
             }
         }
     }

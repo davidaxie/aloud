@@ -95,9 +95,9 @@ final class BudgetSignpostsTests: XCTestCase {
 
     // MARK: - The five budgets
 
-    func testTheIntervalsAreTheFiveBudgets() {
+    func testTheIntervalsAreTheFiveBudgetsAndTheDrySpells() {
         XCTAssertEqual(Budget.allCases.map(\.rawValue),
-                       ["launch", "modelCheck", "modelVerify", "kokoroWarmup", "firstAudio"])
+                       ["launch", "modelCheck", "modelVerify", "kokoroWarmup", "firstAudio", "catchingUp"])
         for budget in Budget.allCases {
             XCTAssertEqual(budget.name.description, budget.rawValue, "Instruments lists it by its budget")
         }
@@ -343,10 +343,12 @@ final class BudgetSignpostsTests: XCTestCase {
         rig.controller.voice = PlaybackTestRig.michael
         let card = PassthroughSubject<Bool, Never>()
         let center = NotificationCenter()
+        // The card alone asks, on both hosts: a Mac's launch warm-up would
+        // start inside init, before the recorder below is attached.
         let prewarm = NeuralPrewarm(playback: rig.controller, kokoro: neural,
                                     cardVisible: card.eraseToAnyPublisher(),
                                     isModelInstalled: { true }, isLowPowerMode: { false },
-                                    sceneActive: true, notifications: center)
+                                    sceneActive: true, warmsBeyondTheCard: false, notifications: center)
         prewarm.budgetSignposts = recorder.signposts
         return Prewarm(rig: rig, neural: neural, card: card, center: center, prewarm: prewarm)
     }

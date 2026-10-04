@@ -62,6 +62,24 @@ final class ProgressIndexTests: XCTestCase {
         return true
     }
 
+    // MARK: - One publish per save
+
+    /// A progress save is one element write: `documents` publishes once,
+    /// not once per field, so everything watching the store (the Library
+    /// shelf, the Continue card) re-renders once a sentence.
+    func testAProgressSavePublishesOnce() throws {
+        let (store, book, _) = try makeStore(saveInterval: 60)
+        var publishes = 0
+        let watch = store.$documents.dropFirst().sink { _ in publishes += 1 }
+        defer { watch.cancel() }
+        store.saveProgress(id: book.id, sentence: 42, fraction: 0.105)
+        XCTAssertEqual(publishes, 1)
+        let saved = try XCTUnwrap(store.documents.first { $0.id == book.id })
+        XCTAssertEqual(saved.progressSentence, 42)
+        XCTAssertEqual(saved.progressFraction, 0.105, accuracy: 0.0001)
+        XCTAssertNotNil(saved.lastOpenedAt)
+    }
+
     // MARK: - Forced writes
 
     /// Swiping the app away while a book plays in the background: the
