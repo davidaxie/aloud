@@ -73,14 +73,14 @@ enum MacSettingsTab: String, CaseIterable, Identifiable {
 /// "Voice & speed": the shared Listening view, with the natural-voice card
 /// shown installed too (size on disk, Remove Download…), as the iPhone's
 /// Settings page shows it. The list fits its content up to a cap and
-/// scrolls beyond, which only the eight installed voices reach; the privacy
+/// scrolls beyond, which only the eleven installed voices reach; the privacy
 /// line sits below it, so it closes the tab however the list scrolls.
 struct MacSettingsVoiceTab: View {
 
     /// The list's tallest: with the window's toolbar and the privacy line,
     /// the tab still fits a 1280 × 800 display. The not-installed list
-    /// (the card with its before-you-fly line, nine voices and "Add voices
-    /// in System Settings…") fits under it unscrolled.
+    /// (the card with its before-you-fly line, the System row and "Add
+    /// voices in System Settings…") fits under it unscrolled.
     static let maxListHeight: CGFloat = 600
 
     /// Seeded near the not-installed layout so the first frame barely moves.

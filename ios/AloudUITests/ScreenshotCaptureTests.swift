@@ -75,7 +75,7 @@ final class ScreenshotCaptureTests: XCTestCase {
 
         // 06 — Listening sheet's voices (proves detectExisting() flipped to
         // .installed from the seeded container — no launch-arg model override
-        // in this test): exactly 8 neural rows, one System row, and Michael as
+        // in this test): exactly 11 neural rows, one System row, and Michael as
         // the fresh-install default.
         let listeningChip = app.buttons["player.listening"].firstMatch
         XCTAssertTrue(listeningChip.waitForExistence(timeout: 5))
@@ -92,12 +92,12 @@ final class ScreenshotCaptureTests: XCTestCase {
         sleep(1)   // sheet animation settle
         save(shot(), to: shotsDir + "/06-voice-sheet.png")
 
-        // One scrolling detent holds the whole roster: exactly 8 neural rows
-        // + 1 System row.
+        // One scrolling detent holds the whole roster: exactly 11 neural rows
+        // (8 stock voices, 3 Aloud blends) + 1 System row.
         let neuralRows = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'voice.kokoro:'"))
-        XCTAssertEqual(neuralRows.count, 8,
-                       "Curated roster must be exactly 8 neural voices")
+        XCTAssertEqual(neuralRows.count, 11,
+                       "Curated roster must be exactly 11 neural voices")
         let systemRows = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH 'voice.' AND NOT (identifier BEGINSWITH 'voice.kokoro:')"))
         XCTAssertEqual(systemRows.count, 1,

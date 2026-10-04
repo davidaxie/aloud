@@ -30,9 +30,18 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     private let modelDirectory: URL
     /// Where the provider config file is written: the app's caches.
     private let runtimeConfigDirectory: URL?
+    /// Where the derived voices file with Aloud's blends is kept; nil loads
+    /// the original, and the blends speak as their fallback speaker.
+    private let blendDirectory: URL?
     private let queue = DispatchQueue(label: "com.davidxie.aloud.kokoro", qos: .userInitiated)
     /// Touched only on `queue`.
     private var tts: SherpaOnnxOfflineTtsWrapper?
+    /// Whether `tts` loaded the derived voices file. Touched only on `queue`.
+    private var blendsLoaded = false
+    /// The voices.bin a derived file failed for: not tried again until it
+    /// changes or the app relaunches, so a blend never switches between its
+    /// own table and its fallback within a session. Touched only on `queue`.
+    private var blendFailure: ModelInstallRecord.File?
 
     private let stateLock = NSLock()
     private var warmFlag = false
@@ -45,11 +54,13 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     init(modelDirectory: URL,
          numThreads: Int = PlatformTuning.kokoroThreads,
          stopsThreadSpinning: Bool = PlatformTuning.kokoroStopsThreadSpinning,
-         runtimeConfigDirectory: URL? = KokoroSherpaEngine.cachesDirectory) {
+         runtimeConfigDirectory: URL? = KokoroSherpaEngine.cachesDirectory,
+         blendDirectory: URL? = nil) {
         self.modelDirectory = modelDirectory
         self.numThreads = max(1, numThreads)
         self.stopsThreadSpinning = stopsThreadSpinning
         self.runtimeConfigDirectory = runtimeConfigDirectory
+        self.blendDirectory = blendDirectory
     }
 
     /// True once the wrapper exists (cheap, lock-guarded — safe from any thread).
@@ -84,10 +95,10 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     }
 
     func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
-        guard let sid = KokoroVoiceCatalog.sid(for: voice.id) else {
+        guard KokoroVoiceCatalog.speakerID(for: voice.id, blendsLoaded: false) != nil else {
             throw TtsError.voiceUnavailable
         }
-        let spoken = TextNormalizer.normalize(text)
+        let spoken = Self.spokenText(text, lang: voice.lang)
         guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .silence(duration: 0.1)
         }
@@ -100,6 +111,11 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
                 do {
                     try self.warmUpOnQueue(onDemand: true)   // auto-recovers after release()
                     guard let tts = self.tts else { throw KokoroEngineError.modelNotInstalled }
+                    // After the load: only it knows which voices file is in.
+                    guard let sid = KokoroVoiceCatalog.speakerID(for: voice.id,
+                                                                 blendsLoaded: self.blendsLoaded) else {
+                        throw TtsError.voiceUnavailable
+                    }
                     let start = Date()
                     let audio = tts.generate(text: spoken, sid: sid, speed: 1.0)
                     // sherpa-onnx returns a NULL audio pointer when it produces
@@ -123,8 +139,16 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     func release() {
         queue.async {
             self.tts = nil
+            self.blendsLoaded = false
             self.setWarm(false)
         }
+    }
+
+    /// The exact string Kokoro is given: the display text normalized, with
+    /// years spelled as said (`SpokenYears`). British voices say "two
+    /// thousand and five".
+    static func spokenText(_ text: String, lang: String) -> String {
+        SpokenYears.apply(to: TextNormalizer.normalize(text), british: lang == "en-GB")
     }
 
     // MARK: - The warm line
@@ -247,22 +271,43 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
         }
 
         let warmStart = Date()
-        let kokoro = sherpaOnnxOfflineTtsKokoroModelConfig(
-            model: modelPath,
-            voices: voicesPath,
-            tokens: tokens,
-            dataDir: dataDir,
-            dictDir: "",
-            lexicon: lexiconUS + "," + lexiconGB)
         // Checked on every load, never cached: the caches directory can be
         // emptied between loads, and a named file that's gone ends the app.
         let provider = Self.runtimeProvider(stopsThreadSpinning: stopsThreadSpinning,
                                             configDirectory: runtimeConfigDirectory)
-        let model = sherpaOnnxOfflineTtsModelConfig(kokoro: kokoro,
-                                                    numThreads: numThreads,
-                                                    provider: provider)
-        var config = sherpaOnnxOfflineTtsConfig(model: model, maxNumSentences: 1)
-        let wrapper = SherpaOnnxOfflineTtsWrapper(config: &config)
+        func load(voices: String) -> SherpaOnnxOfflineTtsWrapper {
+            let kokoro = sherpaOnnxOfflineTtsKokoroModelConfig(
+                model: modelPath,
+                voices: voices,
+                tokens: tokens,
+                dataDir: dataDir,
+                dictDir: "",
+                lexicon: lexiconUS + "," + lexiconGB)
+            let model = sherpaOnnxOfflineTtsModelConfig(kokoro: kokoro,
+                                                        numThreads: numThreads,
+                                                        provider: provider)
+            var config = sherpaOnnxOfflineTtsConfig(model: model, maxNumSentences: 1)
+            return SherpaOnnxOfflineTtsWrapper(config: &config)
+        }
+
+        let source = URL(fileURLWithPath: voicesPath)
+        let sourceStamp = ModelInstallRecord.stamp(at: source, name: "voices.bin",
+                                                   sha256: ModelManager.voicesFile.sha256)
+        var blended: URL?
+        if let blendDirectory, sourceStamp != nil, blendFailure != sourceStamp {
+            blended = KokoroVoiceBlends.preparedVoicesFile(source: source, in: blendDirectory)
+            if blended == nil { blendFailure = sourceStamp }
+        }
+        var wrapper = load(voices: blended?.path ?? voicesPath)
+        if wrapper.tts == nil, blended != nil, let blendDirectory {
+            // The derived file failed to load, never the pinned install's
+            // fault: drop it and load the original.
+            Self.log.error("kokoro blends failed to load; loading the original voices")
+            blendFailure = sourceStamp
+            blended = nil
+            KokoroVoiceBlends.removeDerivedFiles(in: blendDirectory)
+            wrapper = load(voices: voicesPath)
+        }
         // A failed create yields a wrapper around NULL: never cache it as warm.
         guard wrapper.tts != nil else {
             onModelDamaged?()
@@ -279,8 +324,9 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
         }
 
         tts = wrapper
+        blendsLoaded = blended != nil
         setWarm(true)
-        Self.log.info("kokoro warm-up \(String(format: "%.2f", Date().timeIntervalSince(warmStart))) s (model load + graph build\(speaksWarmLine ? " + warm utterance" : "", privacy: .public)), \(self.numThreads) threads, provider \(provider == "cpu" ? "cpu" : "cpu + spinning off", privacy: .public)")
+        Self.log.info("kokoro warm-up \(String(format: "%.2f", Date().timeIntervalSince(warmStart))) s (model load + graph build\(speaksWarmLine ? " + warm utterance" : "", privacy: .public)), \(self.numThreads) threads, provider \(provider == "cpu" ? "cpu" : "cpu + spinning off", privacy: .public), voices \(self.blendsLoaded ? "blended" : "original", privacy: .public)")
     }
 
     private func setWarm(_ value: Bool) {

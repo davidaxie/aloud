@@ -5,7 +5,10 @@ import Foundation
 /// Owns the on-device Kokoro model files (`model.onnx` + `voices.bin`):
 /// detection, resumable background download from Hugging Face, verification,
 /// and deletion. Files live in Application Support/KokoroModel, excluded
-/// from backup (they are re-downloadable).
+/// from backup (they are re-downloadable). The engine may keep a derived
+/// voices file beside them (`KokoroVoiceBlends`: `voices-aloud.bin` and its
+/// record), rebuilt from voices.bin whenever it's missing or stale and
+/// removed along with the files.
 ///
 /// The files are pinned (M3): one Hugging Face revision, exact sizes and a
 /// SHA-256 per file, checked off the main actor as each file stages. A
@@ -97,6 +100,9 @@ final class ModelManager: ObservableObject {
             expectedBytes: 27_678_720,
             sha256: "8a77c0d397026208d22211f37670b5b3b11e03f190756b25a1d24041fced82a9"),
     ]
+
+    /// The pinned voices.bin: the source of the derived voices file.
+    nonisolated static var voicesFile: RemoteFile { remoteFiles[1] }
 
     /// The whole download, summed from the files themselves so no surface
     /// can drift from what is actually fetched.
@@ -279,10 +285,14 @@ final class ModelManager: ObservableObject {
 
     var isInFlight: Bool { inFlightProgress != nil }
 
+    /// What Remove frees: the pinned files, and the derived voices file
+    /// once the engine has built it in the app's own directory.
     var sizeOnDisk: Int64 {
-        Self.remoteFiles.reduce(0) { sum, file in
+        let pinned = Self.remoteFiles.reduce(0) { sum, file in
             sum + Self.fileSize(at: installDirectory.appendingPathComponent(file.name))
         }
+        guard ownsInstallDirectory else { return pinned }
+        return pinned + Self.fileSize(at: installDirectory.appendingPathComponent(KokoroVoiceBlends.fileName))
     }
 
     var hasActiveTask: Bool { activeTask != nil }
@@ -335,6 +345,21 @@ final class ModelManager: ObservableObject {
     /// False for a `-uitest-kokoro-model-path` override: those files belong
     /// to the host, so Remove never deletes them.
     private let ownsInstallDirectory: Bool
+
+    /// Where the engine keeps the derived voices file: the app's own install
+    /// directory, never a host-owned override (DEBUG: a scratch directory
+    /// instead, so UI tests hear the blends too).
+    var blendDirectory: URL? {
+        if ownsInstallDirectory { return installDirectory }
+        #if DEBUG
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KokoroVoiceBlends-uitest", isDirectory: true)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        return scratch
+        #else
+        return nil
+        #endif
+    }
 
     private let wifiCoordinator: DownloadCoordinator
     private let cellularCoordinator: DownloadCoordinator
@@ -765,6 +790,7 @@ final class ModelManager: ObservableObject {
                 try? FileManager.default.removeItem(at: installDirectory.appendingPathComponent(file.name))
             }
             try? FileManager.default.removeItem(at: ModelInstallRecord.url(in: installDirectory))
+            KokoroVoiceBlends.removeDerivedFiles(in: installDirectory)
         }
         state = .notInstalled
     }
@@ -1077,14 +1103,20 @@ struct ModelInstallRecord: Codable, Equatable {
 
     /// `remote`'s entry as it would be recorded now, from one `stat`.
     static func entry(for remote: ModelManager.RemoteFile, in directory: URL) -> File? {
+        stamp(at: directory.appendingPathComponent(remote.name), name: remote.name, sha256: remote.sha256)
+    }
+
+    /// The file at `url` as it sits now, from one `stat`, recorded with the
+    /// hash `sha256` (taken on trust: the caller hashed it, or pinned it).
+    static func stamp(at url: URL, name: String, sha256: String) -> File? {
         var info = stat()
-        let result = directory.appendingPathComponent(remote.name).withUnsafeFileSystemRepresentation { path in
+        let result = url.withUnsafeFileSystemRepresentation { path in
             path.map { stat($0, &info) } ?? -1
         }
         guard result == 0,
               let mtime = nanoseconds(seconds: Int64(info.st_mtimespec.tv_sec),
                                       nanoseconds: Int64(info.st_mtimespec.tv_nsec)) else { return nil }
-        return File(name: remote.name, bytes: Int64(info.st_size), sha256: remote.sha256,
+        return File(name: name, bytes: Int64(info.st_size), sha256: sha256,
                     inode: UInt64(info.st_ino), mtime: mtime)
     }
 

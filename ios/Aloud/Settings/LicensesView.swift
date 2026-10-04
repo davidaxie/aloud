@@ -29,7 +29,8 @@ struct LicensesView: View {
         // empty state), so this card states facts, not a second promise.
         Entry(id: "Kokoro voice model",
               license: "Apache License 2.0",
-              detail: "kokoro-multi-lang-v1_0 neural speech model, downloaded on request."),
+              detail: "kokoro-multi-lang-v1_0 neural speech model, downloaded on request. "
+                    + "Velvet, Anchor and Ember are Aloud's own mixes of its voices."),
         // "natural voice" is the user's word for Kokoro everywhere else.
         Entry(id: "espeak-ng",
               license: "GPL-3.0",

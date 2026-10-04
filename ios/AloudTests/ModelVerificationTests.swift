@@ -438,4 +438,21 @@ final class ModelVerificationTests: XCTestCase {
         XCTAssertEqual(manager.state, .notInstalled, "A late hash changes nothing")
         XCTAssertFalse(exists(directory))
     }
+
+    /// The engine keeps Aloud's blended voices beside the pinned files: the
+    /// card's size counts them, and Remove takes them along.
+    func testTheDerivedVoicesFileIsCountedAndRemoved() async throws {
+        try writePinnedSizes(in: directory)
+        let manager = makeManager(CountingHasher())
+        await drain(manager)
+        XCTAssertEqual(manager.blendDirectory, directory, "the app's own folder")
+        XCTAssertEqual(manager.sizeOnDisk, ModelManager.totalExpectedBytes)
+        let derived = directory.appendingPathComponent(KokoroVoiceBlends.fileName)
+        try writeSparse(derived, size: Int64(KokoroVoiceBlends.expectedBytes))
+        try Data("{}".utf8).write(to: KokoroBlendRecord.url(in: directory))
+        XCTAssertEqual(manager.sizeOnDisk, ModelManager.totalExpectedBytes + Int64(KokoroVoiceBlends.expectedBytes))
+        manager.deleteModel()
+        XCTAssertFalse(exists(derived))
+        XCTAssertFalse(exists(KokoroBlendRecord.url(in: directory)))
+    }
 }

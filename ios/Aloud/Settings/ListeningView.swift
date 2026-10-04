@@ -19,7 +19,8 @@ enum ListeningCopy {
 }
 
 /// R8: speed and voice in one place. The speed numeral, five presets and a
-/// 0.5–3× slider with a 1× detent; the eight natural voices plus System; Read
+/// 0.5–3× slider with a 1× detent; the eleven natural voices (eight stock,
+/// three Aloud blends) plus System; Read
 /// bracketed asides; and the natural-voice card (or its one unsupported
 /// line). Every pick is app-wide (R7) and heard where it is made: a voice tap
 /// re-speaks the current sentence, or a sample line with no book, through the

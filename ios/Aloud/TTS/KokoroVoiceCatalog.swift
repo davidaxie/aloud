@@ -5,10 +5,11 @@ import Foundation
 /// (https://k2-fsa.github.io/sherpa/onnx/tts/pretrained_models/kokoro.html).
 /// Anchors verified: af_heart=3, af_bella=2, af_nicole=6, am_adam=11, am_michael=16.
 ///
-/// Only a curated eight of the English speakers (af_/am_ = US, bf_ = GB)
-/// surface as selectable `TtsVoice`s — the best-graded per the model card,
-/// led by the deep narrator. The full map stays internal so a future
-/// expansion is a table edit, not a redesign.
+/// Only a curated eleven surface as selectable `TtsVoice`s: eight of the
+/// English speakers (af_/am_ = US, bf_ = GB), the best-graded per the model
+/// card and led by the deep narrator, and Aloud's three blends of them
+/// (`KokoroVoiceBlends`), which live in a derived voices file. The full map
+/// stays internal so a future expansion is a table edit, not a redesign.
 enum KokoroVoiceCatalog {
 
     /// Voice IDs are namespaced `kokoro:<speaker>` so they can never collide
@@ -17,9 +18,11 @@ enum KokoroVoiceCatalog {
 
     static let defaultVoiceID = voiceIDPrefix + "am_michael"
 
-    /// The curated eight, in display order. Michael leads as the default.
+    /// The curated eleven, in display order. Michael leads as the default;
+    /// Aloud's blends of him follow.
     static let curatedVoices: [TtsVoice] = [
         voice("am_michael", "Michael", subtitle: "Deep, warm narrator"),
+    ] + KokoroVoiceBlends.all.map(blendVoice) + [
         voice("am_fenrir", "Fenrir", subtitle: "Strong, spirited"),
         voice("am_puck", "Puck", subtitle: "Light, playful"),
         voice("af_heart", "Heart", subtitle: "Bright, expressive"),
@@ -33,11 +36,22 @@ enum KokoroVoiceCatalog {
         curatedVoices.first { $0.id == defaultVoiceID } ?? curatedVoices[0]
     }
 
-    /// Speaker id for a `TtsVoice.id`; nil for non-Kokoro or unknown ids.
+    /// Speaker id for a `TtsVoice.id`; nil for non-Kokoro or unknown ids,
+    /// and for a blend, which no stock speaker is.
     static func sid(for voiceID: String) -> Int? {
         guard voiceID.hasPrefix(voiceIDPrefix) else { return nil }
         let name = String(voiceID.dropFirst(voiceIDPrefix.count))
         return sidByName[name]
+    }
+
+    /// The speaker id to speak `voiceID` with: a blend's slot while the
+    /// engine holds the derived voices file, its fallback speaker otherwise;
+    /// a stock voice's own id.
+    static func speakerID(for voiceID: String, blendsLoaded: Bool) -> Int? {
+        if let blend = KokoroVoiceBlends.blend(forVoiceID: voiceID) {
+            return blendsLoaded ? blend.slot : sid(for: voiceIDPrefix + blend.fallbackSpeaker)
+        }
+        return sid(for: voiceID)
     }
 
     // MARK: - Internal table
@@ -116,5 +130,18 @@ enum KokoroVoiceCatalog {
                  engine: .kokoro,
                  quality: 4,
                  subtitle: subtitle)
+    }
+
+    /// A blend's row: US English, male, like the speakers it mixes. Never
+    /// through `voice(_:_:subtitle:)`, which reads the language and gender
+    /// from a stock speaker's letters.
+    private static func blendVoice(_ blend: KokoroVoiceBlend) -> TtsVoice {
+        TtsVoice(id: blend.voiceID,
+                 name: blend.name,
+                 lang: "en-US",
+                 gender: "male",
+                 engine: .kokoro,
+                 quality: 4,
+                 subtitle: blend.subtitle)
     }
 }

@@ -7,9 +7,10 @@ import SwiftUI
 /// SheetGrabber draws. When the content outgrows the screen the detent tops
 /// out and the list scrolls.
 struct ListeningSheet: View {
-    /// Seeded near the default-size layout so the first frame barely moves.
+    /// Seeded near the default-size installed layout (eleven natural voices)
+    /// so the first frame barely moves.
     @State private var headerHeight: CGFloat = 56
-    @State private var contentHeight: CGFloat = 560
+    @State private var contentHeight: CGFloat = 764
 
     var body: some View {
         VStack(spacing: 0) {

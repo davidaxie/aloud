@@ -118,7 +118,8 @@ final class AppModel: ObservableObject {
 
         engine = AVSpeechEngine()
         modelManager = ModelManager()
-        kokoroEngine = KokoroSherpaEngine(modelDirectory: modelManager.installDirectory)
+        kokoroEngine = KokoroSherpaEngine(modelDirectory: modelManager.installDirectory,
+                                          blendDirectory: modelManager.blendDirectory)
         // R21: files that fail the engine's load-time check read as damaged
         // on the card. Called on the engine's queue.
         kokoroEngine.onModelDamaged = { [weak manager = modelManager] in
@@ -353,8 +354,8 @@ final class AppModel: ObservableObject {
         static let migratedV4 = "aloud.prefs.migratedV4"
     }
 
-    /// The voice ids a stored preference may name: the curated eight Kokoro
-    /// voices plus the stable System id. Nonisolated because it is a default
+    /// The voice ids a stored preference may name: the curated Kokoro voices
+    /// (stock speakers and Aloud's blends) plus the stable System id. Nonisolated because it is a default
     /// argument of `runListeningMigrationIfNeeded`.
     nonisolated static var curatedVoiceIDs: Set<String> {
         Set(KokoroVoiceCatalog.curatedVoices.map(\.id) + [AVSpeechEngine.systemVoiceID])

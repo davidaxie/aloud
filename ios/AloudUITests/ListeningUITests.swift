@@ -169,7 +169,7 @@ final class ListeningUITests: XCTestCase {
                                          "-uitest-kokoro-model-path", modelDirectory])
         app.launch()
 
-        let ids = ["am_michael", "am_fenrir", "am_puck", "af_heart",
+        let ids = ["am_michael", "aloud_velvet", "aloud_anchor", "aloud_ember", "am_fenrir", "am_puck", "af_heart",
                    "af_bella", "af_nicole", "af_sarah", "bf_emma"].map { "kokoro:" + $0 } + ["system"]
         for id in ids {
             openListeningSheet(app)
