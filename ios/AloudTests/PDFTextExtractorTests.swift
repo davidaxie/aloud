@@ -143,6 +143,84 @@ final class PDFTextExtractorTests: XCTestCase {
         }
     }
 
+    // MARK: - Audit fixes
+
+    /// F003: a printed book's headers alternate, the book's title on left
+    /// pages and the chapter's on right ones, so neither repeats on half
+    /// the pages. Both are taken off (and kept for the chapter tier), the
+    /// sentence a page break cuts is whole again, and the chapter's title
+    /// on its opening page stays.
+    func testAlternatingRunningHeadersAreStrippedAndPagesRejoin() async throws {
+        let words = ["amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "heath", "inlet", "juniper",
+                     "kestrel", "linden", "meadow", "nettle", "orchard", "pebble", "quarry", "rowan", "sorrel", "thistle"]
+        func body(_ page: Int) -> [String] {
+            let word = words[page - 1]
+            // Page 6's last sentence runs on to page 7.
+            return ["the \(word) path wound along the harbour wall", "and the boats drifted past the \(word) pier",
+                    "while the light over the \(word) grew softer on", "the water near the \(word) steps"
+                        + (page == 6 ? " and" : ".")]
+        }
+        // Front matter on 1-4; chapters open on 5 and 13 with a sunk title.
+        let url = try makePDF(pages: (1...20).map { page -> [(String, CGFloat)] in
+            var lines: [(String, CGFloat)] = []
+            if page == 5 || page == 13 {
+                lines.append((page == 5 ? "HARBOUR LIGHTS" : "OPEN WATER", 200))
+            } else if page > 5, page % 2 == 0 {
+                lines.append(("\(page) THE SMALL BOOK", 40))
+            } else if page > 5 {
+                lines.append(("\(page < 13 ? "HARBOUR LIGHTS" : "OPEN WATER") \(page)", 40))
+            }
+            for (i, line) in body(page).enumerated() { lines.append((line, 300 + CGFloat(i) * 20)) }
+            return lines
+        })
+
+        let content = try await ExtractionPipeline().extract(pdfURL: url, progress: nil)
+        let joined = content.sentences.map(\.text).joined(separator: " ")
+
+        XCTAssertFalse(joined.contains("THE SMALL BOOK"), "left-page header read aloud: \(joined)")
+        XCTAssertEqual(occurrences(of: "HARBOUR LIGHTS", in: joined), 1, "only the opening page's title")
+        XCTAssertEqual(occurrences(of: "OPEN WATER", in: joined), 1, "only the opening page's title")
+        XCTAssertTrue(joined.contains("near the fjord steps and the grove path wound"), "pages 6 and 7 rejoin")
+        XCTAssertEqual(content.pageHeaders?[7], "HARBOUR LIGHTS 7")
+        XCTAssertEqual(content.pageHeaders?[8], "8 THE SMALL BOOK")
+        XCTAssertNil(content.pageHeaders?[5], "an opening title is no header")
+    }
+
+    /// F024: page images with one text page (a scan's usage notice or
+    /// cover sheet) are a scanned PDF, not a book of a few sentences.
+    func testMostlyScannedPDFThrowsNoReadableText() async throws {
+        let notice = [("This book was digitized from a library copy for public use.", CGFloat(300))]
+        let url = try makePDF(pages: [notice] + Array(repeating: [], count: 11))
+        do {
+            _ = try await ExtractionPipeline().extract(pdfURL: url, progress: nil)
+            XCTFail("expected ExtractionError.noReadableText")
+        } catch let error as ExtractionError {
+            XCTAssertEqual(error, .noReadableText)
+        }
+        XCTAssertFalse(PDFTextExtractor.isMostlyScanned(pagesWithText: 2, pageCount: 4), "a short PDF keeps its text")
+        XCTAssertFalse(PDFTextExtractor.isMostlyScanned(pagesWithText: 3, pageCount: 20))
+    }
+
+    /// F078: a page that continues a sentence with an accented lowercase
+    /// letter is joined on; Chinese and Japanese line wraps add no space,
+    /// Korean ones keep theirs.
+    func testNonASCIIContinuationsAndCJKWraps() {
+        var blocks = [TextBlock(text: "Er sah, wie es", page: 1)]
+        PDFTextExtractor.appendPageParagraphs(&blocks, ["über den Fluss ging."], page: 2)
+        XCTAssertEqual(blocks.map(\.text), ["Er sah, wie es über den Fluss ging."])
+        blocks = [TextBlock(text: "avec un grand", page: 1)]
+        PDFTextExtractor.appendPageParagraphs(&blocks, ["élan vers la porte."], page: 2)
+        XCTAssertEqual(blocks.map(\.text), ["avec un grand élan vers la porte."])
+        blocks = [TextBlock(text: "He walked home", page: 1)]
+        PDFTextExtractor.appendPageParagraphs(&blocks, ["Then it rained."], page: 2)
+        XCTAssertEqual(blocks.count, 2, "a capital still starts a new paragraph")
+
+        XCTAssertEqual(PDFTextExtractor.appendLine("我们今天去", "公园散步。"), "我们今天去公园散步。")
+        XCTAssertEqual(PDFTextExtractor.appendLine("今日は公園へ", "散歩に行きました。"), "今日は公園へ散歩に行きました。")
+        XCTAssertEqual(PDFTextExtractor.appendLine("우리는 오늘", "공원에 갔다."), "우리는 오늘 공원에 갔다.")
+        XCTAssertEqual(PDFTextExtractor.appendLine("plain words", "go on"), "plain words go on")
+    }
+
     // MARK: - Helpers
 
     private func occurrences(of needle: String, in haystack: String) -> Int {

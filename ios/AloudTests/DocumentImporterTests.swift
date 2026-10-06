@@ -8,6 +8,26 @@ import XCTest
 @MainActor
 final class DocumentImporterTests: XCTestCase {
 
+    // MARK: Type sniffing (F091)
+
+    /// A PDF saved under a .txt name goes to the PDF reader by its "%PDF-"
+    /// signature; text and unreadable files go by their name.
+    func testPDFSignatureRoutesAMisnamedFileToThePDFReader() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-sniff-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let misnamed = folder.appendingPathComponent("report.txt")
+        try Data("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".utf8).write(to: misnamed)
+        let notes = folder.appendingPathComponent("notes.txt")
+        try Data("Plain notes about a PDF-1 form.".utf8).write(to: notes)
+
+        XCTAssertTrue(DocumentImporter.isPDF(misnamed))
+        XCTAssertFalse(DocumentImporter.isPDF(notes))
+        XCTAssertTrue(DocumentImporter.isPDF(folder.appendingPathComponent("SCAN.PDF")), "by name, unread")
+        XCTAssertFalse(DocumentImporter.isPDF(folder.appendingPathComponent("missing.txt")))
+    }
+
     // MARK: Fixtures
 
     /// In-memory LibraryAdding. Imports can hold (a 30 s sleep that records

@@ -167,11 +167,21 @@ enum TextNormalizer {
     private static func translate(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.count)
+        // A ZWNJ or ZWJ waits for the scalar after it (see `keepsJoiner`).
+        var joiner: (scalar: Unicode.Scalar, before: Unicode.Scalar?)?
         for scalar in s.unicodeScalars {
+            if let pending = joiner {
+                if keepsJoiner(before: pending.before, after: scalar) { out.unicodeScalars.append(pending.scalar) }
+                joiner = nil
+            }
             switch scalar.value {
-            // Soft hyphen + zero-width family + BOM: delete.
-            case 0x00AD, 0x200B, 0x200C, 0x200D, 0xFEFF:
+            // Soft hyphen + zero-width space + BOM: delete.
+            case 0x00AD, 0x200B, 0xFEFF:
                 continue
+            // Zero-width non-joiner and joiner: delete, but where they shape
+            // the text.
+            case 0x200C, 0x200D:
+                joiner = (scalar, out.unicodeScalars.last)
             // NEL, NBSP, narrow NBSP, line/para separators, en quad..hair space.
             case 0x0085, 0x00A0, 0x202F, 0x2028, 0x2029, 0x2000...0x200A:
                 out.append(" ")
@@ -198,7 +208,38 @@ enum TextNormalizer {
                 out.unicodeScalars.append(scalar)
             }
         }
+        if let pending = joiner, keepsJoiner(before: pending.before, after: nil) {
+            out.unicodeScalars.append(pending.scalar)
+        }
         return out
+    }
+
+    /// ZWJ and ZWNJ beside an emoji or a letter of a non-Latin script are
+    /// spelling: they join "👩‍💻" into one emoji and keep Persian "می‌خواهم"
+    /// and Devanagari half forms as written. Between Latin letters they are
+    /// leftovers of ligature breaking in PDFs, and go. Search folds a query
+    /// by the same rule.
+    static func keepsJoiner(before: Unicode.Scalar?, after: Unicode.Scalar?) -> Bool {
+        func shapes(_ scalar: Unicode.Scalar?) -> Bool {
+            guard let scalar, scalar.value > 0x7F else { return false }
+            let properties = scalar.properties
+            if scalar.value == 0xFE0F || properties.isEmojiPresentation || properties.isEmojiModifier
+                || (properties.isEmoji && scalar.value > 0x2000) {
+                return true
+            }
+            switch scalar.value {
+            case ..<0x0370, 0x1E00...0x1EFF: return false   // Latin, IPA and their diacritics
+            default:
+                switch properties.generalCategory {
+                case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+                     .nonspacingMark, .spacingMark, .enclosingMark:
+                    return true
+                default:
+                    return false
+                }
+            }
+        }
+        return shapes(before) || shapes(after)
     }
 
     /// Whitespace runs → one space, ends trimmed. Same result as replacing

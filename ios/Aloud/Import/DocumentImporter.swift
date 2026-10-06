@@ -158,7 +158,7 @@ final class DocumentImporter: ObservableObject {
         // Snapshot before the add, so a duplicate (the store returns the
         // record already on the shelf) is announced as such.
         let before = Set(library.documents.map(\.id))
-        let isPDF = url.pathExtension.lowercased() == "pdf"
+        let isPDF = !Self.isPastedText(url) && Self.isPDF(url)
         phase = .importing(fileName: title ?? url.lastPathComponent, progress: 0)
 
         let progress: @Sendable (Double) -> Void = { [weak self] value in
@@ -396,6 +396,20 @@ final class DocumentImporter: ObservableObject {
         let url = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension("txt")
         try Data(text.utf8).write(to: url, options: .atomic)
         return url
+    }
+
+    /// A ".pdf" name, or a PDF's own "%PDF-" signature under another name
+    /// (a download saved as .txt), which the text reader would only read
+    /// out as its internal syntax. A file that can't be read yet goes by
+    /// its name.
+    nonisolated static func isPDF(_ url: URL) -> Bool {
+        if url.pathExtension.lowercased() == "pdf" { return true }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 1024) else { return false }
+        return TextExtractor.hasPDFSignature(head)
     }
 
     /// "moby-dick_ch1.txt" → "Moby Dick Ch1"

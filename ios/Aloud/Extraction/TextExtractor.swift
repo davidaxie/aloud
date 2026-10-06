@@ -55,6 +55,7 @@ struct TextExtractor {
     static func paragraphs(in unified: String) -> [RawParagraph] {
         let lines = unified.split(separator: "\n", omittingEmptySubsequences: false)
         let lineIsParagraph = isOneParagraphPerLine(lines)
+        let indentOpens = !lineIsParagraph && isIndentedParagraphLayout(lines)
 
         var result: [RawParagraph] = []
         var current: [Substring] = []
@@ -71,13 +72,47 @@ struct TextExtractor {
             if isBlank(line) {
                 flush()
             } else {
+                let heading = indentOpens && isHeadingLine(at: index, in: lines)
+                if indentOpens && (indent(of: line) >= 2 || heading) { flush() }
                 if current.isEmpty { firstLine = index }
                 current.append(line)
-                if lineIsParagraph { flush() }
+                if lineIsParagraph || heading { flush() }
             }
         }
         flush()
         return result
+    }
+
+    /// Hard-wrapped text with no blank lines that opens each paragraph with
+    /// an indent (lib.ru, OCR and older etexts): blank lines are rare, most
+    /// lines start at the margin and a fair share are indented. There an
+    /// indented line starts a paragraph, and so does a heading line.
+    static func isIndentedParagraphLayout(_ lines: [Substring]) -> Bool {
+        let blankCount = lines.reduce(0) { isBlank($1) ? $0 + 1 : $0 }
+        let count = lines.count - blankCount
+        guard count >= 6, blankCount * 10 < count else { return false }
+        let indented = lines.reduce(0) { !isBlank($1) && indent(of: $1) >= 2 ? $0 + 1 : $0 }
+        return indented * 20 >= count && indented * 2 <= count
+    }
+
+    /// Leading spaces, a tab counting as four.
+    private static func indent(of line: Substring) -> Int {
+        var width = 0
+        for byte in line.utf8 {
+            if byte == 0x20 { width += 1 } else if byte == 0x09 { width += 4 } else { break }
+        }
+        return width
+    }
+
+    /// A short "CHAPTER I" / "PART TWO" / "XII." line with a paragraph
+    /// opening (an indented line) after it, so a wrapped line that merely
+    /// starts "Part one of the…" stays in its paragraph.
+    private static func isHeadingLine(at index: Int, in lines: [Substring]) -> Bool {
+        let line = lines[index].trimmingCharacters(in: .whitespaces)
+        guard line.count <= 40, line.firstMatch(of: headingFirstLineRegex) != nil,
+              line.firstMatch(of: midSentenceRegex) == nil, !isRunOnProse(line) else { return false }
+        guard let next = lines[(index + 1)...].first(where: { !isBlank($0) }) else { return true }
+        return indent(of: next) >= 2
     }
 
     /// Only spaces and tabs, as `trimmingCharacters(in: .whitespaces)` sees
@@ -1184,17 +1219,130 @@ struct TextExtractor {
     // MARK: - Reading
 
     private static func read(_ url: URL) throws -> String {
-        if let text = try? String(contentsOf: url, encoding: .utf8) { return text }
+        guard let data = try? Data(contentsOf: url) else { throw ExtractionError.unreadableTextFile }
+        // A PDF, image or archive under a text name is refused, not read
+        // out as gibberish. UTF-16 without a byte-order mark has a zero in
+        // every other byte; it is text.
+        if let text = bomlessUTF16(data) { return text }
+        guard !isBinary(data) else { throw ExtractionError.unreadableTextFile }
+        if let text = String(data: data, encoding: .utf8) { return text }
         var encoding = String.Encoding.utf8
         if let text = try? String(contentsOf: url, usedEncoding: &encoding) { return text }
         // UTF-8 with a few stray Windows bytes (a ’ pasted in from Word).
-        if let data = try? Data(contentsOf: url), let text = repairingStrayBytes(data) { return text }
+        if let text = repairingStrayBytes(data) { return text }
+        // More bytes above ASCII than ASCII letters: not Western text, which
+        // CP1252 would turn into mojibake. Chinese, Japanese, Korean or
+        // Cyrillic in a legacy encoding, or nothing readable.
+        if isMostlyHighBytes(data) {
+            guard let text = legacyDecoded(data) else { throw ExtractionError.unreadableTextFile }
+            return text
+        }
         // Windows "ANSI" text: CP1252 has curly quotes and dashes at
         // 0x80–0x9F, where Latin-1 has control characters the normalizer
         // deletes. Latin-1 remains for the five bytes CP1252 leaves undefined.
-        if let text = try? String(contentsOf: url, encoding: .windowsCP1252) { return text }
-        if let text = try? String(contentsOf: url, encoding: .isoLatin1) { return text }
+        if let text = String(data: data, encoding: .windowsCP1252) { return text }
+        if let text = String(data: data, encoding: .isoLatin1) { return text }
         throw ExtractionError.unreadableTextFile
+    }
+
+    /// A PDF's "%PDF-" signature, or control bytes no text has: a zero byte
+    /// (with no UTF-16 or UTF-32 byte-order mark), or more than one byte in
+    /// a hundred among C0 controls other than tab, line breaks, form feed,
+    /// escape and the DOS end-of-file mark.
+    static func isBinary(_ data: Data) -> Bool {
+        if hasPDFSignature(data) { return true }
+        let bom = [UInt8](data.prefix(4))
+        if bom.starts(with: [0xFF, 0xFE]) || bom.starts(with: [0xFE, 0xFF]) || bom == [0, 0, 0xFE, 0xFF] {
+            return false
+        }
+        var controls = 0
+        for byte in data {
+            switch byte {
+            case 0x00: return true
+            case 0x01...0x08, 0x0E...0x19, 0x1C...0x1F: controls += 1
+            default: break
+            }
+        }
+        return controls * 100 > data.count
+    }
+
+    /// "%PDF-" in the first kilobyte, where readers look for it.
+    static func hasPDFSignature(_ data: Data) -> Bool {
+        data.prefix(1024).range(of: Data("%PDF-".utf8)) != nil
+    }
+
+    /// UTF-16 saved without a byte-order mark: mostly ASCII, so nearly
+    /// every other byte is zero, at odd offsets (little-endian) or even.
+    static func bomlessUTF16(_ data: Data) -> String? {
+        let bytes = [UInt8](data.prefix(4096))
+        guard bytes.count >= 4, bytes.count % 2 == 0 else { return nil }
+        var evenZeros = 0
+        var oddZeros = 0
+        for (offset, byte) in bytes.enumerated() where byte == 0 {
+            if offset % 2 == 0 { evenZeros += 1 } else { oddZeros += 1 }
+        }
+        let half = bytes.count / 2
+        if oddZeros * 10 >= half * 9, evenZeros * 10 < half {
+            return String(data: data, encoding: .utf16LittleEndian)
+        }
+        if evenZeros * 10 >= half * 9, oddZeros * 10 < half {
+            return String(data: data, encoding: .utf16BigEndian)
+        }
+        return nil
+    }
+
+    static func isMostlyHighBytes(_ data: Data) -> Bool {
+        var high = 0
+        var letters = 0
+        for byte in data {
+            if byte >= 0x80 {
+                high += 1
+            } else if (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte) {
+                letters += 1
+            }
+        }
+        return high > letters
+    }
+
+    /// The legacy encodings of Chinese, Japanese, Korean and Cyrillic text,
+    /// as Foundation's detector judges the data, without loss; nil when
+    /// none of them reads it cleanly.
+    static func legacyDecoded(_ data: Data) -> String? {
+        func cf(_ encoding: CFStringEncodings) -> UInt {
+            CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(encoding.rawValue))
+        }
+        let candidates: [UInt] = [
+            cf(.GB_18030_2000), cf(.big5), String.Encoding.shiftJIS.rawValue,
+            String.Encoding.japaneseEUC.rawValue, cf(.EUC_KR), String.Encoding.windowsCP1251.rawValue,
+            cf(.KOI8_R),
+        ]
+        var converted: NSString?
+        var lossy: ObjCBool = false
+        let found = NSString.stringEncoding(for: data, encodingOptions: [
+            .suggestedEncodingsKey: candidates,
+            .useOnlySuggestedEncodingsKey: true,
+            .allowLossyKey: false,
+        ], convertedString: &converted, usedLossyConversion: &lossy)
+        guard found != 0, !lossy.boolValue, let converted else { return nil }
+        // Both Cyrillic encodings read any bytes, and the detector favours
+        // Windows-1251; KOI8-R read as 1251 comes out in inverted case
+        // ("зМБЧБ"), so the reading with more lowercase wins.
+        let cyrillic = [String.Encoding.windowsCP1251.rawValue, cf(.KOI8_R)]
+        if cyrillic.contains(found) {
+            let readings = cyrillic.compactMap { String(data: data, encoding: String.Encoding(rawValue: $0)) }
+            return readings.max { lowercaseShare($0) < lowercaseShare($1) } ?? converted as String
+        }
+        return converted as String
+    }
+
+    private static func lowercaseShare(_ text: String) -> Double {
+        var letters = 0
+        var lower = 0
+        for scalar in text.unicodeScalars where scalar.properties.isAlphabetic {
+            letters += 1
+            if scalar.properties.isLowercase { lower += 1 }
+        }
+        return letters == 0 ? 0 : Double(lower) / Double(letters)
     }
 
     /// Windows-1252 at 0x80–0x9F; zero where it leaves a byte undefined.

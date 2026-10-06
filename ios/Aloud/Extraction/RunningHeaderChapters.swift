@@ -7,8 +7,10 @@ import Foundation
 /// false positives; a book without that layout fails the gate and falls
 /// through to page ranges.
 ///
-/// 1. A page's header is its first paragraph when that is one short caps
-///    sentence; its key drops a leading or trailing page number. A header
+/// 1. A page's header is the one the extractor took off its top
+///    (`DocContent.pageHeaders`) or, in content extracted before it did,
+///    its first paragraph when that is one short caps sentence; its key
+///    drops a leading or trailing page number. A header
 ///    the extractor glued onto the previous page's run-on sentence ("In
 ///    contemporary par- WHAT'S A NETWORK EFFECT, ANYWAY?") counts for the
 ///    next page.
@@ -64,6 +66,13 @@ enum RunningHeaderChapters {
         //    previous page's last paragraph.
         var headerAt: [Int: String] = [:]
         for page in pages where partTitleByPage[page] == nil {
+            if let header = content.pageHeaders?[page] {
+                let headerKey = Self.key(of: header)
+                if isCapsLine(header, maxWords: maxHeaderWords), headerKey.count >= 2, !isPageNumber(headerKey) {
+                    headerAt[page] = headerKey
+                }
+                continue
+            }
             guard let first = parasByPage[page]?.first, isOneLine(first) else { continue }
             let line = text(first)
             guard isCapsLine(line, maxWords: maxHeaderWords) else { continue }

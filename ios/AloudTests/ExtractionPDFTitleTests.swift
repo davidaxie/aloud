@@ -32,6 +32,20 @@ final class ExtractionPDFTitleTests: XCTestCase {
         XCTAssertEqual(content.title, "The Quiet Hour")
     }
 
+    /// F077: a Title the authoring tool wrote names nothing; the picked
+    /// file's name does.
+    func testPlaceholderMetadataTitleFallsBackToTheFileName() async throws {
+        for junk in ["Microsoft Word - mobydick_final_v3.docx", "untitled", "Untitled-1", "Document1",
+                     "PowerPoint Presentation", "chapter3.indd"] {
+            let url = try makePDF(fileName: "\(UUID().uuidString).pdf", title: junk)
+            let content = try await ExtractionPipeline().extract(pdfURL: url, fallbackTitle: "Moby Dick", progress: nil)
+            XCTAssertEqual(content.title, "Moby Dick", "metadata \(junk)")
+        }
+        for real in ["The Quiet Hour", "Untitled Love Story", "Document of the Year: A Memoir"] {
+            XCTAssertFalse(PDFTextExtractor.isPlaceholderTitle(real), real)
+        }
+    }
+
     func testFileTitle() {
         XCTAssertEqual(ExtractionPipeline.fileTitle(of: URL(fileURLWithPath: "/tmp/Report.pdf")), "Report")
         XCTAssertEqual(ExtractionPipeline.fileTitle(

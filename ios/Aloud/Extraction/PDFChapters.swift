@@ -305,7 +305,9 @@ enum OutlineChapters {
 
 /// Rows from chapter headings in the text, for a PDF with no usable outline:
 /// "CHAPTER ONE" (with its title line) and the named front and back matter
-/// around the numbered run. Needs at least three numbered headings.
+/// around the numbered run. Needs at least three numbered headings. A
+/// chapter's number counts once per Part: a running header that repeats
+/// "Chapter 3 The Return" on every other page is that chapter, not more.
 enum HeadingChapters {
 
     static let minimumNumbered = 3
@@ -317,6 +319,7 @@ enum HeadingChapters {
         let title: String
         let kind: Kind
         let name: String
+        var number: Int? = nil
     }
 
     static func entries(in content: DocContent) -> [ChapterMap.Entry]? {
@@ -345,7 +348,8 @@ enum HeadingChapters {
                 if rest.isEmpty, let next = titleLine(after: index, in: content) {
                     title += ": " + next
                 }
-                candidates.append(Candidate(sentence: id, title: title, kind: .numbered, name: ""))
+                candidates.append(Candidate(sentence: id, title: title, kind: .numbered, name: "",
+                                            number: chapterNumber(text)))
             } else if firstOnPage, words.count <= 8, text.wholeMatch(of: partHeading) != nil {
                 parts.append((id, ChapterText.droppingTrailingPeriod(text)))
             } else if firstOnPage, let match = text.wholeMatch(of: namedHeading) {
@@ -365,6 +369,15 @@ enum HeadingChapters {
             return [numbered[i], numbered[i + 1]]
         })
         candidates.removeAll { $0.kind == .numbered && listed.contains($0.sentence) }
+
+        // Each number once per Part: the first is the chapter's opening, a
+        // later one its running header.
+        var numbersSeen = Set<[Int]>()
+        candidates.removeAll { candidate in
+            guard candidate.kind == .numbered, let number = candidate.number else { return false }
+            let part = parts.filter { $0.sentence < candidate.sentence }.count
+            return !numbersSeen.insert([part, number]).inserted
+        }
 
         let chapters = candidates.filter { $0.kind == .numbered }
         guard chapters.count >= minimumNumbered,
@@ -403,6 +416,38 @@ enum HeadingChapters {
     }
 
     private static let frontNames: Set<String> = ["PREFACE", "FOREWORD", "INTRODUCTION", "PROLOGUE"]
+
+    /// The number after "Chapter": digits, a roman numeral or a number
+    /// word ("twenty-one"), so "CHAPTER THREE" and "Chapter 3" agree.
+    static func chapterNumber(_ heading: String) -> Int? {
+        let words = heading.split(whereSeparator: { $0.isWhitespace || ".:".contains($0) })
+        guard words.count >= 2 else { return nil }
+        let token = words[1].lowercased()
+        if let value = Int(token) { return value }
+        if let value = romanValue(token) { return value }
+        let parts = token.split(separator: "-").map(String.init)
+        guard let head = numberWords[parts[0]] else { return nil }
+        guard parts.count == 2 else { return parts.count == 1 ? head : nil }
+        return numberWords[parts[1]].map { head + $0 }
+    }
+
+    private static func romanValue(_ token: String) -> Int? {
+        let values: [Character: Int] = ["i": 1, "v": 5, "x": 10, "l": 50, "c": 100]
+        let digits = token.compactMap { values[$0] }
+        guard !digits.isEmpty, digits.count == token.count else { return nil }
+        var total = 0
+        for (index, value) in digits.enumerated() {
+            total += index + 1 < digits.count && value < digits[index + 1] ? -value : value
+        }
+        return total
+    }
+
+    private static let numberWords: [String: Int] = [
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+        "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    ]
 
     private static let numberedHeading =
         #/(?:CHAPTER|Chapter)\s+(?i:\d{1,3}|[ivxlc]{1,7}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)(?:-(?i:one|two|three|four|five|six|seven|eight|nine))?\b[.:]?\s*(.*)/#

@@ -31,9 +31,15 @@ struct DocContent: Codable {
     /// content cache older than chapter maps, a text book, synthetic test
     /// content). Not part of `contentHash`, so deriving one keeps progress.
     var chapterMap: ChapterMap? = nil
+    /// PDFs only: the running header the extractor took off the top of
+    /// each page, by page, so the running-header chapter tier can still
+    /// read chapter titles from them when the map is worked out again. nil
+    /// for content extracted before headers were taken off (they are still
+    /// in its text). Not part of `contentHash`.
+    var pageHeaders: [Int: String]? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case title, pageCount, sentences, paragraphs, contentHash, chapterMap
+        case title, pageCount, sentences, paragraphs, contentHash, chapterMap, pageHeaders
     }
 }
 
@@ -51,6 +57,7 @@ extension DocContent {
         paragraphs = try container.decode([Paragraph].self, forKey: .paragraphs)
         contentHash = try container.decode(String.self, forKey: .contentHash)
         chapterMap = (try? container.decodeIfPresent(ChapterMap.self, forKey: .chapterMap)) ?? nil
+        pageHeaders = (try? container.decodeIfPresent([Int: String].self, forKey: .pageHeaders)) ?? nil
     }
 }
 
@@ -78,7 +85,7 @@ struct ChapterMap: Codable, Equatable {
 
     /// Bump whenever a detector changes: every PDF's map is worked out again
     /// on its next open.
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let source: Source
@@ -303,11 +310,27 @@ extension DocContent {
     /// A dash has two stored spellings, both shown as an em dash: " - " (a
     /// real dash in the source) and "--" (Gutenberg's ASCII dash). A query
     /// with a dash yields a needle for each.
+    ///
+    /// Spaces are stored plain and single, with none before , . ; : ! ? so
+    /// a query's no-break, narrow and typographic spaces, and its runs of
+    /// spaces, are folded the same way ("Mr.\u{00A0}Darcy", "Mr.  Darcy").
+    /// A ZWJ or ZWNJ the normalizer keeps (an emoji sequence, a non-Latin
+    /// word) is kept, with a needle without it for books imported before.
     static func searchNeedles(for query: String) -> [String] {
         var folded = ""
         var hasDash = false
-        for scalar in query.unicodeScalars {
+        var keptJoiner = false
+        let scalars = Array(query.unicodeScalars)
+        for (index, scalar) in scalars.enumerated() {
             switch scalar.value {
+            case 0x200C, 0x200D:
+                if TextNormalizer.keepsJoiner(before: folded.unicodeScalars.last,
+                                              after: index + 1 < scalars.count ? scalars[index + 1] : nil) {
+                    folded.unicodeScalars.append(scalar)
+                    keptJoiner = true
+                }
+            case 0x0085, 0x00A0, 0x202F, 0x2028, 0x2029, 0x2000...0x200A:
+                folded.append(" ")
             case 0x2018...0x201B:
                 folded.append("'")
             case 0x201C...0x201F:
@@ -317,7 +340,7 @@ extension DocContent {
             // The word joiner the reader sets after a typeset "--" (it comes
             // along when text is copied), and the invisibles the normalizer
             // deletes.
-            case 0x00AD, 0x200B...0x200D, 0x2060, 0xFEFF:
+            case 0x00AD, 0x200B, 0x2060, 0xFEFF:
                 continue
             case 0x2012...0x2015:
                 folded.append(dash)
@@ -326,15 +349,26 @@ extension DocContent {
                 folded.unicodeScalars.append(scalar)
             }
         }
-        let needle = folded.trimmingCharacters(in: .whitespacesAndNewlines)
+        let needle = folded
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+([,.;:!?])", with: "$1", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return [] }
-        guard hasDash else { return [needle] }
-        // "said—and" → "said--and"; spacing kept as typed.
-        let ascii = needle.replacingOccurrences(of: String(dash), with: "--")
-        // "said—and" and "said — and" → "said - and", the normalizer's form.
-        let spaced = needle.replacingOccurrences(of: "\\s*\(dash)\\s*", with: " - ",
-                                                 options: .regularExpression)
-        return [ascii, spaced]
+        var needles = [needle]
+        if hasDash {
+            // "said—and" → "said--and"; spacing kept as typed.
+            let ascii = needle.replacingOccurrences(of: String(dash), with: "--")
+            // "said—and" and "said — and" → "said - and", the normalizer's form.
+            let spaced = needle.replacingOccurrences(of: "\\s*\(dash)\\s*", with: " - ",
+                                                     options: .regularExpression)
+            needles = [ascii, spaced]
+        }
+        if keptJoiner {
+            needles += needles.map {
+                $0.replacingOccurrences(of: "[\\u200C\\u200D]", with: "", options: .regularExpression)
+            }
+        }
+        return needles
     }
 
     /// Every query dash becomes this one before it is respelled.

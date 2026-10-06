@@ -28,6 +28,7 @@ actor ExtractionPipeline {
         var content = try Self.buildContent(title: title,
                                             pageCount: output.pageCount,
                                             blocks: output.blocks)
+        content.pageHeaders = output.pageHeaders.isEmpty ? nil : output.pageHeaders
         content.chapterMap = PDFChapterDetector.chapterMap(for: content, outline: output.outline)
         progress?(1.0)
         return content

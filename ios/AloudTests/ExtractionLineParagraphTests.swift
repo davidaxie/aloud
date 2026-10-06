@@ -78,6 +78,31 @@ final class ExtractionLineParagraphTests: XCTestCase {
         XCTAssertTrue(content.sentences.allSatisfy { $0.text.hasSuffix(".") })
     }
 
+    /// F022: hard-wrapped text with no blank lines that indents each
+    /// paragraph's first line splits at the indents, and its CHAPTER lines
+    /// stand alone and start pages; a wrapped line that merely starts
+    /// "Part one" stays in its paragraph.
+    func testIndentedParagraphsWithoutBlankLinesSplitAtIndentsAndHeadings() async throws {
+        var lines = ["CHAPTER I"]
+        for topic in 1...6 { lines += wrapped("first \(topic)", sentences: 3, width: 70, indent: "    ") }
+        lines.append("CHAPTER II")
+        for topic in 1...6 { lines += wrapped("second \(topic)", sentences: 3, width: 70, indent: "    ") }
+        lines[lines.count - 2] = "Part one of it ran on with"
+        XCTAssertFalse(lines.contains(""))
+
+        let content = try await extract(lines.joined(separator: "\n"))
+
+        XCTAssertEqual(content.paragraphs.count, 14)
+        XCTAssertEqual(content.pageCount, 2)
+        let firsts = content.paragraphs.map { content.sentences[$0.sentenceIDs.lowerBound].text }
+        XCTAssertEqual(firsts[0], "CHAPTER I")
+        XCTAssertEqual(firsts[7], "CHAPTER II")
+        XCTAssertTrue(firsts[1].hasPrefix("The first 1 kept going"), firsts[1])
+        XCTAssertTrue(TextExtractor.isIndentedParagraphLayout(lines.map { Substring($0) }))
+        XCTAssertFalse(TextExtractor.isIndentedParagraphLayout(
+            wrapped("plain", sentences: 20, width: 70).map { Substring($0) }), "no indents: one paragraph as before")
+    }
+
     func testIndentedWrappedParagraphsAreNotSplitPerLine() {
         let lines = (1...12).flatMap { wrapped("topic \($0)", sentences: 3, width: 110, indent: "    ") }
         XCTAssertFalse(TextExtractor.isOneParagraphPerLine(lines.map { Substring($0) }))

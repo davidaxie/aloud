@@ -77,6 +77,30 @@ final class ContentsSearchFoldingTests: XCTestCase {
         XCTAssertEqual(polls, book.sentences.count)
     }
 
+    /// F093: the spaces the normalizer stores plain (no-break, narrow,
+    /// thin), runs of spaces, and a space before punctuation are folded
+    /// the same way in a query.
+    func testQuerySpacesFoldLikeStoredText() {
+        let darcy = DocContent(
+            title: "Fixture", pageCount: 1,
+            sentences: [Sentence(id: 0, text: "\"I am glad, Mr. Darcy, to see you.\" Il dit: oui.", para: 0, page: 1)],
+            paragraphs: [], contentHash: "spaces")
+        for query in ["Mr.\u{00A0}Darcy", "Mr.\u{202F}Darcy", "Mr.\u{2009}Darcy", "Mr.  Darcy", "Mr.\tDarcy",
+                      "dit\u{202F}:", "glad ,"] {
+            XCTAssertEqual(darcy.matches(of: query).map(\.sentenceID), [0], query.debugDescription)
+        }
+        XCTAssertEqual(DocContent.searchNeedles(for: "Mr.\u{00A0}Darcy"), ["Mr. Darcy"])
+        XCTAssertEqual(DocContent.searchNeedles(for: "a \u{2014}\u{00A0}b"), ["a -- b", "a - b"])
+    }
+
+    /// F079's search side: a ZWJ the normalizer now keeps is kept in the
+    /// query, with a needle without it for a book imported before.
+    func testJoinerNeedles() {
+        XCTAssertEqual(DocContent.searchNeedles(for: "\u{1F469}\u{200D}\u{1F4BB}"),
+                       ["\u{1F469}\u{200D}\u{1F4BB}", "\u{1F469}\u{1F4BB}"])
+        XCTAssertEqual(DocContent.searchNeedles(for: "af\u{200C}fair"), ["affair"])
+    }
+
     func testNeedlesForPlainAndDashedQueries() {
         XCTAssertEqual(DocContent.searchNeedles(for: "  whale  "), ["whale"])
         XCTAssertEqual(DocContent.searchNeedles(for: " \u{2019} "), ["'"])

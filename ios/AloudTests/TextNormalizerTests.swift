@@ -21,6 +21,18 @@ final class TextNormalizerTests: XCTestCase {
                        "zerowidthcharshere")
     }
 
+    /// F079: ZWJ and ZWNJ are spelling beside an emoji or a non-Latin
+    /// letter, and stay; between Latin letters they still go.
+    func testJoinersKeptInEmojiAndNonLatinText() {
+        XCTAssertEqual(TextNormalizer.normalize("She typed \u{1F469}\u{200D}\u{1F4BB} all night."),
+                       "She typed \u{1F469}\u{200D}\u{1F4BB} all night.")
+        XCTAssertEqual(TextNormalizer.normalize("\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}"), "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}")
+        XCTAssertEqual(TextNormalizer.normalize("\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}"),
+                       "\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}")
+        XCTAssertEqual(TextNormalizer.normalize("\u{0915}\u{094D}\u{200D}\u{0937}"), "\u{0915}\u{094D}\u{200D}\u{0937}")
+        XCTAssertEqual(TextNormalizer.normalize("af\u{200C}fair and \u{200D} spaced"), "affair and spaced")
+    }
+
     func testControlCharactersStripped() {
         XCTAssertEqual(TextNormalizer.normalize("a\u{07}b\u{1F}c"), "abc")
     }

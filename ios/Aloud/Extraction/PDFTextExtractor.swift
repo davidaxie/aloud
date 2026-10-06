@@ -31,6 +31,10 @@ struct PDFTextExtractor {
         /// The PDF's outline (bookmarks), read while the document is open,
         /// for `PDFChapterDetector`. Empty when it has none.
         var outline: [PDFOutlineItem] = []
+        /// The running header taken off the top of each page, by 1-based
+        /// page, normalized: gone from `blocks`, kept for the running-header
+        /// chapter tier, which reads chapter titles from them.
+        var pageHeaders: [Int: String] = [:]
     }
 
     func extract(url: URL, progress: ((Double) -> Void)? = nil) throws -> Output {
@@ -56,24 +60,53 @@ struct PDFTextExtractor {
             progress?(Double(index + 1) / Double(pageCount))
         }
 
-        // Detect repeating headers/footers across the whole document.
-        let running = Self.detectRunningHeaders(pageLines)
+        // Detect repeating headers/footers: across the whole document, and
+        // per page for the ones that run through a chapter or alternate.
+        let running = Self.runningHeadersByPage(pageLines)
 
         // Pass 2: strip noise, fold into paragraphs, stitch across pages.
         var blocks: [TextBlock] = []
+        var pageHeaders: [Int: String] = [:]
+        var pagesWithText = 0
         for (index, lines) in pageLines.enumerated() {
-            let cleaned = Self.stripNoise(lines, running: running)
+            if let header = Self.topHeader(lines, running: running[index]) {
+                pageHeaders[index + 1] = header
+            }
+            let cleaned = Self.stripNoise(lines, running: running[index])
             let paragraphs = Self.paragraphs(from: cleaned)
+            if !paragraphs.isEmpty { pagesWithText += 1 }
             Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1)
+        }
+        // A scan whose only text layer is a cover sheet or a usage notice
+        // reads as having no text, not as a book of a few sentences.
+        if Self.isMostlyScanned(pagesWithText: pagesWithText, pageCount: pageCount) {
+            throw ExtractionError.noReadableText
         }
 
         let title = (document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .flatMap { $0.isEmpty ? nil : $0 }
+            .flatMap { $0.isEmpty || Self.isPlaceholderTitle($0) ? nil : $0 }
 
         return Output(title: title, pageCount: pageCount, blocks: blocks,
-                      outline: PDFChapterDetector.outlineItems(of: document))
+                      outline: PDFChapterDetector.outlineItems(of: document),
+                      pageHeaders: pageHeaders)
     }
+
+    /// Five or more pages, under a tenth of them with text: page images
+    /// with a text page or two.
+    static func isMostlyScanned(pagesWithText: Int, pageCount: Int) -> Bool {
+        pageCount >= 5 && pagesWithText * 10 < pageCount
+    }
+
+    /// A Title the authoring tool wrote rather than the author: Word's
+    /// "Microsoft Word - draft.docx", "Untitled-1", "Document1", a file
+    /// name. The picked file's name is the better title.
+    static func isPlaceholderTitle(_ title: String) -> Bool {
+        title.firstMatch(of: placeholderTitle) != nil
+    }
+
+    private static let placeholderTitle =
+        #/(?i)^(?:microsoft\s+(?:word|powerpoint|excel)\s+-\s.*|untitled(?:[\s_-]*\d+)?|document\s*\d*|powerpoint\s+presentation|presentation\s*\d*|.*\.(?:docx?|pptx?|xlsx?|rtf|odt|pages|key|indd|qxd|tex|dvi|ps|txt|pdf))$/#
 
     // MARK: - Geometry types
 
@@ -118,12 +151,7 @@ struct PDFTextExtractor {
     static func paragraphs(from lines: [Line]) -> [String] {
         guard !lines.isEmpty else { return [] }
 
-        var gaps: [CGFloat] = []
-        for i in 1..<lines.count {
-            gaps.append(lines[i - 1].y - lines[i].y)
-        }
-        let medianGap = median(gaps)
-        let typical = medianGap != 0 ? medianGap : lines[0].height * 1.2
+        let typical = typicalGap(lines)
 
         var paragraphs: [String] = []
         var buffer = ""
@@ -148,6 +176,18 @@ struct PDFTextExtractor {
             .filter { !$0.isEmpty }
     }
 
+    /// The page's usual line-to-line distance: a paragraph break is a gap
+    /// over 1.6 times it.
+    static func typicalGap(_ lines: [Line]) -> CGFloat {
+        guard let first = lines.first else { return 0 }
+        var gaps: [CGFloat] = []
+        for i in lines.indices.dropFirst() {
+            gaps.append(lines[i - 1].y - lines[i].y)
+        }
+        let medianGap = median(gaps)
+        return medianGap != 0 ? medianGap : first.height * 1.2
+    }
+
     /// Append a wrapped line, de-hyphenating words broken across the break:
     /// "inter-" + "national" → "international". Only when a letter precedes the
     /// hyphen and the next line starts lowercase — ASCII for a normal hyphen
@@ -161,7 +201,26 @@ struct PDFTextExtractor {
         if hyphenated || softHyphenated {
             return buffer.replacing(#/[-\u{00AD}]$/#, with: "") + nextTrim
         }
-        return buffer.replacing(#/\s+$/#, with: "") + " " + nextTrim
+        let head = buffer.replacing(#/\s+$/#, with: "")
+        // Chinese and Japanese put no space between words: a wrap there
+        // is no word break. (Korean does space its words.)
+        if let last = head.unicodeScalars.last, let first = nextTrim.unicodeScalars.first,
+           isUnspacedCJK(last), isUnspacedCJK(first) {
+            return head + nextTrim
+        }
+        return head + " " + nextTrim
+    }
+
+    /// Han, kana, and the CJK and fullwidth punctuation set between them.
+    static func isUnspacedCJK(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3000...0x303F, 0x3040...0x30FF, 0x31F0...0x31FF, 0x3400...0x4DBF,
+             0x4E00...0x9FFF, 0xF900...0xFAFF, 0xFF01...0xFF60, 0xFF65...0xFF9F,
+             0x20000...0x2FA1F:
+            return true
+        default:
+            return false
+        }
     }
 
     /// A letter of any script, then a soft hyphen, at the very end.
@@ -216,6 +275,72 @@ struct PDFTextExtractor {
         return Set(counts.filter { $0.value >= threshold }.keys)
     }
 
+    /// Each page's running headers and footers: the document-wide ones,
+    /// plus a line that runs through part of the book. A printed book puts
+    /// its title on left-hand pages and the chapter's on right-hand ones,
+    /// so neither reaches half the pages. Such a line is set apart from the
+    /// body by a paragraph gap, sits at the same height in the same size,
+    /// and recurs at least `minimumRun` times no more than `maximumRunGap`
+    /// pages apart (a chapter opening or a blank page between). A chapter's
+    /// title on its opening page sits lower or larger, so it stays.
+    static func runningHeadersByPage(_ pageLines: [[Line]]) -> [Set<String>] {
+        let global = detectRunningHeaders(pageLines)
+        var byPage = Array(repeating: global, count: pageLines.count)
+        guard pageLines.count >= minimumRun else { return byPage }
+
+        var seen: [String: [(page: Int, y: CGFloat, height: CGFloat)]] = [:]
+        for (page, lines) in pageLines.enumerated() {
+            let n = lines.count
+            guard n >= 3 else { continue }
+            let breakGap = typicalGap(lines) * 1.6
+            var keys = Set<String>()
+            for index in Set([0, 1, n - 1, n - 2]) {
+                let line = lines[index]
+                let apart = index <= 1
+                    ? line.y - lines[index + 1].y > breakGap
+                    : lines[index - 1].y - line.y > breakGap
+                let key = normalizeRunning(line.text)
+                guard apart, key.count >= 2, !isPageNumberLine(line.text),
+                      keys.insert(key).inserted else { continue }
+                seen[key, default: []].append((page, line.y, line.height))
+            }
+        }
+
+        for (key, hits) in seen where hits.count >= minimumRun && !global.contains(key) {
+            let y = median(hits.map(\.y))
+            let height = median(hits.map(\.height))
+            let placed = hits.filter {
+                abs($0.y - y) <= max(2, height * 0.25) && abs($0.height - height) <= max(1, height * 0.2)
+            }
+            var run: [Int] = []
+            func close() {
+                if run.count >= minimumRun { for page in run { byPage[page].insert(key) } }
+                run = []
+            }
+            for hit in placed {
+                if let last = run.last, hit.page - last > maximumRunGap { close() }
+                run.append(hit.page)
+            }
+            close()
+        }
+        return byPage
+    }
+
+    static let minimumRun = 3
+    static let maximumRunGap = 4
+
+    /// The page's running header as text, when the noise pass drops one
+    /// from its top: the first of its top two lines that is one.
+    static func topHeader(_ lines: [Line], running: Set<String>) -> String? {
+        for line in lines.prefix(2) where !isPageNumberLine(line.text) {
+            if running.contains(normalizeRunning(line.text)) {
+                let header = TextNormalizer.normalize(line.text)
+                return header.isEmpty ? nil : header
+            }
+        }
+        return nil
+    }
+
     /// Drop noise lines near the page edges: repeating headers/footers and
     /// standalone page numbers. Body lines that merely resemble them survive.
     static func stripNoise(_ lines: [Line], running: Set<String>) -> [Line] {
@@ -238,7 +363,8 @@ struct PDFTextExtractor {
     /// Stitch a page's paragraphs onto the growing block list, merging the
     /// page's first paragraph onto the previous block when that block clearly
     /// runs on (no terminal punctuation) and this one continues it (starts
-    /// lowercase/digit, or the previous ended mid-hyphenation, normal or soft).
+    /// lowercase or with a digit, in any script, or the previous ended
+    /// mid-hyphenation, normal or soft).
     static func appendPageParagraphs(_ blocks: inout [TextBlock],
                                      _ paragraphs: [String],
                                      page: Int) {
@@ -246,7 +372,7 @@ struct PDFTextExtractor {
             if index == 0,
                let previous = blocks.last,
                !looksFinished(previous.text),
-               paragraph.firstMatch(of: #/^[a-z0-9]/#) != nil
+               paragraph.firstMatch(of: #/^[\p{Ll}\p{N}]/#) != nil
                    || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil
                    || endsInSoftHyphen(previous.text) {
                 blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph),

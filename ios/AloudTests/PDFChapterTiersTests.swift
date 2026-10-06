@@ -42,7 +42,9 @@ enum ChapterFixtures {
     ///
     /// First sentences: p3 s3, p7 s15, p8 s16, p13 s33, p18 s46, p19 s47,
     /// p23 s59, p26 s70, p28 s76; the glued header is s38.
-    static var coldStart: DocContent {
+    static var coldStart: DocContent { book(coldStartPages) }
+
+    static var coldStartPages: [(page: Int, paragraphs: [[String]])] {
         var pages: [(page: Int, paragraphs: [[String]])] = []
         for page in 1...28 {
             let paragraphs: [[String]]
@@ -71,7 +73,7 @@ enum ChapterFixtures {
             }
             pages.append((page, paragraphs))
         }
-        return book(pages)
+        return pages
     }
 
     /// Shaped like Traction: a contents page, PREFACE, "CHAPTER ONE" over its
@@ -273,6 +275,74 @@ final class PDFChapterTiersTests: XCTestCase {
             Entry(title: "Notes", sentence: 70, section: nil),
             Entry(title: "About the Author", sentence: 76, section: nil),
         ])
+    }
+
+    /// F003: the extractor now takes headers off the page and keeps them in
+    /// `pageHeaders`; the tier reads them there and finds the same chapters
+    /// it found when they were the pages' first paragraphs.
+    func testRunningHeadersTakenOffThePageStillFindChapters() throws {
+        var headers: [Int: String] = [:]
+        var pages: [(page: Int, paragraphs: [[String]])] = []
+        for (page, paragraphs) in ChapterFixtures.coldStartPages {
+            var kept = paragraphs
+            if page == 14 {
+                // Extracted today: no header glued onto page 14's last sentence.
+                kept = [ChapterFixtures.body(14)]
+                headers[15] = "A BRIEF HISTORY 15"
+                headers[14] = "14 THE SMALL BOOK"
+            } else if page == 15 {
+                kept = [ChapterFixtures.body(15)]
+            } else if [4, 5, 6, 9, 10, 11, 12, 16, 17, 20, 21, 22, 24, 25, 27].contains(page),
+                      let header = paragraphs.first?.first {
+                headers[page] = header
+                kept = Array(paragraphs.dropFirst())
+            }
+            pages.append((page, kept))
+        }
+        var content = ChapterFixtures.book(pages)
+        XCTAssertNil(RunningHeaderChapters.entries(in: content), "headers gone from the text")
+
+        content.pageHeaders = headers
+        let map = PDFChapterDetector.chapterMap(for: content, outline: [])
+
+        XCTAssertEqual(map.source, .runningHeaders)
+        XCTAssertEqual(map.entries.map(\.title), [
+            front, "Introduction", "What's a Network Effect, Anyway?", "A Brief History", "Tiny Speck",
+            "Conclusion: The Future of Network Effects", "Notes", "About the Author",
+        ])
+        XCTAssertEqual(map.entries.map(\.section), [
+            nil, nil, "Part I: Network Effects", "Part I: Network Effects", "Part II: The Cold Start Problem",
+            nil, nil, nil,
+        ])
+    }
+
+    /// F004: a running header that repeats a numbered heading ("Chapter 1
+    /// Departure" on later pages) is not another chapter. Numbering that
+    /// starts again in a new Part is.
+    func testRunningHeadsOfANumberedHeadingCountOnce() throws {
+        let names = ["ONE": "Departure", "TWO": "Crossing", "THREE": "Arrival"]
+        func chapters(_ start: Int) -> [(page: Int, paragraphs: [[String]])] {
+            var pages: [(page: Int, paragraphs: [[String]])] = []
+            var page = start
+            for (number, word) in [(1, "ONE"), (2, "TWO"), (3, "THREE")] {
+                pages.append((page, [["CHAPTER \(word)"], [names[word]!], ChapterFixtures.body(page)]))
+                for inner in 1...4 {
+                    pages.append((page + inner, [["Chapter \(number) \(names[word]!)"], ChapterFixtures.body(page + inner)]))
+                }
+                page += 5
+            }
+            return pages
+        }
+        let book = ChapterFixtures.book([(1, [[ChapterFixtures.copyright]])] + chapters(2))
+        let entries = try XCTUnwrap(HeadingChapters.entries(in: book))
+        XCTAssertEqual(entries.map(\.title), ["CHAPTER ONE: Departure", "CHAPTER TWO: Crossing", "CHAPTER THREE: Arrival"])
+
+        let parts = ChapterFixtures.book([(1, [[ChapterFixtures.copyright]]), (2, [["PART ONE"]])]
+            + chapters(3) + [(18, [["PART TWO"]])] + chapters(19))
+        let twice = try XCTUnwrap(HeadingChapters.entries(in: parts))
+        XCTAssertEqual(twice.count, 6, "\(twice.map(\.title))")
+        XCTAssertEqual(HeadingChapters.chapterNumber("Chapter Twenty-One"), 21)
+        XCTAssertEqual(HeadingChapters.chapterNumber("CHAPTER XIV: Home"), 14)
     }
 
     func testSparsePageTopsWithoutABookHeaderFailTheGate() {
