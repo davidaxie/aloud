@@ -5,6 +5,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { useCallback, useEffect } from 'react'
 import { getHealth, getVoices } from './lib/api'
+import { guardFileDrops, isPdf } from './lib/dropGuard'
+import { watchEngine } from './lib/engineWatch'
 import { loadPdf } from './lib/pdf'
 import { player } from './lib/player'
 import { useStore } from './store'
@@ -16,6 +18,7 @@ import { Reader } from './components/Reader'
 import { PlayerBar } from './components/PlayerBar'
 import { ThemeToggle } from './components/ThemeToggle'
 import { StatusBadge, ErrorBanner } from './components/StatusBadge'
+import { Toast } from './components/Toast'
 import { WaveIcon, FileIcon } from './components/Icons'
 
 export default function App() {
@@ -38,9 +41,9 @@ export default function App() {
   // ── Bootstrap: probe the backend and load the voice roster. ────────────────
   // Re-polls while offline so a backend that starts AFTER the page loads (the
   // common case with the packaged app) is picked up and the badge clears itself.
+  // Playback finding the engine down later starts the probes again.
   useEffect(() => {
     let cancelled = false
-    let timer: ReturnType<typeof setInterval> | undefined
 
     const loadVoicesOnce = async () => {
       try {
@@ -57,32 +60,22 @@ export default function App() {
       }
     }
 
-    const check = async () => {
-      const health = await getHealth() // never throws → { ok: false } when down
-      if (cancelled) return
-      setEngineState(health.state)
-      if (health.ok) {
+    const stopWatching = watchEngine({
+      probe: getHealth, // never throws → { ok: false } when down
+      getEngineState: () => useStore.getState().engineState,
+      setEngineState,
+      onHealthy: async () => {
         if (useStore.getState().voices.length === 0) await loadVoicesOnce()
-        if (timer) {
-          clearInterval(timer)
-          timer = undefined
-        }
-      }
-    }
-
-    check()
-    timer = setInterval(() => {
-      if (useStore.getState().engineState === 'ok') {
-        if (timer) clearInterval(timer)
-        timer = undefined
-      } else {
-        void check()
-      }
-    }, 2500)
+      },
+      subscribe: (listener) =>
+        useStore.subscribe((s, prev) => {
+          if (s.engineState !== prev.engineState) listener(s.engineState)
+        }),
+    })
 
     return () => {
       cancelled = true
-      if (timer) clearInterval(timer)
+      stopWatching()
     }
   }, [setEngineState, setVoices, setVoiceId])
 
@@ -126,6 +119,23 @@ export default function App() {
     }
     reset()
   }, [reset])
+
+  // ── Drops anywhere on the page. ────────────────────────────────────────────
+  // Without this, a PDF dropped on the reader opens in place of the app and the
+  // reading session is lost. A dropped PDF replaces the open document instead.
+  useEffect(
+    () =>
+      guardFileDrops(window, (file) => {
+        if (useStore.getState().status === 'loading') return
+        if (!isPdf(file)) {
+          useStore.getState().pushToast('That file isn\u2019t a PDF')
+          return
+        }
+        if (useStore.getState().doc) handleReset()
+        void handleFile(file)
+      }),
+    [handleFile, handleReset],
+  )
 
   const isLoading = status === 'loading'
 
@@ -176,6 +186,7 @@ export default function App() {
       </main>
 
       {doc && !isLoading && <PlayerBar doc={doc} />}
+      <Toast />
     </div>
   )
 }

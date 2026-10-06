@@ -559,6 +559,11 @@ kbd {
 .reader__sent.is-active:hover {
   background: var(--hl-bg);
 }
+/* A sentence the voice couldn't read; playback stepped over it (F1.5). */
+.reader__sent.is-skipped {
+  text-decoration: underline dotted var(--danger-fg);
+  text-underline-offset: 0.22em;
+}
 
 .reader__page-mark {
   display: flex;
@@ -916,6 +921,11 @@ kbd {
   background: var(--line);
   outline: none;
 }
+/* The rule above drops the global focus ring; keyboard focus still needs one. */
+.rate-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
 .rate-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -1083,6 +1093,35 @@ kbd {
   }
   .control-chip {
     padding: 0 10px;
+  }
+}
+
+/* ── Toast (transient notices, F4.3) ──────────────────────────────────────── */
+.toast-region {
+  position: fixed;
+  left: 50%;
+  bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 50;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.toast {
+  padding: 9px 16px;
+  border-radius: var(--r-round);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--font-ui);
+  font-size: 0.86rem;
+  color: var(--text);
+  animation: toast-in 0.24s var(--ease);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
 }
 

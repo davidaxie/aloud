@@ -112,10 +112,12 @@ export interface AppState {
   // ── skipped sentences ──
   /**
    * Sentences that failed synthesis after every retry. Playback steps over them
-   * rather than stopping (F1.5); the reader marks them inline. Cleared on load.
+   * rather than stopping (F1.5); the reader marks them inline. Cleared on load,
+   * and per sentence once a later attempt to read it succeeds.
    */
   skippedSentences: number[]
   markSkipped: (id: number) => void
+  unmarkSkipped: (id: number) => void
 
   // ── messaging ──
   /**
@@ -214,6 +216,8 @@ export const useStore = create<AppState>((set, get) => {
   skippedSentences: [],
   markSkipped: (id) =>
     set((s) => (s.skippedSentences.includes(id) ? {} : { skippedSentences: [...s.skippedSentences, id] })),
+  unmarkSkipped: (id) =>
+    set((s) => (s.skippedSentences.includes(id) ? { skippedSentences: s.skippedSentences.filter((x) => x !== id) } : {})),
 
   error: null,
   setError: (e) => set({ error: e }),

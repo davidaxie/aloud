@@ -7,12 +7,18 @@
 // Performance: each paragraph is memoized and only re-renders when the active
 // sentence enters or leaves it, so highlighting a book of thousands of sentences
 // touches just two paragraphs per step. The fast-changing word highlight is
-// isolated to <ActiveSentence>: it is the ONLY component subscribed to
+// isolated to <ActiveWords>: it is the ONLY component subscribed to
 // `currentWord`, so a new word re-renders one sentence — never the document.
+//
+// Keyboard: the sentences are one roving-tabindex group (see ../lib/readerNav),
+// so the whole book is a single Tab stop on the way to the player controls. A
+// sentence keeps the same element whether or not it is active, so focus stays
+// put when playback reaches or leaves it.
 // ─────────────────────────────────────────────────────────────────────────────
-import { memo, useEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { player } from '../lib/player'
 import { tokenizeSentence } from '../lib/chunker'
+import { sentenceFocusTarget, sentenceKeyAction, tabStopSentence } from '../lib/readerNav'
 import { useStore } from '../store'
 import type { Doc, Paragraph, Sentence } from '../types'
 
@@ -30,40 +36,34 @@ function seek(sid: number) {
   player.seekTo(sid)
 }
 
-function onSentenceKeyDown(e: React.KeyboardEvent, sid: number) {
-  if (e.key === 'Enter') {
-    e.preventDefault()
+/** Enter or Space plays from the sentence; arrows, Home and End move focus. */
+function onSentenceKeyDown(e: React.KeyboardEvent, sid: number, count: number) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+  const action = sentenceKeyAction(e.key)
+  if (!action) return
+  e.preventDefault()
+  if (action === 'seek') {
     seek(sid)
+    return
   }
+  const target = sentenceFocusTarget(sid, action, count)
+  const reader = (e.currentTarget as HTMLElement).closest('.reader')
+  reader?.querySelector<HTMLElement>(`[data-sentence="${target}"]`)?.focus()
 }
 
 /**
- * The active sentence, rendered as individual word spans. This component alone
+ * The active sentence's words, as individual spans. This component alone
  * subscribes to `currentWord`, so a newly-spoken word re-renders just this
  * sentence. Tokenization is memoized on the text, and the split is
  * non-destructive — the visible copy is byte-identical to `sentence.text`.
  */
-const ActiveSentence = memo(function ActiveSentence({
-  sentence,
-  sid,
-}: {
-  sentence: Sentence
-  sid: number
-}) {
+const ActiveWords = memo(function ActiveWords({ text }: { text: string }) {
   const currentWord = useStore((s) => s.currentWord)
   const skipSkippable = useStore((s) => s.skipSkippable)
-  const tokens = useMemo(() => tokenizeSentence(sentence.text), [sentence.text])
+  const tokens = useMemo(() => tokenizeSentence(text), [text])
 
   return (
-    <span
-      className="reader__sent is-active"
-      data-sentence={sid}
-      data-active="true"
-      role="button"
-      tabIndex={0}
-      onClick={() => seek(sid)}
-      onKeyDown={(e) => onSentenceKeyDown(e, sid)}
-    >
+    <>
       {tokens.map((tk, i) => {
         // Only dim when skipping is on; the active word is always a spoken word,
         // so a skipped token can never be the current highlight.
@@ -86,8 +86,8 @@ const ActiveSentence = memo(function ActiveSentence({
             {tk.text}
           </span>
         )
-      })}{' '}
-    </span>
+      })}
+    </>
   )
 })
 
@@ -96,6 +96,10 @@ interface ReaderParagraphProps {
   sentences: Sentence[]
   /** The active sentence id if it lives in this paragraph, else -1. */
   activeId: number
+  /** The reader's single Tab stop if it lives in this paragraph, else -1. */
+  tabStopId: number
+  /** Sentences here that playback stepped over, if any. */
+  skipped: number[] | undefined
   showPage: boolean
 }
 
@@ -103,6 +107,8 @@ const ReaderParagraph = memo(function ReaderParagraph({
   paragraph,
   sentences,
   activeId,
+  tabStopId,
+  skipped,
   showPage,
 }: ReaderParagraphProps) {
   return (
@@ -116,22 +122,24 @@ const ReaderParagraph = memo(function ReaderParagraph({
         {paragraph.sentenceIds.map((sid) => {
           const s = sentences[sid]
           if (!s) return null
+          const active = sid === activeId
+          const wasSkipped = skipped?.includes(sid) ?? false
           // The active sentence is word-tokenized and reacts to currentWord; every
           // other sentence stays plain text so it never re-renders on word changes.
-          if (sid === activeId) {
-            return <ActiveSentence key={sid} sentence={s} sid={sid} />
-          }
+          // Same element either way, so a focused sentence keeps focus.
           return (
             <span
               key={sid}
-              className="reader__sent"
+              className={`reader__sent${active ? ' is-active' : ''}${wasSkipped ? ' is-skipped' : ''}`}
               data-sentence={sid}
+              data-active={active ? 'true' : undefined}
               role="button"
-              tabIndex={0}
+              tabIndex={sid === tabStopId ? 0 : -1}
+              title={wasSkipped ? 'Skipped: this sentence couldn\u2019t be read' : undefined}
               onClick={() => seek(sid)}
-              onKeyDown={(e) => onSentenceKeyDown(e, sid)}
+              onKeyDown={(e) => onSentenceKeyDown(e, sid, sentences.length)}
             >
-              {s.text}{' '}
+              {active ? <ActiveWords text={s.text} /> : s.text}{' '}
             </span>
           )
         })}
@@ -147,13 +155,30 @@ interface ReaderProps {
 export function Reader({ doc }: ReaderProps) {
   const currentSentence = useStore((s) => s.currentSentence)
   const autoScroll = useStore((s) => s.autoScroll)
+  const skippedSentences = useStore((s) => s.skippedSentences)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // The sentence the keyboard user last focused, while focus stays in the reader.
+  const [focusedId, setFocusedId] = useState<number | null>(null)
   // Timestamp of the last deliberate user scroll — we back off auto-scroll for a
   // short window after it so we never fight someone reading ahead.
   const userScrolledAt = useRef(0)
 
   const activePara =
     currentSentence >= 0 ? doc.sentences[currentSentence]?.para ?? -1 : -1
+  const tabStopId = tabStopSentence(focusedId, currentSentence, doc.sentences.length)
+  const tabStopPara = tabStopId >= 0 ? doc.sentences[tabStopId]?.para ?? -1 : -1
+
+  // Skipped sentences grouped by paragraph, so only the paragraphs that hold
+  // one get a new prop (and re-render) when a sentence is skipped.
+  const skippedByPara = useMemo(() => {
+    const byPara = new Map<number, number[]>()
+    for (const sid of skippedSentences) {
+      const para = doc.sentences[sid]?.para
+      if (para === undefined) continue
+      byPara.set(para, [...(byPara.get(para) ?? []), sid])
+    }
+    return byPara
+  }, [skippedSentences, doc])
 
   // Auto-scroll the active sentence to center, unless the user just scrolled or the
   // auto-scroll option is off (then we never programmatically move the view).
@@ -192,7 +217,18 @@ export function Reader({ doc }: ReaderProps) {
   }, [])
 
   return (
-    <div className="reader" ref={scrollRef}>
+    <div
+      className="reader"
+      ref={scrollRef}
+      onFocus={(e) => {
+        const sid = (e.target as HTMLElement).dataset.sentence
+        if (sid !== undefined) setFocusedId(Number(sid))
+      }}
+      onBlur={(e) => {
+        // Leaving the reader hands the Tab stop back to the sentence being read.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusedId(null)
+      }}
+    >
       <article className="reader__col">
         <header className="reader__head">
           <h1 className="reader__title">{doc.title}</h1>
@@ -212,6 +248,8 @@ export function Reader({ doc }: ReaderProps) {
                 paragraph={para}
                 sentences={doc.sentences}
                 activeId={para.id === activePara ? currentSentence : -1}
+                tabStopId={para.id === tabStopPara ? tabStopId : -1}
+                skipped={skippedByPara.get(para.id)}
                 showPage={showPage}
               />
             )

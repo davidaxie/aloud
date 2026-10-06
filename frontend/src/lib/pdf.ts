@@ -12,8 +12,20 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { Doc, Paragraph, Sentence } from '../types'
 import { chunkParagraph } from './chunker'
+import { bundledCMapReaderFactory } from './pdfCMaps'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
+
+// Adobe's predefined CMaps, which CJK PDFs with non-embedded fonts need for their
+// text (see ./pdfCMaps). Each is emitted as its own asset and fetched only when a
+// PDF names it. `exhaustive` lets the glob reach into node_modules.
+const CMapReaderFactory = bundledCMapReaderFactory(
+  import.meta.glob<string>('/node_modules/pdfjs-dist/cmaps/*.bcmap', {
+    query: '?url',
+    import: 'default',
+    exhaustive: true,
+  }),
+)
 
 // ── Local geometry types ────────────────────────────────────────────────────
 // pdfjs' TextItem carries a transform matrix [a,b,c,d,e,f]; e,f are the x,y of
@@ -360,7 +372,7 @@ export async function loadPdf(
 
   let pdf: pdfjs.PDFDocumentProxy
   try {
-    pdf = await pdfjs.getDocument({ data }).promise
+    pdf = await pdfjs.getDocument({ data, CMapReaderFactory }).promise
   } catch (err) {
     // pdfjs throws PasswordException (name) for encrypted files.
     const name = (err as { name?: string })?.name

@@ -83,12 +83,12 @@ interface CacheEntry {
   controller: AbortController
 }
 
+function errorName(err: unknown): string | undefined {
+  return typeof err === 'object' && err !== null ? (err as { name?: string }).name : undefined
+}
+
 function isAbortError(err: unknown): boolean {
-  return (
-    err instanceof DOMException
-      ? err.name === 'AbortError'
-      : typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError'
-  )
+  return errorName(err) === 'AbortError'
 }
 
 class PlayerImpl implements Player {
@@ -103,7 +103,10 @@ class PlayerImpl implements Player {
   private wantPlaying = false
   /** Bumped whenever the active position changes; stale continuations check it. */
   private playToken = 0
-  /** Sentences skipped in a row because the backend couldn't read them. */
+  /**
+   * Sentences skipped in a row because the backend couldn't read them or the
+   * browser couldn't play them. Reset once a sentence actually starts playing.
+   */
   private consecutiveSkips = 0
 
   // ── word-level highlight (karaoke) ──────────────────────────────────────────
@@ -138,6 +141,9 @@ class PlayerImpl implements Player {
       // The natural (1.0x) WAV duration lands here; per-word windows are laid out in
       // media-time, so raising playbackRate speeds the highlight in lockstep.
       a.addEventListener('loadedmetadata', () => this.onLoadedMetadata())
+      // A clip the element can't decode never fires 'ended'; without this the
+      // player would sit on 'playing' in silence.
+      a.addEventListener('error', () => this.onMediaError())
       this.audio = a
     }
     return this.audio
@@ -388,14 +394,7 @@ class PlayerImpl implements Player {
       // The backend answered but can't read THIS sentence (400, or retries
       // spent on a non-transport error): skip it and keep playing, as the
       // API contract says. Only a transport failure means the engine is down.
-      if (err instanceof SynthesisError && err.status !== null
-          && this.consecutiveSkips < MAX_CONSECUTIVE_SKIPS - 1) {
-        this.consecutiveSkips++
-        store().markSkipped(i)
-        store().pushToast('Skipped a sentence that couldn\u2019t be read')
-        this.advanceFrom(i)
-        return
-      }
+      if (err instanceof SynthesisError && err.status !== null && this.skip(i)) return
       this.handleSynthError()
       return
     }
@@ -409,8 +408,12 @@ class PlayerImpl implements Player {
       return
     }
 
-    this.consecutiveSkips = 0
-    store().setEngineState('ok')
+    // The engine answered: clear the offline badge and banner (F4.1, F4.4), and
+    // this sentence's skipped mark if an earlier attempt failed.
+    const s = store()
+    s.setEngineState('ok')
+    if (s.error) s.setError(null)
+    s.unmarkSkipped(i)
     const audio = this.ensureAudio()
     // Tokenize the sentence now so the 'loadedmetadata' fired by the next line
     // has tokens to lay out. Also resets the highlight for the fresh sentence.
@@ -429,12 +432,71 @@ class PlayerImpl implements Player {
     try {
       await audio.play()
     } catch (err) {
-      // play() rejects if superseded (src swapped / paused) or blocked by autoplay
-      // policy. Ignore stale/abort rejections; an autoplay block is non-fatal.
+      // play() rejects if superseded (src swapped / paused): ignore those. Any
+      // other refusal must not leave the status on 'playing' with no audio.
       if (token !== this.playToken || isAbortError(err)) return
+      this.onPlayRejected(err, i)
+      return
     }
     // Only drive the highlight for the position we're actually still on.
-    if (token === this.playToken) this.startWordLoop()
+    if (token !== this.playToken) return
+    this.consecutiveSkips = 0
+    this.startWordLoop()
+  }
+
+  /**
+   * Step over sentence `i`, which the backend couldn't read or the browser
+   * couldn't play, and keep going (F1.5): mark it in the reader and say so.
+   * Returns false once too many have failed in a row, so the caller stops and
+   * reports it instead of skipping through the whole book.
+   */
+  private skip(i: number): boolean {
+    if (this.consecutiveSkips >= MAX_CONSECUTIVE_SKIPS - 1) return false
+    this.consecutiveSkips++
+    store().markSkipped(i)
+    store().pushToast('Skipped a sentence that couldn\u2019t be read')
+    this.advanceFrom(i)
+    return true
+  }
+
+  /**
+   * play() refused to start sentence `i`. An autoplay block (Safari runs the first
+   * play() after the synth fetch, outside the click) pauses with a hint, and the
+   * next press resumes in place inside a gesture. Any other refusal means the clip
+   * can't be played, so it is stepped over like an unreadable sentence.
+   */
+  private onPlayRejected(err: unknown, i: number) {
+    if (errorName(err) === 'NotAllowedError') {
+      this.wantPlaying = false
+      this.stopWordLoop()
+      store().setStatus('paused')
+      store().pushToast('Press play to start audio')
+      return
+    }
+    this.skipUnplayable(i)
+  }
+
+  /**
+   * The element failed on the clip it was playing (undecodable or cut-off audio).
+   * Only the clip for the current position counts: a late error for a clip already
+   * replaced is ignored, and a paused clip's failure surfaces when play() rejects
+   * on resume.
+   */
+  private onMediaError() {
+    if (!this.wantPlaying || !this.audio?.error || this.loadedIndex !== this.index) return
+    this.playToken++ // the pending play() for this clip no longer matters
+    this.stopWordLoop()
+    this.skipUnplayable(this.index)
+  }
+
+  /** Skip an unplayable sentence, or stop with an error after too many in a row. */
+  private skipUnplayable(i: number) {
+    if (this.skip(i)) return
+    this.wantPlaying = false
+    this.consecutiveSkips = 0
+    this.stopWordLoop()
+    store().setError('Couldn\u2019t play the audio for these sentences \u2014 try reloading the page.')
+    store().setStatus('error')
   }
 
   /** Move past sentence `i` without playing it (silent or skipped). */
@@ -501,7 +563,17 @@ class PlayerImpl implements Player {
       this.wantPlaying = true
       audio.playbackRate = store().rate
       store().setStatus('playing')
-      audio.play().catch(() => {})
+      const token = this.playToken
+      const i = this.index
+      audio.play().then(
+        () => {
+          if (token === this.playToken) this.consecutiveSkips = 0
+        },
+        (err) => {
+          if (token !== this.playToken || isAbortError(err)) return
+          this.onPlayRejected(err, i)
+        },
+      )
       this.prefetchAround(this.index)
       // Resume the highlight in place — tokens/windows for this sentence are
       // still valid, so it picks up from the current playback position.
@@ -622,6 +694,7 @@ class PlayerImpl implements Player {
   stop() {
     this.playToken++
     this.wantPlaying = false
+    this.consecutiveSkips = 0
     this.stopWordLoop()
 
     if (this.audio) {
