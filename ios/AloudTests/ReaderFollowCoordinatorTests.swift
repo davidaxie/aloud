@@ -606,10 +606,14 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.voiceOffscreen, .down)
     }
 
+    /// A three-finger scroll that moves the text is the user taking over.
+    /// Driven through the view's hook: a column outside a window can't
+    /// scroll by accessibility in this host (`...MovesNothingKeepsFollowing`
+    /// covers that case).
     func testAVoiceOverScrollStopsFollowing() throws {
         let (coordinator, textView) = try makeColumn()
         XCTAssertTrue(coordinator.isFollowing)
-        _ = textView.accessibilityScroll(.down)
+        textView.onAccessibilityScroll?()
         XCTAssertFalse(coordinator.isFollowing)
     }
 
@@ -691,10 +695,13 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
     func testTheAppSwitchersSnapshotFlipsRebuildNothing() throws {
         let (coordinator, textView) = try makeColumn()
         let builds = coordinator.columnBuilds
+        // Back to the look it was built for, explicitly: clearing the
+        // override doesn't bring a view outside a window back.
+        let builtStyle: UIUserInterfaceStyle = textView.traitCollection.userInterfaceStyle == .dark ? .dark : .light
         coordinator.isInBackground = { true }
         guard flipAppearance(textView) else { throw XCTSkip("This host doesn't override traits outside a window") }
         coordinator.rebuildForTraitChange()
-        textView.overrideUserInterfaceStyle = .unspecified
+        textView.overrideUserInterfaceStyle = builtStyle
         textView.updateTraitsIfNeeded()
         coordinator.rebuildForTraitChange()
         XCTAssertEqual(coordinator.columnBuilds, builds, "both snapshot flips leave the column as built")

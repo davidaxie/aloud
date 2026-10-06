@@ -1300,9 +1300,12 @@ struct TraitLook: Equatable {
     let contrast: UIAccessibilityContrast
     let boldText: Bool
 
+    /// Unspecified reads as what dynamic colors resolve it to (light,
+    /// normal contrast), so a view that gains a trait environment later is
+    /// not a new look.
     init(_ traits: UITraitCollection) {
-        style = traits.userInterfaceStyle
-        contrast = traits.accessibilityContrast
+        style = traits.userInterfaceStyle == .dark ? .dark : .light
+        contrast = traits.accessibilityContrast == .high ? .high : .normal
         boldText = traits.legibilityWeight == .bold
     }
 }
