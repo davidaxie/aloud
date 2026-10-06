@@ -23,6 +23,14 @@ import SwiftUI
 /// list takes those four keys and passes every other one on, so Space and
 /// ←/→ still reach the commands, and nothing beeps.
 ///
+/// "Where you stopped" leads the list when the book has places, as on the
+/// iPhone (`PlaceHistoryStore`, from the environment): the newest three,
+/// then "Show N earlier stops", each its time and chapter over two lines of
+/// the sentence, the one at the playhead semibold with the bar. A click is
+/// the chapter row's jump. The keyboard walks places, the toggle and the
+/// chapters as one list (`MacContents.ListLayout`), entering on the newest
+/// place; with places the list opens at the top.
+///
 /// Chapters and labels are the reader's, derived once per document, as on
 /// the iPhone: deriving them here would rescan the book on every playhead
 /// tick.
@@ -34,6 +42,7 @@ struct MacContentsPanel: View {
     @EnvironmentObject private var playback: PlaybackController
     @Environment(MacUIState.self) private var ui
     @Environment(\.chromeScale) private var scale
+    @Environment(\.placeHistory) private var placeHistory
 
     @State private var query = ""
     @State private var results: [SentenceMatch] = []
@@ -53,10 +62,12 @@ struct MacContentsPanel: View {
     @FocusState private var isListFocused: Bool
     /// Whose ↓ handoff is offered: this panel's, until it goes.
     @State private var handoffOwner = UUID()
+    /// "Show N earlier stops" pressed; reset when the panel goes.
+    @State private var showsEarlierPlaces = false
 
     var body: some View {
-        let mode = MacContents.mode(hasChapterList: navigation.hasChapterList, query: query,
-                                    searchedQuery: searchedQuery, resultCount: results.count)
+        let mode = MacContents.mode(hasChapterList: navigation.hasChapterList, hasPlaces: !placeRows.isEmpty,
+                                    query: query, searchedQuery: searchedQuery, resultCount: results.count)
         VStack(alignment: .leading, spacing: 0) {
             Text(MacContents.title)
                 .font(Theme.font(.headline, scale: scale))
@@ -165,35 +176,53 @@ struct MacContentsPanel: View {
     private var chapterList: some View {
         let current = navigation.chapterIndex(containing: playback.currentSentence)
         let rate = playback.rate
+        let rows = placeRows
+        // Chapters follow the places in the flat list (ids, cursor).
+        let offset = flatLayout(placeCount: rows.count).chapterOffset
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    ForEach(navigation.sections) { section in
-                        if let title = section.title {
-                            Section {
-                                chapterRows(section, current: current, rate: rate)
-                            } header: {
-                                sectionHeader(title, id: section.id)
-                            }
-                        } else {
-                            Section {
-                                chapterRows(section, current: current, rate: rate)
+                    if !rows.isEmpty {
+                        placesSection(rows)
+                        // A titled first section (Part, Book) names itself.
+                        if navigation.hasChapterList, navigation.sections.first?.title == nil {
+                            eyebrow(PlaceHistoryRows.listsPages(navigation)
+                                        ? PlaceHistoryCopy.pagesHeader : PlaceHistoryCopy.chaptersHeader,
+                                    identifier: "contents.section.list")
+                        }
+                    }
+                    if navigation.hasChapterList {
+                        ForEach(navigation.sections) { section in
+                            if let title = section.title {
+                                Section {
+                                    chapterRows(section, current: current, rate: rate, offset: offset)
+                                } header: {
+                                    sectionHeader(title, id: section.id)
+                                }
+                            } else {
+                                Section {
+                                    chapterRows(section, current: current, rate: rate, offset: offset)
+                                }
                             }
                         }
                     }
                 }
                 .padding(.vertical, Theme.Space.xs)
             }
-            .onAppear { scrollToCurrent(proxy, current: current) }
+            // With places the list opens at the top, on the newest one;
+            // without, the flat ids are the chapter indices.
+            .onAppear { if rows.isEmpty { scrollToCurrent(proxy, current: current) } }
             .onChange(of: cursor) { _, row in
                 if let row { proxy.scrollTo(row) }
             }
         }
     }
 
-    private func chapterRows(_ section: ContentsSection, current: Int?, rate: Double) -> some View {
+    private func chapterRows(_ section: ContentsSection, current: Int?, rate: Double,
+                             offset: Int) -> some View {
         ForEach(section.chapterRange, id: \.self) { index in
-            chapterRow(MacContents.chapterRow(navigation, index: index, current: current, rate: rate))
+            chapterRow(MacContents.chapterRow(navigation, index: index, current: current, rate: rate),
+                       flatIndex: offset + index)
         }
     }
 
@@ -214,7 +243,8 @@ struct MacContentsPanel: View {
             .accessibilityIdentifier("contents.section.\(id)")
     }
 
-    private func chapterRow(_ row: MacContentsChapterRow) -> some View {
+    /// `flatIndex`: the row's place in the flat list, after any places.
+    private func chapterRow(_ row: MacContentsChapterRow, flatIndex: Int) -> some View {
         Button {
             pickChapter(row.index)
         } label: {
@@ -222,10 +252,83 @@ struct MacContentsPanel: View {
         }
         .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
         .focusable(false)
-        .overlay { cursorRing(row.index) }
+        .overlay { cursorRing(flatIndex) }
         .padding(.horizontal, Theme.Space.xs)
         // The current chapter's marker: a bar on the panel's leading edge,
         // outside the rows, so every title stays aligned.
+        .overlay(alignment: .leading) {
+            if row.isCurrent {
+                Rectangle()
+                    .fill(Theme.accentStrong)
+                    .frame(width: 3)
+                    .accessibilityHidden(true)
+            }
+        }
+        .id(flatIndex)
+        .accessibilityLabel(row.accessibilityLabel)
+        .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
+        .accessibilityIdentifier(row.identifier)
+    }
+
+    // MARK: - Where you stopped
+
+    /// The book's places as rows; at most eight.
+    private var placeRows: [PlaceRow] {
+        guard let placeHistory else { return [] }
+        let entries = placeHistory.places(for: playback.document?.id, contentHash: content.contentHash)
+        guard !entries.isEmpty else { return [] }
+        return PlaceHistoryRows.rows(entries, content: content, navigation: navigation,
+                                     playhead: playback.currentSentence)
+    }
+
+    private var listLayout: MacContents.ListLayout { flatLayout(placeCount: placeRows.count) }
+
+    private func flatLayout(placeCount: Int) -> MacContents.ListLayout {
+        MacContents.listLayout(placeCount: placeCount, expanded: showsEarlierPlaces,
+                               chapterCount: navigation.chapters.count,
+                               hasChapterList: navigation.hasChapterList)
+    }
+
+    @ViewBuilder
+    private func placesSection(_ rows: [PlaceRow]) -> some View {
+        let list = flatLayout(placeCount: rows.count)
+        eyebrow(PlaceHistoryCopy.header, identifier: "places.header")
+        ForEach(Array(rows.prefix(list.placeCount))) { row in
+            placeRow(row)
+        }
+        if list.hasShowEarlier {
+            let flatIndex = list.index(of: .showEarlier)
+            Button {
+                toggleEarlierPlaces()
+            } label: {
+                Text(showsEarlierPlaces ? PlaceHistoryCopy.showFewer
+                                        : PlaceHistoryCopy.showEarlier(rows.count - list.placeCount))
+                    .font(Theme.font(.subhead, scale: scale))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Theme.Space.sm)
+                    .frame(minHeight: 32)
+            }
+            .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
+            .focusable(false)
+            .overlay { cursorRing(flatIndex) }
+            .padding(.horizontal, Theme.Space.xs)
+            .id(flatIndex)
+            .accessibilityIdentifier("places.more")
+        }
+    }
+
+    private func placeRow(_ row: PlaceRow) -> some View {
+        Button {
+            pickPlace(row.index)
+        } label: {
+            MacContentsPlaceLabel(row: row, scale: scale)
+        }
+        .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
+        .focusable(false)
+        .overlay { cursorRing(row.index) }
+        .padding(.horizontal, Theme.Space.xs)
+        // The current chapter's bar, on the place at the playhead.
         .overlay(alignment: .leading) {
             if row.isCurrent {
                 Rectangle()
@@ -238,6 +341,21 @@ struct MacContentsPanel: View {
         .accessibilityLabel(row.accessibilityLabel)
         .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
         .accessibilityIdentifier(row.identifier)
+    }
+
+    /// An eyebrow over a run of rows that scrolls with them.
+    private func eyebrow(_ title: String, identifier: String) -> some View {
+        Text(title)
+            .font(Theme.font(.eyebrow, scale: scale))
+            .eyebrowTracking()
+            .foregroundStyle(Theme.textMuted)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Space.md)
+            .padding(.top, Theme.Space.sm)
+            .padding(.bottom, Theme.Space.xs)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier(identifier)
     }
 
     private var resultsList: some View {
@@ -323,25 +441,26 @@ struct MacContentsPanel: View {
 
     private func rowCount(_ mode: MacContents.Mode) -> Int {
         switch mode {
-        case .chapters: return navigation.chapters.count
+        case .chapters: return listLayout.count
         case .results: return results.count
         case .searchOnly, .searching, .noMatches: return 0
         }
     }
 
-    /// Where the keyboard enters the list: the current chapter, or the top
-    /// result.
+    /// Where the keyboard enters the list: the newest place, else the
+    /// current chapter; or the top result.
     private func initialCursor(_ mode: MacContents.Mode) -> Int? {
         switch mode {
-        case .chapters: return navigation.chapterIndex(containing: playback.currentSentence) ?? 0
+        case .chapters:
+            return listLayout.entry(currentChapter: navigation.chapterIndex(containing: playback.currentSentence))
         case .results: return results.isEmpty ? nil : 0
         case .searchOnly, .searching, .noMatches: return nil
         }
     }
 
     private var currentMode: MacContents.Mode {
-        MacContents.mode(hasChapterList: navigation.hasChapterList, query: query,
-                         searchedQuery: searchedQuery, resultCount: results.count)
+        MacContents.mode(hasChapterList: navigation.hasChapterList, hasPlaces: !placeRows.isEmpty,
+                         query: query, searchedQuery: searchedQuery, resultCount: results.count)
     }
 
     /// ↓ in the field (`MacSearchHandoff`): the list takes focus on its
@@ -369,7 +488,13 @@ struct MacContentsPanel: View {
     private func activateCursor(_ mode: MacContents.Mode) -> KeyPress.Result {
         guard let cursor, cursor < rowCount(mode) else { return .handled }
         switch mode {
-        case .chapters: pickChapter(cursor)
+        case .chapters:
+            switch listLayout.row(at: cursor) {
+            case .place(let index): pickPlace(index)
+            case .showEarlier: toggleEarlierPlaces()
+            case .chapter(let index): pickChapter(index)
+            case nil: break
+            }
         case .results: pickResult(cursor)
         case .searchOnly, .searching, .noMatches: break
         }
@@ -403,8 +528,22 @@ struct MacContentsPanel: View {
 
     private func pickChapter(_ index: Int) {
         guard navigation.chapters.indices.contains(index) else { return }
-        cursor = index
+        cursor = listLayout.index(of: .chapter(index))
         jump(to: navigation.chapters[index].startSentence, origin: .chapter)
+    }
+
+    /// A place is a chapter row's jump: it plays, and ⌘Z restores.
+    private func pickPlace(_ index: Int) {
+        let rows = placeRows
+        guard rows.indices.contains(index) else { return }
+        cursor = index
+        jump(to: rows[index].sentence, origin: .chapter)
+    }
+
+    /// The cursor stays on the toggle, which moves as rows come and go.
+    private func toggleEarlierPlaces() {
+        showsEarlierPlaces.toggle()
+        if cursor != nil { cursor = listLayout.index(of: .showEarlier) }
     }
 
     private func pickResult(_ index: Int) {
@@ -547,10 +686,12 @@ enum MacContents {
         case noMatches(String)
     }
 
-    static func mode(hasChapterList: Bool, query: String, searchedQuery: String?,
+    /// `hasPlaces`: "Where you stopped" has rows, which a book without a
+    /// chapter list shows in place of the list.
+    static func mode(hasChapterList: Bool, hasPlaces: Bool = false, query: String, searchedQuery: String?,
                      resultCount: Int) -> Mode {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return hasChapterList ? .chapters : .searchOnly
+            return hasChapterList || hasPlaces ? .chapters : .searchOnly
         }
         guard let searchedQuery else { return .searching }
         return resultCount == 0 ? .noMatches(searchedQuery) : .results

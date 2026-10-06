@@ -11,6 +11,11 @@ struct LiveSession: Equatable, Codable, Sendable {
     let documentID: UUID
     let sentenceIndex: Int
     let wallClock: Date
+    /// When and where this session's audio first played, so a session iOS
+    /// ended still lands in "Where you stopped" (`PlaceStop.recovered`).
+    /// Optional with defaults: a marker written before them still decodes.
+    var startedAt: Date? = nil
+    var startSentence: Int? = nil
 }
 
 /// One-slot stop + the live-session marker (written while audio plays,

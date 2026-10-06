@@ -129,5 +129,7 @@ extension View {
             .environmentObject(model.router)
             .environmentObject(model.importer)
             .environmentObject(model.naturalVoiceOffer)
+            // "Where you stopped" in Contents.
+            .environment(\.placeHistory, model.placeHistory)
     }
 }

@@ -27,6 +27,14 @@ import SwiftUI
 /// jump (R15) and closes the sheet. A result names its place with its
 /// section ("BOOK ONE: 1805 · CHAPTER I").
 ///
+/// "Where you stopped" leads the list when the book has places
+/// (`PlaceHistoryStore`, from the environment): the newest three, then
+/// "Show N earlier stops", each its time and chapter over two lines of the
+/// sentence (`PlaceHistoryRows`). A row is the chapter row's jump; the one
+/// at the playhead carries the current bar and `.isSelected`. With places
+/// the sheet opens at the top, not on the current chapter, and a book
+/// without a chapter list lists them instead of focusing the field.
+///
 /// Chapters and labels are derived once per loaded document by the reader and
 /// handed in — deriving them here would rerun a whole-book scan on every
 /// parent body evaluation (word-highlight cadence during playback).
@@ -38,6 +46,7 @@ struct ContentsSheet: View {
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.placeHistory) private var placeHistory
 
     @State private var query = ""
     @State private var results: [SentenceMatch] = []
@@ -49,6 +58,8 @@ struct ContentsSheet: View {
     @State private var scanTask: Task<[SentenceMatch], Never>?
     @FocusState private var fieldFocused: Bool
     @State private var detent: PresentationDetent
+    /// "Show N earlier stops" pressed; reset each time the sheet opens.
+    @State private var showsEarlierPlaces = false
 
     private static let debounceNanoseconds: UInt64 = 200_000_000
 
@@ -82,7 +93,7 @@ struct ContentsSheet: View {
         // Search only gets one full-height detent: with the keyboard up, a
         // two-detent sheet springs back to full height on every drag, so it
         // could never be swiped closed.
-        .sheetChrome(navigation.hasChapterList ? [.medium, .large] : [.large],
+        .sheetChrome(hasList ? [.medium, .large] : [.large],
                      selection: $detent)
         // Typing at half height leaves the results under the keyboard.
         .onChange(of: fieldFocused) { _, focused in
@@ -97,7 +108,7 @@ struct ContentsSheet: View {
             scheduleSearch(for: newValue)
         }
         .onAppear {
-            guard !navigation.hasChapterList else { return }
+            guard !hasList else { return }
             // Focus after the sheet's presentation settles; an immediate set
             // is dropped by the transition on some runtimes.
             Task { @MainActor in
@@ -116,6 +127,8 @@ struct ContentsSheet: View {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if navigation.hasChapterList {
                 chapterList
+            } else if !placeRows.isEmpty {
+                placesOnlyList
             } else {
                 Spacer(minLength: 0)
             }
@@ -181,6 +194,16 @@ struct ContentsSheet: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    let rows = placeRows
+                    if !rows.isEmpty {
+                        placesSection(rows)
+                        // A titled first section (Part, Book) names itself.
+                        if navigation.sections.first?.title == nil {
+                            eyebrow(PlaceHistoryRows.listsPages(navigation)
+                                        ? PlaceHistoryCopy.pagesHeader : PlaceHistoryCopy.chaptersHeader,
+                                    identifier: "contents.section.list")
+                        }
+                    }
                     ForEach(navigation.sections) { section in
                         if let title = section.title {
                             Section {
@@ -198,7 +221,8 @@ struct ContentsSheet: View {
                 .padding(.vertical, Theme.Space.xs)
             }
             .scrollDismissesKeyboard(.immediately)
-            .onAppear { scrollToCurrent(proxy) }
+            // With places the sheet opens at the top, on the newest one.
+            .onAppear { if placeRows.isEmpty { scrollToCurrent(proxy) } }
         }
     }
 
@@ -325,6 +349,103 @@ struct ContentsSheet: View {
         }
     }
 
+    // MARK: - Where you stopped
+
+    /// Something to list: chapters, or places in a book without chapters.
+    /// It decides the half-height detent and whether the field takes focus.
+    private var hasList: Bool {
+        navigation.hasChapterList || !placeRows.isEmpty
+    }
+
+    /// The book's places as rows. At most eight, so rebuilding them on a
+    /// playhead tick costs nothing worth caching.
+    private var placeRows: [PlaceRow] {
+        guard let placeHistory else { return [] }
+        let entries = placeHistory.places(for: playback.document?.id, contentHash: content.contentHash)
+        guard !entries.isEmpty else { return [] }
+        return PlaceHistoryRows.rows(entries, content: content, navigation: navigation,
+                                     playhead: playback.currentSentence)
+    }
+
+    private var placesOnlyList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                placesSection(placeRows)
+            }
+            .padding(.vertical, Theme.Space.xs)
+        }
+        .scrollDismissesKeyboard(.immediately)
+    }
+
+    @ViewBuilder
+    private func placesSection(_ rows: [PlaceRow]) -> some View {
+        let visible = PlaceHistory.visibleCount(total: rows.count, hasChapterList: navigation.hasChapterList,
+                                                expanded: showsEarlierPlaces)
+        eyebrow(PlaceHistoryCopy.header, identifier: "places.header")
+        ForEach(Array(rows.prefix(visible))) { row in
+            placeRow(row)
+        }
+        if PlaceHistory.offersEarlier(total: rows.count, hasChapterList: navigation.hasChapterList) {
+            Button {
+                showsEarlierPlaces.toggle()
+            } label: {
+                Text(showsEarlierPlaces ? PlaceHistoryCopy.showFewer
+                                        : PlaceHistoryCopy.showEarlier(rows.count - visible))
+                    .font(Theme.font(.subhead))
+                    .foregroundStyle(Theme.accentStrong)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Theme.Space.sheetGutter)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("places.more")
+        }
+    }
+
+    /// The chapter row's jump: play or pause kept, Undo jump offered.
+    private func placeRow(_ row: PlaceRow) -> some View {
+        Button {
+            playback.jump(to: row.sentence, origin: .chapter)
+            dismiss()
+        } label: {
+            ContentsPlaceLabel(row: row)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Theme.Space.sheetGutter)
+                .padding(.vertical, Theme.Space.sm)
+                .frame(minHeight: 44)
+                // The chapter list's current marker, on the place at the
+                // playhead.
+                .overlay(alignment: .leading) {
+                    if row.isCurrent {
+                        Rectangle()
+                            .fill(Theme.accentStrong)
+                            .frame(width: 3)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(row.accessibilityLabel)
+        .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
+        .accessibilityIdentifier(row.identifier)
+    }
+
+    /// An eyebrow over a run of rows that scrolls with them.
+    private func eyebrow(_ title: String, identifier: String) -> some View {
+        Text(title)
+            .font(Theme.font(.eyebrow))
+            .eyebrowTracking()
+            .foregroundStyle(Theme.textMuted)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Space.sheetGutter)
+            .padding(.top, Theme.Space.sm)
+            .padding(.bottom, Theme.Space.xs)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier(identifier)
+    }
+
     // MARK: - Results
 
     private var resultsList: some View {
@@ -412,6 +533,35 @@ struct ContentsSheet: View {
             guard !scan.isCancelled, !Task.isCancelled else { return }
             results = found
             searchedQuery = trimmed
+        }
+    }
+}
+
+// MARK: - Place label
+
+/// A "Where you stopped" row's text: when and where, over the sentence. The
+/// sentence keeps the reader's color and weight on the current row too; the
+/// bar marks it.
+private struct ContentsPlaceLabel: View {
+
+    let row: PlaceRow
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            Text(row.detail)
+                .font(Theme.font(.footnote))
+                .foregroundStyle(Theme.textFaint)
+                .lineLimit(isAccessibilitySize ? nil : 1)
+                .multilineTextAlignment(.leading)
+
+            Text(row.text)
+                .font(Theme.font(.body))
+                .foregroundStyle(Theme.text)
+                .lineLimit(isAccessibilitySize ? 4 : 2)
+                .multilineTextAlignment(.leading)
         }
     }
 }

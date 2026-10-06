@@ -19,6 +19,8 @@ struct AloudApp: App {
                 .environmentObject(model.router)
                 .environmentObject(model.importer)
                 .environmentObject(model.naturalVoiceOffer)
+                // "Where you stopped" in Contents.
+                .environment(\.placeHistory, model.placeHistory)
                 // The app's one haptic player (R20). At the root, so it keeps
                 // playing while a sheet is up.
                 .playsTransportHaptics()

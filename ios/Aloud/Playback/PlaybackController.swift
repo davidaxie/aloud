@@ -50,6 +50,7 @@ final class PlaybackController: ObservableObject {
             // voice sample, buffering) calls that off. Re-armed at every
             // change, so a seek while paused starts the wait again.
             if isActive { cancelIdleEngineStop() } else { armIdleEngineStop() }
+            placeStatusChanged(from: oldValue)   // "Where you stopped"
         }
     }
     @Published private(set) var currentSentence: Int = -1 {
@@ -310,6 +311,17 @@ final class PlaybackController: ObservableObject {
     /// the words the reader's does.
     var onProgress: ((_ documentID: UUID, _ sentence: Int, _ fraction: Double) -> Void)?
 
+    /// "Where you stopped" sink: every end of a listening session, however
+    /// short (PlaybackController+PlaceHistory.swift). Nil by default, like
+    /// `onProgress`, so no test controller writes anywhere.
+    var onPlaceStop: ((PlaceStop) -> Void)?
+    /// The session being timed, and the last stop reported; owned by
+    /// PlaybackController+PlaceHistory.swift.
+    var placeSession: PlaceSession?
+    var lastPlaceStop: PlaceStop?
+    /// The session iOS ended at the last launch, until AppModel takes it.
+    var recoveredPlaceStop: PlaceStop?
+
     // MARK: - Dependencies & graph
 
     private let engine: any TtsEngine
@@ -504,6 +516,7 @@ final class PlaybackController: ObservableObject {
                                           wallClock: live.wallClock,
                                           monotonic: nil))
             pendingStopAnnouncement = .closedByIOS
+            recoveredPlaceStop = PlaceStop.recovered(from: live)
         }
         stopped = stopStore.load()
 
@@ -590,6 +603,7 @@ final class PlaybackController: ObservableObject {
         // the incoming book can never be handed a stop that isn't its own.
         // (Mid-audition the stamp is a no-op: that rest began at the pause.)
         if isActive { stampResumeAnchor() }
+        endPlaceSession()   // the outgoing book's place, while `document` names it
         audition = nil
         // An interruption's end never starts a book the listener switched to.
         resumeAfterInterruption = false
@@ -656,6 +670,7 @@ final class PlaybackController: ObservableObject {
         // The book keeps the rest that starts here (on disk), so reopening it
         // still rewinds; the in-memory slot belongs to no document now.
         if isActive { stampResumeAnchor() }
+        endPlaceSession()
         if let document { discardStop(for: document.id) }
         audition = nil
         invalidateSchedule()
@@ -783,7 +798,10 @@ final class PlaybackController: ObservableObject {
                     self.pauseNode()
                     // A boundary inside the ramp moved the playhead after the
                     // pause stamped it.
-                    if self.currentSentence != pausedAt { self.stampResumeAnchor() }
+                    if self.currentSentence != pausedAt {
+                        self.stampResumeAnchor()
+                        self.placeStopMovedByPauseRamp()
+                    }
                 }
                 // After the call: the ramp's own cancel of the one before must
                 // not pause the node.
@@ -979,6 +997,7 @@ final class PlaybackController: ObservableObject {
     /// rest anchored, and no closed-by-iOS reason is reported next launch.
     func applicationWillTerminate() {
         if isActive { stampResumeAnchor() }
+        endPlaceSession()
         stopStore.clearLive()
     }
 
@@ -1028,6 +1047,7 @@ final class PlaybackController: ObservableObject {
     private func didEnterActivePlayback() {
         guard audition == nil else { return }
         clearStop()
+        beginPlaceSession()
         markLiveSession()
     }
 
@@ -1036,7 +1056,9 @@ final class PlaybackController: ObservableObject {
         guard audition == nil, let document, currentSentence >= 0 else { return }
         stopStore.markLive(LiveSession(documentID: document.id,
                                        sentenceIndex: currentSentence,
-                                       wallClock: Date()))
+                                       wallClock: Date(),
+                                       startedAt: placeSession?.startedAt,
+                                       startSentence: placeSession?.startSentence))
     }
 
     // MARK: - Sleep-stop mechanics (R19)
@@ -1204,6 +1226,7 @@ final class PlaybackController: ObservableObject {
         let from = max(currentSentence, 0)
         jumpSerial &+= 1
         if Self.offersUndo(origin: origin, from: from, to: target) {
+            if isListenerPlaying { placeSession?.movedAway = true }   // "Where you stopped"
             if let live = undoableJump, live.documentID == document.id, currentSentence == live.toSentence {
                 undoableJump = UndoableJump(documentID: live.documentID,
                                             fromSentence: live.fromSentence,
