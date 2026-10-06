@@ -76,6 +76,13 @@ final class PlayerBarLintTests: XCTestCase {
         XCTAssertEqual(code.components(separatedBy: "scrubFill(of:").count - 1, 2, "fill and slider value")
         XCTAssertFalse(code.contains("scrubFraction(of: drag?.target ?? playhead"))
         XCTAssertFalse(code.contains("scrubFraction(of: playhead"))
+        // The Mac scrub's twin: the fill and the model's fraction.
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: ["Reader/MacScrub.swift"])
+        let mac = Self.code(try XCTUnwrap(macSources["Reader/MacScrub.swift"]))
+        XCTAssertEqual(mac.components(separatedBy: "scrubFill(of:").count - 1, 2, "Mac fill and model fraction")
+        XCTAssertTrue(mac.contains("isFinished: press == nil && playback.isAtEnd"), "a press shows its target")
+        XCTAssertFalse(mac.contains("scrubFraction(of: shown"))
+        XCTAssertFalse(mac.contains("scrubFraction(of: playhead"))
     }
 
     /// `source` without its line comments.

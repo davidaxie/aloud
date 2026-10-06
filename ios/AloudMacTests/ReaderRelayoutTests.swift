@@ -183,6 +183,33 @@ final class ReaderRelayoutTests: XCTestCase {
         XCTAssertFalse(coordinator.isFollowing)
     }
 
+    /// Light/dark while reading elsewhere rebuilds the column in its new
+    /// colors and puts the reader's line back where it was, on laid-out
+    /// text, not by the raw offset over estimated heights (F030).
+    func testAnAppearanceChangeKeepsTheReadersPlaceWhileNotFollowing() throws {
+        final class Edits: @unchecked Sendable { var count = 0 }
+        let page = try makePage(sentences: 300, active: 150, size: NSSize(width: 1000, height: 600))
+        let coordinator = page.coordinator
+        try page.scrollAway(toSentence: 60)
+        let place = try page.firstVisibleLine()
+        let edits = Edits()
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: page.textView.textStorage,
+            queue: nil) { _ in edits.count += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let look = page.textView.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        page.textView.appearance = NSAppearance(named: look == .darkAqua ? .aqua : .darkAqua)
+        coordinator.rebuildForAppearanceChange()
+        XCTAssertGreaterThan(edits.count, 0, "rebuilt in the new colors")
+        XCTAssertFalse(coordinator.isFollowing, "a change of look never re-engages following")
+        XCTAssertEqual(try page.lineTop(of: place.location), place.top, accuracy: 1.5, "the reader's line stays")
+        page.settleLayout()
+        XCTAssertNil(coordinator.relayoutAnchor, "the anchor's check is over")
+        XCTAssertEqual(try page.lineTop(of: place.location), place.top, accuracy: 1.5, "after layout settles")
+        XCTAssertEqual(try page.firstVisibleLine().location, place.location, "the same passage on screen")
+    }
+
     /// Contents docking while reading elsewhere keeps the reader's line.
     func testADockedContentsPanelKeepsTheReadersPlace() throws {
         let page = try makePage(sentences: 300, active: 150, size: NSSize(width: 1000, height: 600), inContainer: true)

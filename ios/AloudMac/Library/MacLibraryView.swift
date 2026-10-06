@@ -76,19 +76,21 @@ struct MacLibraryView: View {
         .onChange(of: router.path.isEmpty) { _, atRoot in
             offerPaste(atRoot)
             // Back from the reader or Classics: the saves made meanwhile, once.
-            if atRoot { feedShelf { $0.libraryShown(store.documents, loadedID: loadedID) } }
+            if atRoot {
+                feedShelf { $0.libraryShown(store.documents, loadedID: loadedID, stop: model.playback.stopped) }
+            }
         }
         .onDisappear { offerPaste(false) }
         .onReceive(store.$documents) { documents in
             let shows = router.path.isEmpty
-            feedShelf { $0.publish(documents, loadedID: loadedID, libraryShows: shows) }
+            feedShelf { $0.publish(documents, loadedID: loadedID, stop: model.playback.stopped, libraryShows: shows) }
         }
         .onReceive(model.playback.$document) { document in
             guard document?.id != loadedID else { return }
             let id = document?.id
             loadedID = id
             let shows = router.path.isEmpty
-            feedShelf { $0.publish(store.documents, loadedID: id, libraryShows: shows) }
+            feedShelf { $0.publish(store.documents, loadedID: id, stop: model.playback.stopped, libraryShows: shows) }
         }
         .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)
@@ -177,9 +179,9 @@ struct MacLibraryView: View {
                                 rate: model.globalRate,
                                 playback: model.playback,
                                 continuePlayback: continuePlayback,
-                                onOpen: { router.open(hero) },
+                                onOpen: { open(hero) },
                                 onTogglePlayback: { toggleContinue(hero) }) {
-                    MacDocumentMenu(document: hero, onOpen: { router.open(hero) },
+                    MacDocumentMenu(document: hero, onOpen: { open(hero) },
                                     perform: { perform($0, on: hero) })
                 }
                 .frame(maxWidth: Self.continueMaxWidth, alignment: .leading)
@@ -188,7 +190,7 @@ struct MacLibraryView: View {
                 // and Delete Book… (⌘⌫) acts on its book.
                 .focused($focusedCard, equals: hero.id)
                 .onKeyPress(.return) {
-                    router.open(hero)
+                    open(hero)
                     return .handled
                 }
                 .onMoveCommand { direction in
@@ -215,7 +217,7 @@ struct MacLibraryView: View {
                 MacLibraryCard(document: document,
                                rate: model.globalRate,
                                coverWidth: metrics.coverWidth,
-                               onOpen: { router.open(document) },
+                               onOpen: { open(document) },
                                perform: { perform($0, on: document) })
                     .focused($focusedCard, equals: document.id)
             }
@@ -254,6 +256,14 @@ struct MacLibraryView: View {
     }
 
     // MARK: Playback
+
+    /// Opens `document` in the reader. A Continue circle load of another
+    /// book stops first, so it can't take the controller from the page on
+    /// screen (`ContinuePlayback.readerOpens`).
+    private func open(_ document: LibraryDocument) {
+        continuePlayback.readerOpens(document.id)
+        router.open(document)
+    }
 
     /// Plays or pauses `document` without opening it. A book the controller
     /// doesn't hold yet is loaded first; if it can't be, the reader opens
@@ -308,13 +318,16 @@ struct MacShelfFeed {
 
     /// A publish of the store or of the loaded book. False when the feed is
     /// unchanged (covered and already stale), so the view writes no state.
-    mutating func publish(_ documents: [LibraryDocument], loadedID: UUID?, libraryShows: Bool) -> Bool {
+    /// `stop` is the controller's unattended stop, which keeps a book
+    /// stopped in its last minute on offer (`DocumentStore.isAtItsEnd`).
+    mutating func publish(_ documents: [LibraryDocument], loadedID: UUID?, stop: PlaybackStop? = nil,
+                          libraryShows: Bool) -> Bool {
         guard libraryShows else {
             guard !isStale else { return false }
             isStale = true
             return true
         }
-        layout = ShelfLayout(for: documents, loadedID: loadedID)
+        layout = ShelfLayout(for: documents, loadedID: loadedID, stop: stop)
         isStale = false
         builds += 1
         return true
@@ -322,9 +335,9 @@ struct MacShelfFeed {
 
     /// The Library shows again: a stale shelf is rebuilt, once; a current
     /// one is left alone.
-    mutating func libraryShown(_ documents: [LibraryDocument], loadedID: UUID?) -> Bool {
+    mutating func libraryShown(_ documents: [LibraryDocument], loadedID: UUID?, stop: PlaybackStop? = nil) -> Bool {
         guard isStale else { return false }
-        return publish(documents, loadedID: loadedID, libraryShows: true)
+        return publish(documents, loadedID: loadedID, stop: stop, libraryShows: true)
     }
 }
 

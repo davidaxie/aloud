@@ -42,4 +42,27 @@ final class MacShelfFeedTests: XCTestCase {
         XCTAssertEqual(feed.builds, 2)
         XCTAssertEqual(feed.layout.hero?.id, started.id, "the loaded book is the hero")
     }
+
+    /// After a relaunch nothing is loaded, and a book a sleep timer stopped
+    /// in its last minute reads Finished: the controller's stop keeps it the
+    /// hero, as the launch restore and remote Play have it (F045).
+    func testABookStoppedInItsLastMinuteStaysTheHero() {
+        var older = started
+        older.lastOpenedAt = Date().addingTimeInterval(-600)
+        var stopped = PlaybackTestRig.makeDocument(hash: "shelf-stop", sentences: 100,
+                                                   progressSentence: 99, progressFraction: 0.995)
+        stopped.lastOpenedAt = Date().addingTimeInterval(-60)
+        XCTAssertTrue(stopped.isFinished, "the record reads Finished")
+        let stop = PlaybackStop(reason: .sleepTimer, documentID: stopped.id)
+
+        var feed = MacShelfFeed()
+        _ = feed.publish([older, stopped], loadedID: nil, libraryShows: true)
+        XCTAssertEqual(feed.layout.hero?.id, older.id, "without the stop it reads Finished")
+        _ = feed.publish([older, stopped], loadedID: nil, stop: stop, libraryShows: true)
+        XCTAssertEqual(feed.layout.hero?.id, stopped.id, "the stop holds it at its sentence")
+
+        _ = feed.publish([older, stopped], loadedID: nil, stop: stop, libraryShows: false)
+        XCTAssertTrue(feed.libraryShown([older, stopped], loadedID: nil, stop: stop))
+        XCTAssertEqual(feed.layout.hero?.id, stopped.id, "a shelf rebuilt on showing again keeps it")
+    }
 }

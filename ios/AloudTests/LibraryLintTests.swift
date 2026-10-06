@@ -46,4 +46,34 @@ final class LibraryLintTests: XCTestCase {
         let shelves = try SourceTree.sources(only: ["Library", "Bookshelf"])
         XCTAssertEqual(SourceTree.files(containing: "ProgressView", in: shelves), [])
     }
+
+    /// F026, the Mac shelf: every way a card opens its book stops a Continue
+    /// circle load of another book first, as the iPhone shelf's `open` does.
+    func testTheMacShelfOpensThroughReaderOpens() throws {
+        let file = "Library/MacLibraryView.swift"
+        let text = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [file])[file])
+        let shelf = body(ofStruct: "MacLibraryView", in: text)
+        XCTAssertTrue(shelf.contains("continuePlayback.readerOpens(document.id)\n        router.open(document)"),
+                      "open(_:) should stop another book's circle load before it opens")
+        // The only direct open left is a circle load that failed: it was
+        // this book's, and it is over.
+        let direct = shelf.components(separatedBy: "router.open(").count - 1
+        XCTAssertEqual(direct, 2, "only open(_:) and the circle's onFailure call router.open")
+        XCTAssertTrue(shelf.contains("onFailure: { router.open(document) }"))
+    }
+
+    /// F045, the Mac: the Continue hero and Space/Play with no book loaded
+    /// pick by the controller's unattended stop, as the launch restore and
+    /// remote Play do, so a book stopped in its last minute stays on offer.
+    func testTheMacContinueBookHonoursTheStop() throws {
+        let files = ["Library/MacLibraryView.swift", "Commands/MacCommandActions.swift"]
+        let sources = try SourceTree.sources(in: SourceTree.macRoot, only: files)
+        let library = try XCTUnwrap(sources[files[0]])
+        XCTAssertTrue(library.contains("ShelfLayout(for: documents, loadedID: loadedID, stop: stop)"))
+        XCTAssertEqual(library.components(separatedBy: "stop: model.playback.stopped").count - 1, 3,
+                       "both store and controller publishes and the Library showing again")
+        let commands = try XCTUnwrap(sources[files[1]])
+        XCTAssertTrue(commands.contains("loadedID: playback.document?.id,\n                                                 stop: playback.stopped)"),
+                      "continueBook should pass the controller's stop")
+    }
 }

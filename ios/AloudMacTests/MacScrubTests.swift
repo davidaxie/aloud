@@ -57,6 +57,19 @@ final class MacScrubTests: XCTestCase {
         XCTAssertEqual(model(navigation, content, playhead: 0).span, 0...1)
     }
 
+    /// At the end of a book the fill covers the track: the last sentence has
+    /// been heard, not just begun (F090). Before then it stops at the
+    /// playhead's start.
+    func testAFinishedBookFillsTheTrack() {
+        let (_, navigation, content) = chapterBook(pausedAt: 13)
+        let reading = model(navigation, content, playhead: 13)
+        XCTAssertEqual(reading.span, 12...13)
+        XCTAssertEqual(reading.fraction, 0.5, accuracy: 0.0001, "the last sentence's start, while it is read")
+        let finished = MacScrubModel(navigation: navigation, sentences: content.sentences,
+                                     playhead: 13, rate: 1, isFinished: true)
+        XCTAssertEqual(finished.fraction, 1, "a finished book fills the track")
+    }
+
     /// x is a fraction of the chapter, and the target is the sentence whose
     /// start is nearest it: 80% of ten sentences is the ninth one's start.
     func testHoverMapsXToTheNearestSentenceAtThatFractionOfTheChapter() {

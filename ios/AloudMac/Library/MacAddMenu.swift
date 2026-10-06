@@ -353,19 +353,23 @@ final class MacFileIntake: ObservableObject {
         return contentTypes.contains { type.conforms(to: $0) }
     }
 
-    /// The importer's own test: anything not a PDF is read as text.
-    static func isPDF(_ url: URL) -> Bool {
-        url.pathExtension.lowercased() == "pdf"
+    /// The importer's own test (`DocumentImporter.isPDF`): a ".pdf" name,
+    /// or a PDF's "%PDF-" signature under another name; anything else is
+    /// read as text.
+    nonisolated static func isPDF(_ url: URL) -> Bool {
+        DocumentImporter.isPDF(url)
     }
 
     /// The table row for a file that failed before the importer saw it. A
     /// coordinator that couldn't fetch the file, or a cloud file the system
     /// reports unavailable, is `notDownloaded`; anything else reads as the
-    /// importer would read it (out of space, couldn't open).
-    nonisolated static func failure(for error: any Error, isPDF: Bool) -> ImportFailure {
+    /// importer would read it (out of space, couldn't open). `isPDF` is
+    /// asked only then: it may read the file's first bytes, which a cloud
+    /// file that couldn't be fetched would only try to fetch again.
+    nonisolated static func failure(for error: any Error, isPDF: @autoclosure () -> Bool) -> ImportFailure {
         if error is CoordinationError { return .notDownloaded }
         if let cocoa = error as? CocoaError, cocoa.code == .ubiquitousFileUnavailable { return .notDownloaded }
-        return ImportFailure(error, isPDF: isPDF)
+        return ImportFailure(error, isPDF: isPDF())
     }
 
     // MARK: The coordinated copy

@@ -387,6 +387,28 @@ final class MacImportTests: XCTestCase {
         XCTAssertEqual(ImportFailure.notDownloaded.title, "This file isn't downloaded yet.")
     }
 
+    /// A failure before the importer reads as the importer would: a PDF by
+    /// its "%PDF-" signature under any name, as `DocumentImporter.isPDF`
+    /// has it (F091). A cloud file that couldn't be fetched is never read
+    /// again to find out.
+    func testAFailedFileIsAPDFByTheImportersOwnTest() throws {
+        let folder = try makeFolder()
+        let misnamed = folder.appendingPathComponent("report.txt")
+        try Data("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".utf8).write(to: misnamed)
+        XCTAssertTrue(MacFileIntake.isPDF(misnamed), "a PDF saved as .txt")
+        XCTAssertFalse(MacFileIntake.isPDF(try writeText("notes.txt", in: folder)))
+        XCTAssertTrue(MacFileIntake.isPDF(folder.appendingPathComponent("SCAN.PDF")), "by its name, unread")
+        XCTAssertEqual(MacFileIntake.isPDF(misnamed), DocumentImporter.isPDF(misnamed))
+
+        var asked = false
+        func sniff() -> Bool { asked = true; return true }
+        XCTAssertEqual(MacFileIntake.failure(for: CocoaError(.ubiquitousFileUnavailable), isPDF: sniff()),
+                       .notDownloaded)
+        XCTAssertFalse(asked, "an unfetched cloud file isn't read")
+        XCTAssertEqual(MacFileIntake.failure(for: CocoaError(.fileReadNoSuchFile), isPDF: sniff()), .couldNotOpen)
+        XCTAssertTrue(asked)
+    }
+
     /// A refused coordinated read stages nothing: no copy, no folder.
     func testARefusedReadStagesNothing() throws {
         let folder = try makeFolder()

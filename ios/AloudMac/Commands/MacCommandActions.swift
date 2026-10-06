@@ -224,7 +224,8 @@ struct MacCommandActions {
 
     /// The book Space plays when none is loaded: the Continue card's.
     private var continueBook: LibraryDocument? {
-        DocumentStore.continueListeningCandidate(in: store.documents, loadedID: playback.document?.id)
+        DocumentStore.continueListeningCandidate(in: store.documents, loadedID: playback.document?.id,
+                                                 stop: playback.stopped)
     }
 
     /// What Play/Pause would act on: the loaded book, else the Continue

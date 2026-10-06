@@ -393,8 +393,8 @@ struct MacContentsPanel: View {
         Button {
             pickResult(index)
         } label: {
-            MacContentsResultLabel(match: match, location: navigation.location(ofSentence: match.sentenceID,
-                                                                               page: match.page),
+            MacContentsResultLabel(match: match, location: navigation.searchLocation(ofSentence: match.sentenceID,
+                                                                                     page: match.page),
                                    scale: scale)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Space.sm)
@@ -595,8 +595,12 @@ struct MacContentsPanel: View {
             scanTask = scan
             let found = await scan.value
             guard !scan.isCancelled, !Task.isCancelled else { return }
+            let previousCount: Int? = searchedQuery == nil ? nil : results.count
             results = found
             searchedQuery = trimmed
+            // Focus stays in the field: VoiceOver hears what landed.
+            ContentsSearch.announceResults(count: found.count, query: trimmed,
+                                           previousCount: previousCount, muted: playback.isOutputMuted)
             if submitPending {
                 submitPending = false
                 if !found.isEmpty { pickResult(0) }
@@ -648,11 +652,11 @@ enum MacContents {
     static let leadLimit = ContentsSearch.leadLimit(for: .large)
 
     static func countLabel(_ count: Int) -> String {
-        count == 1 ? "1 match" : "\(count) matches"
+        ContentsSearch.countLabel(count)
     }
 
     static func noMatchesLabel(_ query: String) -> String {
-        "No matches for \u{201C}\(query)\u{201D}"
+        ContentsSearch.noMatchesLabel(query)
     }
 
     // MARK: Chapters
@@ -800,10 +804,11 @@ private struct MacContentsChapterLabel: View {
 
 /// A result: the sentence cut to start a few words before its hit
 /// (`ContentsSearch.snippet`), the hit in semibold, over its chapter or
-/// page.
+/// page: none in a book without chapters, where every hit would name the
+/// same one (`ReaderNavigation.searchLocation`).
 private struct MacContentsResultLabel: View {
     let match: SentenceMatch
-    let location: String
+    let location: String?
     let scale: ChromeScale
 
     var body: some View {
@@ -819,10 +824,12 @@ private struct MacContentsResultLabel: View {
                 // The cut is only visual: VoiceOver reads the whole sentence.
                 .accessibilityLabel(ReaderTypography.typeset(match.text))
 
-            Text(location)
-                .font(Theme.font(.footnote, scale: scale))
-                .foregroundStyle(Theme.textFaint)
-                .lineLimit(1)
+            if let location {
+                Text(location)
+                    .font(Theme.font(.footnote, scale: scale))
+                    .foregroundStyle(Theme.textFaint)
+                    .lineLimit(1)
+            }
         }
     }
 }

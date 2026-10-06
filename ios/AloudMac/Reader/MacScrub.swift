@@ -47,8 +47,11 @@ struct MacScrub: View {
                 Capsule().fill(Theme.line)
                 Capsule()
                     .fill(Theme.accent)
+                    // A finished book fills the track (its last sentence
+                    // was heard, not just begun); a press shows its target.
                     .frame(width: max(Self.trackHeight,
-                                      width * navigation.scrubFraction(of: shown, in: span)))
+                                      width * navigation.scrubFill(of: shown, in: span,
+                                                                   isFinished: press == nil && playback.isAtEnd)))
             }
             .frame(height: Self.trackHeight)
             .frame(maxHeight: .infinity, alignment: .center)
@@ -95,7 +98,8 @@ struct MacScrub: View {
 
     private var model: MacScrubModel {
         MacScrubModel(navigation: navigation, sentences: content.sentences,
-                      playhead: max(playback.currentSentence, 0), rate: playback.rate)
+                      playhead: max(playback.currentSentence, 0), rate: playback.rate,
+                      isFinished: playback.isAtEnd)
     }
 
     // MARK: - Pointer
@@ -188,12 +192,15 @@ struct MacScrubModel {
     /// The sentence being read (0 before anything loads).
     let playhead: Int
     let rate: Double
+    /// The book is at its end: its last sentence has been heard.
+    var isFinished = false
 
     /// The chapter holding the playhead, or the whole document.
     var span: ClosedRange<Int> { navigation.scrubSpan(at: playhead) }
 
-    /// The playhead's place along the track, 0...1, by words.
-    var fraction: Double { navigation.scrubFraction(of: playhead, in: span) }
+    /// The playhead's place along the track, 0...1, by words: the whole
+    /// track once the book is finished.
+    var fraction: Double { navigation.scrubFill(of: playhead, in: span, isFinished: isFinished) }
 
     /// The sentence whose start is nearest `x` along a track `width` wide,
     /// in `span` (the playhead's chapter unless a press froze another).

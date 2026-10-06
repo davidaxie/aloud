@@ -100,6 +100,43 @@ final class MacContentsPanelTests: XCTestCase {
         XCTAssertLessThanOrEqual(snippet.lead.count, MacContents.leadLimit + 1, "the hit is on the first line")
     }
 
+    /// In a book without chapters every hit would name the same derived
+    /// chapter (its first sentence), so a result has no location line; a
+    /// chaptered book's hits still name theirs (F040).
+    func testAChapterlessBooksResultsHaveNoLocation() throws {
+        let chapterless = Self.chapterless()
+        let flat = ReaderNavigation(content: chapterless, kind: .text)
+        let hits = chapterless.matches(of: "the")
+        XCTAssertFalse(hits.isEmpty)
+        for hit in hits {
+            XCTAssertNil(flat.searchLocation(ofSentence: hit.sentenceID, page: hit.page),
+                         "sentence \(hit.sentenceID) names a chapter the book doesn't have")
+        }
+        let chaptered = Self.chaptered()
+        let navigation = ReaderNavigation(content: chaptered, kind: .text)
+        let match = try XCTUnwrap(chaptered.matches(of: "amontillado").first)
+        XCTAssertEqual(navigation.searchLocation(ofSentence: match.sentenceID, page: match.page), "CHAPTER III")
+    }
+
+    /// The panel's count and no-matches copy are the shared lines VoiceOver
+    /// hears as a search lands, once per changed count, through the one
+    /// announcement path (F041).
+    func testALandedSearchIsAnnouncedThroughTheSharedLines() {
+        XCTAssertEqual(MacContents.countLabel(3), ContentsSearch.countLabel(3))
+        XCTAssertEqual(MacContents.noMatchesLabel("cask"), ContentsSearch.noMatchesLabel("cask"))
+        #if DEBUG
+        let log = UITestAnnouncementLog.shared
+        log.reset()
+        ContentsSearch.announceResults(count: 2, query: "cask", previousCount: nil, muted: true)
+        XCTAssertEqual(log.entries, [MacContents.countLabel(2)])
+        ContentsSearch.announceResults(count: 2, query: "cask ", previousCount: 2, muted: true)
+        XCTAssertEqual(log.entries, [MacContents.countLabel(2)], "the same count says nothing more")
+        ContentsSearch.announceResults(count: 0, query: "caskx", previousCount: 2, muted: true)
+        XCTAssertEqual(log.entries.last, MacContents.noMatchesLabel("caskx"))
+        log.reset()
+        #endif
+    }
+
     // MARK: - Keys
 
     func testArrowsWalkTheRowsAndUpLeavesForTheField() {

@@ -559,6 +559,39 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertGreaterThan(coordinator.programmaticScrollCount, scrolls, "the two re-engages placed the voice")
     }
 
+    /// A sentence taller than the band parks its top on the landing line;
+    /// once its spoken word would fall below the band, following keeps the
+    /// word's line in the band, so the end of a long sentence is never read
+    /// off the page (F031, the iPhone's `FollowBand.followed`).
+    func testASentenceTallerThanTheBandKeepsItsSpokenWordInTheBand() throws {
+        let page = try makePage(content: Self.tallSentenceBook(), active: 6,
+                                size: NSSize(width: 800, height: 500), reduceMotion: true)
+        let coordinator = page.coordinator
+        nextMainTurn()   // the opening placement runs first, as when a book opens
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let sentence = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertTrue(FollowBand.isTall(sentence, in: viewport), "taller than the band")
+        XCTAssertGreaterThan(sentence.maxY, viewport.maxY, "its end starts below the page")
+        XCTAssertTrue(page.activeSentenceIsInTheBand(), "parked on the landing line")
+        let scrolls = coordinator.programmaticScrollCount
+
+        page.update(activeSentence: 6, activeWord: 0)
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "its first word reads where it is parked")
+
+        var spoken = 0
+        for token in 0..<600 {
+            page.update(activeSentence: 6, activeWord: token)
+            guard let word = coordinator.activeWordRect(), let now = coordinator.viewport() else { continue }
+            spoken += 1
+            XCTAssertLessThanOrEqual(word.maxY, now.minY + FollowBand.bottom * now.height + 1,
+                                     "token \(token) is read below the band")
+            XCTAssertGreaterThanOrEqual(word.minY, now.minY - 1, "token \(token) is read above the page")
+        }
+        XCTAssertGreaterThan(spoken, 200, "every word of the sentence was spoken")
+        XCTAssertGreaterThan(coordinator.programmaticScrollCount, scrolls, "following tracked the word")
+        XCTAssertTrue(coordinator.isFollowing)
+    }
+
     /// The next sentence leaves the band within one viewport: under Reduce
     /// Motion the page moves there at once, with no glide; otherwise it
     /// glides. Either way, one follow scroll.
@@ -856,6 +889,21 @@ final class ReaderColumnViewTests: XCTestCase {
         coordinator.placeActiveSentence()
         XCTAssertNotNil(coordinator.textView?.textLayoutManager)
         return Page(window: window, scrollView: scrollView, coordinator: coordinator, played: log, view: view)
+    }
+
+    /// Twelve one-sentence paragraphs; the seventh is 220 words long, far
+    /// taller than the band at 19 pt in an 800 × 500 window.
+    private static func tallSentenceBook() -> DocContent {
+        let long = (0..<220).map { "word\($0)" }.joined(separator: " ") + "."
+        var sentences: [Sentence] = []
+        var paragraphs: [Paragraph] = []
+        for id in 0..<12 {
+            let text = id == 6 ? long : "Sentence \(id) reads a few plain words aloud."
+            sentences.append(Sentence(id: id, text: text, para: id, page: 0))
+            paragraphs.append(Paragraph(id: id, sentenceIDs: id..<(id + 1), page: 0))
+        }
+        return DocContent(title: "Tall", pageCount: 1, sentences: sentences, paragraphs: paragraphs,
+                          contentHash: "mac-column-tall")
     }
 
     /// `count` sentences of eight words, four to a paragraph, on one page.

@@ -438,7 +438,7 @@ struct ReaderColumnView: NSViewRepresentable {
             }
 
             if activeWordToken != newParent.activeWord {
-                setActiveWord(newParent.activeWord)
+                setActiveWord(newParent.activeWord, follows: true)
             }
 
             if obscuredBottomChanged {
@@ -489,13 +489,18 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         /// Light/dark and Increase Contrast only recolor (the Mac has no
-        /// Bold Text), so the offset still frames the same passage, and the
-        /// same ranges hold the reader's selection and VoiceOver's cursor.
+        /// Bold Text): the same ranges hold the reader's selection and
+        /// VoiceOver's cursor, and the passage on screen is put back where
+        /// it was. Not by the raw offset: the rebuild drops the layout, and
+        /// TextKit 2 would frame it on estimated heights, far off deep in a
+        /// book. The first visible line is anchored instead, laid out for
+        /// real through it, as a text-size step does.
         func rebuildForAppearanceChange() {
             guard let textView, !builtHash.isEmpty, builtHash == parent.content.contentHash,
                   Self.look(of: textView.effectiveAppearance) != builtLook else { return }
             let active = activeSentence
             let offset = contentOffsetY
+            let anchor = relayoutAnchor ?? viewport().flatMap { readingAnchor(in: $0) }
             let rebuildPage = { self.rebuild(content: self.parent.content, fontSize: self.parent.fontSize) }
             if let access = textView.readerAccessibility {
                 access.keepingCursor(through: rebuildPage)
@@ -505,7 +510,7 @@ struct ReaderColumnView: NSViewRepresentable {
             follow.pendingPlacement = false
             setActiveSentence(active, scroll: false)
             setActiveWord(parent.activeWord)
-            setOffset(offset)
+            if let anchor { arm(anchor, confirming: true) } else { setOffset(offset) }
         }
 
         /// Which of the four looks a theme token tells apart `appearance` is.
@@ -859,8 +864,10 @@ struct ReaderColumnView: NSViewRepresentable {
                                         animated: animated, reduceMotion: reduceMotion())
         }
 
-        /// Word layer: an accent underline under the spoken word.
-        func setActiveWord(_ token: Int) {
+        /// Word layer: an accent underline under the spoken word. A word
+        /// tick `follows`: through a sentence taller than the band,
+        /// following keeps the spoken word on screen (`FollowBand.followed`).
+        func setActiveWord(_ token: Int, follows: Bool = false) {
             guard textView != nil else { return }
             var newRange: NSRange?
             if token >= 0, let ranges = wordRanges(for: activeSentence), ranges.indices.contains(token) {
@@ -871,6 +878,13 @@ struct ReaderColumnView: NSViewRepresentable {
             let slide = activeWordRange != nil
             activeWordRange = newRange
             renderWordUnderline(animated: slide)
+            if follows, newRange != nil, isFollowing { followIfNeeded(animated: true) }
+        }
+
+        /// The underlined word's laid-out rect in the page's coordinates,
+        /// like `viewport()`; nil without one.
+        func activeWordRect() -> CGRect? {
+            activeWordRange.flatMap { boundingRect(for: $0) }
         }
 
         private func renderWordUnderline(animated: Bool) {
@@ -920,15 +934,24 @@ struct ReaderColumnView: NSViewRepresentable {
         /// line. Never moves under a gesture.
         func followIfNeeded(animated: Bool) {
             guard isFollowing, !userHoldsScroll,
-                  let rect = activeSentenceRect(), let viewport = viewport(), viewport.height > 0,
-                  !FollowBand.contains(rect, in: viewport),
-                  let target = landingTarget() else { return }
+                  let sentence = activeSentenceRect(), let viewport = viewport(), viewport.height > 0 else { return }
+            let rect = followedRect(sentence: sentence, in: viewport)
+            guard !FollowBand.contains(rect, in: viewport),
+                  let target = rect == sentence ? landingTarget() : landingOffset(for: rect) else { return }
             switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
                                            animated: animated, reaim: false) {
             case .none: return
             case .glide(let y): scroll(toY: y, animated: true)
             case .jump(let y, _): scroll(toY: y, animated: false)
             }
+        }
+
+        /// `FollowBand.followed` for the active sentence, as on the iPhone:
+        /// the spoken word is measured only for a sentence taller than the
+        /// band, whose end would otherwise be read below the page.
+        private func followedRect(sentence: CGRect, in viewport: CGRect) -> CGRect {
+            guard shownColophon == nil, FollowBand.isTall(sentence, in: viewport) else { return sentence }
+            return FollowBand.followed(sentence: sentence, word: activeWordRect(), in: viewport)
         }
 
         /// Play, a jump, Undo or Follow the voice: follow again and bring

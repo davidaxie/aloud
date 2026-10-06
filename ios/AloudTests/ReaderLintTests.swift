@@ -95,4 +95,25 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertEqual(SourceTree.occurrences(of: "[\"reader.sentence\"]", in: uiTests), 0,
                        "the value probe is gone; use currentSentence(_:) or waitForSentence(_:in:timeout:)")
     }
+
+    /// F040 and F041 on the Mac, as on the iPhone's sheet: a result's
+    /// footnote is `searchLocation` (none in a chapterless book), and a
+    /// landed search is announced against the count before it.
+    func testTheMacContentsSearchNamesNoFakeChapterAndIsAnnounced() throws {
+        let file = "Reader/MacContentsPanel.swift"
+        let panel = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [file])[file])
+        let code = codeLines(panel).joined(separator: "\n")
+        XCTAssertTrue(code.contains("navigation.searchLocation(ofSentence: match.sentenceID"))
+        XCTAssertFalse(code.contains("navigation.location(ofSentence: match.sentenceID"))
+        XCTAssertTrue(code.contains("let location: String?"))
+        XCTAssertTrue(code.contains("if let location {"))
+
+        let captured = try XCTUnwrap(code.range(of: "let previousCount: Int? = searchedQuery == nil ? nil : results.count"),
+                                     "the count before the search lands")
+        let landed = try XCTUnwrap(code.range(of: "results = found"))
+        let announced = try XCTUnwrap(code.range(of: "ContentsSearch.announceResults(count: found.count, query: trimmed,"))
+        XCTAssertLessThan(captured.lowerBound, landed.lowerBound, "previousCount is taken before results change")
+        XCTAssertLessThan(landed.lowerBound, announced.lowerBound)
+        XCTAssertTrue(code.contains("previousCount: previousCount, muted: playback.isOutputMuted)"))
+    }
 }
