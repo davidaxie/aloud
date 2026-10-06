@@ -13,6 +13,7 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { Doc, Paragraph, Sentence } from '../types'
 import { chunkParagraph } from './chunker'
 import { bundledCMapReaderFactory } from './pdfCMaps'
+import { type Line, runningHeadersByPage, stripNoise, typicalGap } from './pdfHeaders'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -38,12 +39,6 @@ interface Piece {
   w: number // width in device space
   h: number // font height (approx), used as the spacing/leading scale
   hasEOL: boolean
-}
-
-interface Line {
-  text: string
-  y: number // representative baseline y (top-most piece)
-  height: number // representative font height
 }
 
 // A reconstructed paragraph plus the 1-based page it starts on.
@@ -206,9 +201,7 @@ function linesToParagraphs(lines: Line[]): string[] {
 
   // Typical line spacing = median of consecutive baseline gaps (robust to
   // headings / outliers). Fall back to font height when there's one line.
-  const gaps: number[] = []
-  for (let i = 1; i < lines.length; i++) gaps.push(lines[i - 1].y - lines[i].y)
-  const typical = median(gaps) || lines[0].height * 1.2
+  const typical = typicalGap(lines)
 
   const paragraphs: string[] = []
   let buf = ''
@@ -252,69 +245,6 @@ function appendLine(buf: string, next: string): string {
     return buf.replace(/[-\u00AD]$/, '') + nextTrim
   }
   return buf.replace(/\s+$/, '') + ' ' + nextTrim
-}
-
-function median(nums: number[]): number {
-  if (nums.length === 0) return 0
-  const s = [...nums].sort((a, b) => a - b)
-  const mid = s.length >> 1
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
-}
-
-/** Purely a page number / roman numeral (running-foot noise). */
-function isPageNumberLine(text: string): boolean {
-  const t = text.trim()
-  return /^\d{1,4}$/.test(t) || /^[ivxlcdm]{1,7}$/i.test(t)
-}
-
-/** Normalize a header/footer candidate so "Page 3" and "Page 4" collapse. */
-function normalizeRunning(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/\d+/g, '#') // page numbers vary; ignore the digits
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-/**
- * Detect running headers/footers: the top/bottom line of each page, normalized,
- * that repeats across a majority of pages. Returns the set of normalized forms
- * to strip. Only meaningful for multi-page docs.
- */
-function detectRunningHeaders(pageLines: Line[][]): Set<string> {
-  const counts = new Map<string, number>()
-  const bump = (line: Line | undefined) => {
-    if (!line) return
-    const key = normalizeRunning(line.text)
-    if (key.length >= 2) counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  for (const lines of pageLines) {
-    // Consider the outer two lines at each edge — headers can be 1-2 lines.
-    bump(lines[0])
-    bump(lines[1])
-    bump(lines[lines.length - 1])
-    bump(lines[lines.length - 2])
-  }
-  const pages = pageLines.length
-  const threshold = Math.max(2, Math.ceil(pages * 0.5))
-  const repeating = new Set<string>()
-  if (pages < 3) return repeating // too few pages to be confident
-  for (const [key, n] of counts) if (n >= threshold) repeating.add(key)
-  return repeating
-}
-
-/**
- * Drop noise lines: repeating headers/footers (only near the page edges, so a
- * body line that happens to match isn't nuked) and standalone page numbers.
- */
-function stripNoise(lines: Line[], running: Set<string>): Line[] {
-  const n = lines.length
-  return lines.filter((line, idx) => {
-    const nearEdge = idx <= 1 || idx >= n - 2
-    if (nearEdge && running.has(normalizeRunning(line.text))) return false
-    if (nearEdge && isPageNumberLine(line.text)) return false
-    return true
-  })
 }
 
 /** True if text ends a sentence (terminal punctuation, ignoring closers). */
@@ -432,13 +362,14 @@ export async function loadPdf(
     onProgress?.(pageNum / pageCount)
   }
 
-  // ── Detect repeating headers/footers across the whole document. ──
-  const running = detectRunningHeaders(pageLines)
+  // ── Detect repeating headers/footers: across the whole document, and per
+  //    page for the ones that run through a chapter or alternate. ──
+  const running = runningHeadersByPage(pageLines)
 
   // ── Pass 2: strip noise, fold into paragraphs, stitch across pages. ──
   const blocks: Block[] = []
   pageLines.forEach((lines, idx) => {
-    const cleaned = stripNoise(lines, running)
+    const cleaned = stripNoise(lines, running[idx])
     const paras = linesToParagraphs(cleaned)
     appendPageParagraphs(blocks, paras, idx + 1)
   })

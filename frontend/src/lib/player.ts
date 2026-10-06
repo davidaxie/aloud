@@ -31,7 +31,7 @@
 import { synthesize, SynthesisError } from './api'
 import { spokenText, tokenizeSentence } from './chunker'
 import { useStore } from '../store'
-import type { Doc, WordToken } from '../types'
+import type { Doc, SynthesisPriority, WordToken } from '../types'
 
 export interface Player {
   /** Attach a freshly parsed document and reset playback to its start. */
@@ -255,8 +255,14 @@ class PlayerImpl implements Player {
   /**
    * Return the cache entry for `sentenceId` at the CURRENT voice+rate, creating it
    * (and kicking off synthesis) on a miss. Touches the entry for LRU freshness.
+   *
+   * `priority` picks the backend's queue lane: `now` for the sentence the user is
+   * on, `prefetch` for look-ahead, so speculative work never delays a sentence
+   * someone is waiting to hear. An entry already in flight keeps the lane it was
+   * created with (the backend has queued it); that just means prefetch got there
+   * first.
    */
-  private ensure(sentenceId: number): CacheEntry {
+  private ensure(sentenceId: number, priority: SynthesisPriority = 'now'): CacheEntry {
     const { voiceId, skipSkippable } = store()
     // Rate is NOT in the key: every clip is synthesized at speed 1.0 and sped up
     // client-side via playbackRate, so one cached WAV serves all rates. The skip
@@ -290,7 +296,7 @@ class PlayerImpl implements Player {
       entry.url = SILENT
       entry.promise = Promise.resolve(SILENT)
     } else {
-      entry.promise = this.synth(entry, text, voiceId, 1)
+      entry.promise = this.synth(entry, text, voiceId, 1, priority)
     }
     this.cache.set(key, entry)
     this.evict()
@@ -303,9 +309,10 @@ class PlayerImpl implements Player {
     text: string,
     voice: string,
     speed: number,
+    priority: SynthesisPriority,
   ): Promise<string> {
     try {
-      const blob = await synthesize({ text, voice, speed }, entry.controller.signal)
+      const blob = await synthesize({ text, voice, speed, priority }, entry.controller.signal)
       const url = URL.createObjectURL(blob)
       entry.url = url
       // If we were evicted/invalidated while the request was in flight, no one is
@@ -357,7 +364,7 @@ class PlayerImpl implements Player {
       if (j >= 0 && j < n) {
         // Attach a no-op catch so a prefetch failure/abort never becomes an
         // unhandled rejection; the real error surfaces when we actually reach `j`.
-        this.ensure(j).promise.catch(() => {})
+        this.ensure(j, 'prefetch').promise.catch(() => {})
       }
     }
   }
@@ -393,8 +400,16 @@ class PlayerImpl implements Player {
       if (token !== this.playToken || isAbortError(err)) return
       // The backend answered but can't read THIS sentence (400, or retries
       // spent on a non-transport error): skip it and keep playing, as the
-      // API contract says. Only a transport failure means the engine is down.
-      if (err instanceof SynthesisError && err.status !== null && this.skip(i)) return
+      // API contract says. Only a transport failure means the engine is down,
+      // so a run of unreadable sentences stops without blaming the engine.
+      if (err instanceof SynthesisError && err.status !== null) {
+        if (!this.skip(i)) {
+          this.stopAfterSkips(
+            'The speech engine couldn\u2019t read these sentences \u2014 try skipping ahead.',
+          )
+        }
+        return
+      }
       this.handleSynthError()
       return
     }
@@ -492,10 +507,15 @@ class PlayerImpl implements Player {
   /** Skip an unplayable sentence, or stop with an error after too many in a row. */
   private skipUnplayable(i: number) {
     if (this.skip(i)) return
+    this.stopAfterSkips('Couldn\u2019t play the audio for these sentences \u2014 try reloading the page.')
+  }
+
+  /** Too many sentences failed in a row: stop and say why (the engine itself is up). */
+  private stopAfterSkips(message: string) {
     this.wantPlaying = false
     this.consecutiveSkips = 0
     this.stopWordLoop()
-    store().setError('Couldn\u2019t play the audio for these sentences \u2014 try reloading the page.')
+    store().setError(message)
     store().setStatus('error')
   }
 

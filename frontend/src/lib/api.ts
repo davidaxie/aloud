@@ -295,8 +295,9 @@ async function attemptSynthesize(
  * never be retried.
  *
  * `req.priority` decides the backend's queue class: `now` for the sentence the
- * user is waiting on, `prefetch` for speculative lookahead. Defaults to `now`
- * server-side, so it is always passed explicitly here.
+ * user is waiting on, `prefetch` for speculative look-ahead (the player passes
+ * it for the sentences it warms ahead of the playhead). Omitted, it is sent as
+ * `now`, which is also the backend's default.
  */
 export async function synthesize(req: SynthesizeRequest, signal?: AbortSignal): Promise<Blob> {
   const body = JSON.stringify({ priority: 'now', ...req })

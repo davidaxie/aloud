@@ -647,10 +647,6 @@ export class AloudPlayer {
     // A newer play/seek/stop happened while we were synthesizing → abandon.
     if (token !== this.playToken) return
 
-    // A sentence that read successfully clears the failure streak AND the error
-    // it produced: status is honest about the present, not the past (F4.1).
-    this.streak = []
-
     const audio = this.ensureAudio()
     // Adopt the tokens now so the 'loadedmetadata' fired by the next line has
     // something to lay out.
@@ -676,7 +672,13 @@ export class AloudPlayer {
       this.playRefused(i, err)
       return
     }
-    if (token === this.playToken) this.startWordLoop()
+    if (token !== this.playToken) return
+    // A sentence that actually started playing clears the failure streak (the
+    // error it produced already went with status 'playing', F4.1). Not before:
+    // a clip that synthesizes but won't play is a failure too, and a run of
+    // them must stop rather than skip through the page.
+    this.streak = []
+    this.startWordLoop()
   }
 
   /**
@@ -803,9 +805,14 @@ export class AloudPlayer {
       audio.playbackRate = this.hooks.prefs().rate
       this.setStatus('playing')
       const token = this.playToken
-      audio.play().catch((err: unknown) => {
-        if (token === this.playToken && !isAbortError(err)) this.playRefused(this.index, err)
-      })
+      audio.play().then(
+        () => {
+          if (token === this.playToken) this.streak = []
+        },
+        (err: unknown) => {
+          if (token === this.playToken && !isAbortError(err)) this.playRefused(this.index, err)
+        },
+      )
       this.startFilling()
       this.startWordLoop()
       return

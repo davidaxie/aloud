@@ -121,6 +121,35 @@ test('F011: an audio error event skips the loaded sentence exactly once', async 
   assert.equal(current.player.currentIndex, 1)
 })
 
+test('F011/F061: a run of clips the browser cannot play stops instead of skipping the page', async () => {
+  // Every clip synthesizes fine but none will play: the streak must survive the
+  // successful syntheses, or the player skips through the whole page.
+  FakeAudio.play = () => Promise.reject(new DOMException('no supported source', 'NotSupportedError'))
+  current = rig(OK)
+  current.player.play()
+  await until(() => current.player.status === 'error', 3000, "status 'error' (skipped through the page)")
+  assert.equal(current.seen.skips.length, 3)
+  assert.equal(current.player.currentIndex, 0, 'stops where the run began')
+  assert.equal(current.player.wasSkipped(0), false)
+})
+
+test('F011/F061: a clip that plays after a refused one clears the failure streak', async () => {
+  // Two unplayable clips, then one that plays: the run is broken, so two more
+  // failures later must not add up to a stop.
+  const outcomes = ['bad', 'bad', 'ok', 'bad', 'bad']
+  FakeAudio.play = () =>
+    outcomes.shift() === 'bad'
+      ? Promise.reject(new DOMException('no supported source', 'NotSupportedError'))
+      : Promise.resolve()
+  current = rig(OK)
+  current.player.play()
+  await until(() => current.player.currentIndex === 2 && current.player.status === 'playing', 3000, 'playing sentence 2')
+  FakeAudio.last.dispatchEvent(new Event('ended'))
+  await until(() => current.player.currentIndex === 5, 3000, 'advance past two more bad clips')
+  assert.notEqual(current.player.status, 'error')
+  assert.deepEqual(current.seen.skips.map((s) => s.index), [0, 1, 3, 4])
+})
+
 test('F064: an unreachable backend stops on the first sentence, and play resumes there', async () => {
   let up = false
   current = rig((msg) => (up ? OK(msg) : fail(0, true)(msg)))

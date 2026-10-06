@@ -28,13 +28,14 @@ import unicodedata
 # substitutes for it. Everything here operates on individual code points.
 # ---------------------------------------------------------------------------
 
-# Characters removed outright. Soft hyphen and the zero-width family are
-# invisible artifacts that split or fuse words for the phonemizer.
+# Characters removed outright. Soft hyphen, zero-width space and BOM are
+# invisible artifacts that split or fuse words for the phonemizer. The zero-width
+# joiner and non-joiner (U+200D / U+200C) are not here: they are spelling inside
+# emoji sequences and Persian/Indic words, so ``_drop_stray_joiners`` removes
+# them only where they are leftovers (see ``_keeps_joiner``).
 _DELETE: dict[int, None] = {
     0x00AD: None,  # SOFT HYPHEN
     0x200B: None,  # ZERO WIDTH SPACE
-    0x200C: None,  # ZERO WIDTH NON-JOINER
-    0x200D: None,  # ZERO WIDTH JOINER
     0xFEFF: None,  # ZERO WIDTH NO-BREAK SPACE / BOM
 }
 
@@ -104,6 +105,60 @@ _TRANSLATION.update(_ELLIPSIS)
 _TRANSLATION.update(_BULLETS)
 
 # ---------------------------------------------------------------------------
+# Zero-width joiner / non-joiner
+# ---------------------------------------------------------------------------
+
+_JOINERS = "\u200c\u200d"  # ZERO WIDTH NON-JOINER, ZERO WIDTH JOINER
+
+# Letters and marks: in a non-Latin script these are what a joiner shapes.
+_SHAPING_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me"})
+
+
+def _shapes(ch: str | None) -> bool:
+    """True for a character a ZWJ/ZWNJ beside it belongs to: an emoji (or its
+    presentation selector, skin-tone modifier, keycap or flag tag) or a letter
+    or mark of a non-Latin script."""
+    if ch is None:
+        return False
+    cp = ord(ch)
+    if cp <= 0x7F:
+        return False
+    if (
+        cp in (0xFE0F, 0x20E3)  # emoji presentation selector, combining keycap
+        or 0x2190 <= cp <= 0x2BFF  # arrows .. misc symbols, dingbats (U+2640, U+2764)
+        or 0x1F000 <= cp <= 0x1FAFF  # emoji blocks, incl. modifiers U+1F3FB..U+1F3FF
+        or 0xE0020 <= cp <= 0xE007F  # tag characters (subdivision flags)
+    ):
+        return True
+    if cp < 0x0370 or 0x1E00 <= cp <= 0x1EFF:  # Latin, IPA and their diacritics
+        return False
+    return unicodedata.category(ch) in _SHAPING_CATEGORIES
+
+
+def _keeps_joiner(before: str | None, after: str | None) -> bool:
+    """ZWJ and ZWNJ beside an emoji or a non-Latin letter are spelling: they
+    join a ZWJ emoji sequence into one emoji and keep Persian and Devanagari
+    words as written. Between Latin letters they are leftovers of ligature
+    breaking in PDFs and go. Same rule as TextNormalizer.keepsJoiner (iOS/Mac)."""
+    return _shapes(before) or _shapes(after)
+
+
+def _drop_stray_joiners(text: str) -> str:
+    """Delete each ZWJ/ZWNJ that ``_keeps_joiner`` does not keep."""
+    if "\u200c" not in text and "\u200d" not in text:
+        return text
+    out: list[str] = []
+    for i, ch in enumerate(text):
+        if ch in _JOINERS:
+            before = out[-1] if out else None
+            after = text[i + 1] if i + 1 < len(text) else None
+            if not _keeps_joiner(before, after):
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Regex passes
 # ---------------------------------------------------------------------------
 
@@ -132,9 +187,11 @@ def normalize_for_tts(text: str) -> str:
     The transformation is a fixed pipeline:
 
     1. Unicode **NFKC** normalization (expands ligatures ``ﬁ`` -> ``fi`` etc.).
-    2. Single-pass character translation: delete soft hyphen / zero-width chars,
-       map exotic spaces to a plain space, straighten quotes, convert dashes to
-       " - ", expand the ellipsis, and drop non-ASCII bullets.
+    2. Single-pass character translation: delete soft hyphen / zero-width
+       space / BOM, map exotic spaces to a plain space, straighten quotes,
+       convert dashes to " - ", expand the ellipsis, and drop non-ASCII
+       bullets. Then drop ZWJ/ZWNJ except inside emoji sequences and
+       non-Latin words, where they are spelling.
     3. Strip remaining C0/C1 control characters (keeping normal whitespace).
     4. Repair conservative line-wrap hyphenation.
     5. Collapse whitespace runs and trim ends.
@@ -160,6 +217,7 @@ def normalize_for_tts(text: str) -> str:
 
     # 2. One-pass character rewrites (deletions, spaces, quotes, dashes, ...).
     result = result.translate(_TRANSLATION)
+    result = _drop_stray_joiners(result)
 
     # 3. Drop leftover control characters that are not normal whitespace.
     result = _CONTROL_RE.sub("", result)

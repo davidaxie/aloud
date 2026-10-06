@@ -8,6 +8,10 @@ import assert from 'node:assert/strict'
 /** What the next play() calls do, in order; 'ok' once the list runs out. */
 let playOutcomes: Array<'ok' | DOMException> = []
 let audioEl: FakeAudio | null = null
+/** Every /synthesize body the player sent, in order. */
+let synthBodies: Array<{ text: string; priority?: string }> = []
+/** Sentence texts the fake backend answers 400 for (it is up, it just can't read them). */
+let unreadable = new Set<string>()
 
 class FakeAudio extends EventTarget {
   preload = ''
@@ -52,8 +56,16 @@ Object.assign(globalThis, {
   Audio: FakeAudio,
   requestAnimationFrame: () => 0,
   cancelAnimationFrame: () => {},
-  fetch: async (url: string | URL) => {
+  fetch: async (url: string | URL, init?: RequestInit) => {
     if (String(url).endsWith('/synthesize')) {
+      const body = JSON.parse(String(init?.body))
+      synthBodies.push(body)
+      if (unreadable.has(body.text)) {
+        return new Response(JSON.stringify({ detail: 'no phonemes', retryable: false }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       return new Response(new Uint8Array([82, 73, 70, 70]), {
         status: 200,
         headers: { 'Content-Type': 'audio/wav' },
@@ -82,6 +94,8 @@ async function settle() {
 
 beforeEach(() => {
   playOutcomes = []
+  synthBodies = []
+  unreadable = new Set()
   state().reset()
   player.load(doc)
 })
@@ -153,4 +167,24 @@ test('F058: a skipped sentence loses its mark once it is read', async () => {
   player.play()
   await settle()
   assert.deepEqual(state().skippedSentences, [2])
+})
+
+test('look-ahead synthesis rides the prefetch lane; the sentence being played is now', async () => {
+  player.play()
+  await settle()
+  const lane = new Map(synthBodies.map((b) => [b.text, b.priority]))
+  assert.equal(lane.get('Sentence number 0.'), 'now')
+  assert.equal(lane.get('Sentence number 1.'), 'prefetch')
+  assert.equal(lane.get('Sentence number 2.'), 'prefetch')
+})
+
+test('a run of sentences the backend answers 400 for stops without calling it offline', async () => {
+  unreadable = new Set(['Sentence number 0.', 'Sentence number 1.', 'Sentence number 2.'])
+  player.play()
+  await settle()
+  assert.equal(state().status, 'error')
+  assert.deepEqual(state().skippedSentences, [0, 1])
+  assert.notEqual(state().engineState, 'offline')
+  assert.ok(state().error)
+  assert.doesNotMatch(state().error ?? '', /offline/i)
 })
