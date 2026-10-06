@@ -83,12 +83,30 @@ final class PlaybackController: ObservableObject {
     /// (`scheduleCompressionSwitch`).
     private var lastScheduledCompression: Double?
 
-    /// What the time-pitch unit is playing at now (tests).
+    /// What the time-pitch unit is playing at now, whether it is bypassed,
+    /// and how much faster than 1x the clips now playing were made (tests).
     var timePitchRate: Float { timePitch.rate }
+    var isTimePitchBypassed: Bool { timePitch.bypass }
+    var playingSpeedUp: Double { playingCompression }
 
-    /// The time-pitch unit's share of the listener's speed.
+    /// The time-pitch unit's share of the listener's speed: nothing, and
+    /// bypassed, once each clip is stretched to the speed in the time domain
+    /// (`SpeechStretcher`); a slider move plays the small difference until
+    /// the clips at the new speed arrive.
     private func applyTimePitchRate() {
-        timePitch.rate = Float(rate / max(playingCompression, 0.1))
+        let residual = rate / max(playingCompression, 0.1)
+        timePitch.rate = Float(residual)
+        timePitch.bypass = abs(residual - 1) < 0.01
+    }
+
+    /// `clip` sped up to the listener's speed in the time domain, off the
+    /// main thread: no phase-vocoder ring. What it achieved rides on the clip.
+    nonisolated private static func stretchedToSpeed(_ clip: SynthesizedAudio, rate: Double) async -> SynthesizedAudio {
+        let speed = rate / max(clip.nativeSpeed, 0.1)
+        guard abs(speed - 1) > 0.01 else { return clip }
+        return await Task.detached(priority: .userInitiated) {
+            SpeechStretcher.stretch(clip, speed: speed)
+        }.value
     }
 
     /// The pace Kokoro is asked for at the current speed (`NativeSpeed`);
@@ -1464,8 +1482,10 @@ final class PlaybackController: ObservableObject {
                                              sentenceID: next)
                 let priority: SynthesisPriority = next == currentSentence ? .now : .prefetch
                 do {
-                    clip = try await synthesizeWithRetry(spoken, voice: clipVoice, speed: pace, key: key,
-                                                         priority: priority, token: token)
+                    let made = try await synthesizeWithRetry(spoken, voice: clipVoice, speed: pace, key: key,
+                                                             priority: priority, token: token)
+                    guard token == playToken else { return }
+                    clip = await Self.stretchedToSpeed(made, rate: rate)
                     guard token == playToken else { return }
                     // The splice was fixed while this clip was synthesizing:
                     // the old voice never reaches the node at or past it.
@@ -2030,16 +2050,18 @@ final class PlaybackController: ObservableObject {
             guard let self else { return }
             await self.scheduler.cancelPending()
             guard token == self.playToken, self.content == nil else { return }
-            let clip: SynthesizedAudio
+            let made: SynthesizedAudio
             do {
                 let pace = self.nativePace(for: voice)
-                clip = try await self.scheduler.synthesize(
+                made = try await self.scheduler.synthesize(
                     Self.sampleLine, voice: voice, speed: pace,
                     key: "sample|\(voice.id)|" + NativeSpeed.keyComponent(pace), priority: .now)
             } catch {
                 if token == self.playToken { self.setPreparingVoice(false) }
                 return
             }
+            guard token == self.playToken, self.content == nil else { return }
+            let clip = await Self.stretchedToSpeed(made, rate: self.rate)
             guard token == self.playToken, self.content == nil else { return }
             self.setPreparingVoice(false)
             if self.graphFormat == nil || self.graphFormat?.sampleRate != clip.sampleRate {

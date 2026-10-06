@@ -169,6 +169,48 @@ final class MacNativeSpeedClarityTests: XCTestCase {
         await Self.publish(report)
     }
 
+    /// Listening samples for the ring (written, never played): the same
+    /// passage, per voice and speed, the way it was rendered before today,
+    /// with this morning's split (Kokoro's pace plus the time-pitch unit),
+    /// and with the time-domain stretch that replaces the unit.
+    func testRingComparisonSamples() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ALOUD_PERF"] == "1",
+                          "measurement only: pass TEST_RUNNER_ALOUD_PERF=1 to run it")
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AloudRingSamples", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let engine = KokoroSherpaEngine(modelDirectory: Self.modelDirectory)
+        defer { engine.release() }
+        let passage = [
+            "Traction is the best way to improve your chances of startup success.",
+            "Most startups don't fail at building a product; they fail at getting customers, "
+                + "and the best way to avoid that is to test channels early and often.",
+        ]
+        for (id, rate) in [("kokoro:am_puck", 2.15), ("kokoro:am_michael", 2.95)] {
+            let voice = try XCTUnwrap(engine.voices.first { $0.id == id })
+            let tier = NativeSpeed.tier(for: rate, engine: .kokoro)
+            var renders: [String: [Float]] = [:]
+            for sentence in passage {
+                let natural = try await engine.synthesize(sentence, voice: voice, speed: 1.0)
+                let paced = try await engine.synthesize(sentence, voice: voice, speed: tier)
+                let gap = [Float](repeating: 0, count: Int(0.12 * natural.sampleRate))
+                func add(_ name: String, _ samples: [Float]) { renders[name, default: []] += samples + gap }
+                add("1-before-today", try Self.stretch(natural.samples, sampleRate: natural.sampleRate,
+                                                       rate: Float(rate), overlap: 8))
+                add("2-this-morning", try Self.stretch(paced.samples, sampleRate: paced.sampleRate,
+                                                       rate: Float(rate / paced.nativeSpeed), overlap: 32))
+                add("3-new", SpeechStretcher.stretch(paced, speed: rate / paced.nativeSpeed).samples)
+                add("4-new-stretch-only", SpeechStretcher.stretch(natural, speed: rate).samples)
+            }
+            for (name, samples) in renders {
+                try Self.writeWAV(samples, sampleRate: 24_000,
+                                  to: folder.appendingPathComponent("\(voice.name) \(rate)x \(name).wav"))
+            }
+        }
+        await Self.publish("Ring comparison samples: \(folder.path)\n")
+    }
+
     // MARK: - Offline time-pitch
 
     /// `samples` through an AVAudioUnitTimePitch at `rate`, rendered offline:

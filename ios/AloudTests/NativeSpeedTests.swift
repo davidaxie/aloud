@@ -2,7 +2,8 @@ import XCTest
 @testable import Aloud
 
 /// Kokoro speaks part of the listener's speed itself (`NativeSpeed`) and
-/// the time-pitch unit plays the rest: the pace table, the measured
+/// the rest is stretched in the time domain (`SpeechStretcher`), leaving the
+/// time-pitch unit bypassed: the pace table, the measured
 /// compression, the cache keys, the scheduler and router carrying the pace,
 /// the word timeline's wall time, and the controller's split. Silent: muted
 /// controllers over engines that return silence.
@@ -184,8 +185,10 @@ final class NativeSpeedTests: XCTestCase {
         try await rig.waitUntilPlayingOrSkip()
         XCTAssertFalse(paced.speeds.isEmpty)
         XCTAssertTrue(paced.speeds.allSatisfy { $0 == 2.0 }, "asked \(paced.speeds)")
-        XCTAssertEqual(Double(rig.controller.timePitchRate),
-                       2.95 / NativeSpeed.compression(speed: 2.0, voiceID: michael.id), accuracy: 0.001)
+        // The rest is stretched in the time domain: nothing left for the
+        // unit, which is bypassed (no phase-vocoder ring).
+        XCTAssertEqual(Double(rig.controller.timePitchRate), 1.0, accuracy: 0.01)
+        XCTAssertTrue(rig.controller.isTimePitchBypassed)
         rig.controller.pause(rampsOut: false)
     }
 
@@ -196,9 +199,11 @@ final class NativeSpeedTests: XCTestCase {
         rig.loadDefault(at: 0)
         rig.controller.play()
         try await rig.waitUntilPlayingOrSkip()
-        XCTAssertEqual(rig.controller.timePitchRate, 2.0, accuracy: 0.0001)
-        rig.controller.rate = 2.5   // a slider step: only the unit moves
-        XCTAssertEqual(rig.controller.timePitchRate, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(rig.controller.timePitchRate, 1.0, accuracy: 0.01, "stretched before scheduling")
+        XCTAssertTrue(rig.controller.isTimePitchBypassed)
+        rig.controller.rate = 2.5   // a slider step: the unit plays the difference until new clips come
+        XCTAssertEqual(rig.controller.timePitchRate, 1.25, accuracy: 0.02)
+        XCTAssertFalse(rig.controller.isTimePitchBypassed)
         rig.controller.pause(rampsOut: false)
     }
 
@@ -216,7 +221,7 @@ final class NativeSpeedTests: XCTestCase {
         rig.controller.play()
         try await rig.waitUntilPlayingOrSkip()
         rig.controller.selectRate(1.0)
-        let switched = await rig.waitUntil(8) { abs(rig.controller.timePitchRate - 1.0) < 0.001 }
+        let switched = await rig.waitUntil(8) { rig.controller.isTimePitchBypassed && rig.controller.playingSpeedUp < 1.2 }
         XCTAssertTrue(switched, "the unit plays the new clips' share: \(rig.controller.timePitchRate)")
         XCTAssertEqual(paced.speeds.last, 1.0, "later sentences were asked at the new pace")
         XCTAssertTrue(paced.speeds.contains(2.0))
