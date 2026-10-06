@@ -247,6 +247,64 @@ final class KokoroVoiceBlendsTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: blendFolder.path), [])
     }
 
+    /// F074: bytes that don't hash to the pin say the install is damaged,
+    /// apart from every other reason to load the original.
+    func testAWrongSourceHashIsReportedAsDamaged() throws {
+        let source = try writeSource()
+        XCTAssertEqual(KokoroVoiceBlends.prepareVoicesFile(source: source.url, in: blendFolder,
+                                                           pinnedSHA256: String(repeating: "0", count: 64)),
+                       .sourceDamaged)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: blendFolder.path), [])
+
+        let gone = folder.appendingPathComponent("removed", isDirectory: true)
+        XCTAssertEqual(KokoroVoiceBlends.prepareVoicesFile(source: source.url, in: gone, pinnedSHA256: source.sha),
+                       .original, "no folder is no damage")
+        XCTAssertEqual(KokoroVoiceBlends.prepareVoicesFile(source: source.url, in: blendFolder,
+                                                           pinnedSHA256: source.sha),
+                       .blended(copyURL))
+    }
+
+    /// F074: the engine reports a voices.bin that fails its pin as damaged
+    /// and loads nothing. The files are sparse at their pinned sizes, so
+    /// the size check passes and only the blend build's hash can tell; the
+    /// report comes before sherpa-onnx is ever created.
+    func testTheEngineReportsAVoicesFileThatFailsItsPin() async throws {
+        for asset in [("tokens", "txt"), ("lexicon-us-en", "txt"), ("lexicon-gb-en", "txt")] {
+            try XCTSkipUnless(Bundle.main.path(forResource: asset.0, ofType: asset.1) != nil,
+                              "this host doesn't bundle Kokoro's assets")
+        }
+        try XCTSkipUnless(Bundle.main.path(forResource: "espeak-ng-data", ofType: nil) != nil,
+                          "this host doesn't bundle Kokoro's assets")
+        for file in ModelManager.remoteFiles {
+            let url = sourceFolder.appendingPathComponent(file.name)
+            XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(file.expectedBytes))
+            try handle.close()
+        }
+        XCTAssertTrue(ModelManager.installedFilesLookIntact(in: sourceFolder))
+
+        final class Reports: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            func add() { lock.lock(); count += 1; lock.unlock() }
+            var total: Int { lock.lock(); defer { lock.unlock() }; return count }
+        }
+        let reports = Reports()
+        let engine = KokoroSherpaEngine(modelDirectory: sourceFolder, stopsThreadSpinning: false,
+                                        runtimeConfigDirectory: nil, blendDirectory: blendFolder)
+        engine.onModelDamaged = { reports.add() }
+        do {
+            try await engine.warmUp()
+            XCTFail("a voices.bin that fails its pin must not load")
+        } catch {
+            XCTAssertEqual(error as? KokoroEngineError, .modelDamaged)
+        }
+        XCTAssertEqual(reports.total, 1)
+        XCTAssertFalse(engine.isWarm)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: blendFolder.path), [])
+    }
+
     /// The pinned original is only read, and a build leaves only its two files.
     func testTheSourceIsNeverTouchedAndNothingIsLeftOver() throws {
         let source = try writeSource()

@@ -23,10 +23,13 @@ import Foundation
 /// and the answer comes when the first path lands (`cellularQuestion`).
 ///
 /// The download can't leave the user stuck (R21): free space of twice the
-/// download is checked before anything is created or sent; resume data is
-/// kept on disk beside the staged files; a record lets a relaunch reattach
-/// to the background session and show its progress at once; and every stop
-/// is one of three classified failures, announced, never an error's text.
+/// download, less what is already staged, is checked before anything is
+/// created or sent; every file's task starts with the run, so a suspended
+/// app's background session fetches them all; resume data is kept on disk
+/// beside the staged files, and a resumed file whose link has expired
+/// starts once more from scratch; a record lets a relaunch reattach to the
+/// background session and show its progress at once; and every stop is one
+/// of three classified failures, announced, never an error's text.
 ///
 /// Nothing here touches the network until a download is asked for or
 /// reattached (M4): both sessions are made on first use, so a launch with
@@ -153,10 +156,21 @@ final class ModelManager: ObservableObject {
     nonisolated static var requiredFreeBytes: Int64 { totalExpectedBytes * 2 }
 
     /// Unknown free space allows the download; a write that then runs out
-    /// still lands as `.notEnoughSpace`.
-    nonisolated static func hasRoom(freeBytes: Int64?) -> Bool {
+    /// still lands as `.notEnoughSpace`. Files already staged at their
+    /// pinned size are on disk and won't be fetched again, so a retry after
+    /// a cancel or a failure needs that much less.
+    nonisolated static func hasRoom(freeBytes: Int64?, stagedBytes: Int64 = 0) -> Bool {
         guard let freeBytes else { return true }
-        return freeBytes >= requiredFreeBytes
+        return freeBytes >= requiredFreeBytes - max(0, stagedBytes)
+    }
+
+    /// The pinned files staged in `staging` at their exact size: what an
+    /// earlier attempt left for the next one to hash rather than fetch.
+    nonisolated static func stagedBytes(in staging: URL) -> Int64 {
+        remoteFiles.reduce(0) { sum, file in
+            let size = fileSize(at: staging.appendingPathComponent(file.name))
+            return sum + (sizeIsExact(size, expected: file.expectedBytes) ? size : 0)
+        }
     }
 
     /// The space iOS would free for a download the user asked for, which is
@@ -220,10 +234,37 @@ final class ModelManager: ObservableObject {
         return digest == file.sha256
     }
 
-    /// A Wi-Fi-only download with no Wi-Fi is waiting, not downloading.
+    /// A Wi-Fi-only download with no Wi-Fi is waiting, not downloading, and
+    /// so is any download with no network at all: a run allowed onto
+    /// cellular can't move a byte in a tunnel either.
     nonisolated static func inFlightState(progress: Double, allowsCellular: Bool,
-                                          wifiAvailable: Bool) -> ModelState {
-        allowsCellular || wifiAvailable ? .downloading(progress) : .waitingForWiFi(progress)
+                                          wifiAvailable: Bool, networkAvailable: Bool = true) -> ModelState {
+        guard networkAvailable else { return .waitingForWiFi(progress) }
+        return allowsCellular || wifiAvailable ? .downloading(progress) : .waitingForWiFi(progress)
+    }
+
+    /// Whether `path` can carry any transfer: satisfied, costly or not. An
+    /// unknown path reads true, so nothing claims "waiting" before the
+    /// first update.
+    nonisolated static func networkAvailable(on path: any NetworkPathSource) -> Bool {
+        path.allowsWiFiOnlyTransfer || path.isExpensiveOrConstrained
+    }
+
+    /// The later files a run starts alongside file `index` (R21): every one
+    /// not yet staged at its pinned size.
+    nonisolated static func filesQueuedAhead(of index: Int, in staging: URL) -> [RemoteFile] {
+        remoteFiles.dropFirst(index + 1).filter { file in
+            !sizeIsExact(fileSize(at: staging.appendingPathComponent(file.name)), expected: file.expectedBytes)
+        }
+    }
+
+    /// A task that resumed a partial file and then failed leaving no new
+    /// resume data starts its file once more from the pinned URL before the
+    /// run fails: the resume data replays Hugging Face's redirect, whose
+    /// signed CDN link expires within the hour and then answers 403 (R21).
+    nonisolated static func restartsFromScratch(after failure: DownloadFailure, resumedFromData: Bool,
+                                                leftResumeData: Bool) -> Bool {
+        failure == .interrupted && resumedFromData && !leftResumeData
     }
 
     /// Two background sessions rather than one toggled config: a background
@@ -293,6 +334,25 @@ final class ModelManager: ObservableObject {
         }
         guard ownsInstallDirectory else { return pinned }
         return pinned + Self.fileSize(at: installDirectory.appendingPathComponent(KokoroVoiceBlends.fileName))
+    }
+
+    /// What a Remove frees before the files are installed: the pinned
+    /// files a cancelled or failed attempt staged, kept so the next one
+    /// hashes them rather than fetching them again.
+    var stagedBytes: Int64 { Self.stagedBytes(in: stagingDirectory) }
+
+    /// The waiting line: a run allowed onto cellular waits for any
+    /// connection, a Wi-Fi-only run for Wi-Fi.
+    var waitingLine: String {
+        allowsCellularThisRun ? NaturalVoiceCopy.waitingForConnection : NaturalVoiceCopy.waitingForWiFi
+    }
+
+    /// A Wi-Fi-only run waiting on a costly network that could carry it:
+    /// its Download raises R5's prompt again, and confirming moves the run
+    /// onto the cellular session from where it stopped.
+    var canContinueOnCellular: Bool {
+        guard case .waitingForWiFi = state else { return false }
+        return !allowsCellularThisRun && pathSource.isExpensiveOrConstrained
     }
 
     var hasActiveTask: Bool { activeTask != nil }
@@ -368,6 +428,13 @@ final class ModelManager: ObservableObject {
 
     private var allowsCellularThisRun = false
     private var activeTask: URLSessionDownloadTask?
+    /// The active task picked up a partial file from resume data.
+    private var activeTaskResumed = false
+    /// Later files' tasks, started with the run's first so a background
+    /// session fetches every file while Aloud is suspended (R21). Each
+    /// stages under its own name; the run adopts the task when it reaches
+    /// that file, or hashes the file it finds already there.
+    private var queuedTasks: [String: (task: URLSessionDownloadTask, resumed: Bool)] = [:]
     /// The (session, task) pair allowed to move `state`. Task IDs are only
     /// unique within one session, so the coordinator is part of the key.
     private var activeTaskID: Int?
@@ -573,6 +640,9 @@ final class ModelManager: ObservableObject {
         clearCellularQuestion()
         // The files are on disk and being checked: nothing to fetch.
         if isVerifying { return .started }
+        // A Wi-Fi-only run waiting on a costly network: the prompt again,
+        // and its Download moves the run there.
+        if canContinueOnCellular { return .needsCellularConfirmation }
         switch state {
         case .downloading, .waitingForWiFi, .installed:
             return .started
@@ -582,7 +652,7 @@ final class ModelManager: ObservableObject {
         case .notInstalled, .failed:
             break
         }
-        guard Self.hasRoom(freeBytes: freeSpace()) else {
+        guard Self.hasRoom(freeBytes: freeSpace(), stagedBytes: stagedBytes) else {
             pendingRequest = nil
             fail(.notEnoughSpace)
             return .notEnoughSpace
@@ -611,12 +681,16 @@ final class ModelManager: ObservableObject {
     func startDownload(allowingCellular: Bool = false) {
         clearCellularQuestion()
         guard !isVerifying else { return }
+        if allowingCellular, canContinueOnCellular {
+            continueOnCellular()
+            return
+        }
         switch state {
         case .downloading, .waitingForWiFi, .installed: return
         case .notInstalled, .failed: break
         }
         // Again here: the cellular prompt's Download lands here directly.
-        guard Self.hasRoom(freeBytes: freeSpace()) else {
+        guard Self.hasRoom(freeBytes: freeSpace(), stagedBytes: stagedBytes) else {
             fail(.notEnoughSpace)
             return
         }
@@ -629,6 +703,9 @@ final class ModelManager: ObservableObject {
             fail(DownloadFailure.classify(error))
             return
         }
+        // Staged files are re-downloadable too, and a cancel or a failure
+        // keeps them: out of backups from the start, not only once installed.
+        excludeInstallDirectoryFromBackup()
         epoch &+= 1
         completedBytes = 0
         setInFlight(progress: 0)
@@ -641,8 +718,44 @@ final class ModelManager: ObservableObject {
         endVerification()
         if let activeTask { cancelKeepingResumeData(activeTask) }
         clearActiveTask()
+        cancelQueuedTasks()
         ModelDownloadRecord.clear(from: defaults)
         state = .notInstalled
+    }
+
+    /// R5's prompt confirmed while a Wi-Fi-only run waits: its tasks stop,
+    /// each keeping its partial file as resume data, and once every one
+    /// has, the run starts again on the cellular session from there. Staged
+    /// files are hashed again rather than fetched.
+    private func continueOnCellular() {
+        let tasks = ([activeTask].compactMap { $0 }) + queuedTasks.values.map(\.task)
+        epoch &+= 1
+        endVerification()
+        clearActiveTask()
+        queuedTasks = [:]
+        allowsCellularThisRun = true
+        refreshInFlightState()
+        saveRecord(fraction: inFlightProgress ?? 0)
+        let generation = epoch
+        guard !tasks.isEmpty else {
+            restartOnCellular(generation)
+            return
+        }
+        let handedOver = DispatchGroup()
+        for task in tasks {
+            handedOver.enter()
+            cancelKeepingResumeData(task) { handedOver.leave() }
+        }
+        handedOver.notify(queue: .main) { [weak self] in
+            Task { @MainActor [weak self] in self?.restartOnCellular(generation) }
+        }
+    }
+
+    /// A cancel, a delete or a new run while the tasks handed over wins.
+    private func restartOnCellular(_ generation: Int) {
+        guard epoch == generation, isInFlight else { return }
+        completedBytes = 0
+        startTask(forFileAt: 0)
     }
 
     func deleteModel() {
@@ -673,11 +786,15 @@ final class ModelManager: ObservableObject {
         currentFileIndex = index
         let file = Self.remoteFiles[index]
         let staged = stagingDirectory.appendingPathComponent(file.name)
+        let queued = queuedTasks.removeValue(forKey: file.name)
 
         // A fully staged file from an earlier attempt (or one that finished
-        // while Aloud was gone) is not re-downloaded, but it is hashed.
+        // while Aloud was gone, or ahead of the file before it) is not
+        // re-downloaded, but it is hashed.
         if Self.sizeIsExact(Self.fileSize(at: staged), expected: file.expectedBytes) {
+            if let queued { cancelKeepingResumeData(queued.task) }
             verifyStagedFile(at: staged, index: index)
+            queueLaterFiles(after: index)
             return
         }
 
@@ -687,42 +804,85 @@ final class ModelManager: ObservableObject {
             return
         }
         #endif
+        // Started with an earlier file and still fetching: this file's task.
+        if let queued, queued.task.state == .running || queued.task.state == .suspended {
+            track(queued.task, resumedFromData: queued.resumed)
+            saveRecord(fraction: inFlightProgress ?? 0)
+            publishProgress(bytesInFlight: min(queued.task.countOfBytesReceived, file.expectedBytes))
+            queued.task.resume()
+            return
+        }
+        let made = makeTask(for: file)
+        track(made.task, resumedFromData: made.resumed)
+        saveRecord(fraction: inFlightProgress ?? 0)
+        made.task.resume()
+        queueLaterFiles(after: index)
+    }
+
+    /// A task for `file` on the run's session, from its resume data when
+    /// there is some.
+    private func makeTask(for file: RemoteFile) -> (task: URLSessionDownloadTask, resumed: Bool) {
         let session = allowsCellularThisRun ? cellularSession : wifiSession
         // Consumed either way: a stale copy must never resume a later attempt.
         let resumeURL = Self.resumeDataURL(for: file.name, in: stagingDirectory)
         let resumeData = try? Data(contentsOf: resumeURL)
         try? FileManager.default.removeItem(at: resumeURL)
         let task: URLSessionDownloadTask
+        let resumed: Bool
         if let resumeData, !resumeData.isEmpty {
             task = session.downloadTask(withResumeData: resumeData)
+            resumed = true
         } else {
             task = session.downloadTask(with: file.url)
+            resumed = false
         }
         // The task carries its file's name, so a relaunch (or a callback
         // for a task this run never registered) knows what it holds.
         task.taskDescription = file.name
-        track(task)
-        saveRecord(fraction: inFlightProgress ?? 0)
-        task.resume()
+        return (task, resumed)
     }
 
-    private func track(_ task: URLSessionDownloadTask) {
+    /// Starts every later file not yet staged alongside this one (R21): a
+    /// background session then fetches them all while Aloud is suspended,
+    /// and the next open hashes and installs them offline. Nothing waits on
+    /// Aloud being awake to start the second file.
+    private func queueLaterFiles(after index: Int) {
+        #if DEBUG
+        guard startsNetworkTasks else { return }
+        #endif
+        for file in Self.filesQueuedAhead(of: index, in: stagingDirectory) where queuedTasks[file.name] == nil {
+            let made = makeTask(for: file)
+            queuedTasks[file.name] = made
+            made.task.resume()
+        }
+    }
+
+    /// Queued tasks stop with their run, each keeping its partial file.
+    private func cancelQueuedTasks() {
+        for queued in queuedTasks.values { cancelKeepingResumeData(queued.task) }
+        queuedTasks = [:]
+    }
+
+    private func track(_ task: URLSessionDownloadTask, resumedFromData: Bool = false) {
         let coordinator = allowsCellularThisRun ? cellularCoordinator : wifiCoordinator
         coordinator.register(taskID: task.taskIdentifier,
                              destination: stagingDirectory.appendingPathComponent(
                                 Self.remoteFiles[currentFileIndex].name))
         activeTask = task
+        activeTaskResumed = resumedFromData
         activeTaskID = task.taskIdentifier
         activeCoordinatorID = ObjectIdentifier(coordinator)
     }
 
     /// The partial file survives as resume data on disk, so the next
-    /// Download picks up where this one stopped.
-    private func cancelKeepingResumeData(_ task: URLSessionDownloadTask) {
+    /// Download picks up where this one stopped. `then` runs once it has.
+    private func cancelKeepingResumeData(_ task: URLSessionDownloadTask,
+                                         then: (@Sendable () -> Void)? = nil) {
         let fileName = task.taskDescription ?? ""
         let staging = stagingDirectory
         task.cancel(byProducingResumeData: { data in
             if let data { ModelManager.writeResumeData(data, for: fileName, in: staging) }
+            then?()
         })
     }
 
@@ -734,6 +894,7 @@ final class ModelManager: ObservableObject {
 
     private func clearActiveTask() {
         activeTask = nil
+        activeTaskResumed = false
         activeTaskID = nil
         activeCoordinatorID = nil
     }
@@ -772,13 +933,26 @@ final class ModelManager: ObservableObject {
 
     private func fileFailed(_ failure: DownloadFailure) {
         guard isInFlight else { return }   // e.g. after an explicit cancel
+        // The coordinator writes any new resume data before it reports.
+        let name = Self.remoteFiles[currentFileIndex].name
+        let leftResumeData = FileManager.default.fileExists(
+            atPath: Self.resumeDataURL(for: name, in: stagingDirectory).path)
+        if Self.restartsFromScratch(after: failure, resumedFromData: activeTaskResumed,
+                                    leftResumeData: leftResumeData) {
+            // Once: the fresh task never counts as resumed.
+            clearActiveTask()
+            startTask(forFileAt: currentFileIndex)
+            return
+        }
         fail(failure)
     }
 
     /// Every stop the user didn't choose: no task and no record (resume
-    /// data stays on disk), then one announcement of the card's line.
+    /// data stays on disk, and queued tasks stop keeping theirs), then one
+    /// announcement of the card's line.
     private func fail(_ failure: DownloadFailure) {
         clearActiveTask()
+        cancelQueuedTasks()
         ModelDownloadRecord.clear(from: defaults)
         state = .failed(failure)
         announce(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(failure)))
@@ -806,10 +980,7 @@ final class ModelManager: ObservableObject {
                 try fm.moveItem(at: staged, to: final)
             }
             try? fm.removeItem(at: stagingDirectory)
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var directory = installDirectory
-            try? directory.setResourceValues(values)
+            excludeInstallDirectoryFromBackup()
             ModelDownloadRecord.clear(from: defaults)
             // Both files hashed to their pins as they staged.
             writeInstallRecord()
@@ -817,6 +988,14 @@ final class ModelManager: ObservableObject {
         } catch {
             fail(DownloadFailure.classify(error))
         }
+    }
+
+    /// The files are re-downloadable: never in a backup.
+    private func excludeInstallDirectoryFromBackup() {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var directory = installDirectory
+        try? directory.setResourceValues(values)
     }
 
     private func publishProgress(bytesInFlight: Int64) {
@@ -830,12 +1009,13 @@ final class ModelManager: ObservableObject {
 
     private func setInFlight(progress: Double) {
         let next = Self.inFlightState(progress: progress, allowsCellular: allowsCellularThisRun,
-                                      wifiAvailable: pathSource.allowsWiFiOnlyTransfer)
+                                      wifiAvailable: pathSource.allowsWiFiOnlyTransfer,
+                                      networkAvailable: Self.networkAvailable(on: pathSource))
         let wasWaiting: Bool
         if case .waitingForWiFi = state { wasWaiting = true } else { wasWaiting = false }
         state = next
         if case .waitingForWiFi = next, !wasWaiting {
-            announce(NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi))
+            announce(NaturalVoiceCopy.spoken(waitingLine))
         }
     }
 
@@ -869,21 +1049,34 @@ final class ModelManager: ObservableObject {
         let fileIndex = record.fileIndex
         let fileName = Self.remoteFiles[fileIndex].name
         let session = allowsCellularThisRun ? cellularSession : wifiSession
+        let laterNames = Set(Self.remoteFiles.dropFirst(fileIndex + 1).map(\.name))
         session.getAllTasks { [weak self] tasks in
-            let task = tasks.lazy
+            let live = tasks
                 .compactMap { $0 as? URLSessionDownloadTask }
-                .first { $0.taskDescription == fileName && ($0.state == .running || $0.state == .suspended) }
+                .filter { $0.state == .running || $0.state == .suspended }
+            let task = live.first { $0.taskDescription == fileName }
+            let later = live.filter { laterNames.contains($0.taskDescription ?? "") }
             Task { @MainActor [weak self] in
-                self?.finishReattach(adopting: task, fileIndex: fileIndex)
+                self?.finishReattach(adopting: task, queued: later, fileIndex: fileIndex)
             }
         }
     }
 
-    private func finishReattach(adopting task: URLSessionDownloadTask?, fileIndex: Int) {
+    private func finishReattach(adopting task: URLSessionDownloadTask?, queued: [URLSessionDownloadTask],
+                                fileIndex: Int) {
         // A cancel, delete or new run while the session answered wins.
         guard isInFlight, activeTask == nil, currentFileIndex == fileIndex else {
             if let task { cancelKeepingResumeData(task) }
+            for later in queued { cancelKeepingResumeData(later) }
             return
+        }
+        // Later files' tasks the run queued before the relaunch.
+        for later in queued {
+            guard let name = later.taskDescription, queuedTasks[name] == nil else {
+                cancelKeepingResumeData(later)
+                continue
+            }
+            queuedTasks[name] = (later, false)
         }
         guard let task else {
             startTask(forFileAt: fileIndex)

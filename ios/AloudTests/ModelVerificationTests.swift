@@ -102,11 +102,13 @@ final class ModelVerificationTests: XCTestCase {
         XCTAssertFalse(record.vouches(for: model, in: directory))
     }
 
-    private func makeManager(_ hasher: CountingHasher) -> ModelManager {
-        let manager = ModelManager(pathSource: FixedNetworkPath(isExpensiveOrConstrained: false),
+    private func makeManager(_ hasher: CountingHasher,
+                             path: any NetworkPathSource = FixedNetworkPath(isExpensiveOrConstrained: false),
+                             freeBytes: Int64 = 2_000_000_000) -> ModelManager {
+        let manager = ModelManager(pathSource: path,
                                    installDirectory: directory,
                                    defaults: defaults,
-                                   freeSpace: { 2_000_000_000 },
+                                   freeSpace: { freeBytes },
                                    hasher: { try hasher.hash($0) })
         manager.startsNetworkTasks = false
         manager.announce = { [weak self] in self?.announcements.append($0) }
@@ -313,6 +315,79 @@ final class ModelVerificationTests: XCTestCase {
         XCTAssertEqual(manager.state, .installed)
         XCTAssertEqual(hasher.reads, [model.name, model.name, voices.name])
         XCTAssertEqual(gate.opened, 1)
+    }
+
+    /// F019: a failed attempt's staged model.onnx counts toward the room a
+    /// retry needs, is out of backups from the run's start, and Remove
+    /// takes it.
+    func testStagedFilesCountTowardTheRoomAndStayOutOfBackups() async throws {
+        try writeSparse(staging.appendingPathComponent(model.name), size: model.expectedBytes)
+        // Less than the full 707 MB, more than what voices.bin still needs.
+        let manager = makeManager(CountingHasher(), freeBytes: 469_000_000)
+        XCTAssertEqual(manager.stagedBytes, model.expectedBytes)
+
+        XCTAssertEqual(manager.requestDownload(), .started, "The staged file is already on disk")
+        let values = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        XCTAssertEqual(values.isExcludedFromBackup, true, "Staged files are never backed up")
+        await drain(manager)
+
+        // voices.bin would need the network, which this manager never uses.
+        XCTAssertEqual(manager.state, .failed(.interrupted))
+        XCTAssertEqual(manager.stagedBytes, model.expectedBytes, "The verified file stays for the next attempt")
+        XCTAssertEqual(manager.requestDownload(), .started, "and the retry still has room")
+        await drain(manager)
+
+        manager.deleteModel()
+        XCTAssertEqual(manager.stagedBytes, 0)
+        XCTAssertFalse(exists(staging))
+    }
+
+    /// F018: a run starts every later file not yet staged with its first,
+    /// so a suspended app's background session fetches both.
+    func testARunQueuesEveryLaterFileNotYetStaged() throws {
+        XCTAssertEqual(ModelManager.filesQueuedAhead(of: 0, in: staging).map(\.name), [voices.name])
+        XCTAssertEqual(ModelManager.filesQueuedAhead(of: 1, in: staging).map(\.name), [])
+        try writeSparse(staging.appendingPathComponent(voices.name), size: voices.expectedBytes)
+        XCTAssertEqual(ModelManager.filesQueuedAhead(of: 0, in: staging).map(\.name), [], "Staged is hashed, not fetched")
+    }
+
+    /// F021: a run allowed onto cellular with no network at all waits, and
+    /// says it waits for a connection rather than for Wi-Fi.
+    func testACellularRunWithNoNetworkWaits() async throws {
+        try writePinnedSizes(in: staging)
+        let manager = makeManager(CountingHasher(), path: FixedNetworkPath.unsatisfied)
+
+        manager.startDownload(allowingCellular: true)
+        XCTAssertEqual(manager.state, .waitingForWiFi(0), "Nothing can move: never a frozen live percentage")
+        XCTAssertEqual(manager.waitingLine, NaturalVoiceCopy.waitingForConnection)
+        XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForConnection)])
+        XCTAssertFalse(manager.canContinueOnCellular, "Already allowed: nothing to offer")
+
+        await drain(manager)
+        XCTAssertEqual(manager.state, .installed, "Staged files hash offline")
+    }
+
+    /// F023: a Wi-Fi-only run waiting on a costly network offers the
+    /// cellular prompt again, and confirming moves the run there.
+    func testAWaitingWiFiOnlyRunCanContinueOnCellular() async throws {
+        try writePinnedSizes(in: staging)
+        let manager = makeManager(CountingHasher(), path: FixedNetworkPath(isExpensiveOrConstrained: true))
+
+        manager.startDownload()
+        XCTAssertEqual(manager.state, .waitingForWiFi(0))
+        XCTAssertEqual(manager.waitingLine, NaturalVoiceCopy.waitingForWiFi)
+        XCTAssertTrue(manager.canContinueOnCellular)
+        XCTAssertEqual(manager.requestDownload(), .needsCellularConfirmation, "The prompt, not a silent no-op")
+
+        manager.startDownload(allowingCellular: true)
+        XCTAssertEqual(manager.state, .downloading(0))
+        XCTAssertFalse(manager.canContinueOnCellular)
+        XCTAssertEqual(ModelDownloadRecord.load(from: defaults, directory: directory)?.allowsCellular, true,
+                       "A relaunch reattaches to the cellular session")
+
+        await drain(manager)
+        XCTAssertEqual(manager.state, .installed)
+        XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi)])
     }
 
     // MARK: - Launch

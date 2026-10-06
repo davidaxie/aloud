@@ -95,6 +95,46 @@ final class KokoroRuntimeConfigTests: XCTestCase {
         XCTAssertEqual(engine.numThreads, 1)
         XCTAssertFalse(engine.isWarm, "building it loads nothing")
     }
+
+    // MARK: - Text the English frontend can't say (F072)
+
+    /// A line of nothing but Han characters gives sherpa-onnx no tokens, so
+    /// it is a short silence, decided before any model is needed (this
+    /// folder holds none), never a failure that counts against the voice.
+    func testALineOfOnlyHanCharactersIsASilence() async throws {
+        let engine = KokoroSherpaEngine(modelDirectory: folder, stopsThreadSpinning: false,
+                                        runtimeConfigDirectory: nil)
+        for line in ["第一回", "静夜思", "床前明月光", "第一回 第二回"] {
+            let audio = try await engine.synthesize(line, voice: engine.defaultVoice)
+            XCTAssertFalse(audio.samples.isEmpty, line)
+            XCTAssertTrue(audio.samples.allSatisfy { $0 == 0 }, "\(line): silence")
+        }
+        XCTAssertFalse(engine.isWarm, "nothing loaded")
+    }
+
+    func testOnlyAllHanTextIsUnvoiceable() {
+        for line in ["第一回", "静夜思", "第一回 第二回"] {
+            XCTAssertFalse(KokoroSherpaEngine.frontendCanVoice(line), line)
+        }
+        for line in ["Chapter one", "第一回。", "Chapter 第一回", "ひらがな", "1984", "", "Hello, world"] {
+            XCTAssertTrue(KokoroSherpaEngine.frontendCanVoice(line), line)
+        }
+    }
+
+    // MARK: - Blends without their table (F073)
+
+    /// A blend speaking as its fallback is paced as its fallback, and the
+    /// engine says whether the blends are in once a load has decided.
+    func testABlendWithoutItsTableIsPacedAsItsFallback() {
+        let velvet = KokoroVoiceBlends.velvet.voiceID
+        XCTAssertEqual(KokoroSherpaEngine.speakingVoiceID(for: velvet, blendsLoaded: false), "kokoro:am_michael")
+        XCTAssertEqual(KokoroSherpaEngine.speakingVoiceID(for: velvet, blendsLoaded: true), velvet)
+        XCTAssertEqual(KokoroSherpaEngine.speakingVoiceID(for: "kokoro:af_heart", blendsLoaded: false),
+                       "kokoro:af_heart")
+        let engine = KokoroSherpaEngine(modelDirectory: folder, stopsThreadSpinning: false,
+                                        runtimeConfigDirectory: nil, blendDirectory: folder)
+        XCTAssertNil(engine.blendsAvailable, "no load has decided yet")
+    }
 }
 
 /// The System voice is ranked once, not per sentence, and ranked again

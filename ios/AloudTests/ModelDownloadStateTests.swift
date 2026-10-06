@@ -43,6 +43,24 @@ final class ModelDownloadStateTests: XCTestCase {
         XCTAssertTrue(ModelManager.hasRoom(freeBytes: 706_619_098))
     }
 
+    /// F019: a retry after a cancel or a failure already holds the staged
+    /// model.onnx, so it needs that much less room, never the whole 707 MB.
+    func testStagedFilesCountTowardTheRoom() throws {
+        let model = ModelManager.remoteFiles[0]
+        XCTAssertFalse(ModelManager.hasRoom(freeBytes: 469_000_000), "nothing staged: the full 707 MB")
+        XCTAssertTrue(ModelManager.hasRoom(freeBytes: 469_000_000, stagedBytes: model.expectedBytes))
+        XCTAssertTrue(ModelManager.hasRoom(freeBytes: 380_988_269, stagedBytes: model.expectedBytes))
+        XCTAssertFalse(ModelManager.hasRoom(freeBytes: 380_988_268, stagedBytes: model.expectedBytes))
+
+        // Only a file at its exact pinned size counts.
+        let staging = directory.appendingPathComponent("staging", isDirectory: true)
+        XCTAssertEqual(ModelManager.stagedBytes(in: staging), 0)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try writeSparse("staging/" + model.name, size: model.expectedBytes)
+        try writeSparse("staging/" + ModelManager.remoteFiles[1].name, size: 1_000)
+        XCTAssertEqual(ModelManager.stagedBytes(in: staging), model.expectedBytes)
+    }
+
     // MARK: - Copy
 
     func testFailureLinesAndWaitingCopy() {
@@ -61,6 +79,34 @@ final class ModelDownloadStateTests: XCTestCase {
                        .downloading(0.4))
         XCTAssertEqual(ModelManager.inFlightState(progress: 0.4, allowsCellular: false, wifiAvailable: true),
                        .downloading(0.4))
+    }
+
+    /// F021: a run allowed onto cellular with no network at all (a tunnel,
+    /// a plane) waits too, rather than showing a frozen live percentage.
+    func testNoNetworkAtAllIsWaitingEvenOnCellular() {
+        XCTAssertEqual(ModelManager.inFlightState(progress: 0.37, allowsCellular: true, wifiAvailable: false,
+                                                  networkAvailable: false),
+                       .waitingForWiFi(0.37))
+        XCTAssertEqual(ModelManager.inFlightState(progress: 0.37, allowsCellular: true, wifiAvailable: false,
+                                                  networkAvailable: true),
+                       .downloading(0.37))
+        XCTAssertFalse(ModelManager.networkAvailable(on: FixedNetworkPath.unsatisfied))
+        XCTAssertTrue(ModelManager.networkAvailable(on: FixedNetworkPath(isExpensiveOrConstrained: true)))
+        XCTAssertTrue(ModelManager.networkAvailable(on: FixedNetworkPath(isExpensiveOrConstrained: false)))
+    }
+
+    /// F020: a task that resumed from resume data and failed leaving none
+    /// (an expired CDN link's 403) starts its file once more from the pinned
+    /// URL; a fresh task's failure, or one that left resume data, fails.
+    func testOnlyAResumedTaskThatLeftNothingStartsOver() {
+        XCTAssertTrue(ModelManager.restartsFromScratch(after: .interrupted, resumedFromData: true,
+                                                       leftResumeData: false))
+        XCTAssertFalse(ModelManager.restartsFromScratch(after: .interrupted, resumedFromData: false,
+                                                        leftResumeData: false))
+        XCTAssertFalse(ModelManager.restartsFromScratch(after: .interrupted, resumedFromData: true,
+                                                        leftResumeData: true))
+        XCTAssertFalse(ModelManager.restartsFromScratch(after: .notEnoughSpace, resumedFromData: true,
+                                                        leftResumeData: false))
     }
 
     func testFixedPathWiFiFollowsTheCostUnlessGiven() {

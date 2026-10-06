@@ -55,6 +55,17 @@ enum KokoroVoiceBlendError: Error, Equatable {
     case badRecipe
 }
 
+/// What a load gets from `KokoroVoiceBlends.prepareVoicesFile`.
+enum KokoroPreparedVoices: Equatable {
+    /// The derived file, current and at its exact size.
+    case blended(URL)
+    /// No derived file this time: load the original.
+    case original
+    /// voices.bin read back bytes that don't hash to the pin: the install
+    /// is damaged (R21), and nothing should load it.
+    case sourceDamaged
+}
+
 /// Aloud's blends, and the derived voices file that carries them: a copy of
 /// the verified voices.bin with each blend's table written into its slot.
 /// The pinned original is only ever read.
@@ -156,7 +167,21 @@ enum KokoroVoiceBlends {
     private static let log = Logger(subsystem: "com.davidxie.Aloud", category: "kokoro")
 
     /// The derived voices file to load, built from `source` when missing or
-    /// stale; nil to load the original instead.
+    /// stale; nil to load the original instead (or, for a damaged source,
+    /// nothing: `prepareVoicesFile` says which).
+    static func preparedVoicesFile(source: URL, in directory: URL,
+                                   pinnedSHA256: String = ModelManager.voicesFile.sha256,
+                                   blends: [KokoroVoiceBlend] = all,
+                                   fileManager: FileManager = .default) -> URL? {
+        guard case .blended(let copy) = prepareVoicesFile(source: source, in: directory,
+                                                          pinnedSHA256: pinnedSHA256, blends: blends,
+                                                          fileManager: fileManager) else { return nil }
+        return copy
+    }
+
+    /// The derived voices file to load, built from `source` when missing or
+    /// stale; `.original` to load the original instead, and `.sourceDamaged`
+    /// when the build read bytes that don't hash to the pin.
     ///
     /// A current copy costs two `stat`s and a small read: the record keeps
     /// the recipe and both files' size, inode and mtime. A build reads the
@@ -165,31 +190,37 @@ enum KokoroVoiceBlends {
     /// can't be undone by a late load. sherpa-onnx ends the process on a
     /// voices file of the wrong length: a copy is only named at its exact
     /// size. Runs on the engine's queue.
-    static func preparedVoicesFile(source: URL, in directory: URL,
-                                   pinnedSHA256: String = ModelManager.voicesFile.sha256,
-                                   blends: [KokoroVoiceBlend] = all,
-                                   fileManager: FileManager = .default) -> URL? {
+    static func prepareVoicesFile(source: URL, in directory: URL,
+                                  pinnedSHA256: String = ModelManager.voicesFile.sha256,
+                                  blends: [KokoroVoiceBlend] = all,
+                                  fileManager: FileManager = .default) -> KokoroPreparedVoices {
         let recipe = recipe(for: blends)
         guard let sourceStamp = ModelInstallRecord.stamp(at: source, name: source.lastPathComponent,
                                                          sha256: pinnedSHA256),
-              sourceStamp.bytes == Int64(expectedBytes) else { return nil }
+              sourceStamp.bytes == Int64(expectedBytes) else { return .original }
         let copy = directory.appendingPathComponent(fileName, isDirectory: false)
 
         if let record = KokoroBlendRecord.load(from: directory), record.recipe == recipe,
            record.source == sourceStamp, record.output.bytes == Int64(expectedBytes),
            ModelInstallRecord.stamp(at: copy, name: fileName, sha256: record.output.sha256) == record.output {
-            return copy
+            return .blended(copy)
         }
 
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else { return nil }
+              isDirectory.boolValue else { return .original }
         do {
             var bytes = try Data(contentsOf: source)
             guard ModelInstallRecord.stamp(at: source, name: source.lastPathComponent,
-                                           sha256: pinnedSHA256) == sourceStamp,
-                  hex(SHA256.hash(data: bytes)) == pinnedSHA256 else {
+                                           sha256: pinnedSHA256) == sourceStamp else {
+                // Replaced while it was read: the next load reads it again.
                 throw CocoaError(.fileReadCorruptFile)
+            }
+            guard hex(SHA256.hash(data: bytes)) == pinnedSHA256 else {
+                // The very file the engine would load: damaged, never loaded.
+                removeDerivedFiles(in: directory, fileManager: fileManager)
+                log.error("kokoro blends not built: voices.bin doesn't match its pin")
+                return .sourceDamaged
             }
             try derive(into: &bytes, blends: blends)
             let digest = hex(SHA256.hash(data: bytes))
@@ -206,13 +237,13 @@ enum KokoroVoiceBlends {
             }
             let record = KokoroBlendRecord(recipe: recipe, source: sourceStamp, output: output)
             try JSONEncoder().encode(record).write(to: KokoroBlendRecord.url(in: directory), options: .atomic)
-            return copy
+            return .blended(copy)
         } catch {
             removeDerivedFiles(in: directory, fileManager: fileManager)
             // The error's domain and code, never its own text.
             let failure = error as NSError
             log.error("kokoro blends not built: \(failure.domain, privacy: .public) \(failure.code)")
-            return nil
+            return .original
         }
     }
 

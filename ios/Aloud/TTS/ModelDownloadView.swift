@@ -22,6 +22,7 @@ struct ModelDownloadView: View {
     var showsCard = true
 
     @State private var isConfirmingRemove = false
+    @State private var isConfirmingRemovePartial = false
     @State private var isConfirmingCellular = false
 
     /// Icon tiles grow with their glyphs under Dynamic Type.
@@ -120,6 +121,7 @@ struct ModelDownloadView: View {
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
+            removePartialDownload
         }
         // The Mac learns whether a download could start; the iPhone's card
         // watches nothing before its Download (M4).
@@ -149,6 +151,7 @@ struct ModelDownloadView: View {
                 icon
                 inFlightLabel(progress, waiting: waiting)
                 progressBar(progress, waiting: waiting)
+                if waiting { continueNow }
                 CancelDownloadButton { manager.cancelDownload() }
             } else {
                 HStack(spacing: Theme.Space.sm) {
@@ -158,6 +161,56 @@ struct ModelDownloadView: View {
                     CancelDownloadButton { manager.cancelDownload() }
                 }
                 progressBar(progress, waiting: waiting)
+                if waiting { continueNow }
+            }
+        }
+    }
+
+    /// A Wi-Fi-only download waiting on a costly network that could carry
+    /// it: R5's prompt again, whose Download moves the run there from where
+    /// it stopped. Without it, only Cancel then Download reached cellular.
+    @ViewBuilder
+    private var continueNow: some View {
+        if manager.canContinueOnCellular {
+            Button {
+                requestDownload()
+            } label: {
+                Text(NaturalVoiceCopy.continueNow)
+                    .font(Theme.font(.callout).weight(.semibold))
+                    .foregroundStyle(Theme.accentStrong)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("model.continueOnCellular")
+        }
+    }
+
+    /// What a cancelled or failed download staged stays for the next
+    /// attempt, unseen by the size on disk. Settings' card can remove it
+    /// (R21), confirming first as the installed voice's Remove does.
+    @ViewBuilder
+    private var removePartialDownload: some View {
+        let staged = manager.stagedBytes
+        if showsInstalledState, staged > 0 {
+            Button {
+                isConfirmingRemovePartial = true
+            } label: {
+                Text(DeviceCopy.removeDownload)
+                    .font(Theme.font(.callout).weight(.medium))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("model.removePartial")
+            .confirmationDialog(NaturalVoiceCopy.removePartialTitle,
+                                isPresented: $isConfirmingRemovePartial,
+                                titleVisibility: .visible) {
+                Button("Remove Download", role: .destructive) { manager.deleteModel() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(NaturalVoiceCopy.removePartialMessage(ModelManager.formattedSize(staged)))
             }
         }
     }
@@ -166,10 +219,10 @@ struct ModelDownloadView: View {
     private func inFlightLabel(_ progress: Double, waiting: Bool) -> some View {
         if waiting {
             // Nothing is moving, so it reads quieter than the live percent.
-            Text(NaturalVoiceCopy.waitingForWiFi)
+            Text(manager.waitingLine)
                 .font(Theme.font(.body).weight(.semibold))
                 .foregroundStyle(Theme.textMuted)
-                .accessibilityLabel(NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi))
+                .accessibilityLabel(NaturalVoiceCopy.spoken(manager.waitingLine))
                 .accessibilityIdentifier("model.waiting")
         } else {
             Text(NaturalVoiceCopy.downloading(progress))
@@ -180,9 +233,17 @@ struct ModelDownloadView: View {
         }
     }
 
+    /// The retry line, and on Settings' card what the attempt staged.
+    private func failed(_ failure: ModelManager.DownloadFailure) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            retry(failure)
+            removePartialDownload
+        }
+    }
+
     /// The whole line is the retry: "Download failed · Try again". Too little
     /// space checks again, and on cellular the prompt asks first.
-    private func failed(_ failure: ModelManager.DownloadFailure) -> some View {
+    private func retry(_ failure: ModelManager.DownloadFailure) -> some View {
         let copy = NaturalVoiceCopy.failure(failure)
         return Button {
             requestDownload()

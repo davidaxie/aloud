@@ -45,6 +45,7 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
 
     private let stateLock = NSLock()
     private var warmFlag = false
+    private var blendsFlag: Bool?
     private var damagedHandler: (@Sendable () -> Void)?
     /// `synthesize` calls handed to `queue` and not yet begun.
     private var waitingSyntheses = 0
@@ -67,6 +68,15 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     var isWarm: Bool {
         stateLock.lock(); defer { stateLock.unlock() }
         return warmFlag
+    }
+
+    /// Whether Velvet, Anchor and Ember speak from their own tables: nil
+    /// until a load decides, false once one loaded without the derived
+    /// voices file (they then speak as their fallback speaker, Michael, for
+    /// the session). Lock-guarded, for the voice picker to say so.
+    var blendsAvailable: Bool? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return blendsFlag
     }
 
     /// Called on the engine's queue when warm-up finds the installed files
@@ -113,7 +123,11 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
         }
         let speed = requested.isFinite ? min(max(requested, Self.speedRange.lowerBound), Self.speedRange.upperBound) : 1.0
         let spoken = Self.spokenText(text, lang: voice.lang)
-        guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        // Nothing to say, or nothing Kokoro's English frontend can say: a
+        // short silence, never a failed voice (three in a row would drop
+        // the listener to the System voice).
+        guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              Self.frontendCanVoice(spoken) else {
             let compression = NativeSpeed.compression(speed: speed, voiceID: voice.id)
             return .silence(duration: 0.1 / compression, nativeSpeed: compression)
         }
@@ -140,10 +154,12 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
                     let samples = audio.samples
                     Self.log.info("kokoro synth \(String(format: "%.2f", Date().timeIntervalSince(start))) s → \(samples.count) samples (\(spoken.count) chars) at \(String(format: "%.2f", speed))x")
                     guard !samples.isEmpty else { throw TtsError.emptyAudio }
+                    // A blend without its table speaks as its fallback, at that pace.
+                    let speaker = Self.speakingVoiceID(for: voice.id, blendsLoaded: self.blendsLoaded)
                     cont.resume(returning: SynthesizedAudio(samples: samples,
                                                             sampleRate: Double(audio.sampleRate),
                                                             nativeSpeed: NativeSpeed.compression(
-                                                                speed: speed, voiceID: voice.id)))
+                                                                speed: speed, voiceID: speaker)))
                 } catch {
                     cont.resume(throwing: error)
                 }
@@ -159,6 +175,24 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
             self.blendsLoaded = false
             self.setWarm(false)
         }
+    }
+
+    /// Whether Kokoro's English frontend can say anything in `text`. Its
+    /// lexicons hold no Chinese characters and sherpa-onnx drops every one,
+    /// so a line of nothing but Han ideographs (a heading like "第一回", a
+    /// poem's title) yields no audio at all. Anything else beside them (kana,
+    /// Latin, digits, punctuation) still reaches the frontend.
+    static func frontendCanVoice(_ text: String) -> Bool {
+        let scalars = text.unicodeScalars
+        guard scalars.contains(where: { $0.properties.isIdeographic }) else { return true }
+        return scalars.contains { !$0.properties.isIdeographic && !$0.properties.isWhitespace }
+    }
+
+    /// The voice whose table speaks for `voiceID`: a blend's own once the
+    /// derived file is loaded, otherwise its fallback speaker's.
+    static func speakingVoiceID(for voiceID: String, blendsLoaded: Bool) -> String {
+        guard !blendsLoaded, let blend = KokoroVoiceBlends.blend(forVoiceID: voiceID) else { return voiceID }
+        return KokoroVoiceCatalog.voiceIDPrefix + blend.fallbackSpeaker
     }
 
     /// The exact string Kokoro is given: the display text normalized, with
@@ -312,8 +346,16 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
                                                    sha256: ModelManager.voicesFile.sha256)
         var blended: URL?
         if let blendDirectory, sourceStamp != nil, blendFailure != sourceStamp {
-            blended = KokoroVoiceBlends.preparedVoicesFile(source: source, in: blendDirectory)
-            if blended == nil { blendFailure = sourceStamp }
+            switch KokoroVoiceBlends.prepareVoicesFile(source: source, in: blendDirectory) {
+            case .blended(let copy):
+                blended = copy
+            case .original:
+                blendFailure = sourceStamp
+            case .sourceDamaged:
+                // Its bytes don't hash to the pin: reported, never loaded.
+                onModelDamaged?()
+                throw KokoroEngineError.modelDamaged
+            }
         }
         var wrapper = load(voices: blended?.path ?? voicesPath)
         if wrapper.tts == nil, blended != nil, let blendDirectory {
@@ -342,6 +384,9 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
 
         tts = wrapper
         blendsLoaded = blended != nil
+        stateLock.lock()
+        blendsFlag = blendsLoaded
+        stateLock.unlock()
         setWarm(true)
         Self.log.info("kokoro warm-up \(String(format: "%.2f", Date().timeIntervalSince(warmStart))) s (model load + graph build\(speaksWarmLine ? " + warm utterance" : "", privacy: .public)), \(self.numThreads) threads, provider \(provider == "cpu" ? "cpu" : "cpu + spinning off", privacy: .public), voices \(self.blendsLoaded ? "blended" : "original", privacy: .public)")
     }

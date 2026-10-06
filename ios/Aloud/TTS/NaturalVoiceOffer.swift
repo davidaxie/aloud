@@ -263,6 +263,15 @@ enum NaturalVoiceCopy {
     /// A Wi-Fi-only download with no free network: on the iPhone,
     /// "Download paused · waiting for Wi-Fi".
     static var waitingForWiFi: String { DeviceCopy.waitingForNetwork }
+    /// A download allowed onto a costly network, with no network at all.
+    static let waitingForConnection = "Download paused · waiting for a connection"
+    /// Beside the Wi-Fi wait on a costly network: raises the cellular prompt.
+    static let continueNow = "Continue Now"
+    /// Removing what a cancelled or failed download staged.
+    static let removePartialTitle = "Remove the partial download?"
+    static func removePartialMessage(_ size: String) -> String {
+        "Frees \(size). The next download starts over."
+    }
     static let installed = "Natural voice installed"
     /// On the iPhone, "353 MB on device · works offline".
     static func onDevice(_ size: String) -> String { "\(size) \(DeviceCopy.onDevice) · works offline" }
