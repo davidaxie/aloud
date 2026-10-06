@@ -221,6 +221,76 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertEqual(followed, 1)
     }
 
+    /// A command that acts in the main window brings it back first, closed
+    /// or minimized: Add from Files…'s panel, a pushed Classics or a
+    /// focused field never waits in a window no one can see. Playback's
+    /// commands act wherever the window is.
+    func testWindowCommandsBringTheWindowBackFirst() {
+        let (rig, base) = makeActions()
+        rig.loadDefault()
+        var actions = base
+        let router = base.router
+        var shownWith: [LibraryRouter.RootPresentation?] = []
+        actions.showMainWindow = { shownWith.append(router.rootPresentation) }
+        var settingsOpened = 0
+        actions.openSettings = { settingsOpened += 1 }
+
+        XCTAssertTrue(actions.perform(.addFromFiles))
+        XCTAssertEqual(shownWith, [nil], "the window comes back before the panel is asked for")
+        XCTAssertEqual(actions.router.rootPresentation, .filePicker)
+
+        XCTAssertTrue(actions.perform(.addClassic))
+        XCTAssertEqual(shownWith.count, 2)
+        XCTAssertEqual(actions.router.path, [.bookshelf])
+        XCTAssertTrue(actions.perform(.find))
+        XCTAssertTrue(actions.perform(.back))
+        XCTAssertEqual(shownWith.count, 4, "Find and Back too")
+
+        XCTAssertTrue(actions.perform(.voiceAndSpeed))
+        XCTAssertEqual(settingsOpened, 1)
+        XCTAssertEqual(shownWith.count, 4, "Voice & Speed… away from the reader is the Settings window")
+        XCTAssertTrue(actions.perform(.forward15))
+        XCTAssertEqual(shownWith.count, 4, "a skip plays on wherever the window is")
+        for command: MacCommand in [.playPause, .back15, .forward15, .faster, .slower, .sleepTimer, .undoJump] {
+            XCTAssertFalse(actions.needsMainWindow(command), "\(command)")
+        }
+    }
+
+    /// Playback ▸ Sleep Timer: picking the checked duration again re-arms it
+    /// from the top, as the player bar's chip does (a checked Toggle's
+    /// click sets false).
+    func testPickingTheArmedSleepItemAgainReArmsIt() {
+        var picked: [SleepTimer.Option] = []
+        let armed = AloudCommands.sleepToggle(.minutes(30), selection: .minutes(30)) { picked.append($0) }
+        XCTAssertTrue(armed.wrappedValue, "the armed one is checked")
+        armed.wrappedValue = false
+        XCTAssertEqual(picked, [.minutes(30)], "re-picked, so re-armed")
+
+        let other = AloudCommands.sleepToggle(.minutes(15), selection: .minutes(30)) { picked.append($0) }
+        XCTAssertFalse(other.wrappedValue)
+        other.wrappedValue = true
+        XCTAssertEqual(picked, [.minutes(30), .minutes(15)])
+    }
+
+    /// Classics' Find on macOS 14 focuses the toolbar's search field
+    /// through the window: a search item's own field, or one inside an
+    /// item's view; none in a toolbar without one.
+    func testTheToolbarSearchFieldIsFound() {
+        let plain = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("plain"))
+        let search = NSSearchToolbarItem(itemIdentifier: NSToolbarItem.Identifier("search"))
+        XCTAssertTrue(MacToolbarSearch.field(in: [plain, search]) === search.searchField)
+
+        let hosted = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("hosted"))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        let field = NSSearchField(frame: container.bounds)
+        container.addSubview(field)
+        hosted.view = container
+        XCTAssertTrue(MacToolbarSearch.field(in: [plain, hosted]) === field)
+
+        XCTAssertNil(MacToolbarSearch.field(in: [plain]))
+        XCTAssertFalse(MacToolbarSearch.focus(in: nil))
+    }
+
     // MARK: - Helpers
 
     private func makeActions(sentences: Int = 12) -> (PlaybackTestRig, MacCommandActions) {

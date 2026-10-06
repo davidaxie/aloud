@@ -138,9 +138,8 @@ struct AloudCommands: Commands {
     private var sleepTimerMenu: some View {
         Menu(MacMenuCopy.sleepTimer) {
             ForEach(Array(zip(snapshot.sleepOptions, snapshot.sleepTitles)), id: \.0) { option, title in
-                Toggle(title, isOn: Binding(
-                    get: { snapshot.sleepSelection == option },
-                    set: { if $0 { state.actions.selectSleep(option) } }))
+                Toggle(title, isOn: Self.sleepToggle(option, selection: snapshot.sleepSelection,
+                                                     select: { state.actions.selectSleep($0) }))
             }
             if snapshot.sleepSelection != .off {
                 Divider()
@@ -148,6 +147,16 @@ struct AloudCommands: Commands {
             }
         }
         .disabled(!snapshot.isEnabled(.sleepTimer))
+    }
+
+    /// One Sleep Timer item's checkmark. Any pick selects it: the checked
+    /// one again re-arms it from the top, as the player bar's chip and the
+    /// iPhone do (a checked Toggle's click sets false).
+    @MainActor
+    static func sleepToggle(_ option: SleepTimer.Option, selection: SleepTimer.Option,
+                            select: @escaping @MainActor (SleepTimer.Option) -> Void) -> Binding<Bool> {
+        Binding(get: { selection == option },
+                set: { _ in select(option) })
     }
 }
 

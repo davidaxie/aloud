@@ -183,6 +183,18 @@ struct MacLibraryView: View {
                                     perform: { perform($0, on: hero) })
                 }
                 .frame(maxWidth: Self.continueMaxWidth, alignment: .leading)
+                // The keyboard's as a grid card is (mac-ux §3.2): ↑ from the
+                // grid's first row reaches it, ↓ goes back, Return opens it
+                // and Delete Book… (⌘⌫) acts on its book.
+                .focused($focusedCard, equals: hero.id)
+                .onKeyPress(.return) {
+                    router.open(hero)
+                    return .handled
+                }
+                .onMoveCommand { direction in
+                    moveFocus(direction, in: metrics)
+                }
+                .focusedValue(\.macDeleteBook) { perform(.delete, on: hero) }
             }
             grid(metrics)
                 // The cells carry the plates: pull them out by a
@@ -224,9 +236,21 @@ struct MacLibraryView: View {
         case .down: move = .down
         @unknown default: return
         }
-        guard let focusedCard, let index = shelf.grid.firstIndex(where: { $0.id == focusedCard }),
-              let next = metrics.neighbor(of: index, moving: move, count: shelf.grid.count) else { return }
-        self.focusedCard = shelf.grid[next].id
+        guard let next = Self.focusTarget(from: focusedCard, moving: move, hero: shelf.hero?.id,
+                                          grid: shelf.grid.map(\.id), metrics: metrics) else { return }
+        focusedCard = next
+    }
+
+    /// Where an arrow takes keyboard focus on the shelf: through the grid
+    /// by its own columns, ↑ from its first row to the Continue card, and
+    /// ↓ from the card to the grid's first card. nil: focus stays.
+    static func focusTarget(from focused: UUID?, moving move: MacGridMetrics.Move, hero: UUID?,
+                            grid: [UUID], metrics: MacGridMetrics) -> UUID? {
+        guard let focused else { return nil }
+        if focused == hero { return move == .down ? grid.first : nil }
+        guard let index = grid.firstIndex(of: focused) else { return nil }
+        if let next = metrics.neighbor(of: index, moving: move, count: grid.count) { return grid[next] }
+        return move == .up ? hero : nil
     }
 
     // MARK: Playback

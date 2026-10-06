@@ -29,7 +29,12 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
     /// The menus' model over the one `AppModel`. Built on first use, so the
     /// shared graph is made by the scene, as on the iPhone.
-    lazy var commandState = MacCommandState(actions: MacCommandActions(model: AppModel.shared, ui: ui))
+    /// A command that acts in the main window brings it back first.
+    lazy var commandState: MacCommandState = {
+        var actions = MacCommandActions(model: AppModel.shared, ui: ui)
+        actions.showMainWindow = { [unowned self] in self.showMainWindow() }
+        return MacCommandState(actions: actions)
+    }()
 
     /// Space, the arrows and the brackets, before any menu sees them.
     private(set) lazy var keyRouter = MacKeyRouter { [unowned self] command in
@@ -88,6 +93,18 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         guard let openMainWindow else { return true }
         openMainWindow()
         return false
+    }
+
+    /// The main window on screen and in front, however it went away, for a
+    /// menu command that acts in it (Add from Files…, Find, Back…).
+    func showMainWindow() {
+        if let mainWindow, mainWindow.isMiniaturized {
+            mainWindow.deminiaturize(nil)
+        } else if let mainWindow, mainWindow.isVisible {
+            mainWindow.makeKeyAndOrderFront(nil)
+        } else {
+            openMainWindow?()
+        }
     }
 
     /// The main window is on screen: it can be reopened from here on, and a

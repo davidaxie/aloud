@@ -82,15 +82,41 @@ final class MacDockMenuTests: XCTestCase {
         XCTAssertTrue(paused, "Pause paused")
     }
 
+    /// A rename reaches the header at once: the store's record is the live
+    /// one, as Now Playing reads it, while the controller keeps its copy
+    /// until the next load.
+    func testTheHeaderShowsARenameOfTheLoadedBook() throws {
+        let (rig, dock, actions) = makeDock(shelved: true)
+        rig.loadDefault()
+        let shelved = try XCTUnwrap(actions.store.documents.first { $0.id == rig.document.id })
+        actions.store.rename(shelved, to: "A Better Title")
+
+        XCTAssertEqual(actions.playback.document?.title, rig.document.title, "the controller's copy is the old one")
+        XCTAssertEqual(try XCTUnwrap(dock.menu()).items[0].title, "A Better Title")
+    }
+
     // MARK: - Rig
 
-    private func makeDock(sentences: Int = 12) -> (PlaybackTestRig, MacDockMenu, MacCommandActions) {
+    /// `shelved`: the rig's book is in the store's index too, as a loaded
+    /// book is in the app.
+    private func makeDock(sentences: Int = 12,
+                          shelved: Bool = false) -> (PlaybackTestRig, MacDockMenu, MacCommandActions) {
         let rig = PlaybackTestRig(sentences: sentences)
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("aloud-dock-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
-        let store = DocumentStore(indexURL: folder.appendingPathComponent("library.json"),
-                                  notifications: NotificationCenter())
+        let indexURL = folder.appendingPathComponent("library.json")
+        if shelved {
+            struct Index: Encodable {
+                let version: Int
+                let documents: [LibraryDocument]
+            }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? encoder.encode(Index(version: 2, documents: [rig.document])).write(to: indexURL)
+        }
+        let store = DocumentStore(indexURL: indexURL, notifications: NotificationCenter())
         var actions = MacCommandActions(playback: rig.controller, router: LibraryRouter(), store: store,
                                         sleepTimer: SleepTimer(defaults: rig.defaults),
                                         continuePlayback: ContinuePlayback(), ui: MacUIState())

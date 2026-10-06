@@ -232,11 +232,39 @@ enum MacCommand: String, CaseIterable, Sendable {
     /// The command whose key an event is, if any.
     static func command(for event: NSEvent) -> MacCommand? {
         guard let key = MacShortcutKey(event: event) else { return nil }
-        return command(for: MacShortcut(key: key, modifiers: MacModifiers(event: event)))
+        let modifiers = MacModifiers(event: event)
+        return command(for: MacShortcut(key: key, modifiers: modifiers))
+            ?? typedBracketCommand(for: event, modifiers: modifiers)
     }
 
     static func command(for shortcut: MacShortcut) -> MacCommand? {
         allCases.first { $0.shortcut == shortcut }
+    }
+
+    /// [ and ] where the layout types them with ⌥ or ⇧ held (German ⌥5 and
+    /// ⌥6, French ⌥⇧5, Russian ⇧ for [): Slower and Faster by the bracket
+    /// the key types, so the plain keys work on every layout. ⌘ or ⌃ held
+    /// makes it a menu's key, never a speed step.
+    private static func typedBracketCommand(for event: NSEvent, modifiers: MacModifiers) -> MacCommand? {
+        guard !modifiers.isEmpty, modifiers.isSubset(of: [.option, .shift]),
+              let typed = event.characters, typed.count == 1, let character = typed.first,
+              let bracket = command(for: MacShortcut(key: .character(character))),
+              bracket == .slower || bracket == .faster else { return nil }
+        return bracket
+    }
+
+    /// A second key a command also answers, never shown in its menu: ⌘=
+    /// for Make Text Bigger, the unshifted key most Mac apps take for it
+    /// beside ⌘+. The key router runs it (`MacKeyRouter`).
+    var alternateShortcut: MacShortcut? {
+        self == .biggerText ? MacShortcut(key: .character("="), modifiers: .command) : nil
+    }
+
+    /// The command whose alternate key an event is, if any.
+    static func alternateCommand(for event: NSEvent) -> MacCommand? {
+        guard let key = MacShortcutKey(event: event) else { return nil }
+        let shortcut = MacShortcut(key: key, modifiers: MacModifiers(event: event))
+        return allCases.first { $0.alternateShortcut == shortcut }
     }
 }
 

@@ -118,6 +118,33 @@ final class MacShortcutsTests: XCTestCase {
 
     // MARK: - Events
 
+    /// Brackets typed with ⌥ or ⇧ (German ⌥5 and ⌥6, Russian ⇧ for [)
+    /// still step the speed, by the bracket the key types. A ⌥ key that
+    /// types something else, or ⌘ held, is no speed step.
+    func testBracketsTypedWithOptionStillStepTheSpeed() {
+        XCTAssertEqual(MacCommand.plainCommand(for: Self.typed("[", ignoring: "5", code: 23, flags: .option)), .slower)
+        XCTAssertEqual(MacCommand.plainCommand(for: Self.typed("]", ignoring: "6", code: 22, flags: .option)), .faster)
+        XCTAssertEqual(MacCommand.plainCommand(for: Self.typed("[", ignoring: "[", code: 50, flags: .shift)), .slower)
+        XCTAssertEqual(MacCommand.plainCommand(for: Self.typed("[", ignoring: "5", code: 23, flags: [.option, .shift])),
+                       .slower, "French: ⌥⇧5")
+        XCTAssertNil(MacCommand.command(for: Self.typed("\u{2018}", ignoring: "]", code: 30, flags: .option)),
+                     "US ⌥] types a quote")
+        XCTAssertNil(MacCommand.command(for: Self.typed("[", ignoring: "5", code: 23, flags: [.option, .command])))
+        XCTAssertNil(MacCommand.command(for: Self.typed("[", ignoring: "5", code: 23, flags: [.option, .control])))
+    }
+
+    /// ⌘= is Make Text Bigger's second key, never shown and no one else's.
+    func testCommandEqualsIsBiggerTextsSecondKey() {
+        XCTAssertEqual(MacCommand.alternateCommand(for: Self.key("=", code: 24, flags: .command)), .biggerText)
+        XCTAssertNil(MacCommand.alternateCommand(for: Self.key("=", code: 24)))
+        XCTAssertNil(MacCommand.alternateCommand(for: Self.key("+", code: 24, flags: [.command, .shift])))
+        let alternates = MacCommand.allCases.compactMap(\.alternateShortcut)
+        XCTAssertEqual(alternates, [MacShortcut(key: .character("="), modifiers: .command)])
+        for alternate in alternates {
+            XCTAssertNil(MacCommand.command(for: alternate), "\(alternate.symbol) is no other command's key")
+        }
+    }
+
     func testEventsMapToTheirCommands() {
         XCTAssertEqual(MacCommand.plainCommand(for: Self.key(" ", code: 49)), .playPause)
         XCTAssertEqual(MacCommand.plainCommand(for: Self.arrow(left: true)), .back15)
@@ -138,6 +165,15 @@ final class MacShortcutsTests: XCTestCase {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
                          windowNumber: window?.windowNumber ?? 0, context: nil, characters: characters,
                          charactersIgnoringModifiers: characters, isARepeat: repeats, keyCode: code)!
+    }
+
+    /// A key whose layout types `characters` with `flags` held, where the
+    /// bare key reads `ignoring` (German ⌥6 types "]", reads "6").
+    static func typed(_ characters: String, ignoring: String, code: UInt16,
+                      flags: NSEvent.ModifierFlags) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                         windowNumber: 0, context: nil, characters: characters,
+                         charactersIgnoringModifiers: ignoring, isARepeat: false, keyCode: code)!
     }
 
     /// An arrow carries the function and keypad flags by itself.

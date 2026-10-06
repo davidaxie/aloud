@@ -5,7 +5,9 @@ import SwiftUI
 /// and small PDFs are done before an overlay could be read. Past that, a
 /// shadow-ink scrim takes the clicks and a raised surface card shows the
 /// file, its progress and Cancel, which Esc presses too. Cancel drops the
-/// queue with it, and the book never opens.
+/// queue with it, and the book never opens. A file still being copied in
+/// (a cloud file downloading, a large one copying) shows the same card at
+/// no progress yet, and Cancel drops its batch too (`MacFileIntake`).
 ///
 /// `isRevealed` is the root's, so the stack under the overlay leaves the
 /// VoiceOver tree only while the overlay is actually up.
@@ -13,31 +15,43 @@ struct MacImportOverlay: View {
     @Binding var isRevealed: Bool
 
     @EnvironmentObject private var importer: DocumentImporter
+    /// The window's intake: its copies come before the importer has them.
+    @ObservedObject private var intake = MacFileIntake.shared
 
     /// Quicker extraction than this shows nothing.
     static let revealDelay: Duration = .milliseconds(800)
 
     var body: some View {
         ZStack {
-            if isRevealed, case .importing(let name, let progress) = importer.phase {
-                MacImportCard(fileName: name, progress: progress, onCancel: importer.cancel)
+            if isRevealed, let shown = Self.shown(phase: importer.phase, copyingName: intake.copyingName) {
+                MacImportCard(fileName: shown.name, progress: shown.progress, onCancel: intake.cancel)
                     .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: Theme.Motion.crossfade), value: isRevealed)
         // Keyed on the add as a whole: a queued file starts in the same turn
-        // the last one ends, so a batch keeps the overlay up.
-        .task(id: importer.isImporting) { await revealOnceSlow() }
+        // the last one ends, and a copied batch is handed over in the turn
+        // its copying ends, so a batch keeps the overlay up.
+        .task(id: isBusy) { await revealOnceSlow() }
     }
+
+    /// What the card shows: the importer's add, or else the file being
+    /// copied in, at no progress yet. nil: nothing is under way.
+    static func shown(phase: DocumentImporter.Phase, copyingName: String?) -> (name: String, progress: Double)? {
+        if case .importing(let name, let progress) = phase { return (name, progress) }
+        return copyingName.map { (name: $0, progress: 0.0) }
+    }
+
+    private var isBusy: Bool { importer.isImporting || intake.copyingName != nil }
 
     /// A display delay only: the add itself never waits on it.
     private func revealOnceSlow() async {
-        guard importer.isImporting else {
+        guard isBusy else {
             isRevealed = false
             return
         }
         try? await Task.sleep(for: Self.revealDelay)
-        if !Task.isCancelled, importer.isImporting { isRevealed = true }
+        if !Task.isCancelled, isBusy { isRevealed = true }
     }
 }
 

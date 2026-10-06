@@ -159,6 +159,43 @@ final class MacImportTests: XCTestCase {
         XCTAssertEqual(router.path, [.bookshelf], "the user stays in Classics")
     }
 
+    /// A file still copying in shows on the import overlay (its name, no
+    /// progress yet), and Cancel drops it: when the copy lands it is never
+    /// handed over, nothing is added and no failure shows.
+    func testCancelWhileAFileCopiesAddsNothing() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        let importer = DocumentImporter(library: library) { _ in }
+        importer.navigation = router
+        importer.onAdded = { router.open($0) }
+        let download = Download()
+        let intake = MacFileIntake(importer: importer) { url in
+            await download.finished()
+            return url
+        }
+
+        intake.admit([try writeText("cloud.txt", in: folder)])
+        let copying = await waitUntil { intake.copyingName == "cloud.txt" }
+        XCTAssertTrue(copying, "the copy is published before the importer has it")
+        XCTAssertEqual(importer.phase, .idle)
+        let shown = try XCTUnwrap(MacImportOverlay.shown(phase: importer.phase, copyingName: intake.copyingName))
+        XCTAssertEqual(shown.name, "cloud.txt")
+        XCTAssertEqual(shown.progress, 0)
+
+        intake.cancel()
+        XCTAssertNil(intake.copyingName, "the overlay goes at once")
+        XCTAssertNil(MacImportOverlay.shown(phase: importer.phase, copyingName: intake.copyingName))
+        await download.finish()
+        let settled = await waitUntil { !intake.holdsOpens }
+        XCTAssertTrue(settled)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(library.documents.count, 0, "a cancelled copy is never added")
+        XCTAssertEqual(importer.phase, .idle)
+        XCTAssertNil(intake.failure)
+        XCTAssertEqual(router.path, [])
+    }
+
     /// A download that ends when the test says so.
     private actor Download {
         private var isFinished = false
@@ -399,6 +436,31 @@ final class MacImportTests: XCTestCase {
         XCTAssertEqual(staged.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL.path,
                        root.standardizedFileURL.path)
         XCTAssertEqual(try Data(contentsOf: staged), try Data(contentsOf: source))
+    }
+
+    /// A dropped symbolic link stages the file it points to, as a regular
+    /// file: a relative link would dangle from the staging folder, and an
+    /// absolute one would leave the library a link outside its container.
+    func testASymbolicLinkStagesTheFileItPointsTo() throws {
+        let folder = try makeFolder()
+        let root = folder.appendingPathComponent("Inbox", isDirectory: true)
+        let books = folder.appendingPathComponent("Books", isDirectory: true)
+        let desktop = folder.appendingPathComponent("Desktop", isDirectory: true)
+        try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
+        let real = try writeText("real.txt", in: books)
+        let relative = desktop.appendingPathComponent("relative.txt")
+        try FileManager.default.createSymbolicLink(atPath: relative.path, withDestinationPath: "../Books/real.txt")
+        let absolute = desktop.appendingPathComponent("absolute.txt")
+        try FileManager.default.createSymbolicLink(at: absolute, withDestinationURL: real)
+
+        for link in [relative, absolute] {
+            let staged = try MacFileIntake.stageCopy(of: link, into: root, read: MacFileIntake.systemCoordinatedRead)
+            XCTAssertEqual(staged.lastPathComponent, link.lastPathComponent, "the dropped name")
+            let type = try FileManager.default.attributesOfItem(atPath: staged.path)[.type] as? FileAttributeType
+            XCTAssertEqual(type, .typeRegular, "\(link.lastPathComponent): a copy, not a link")
+            XCTAssertEqual(try Data(contentsOf: staged), try Data(contentsOf: real))
+        }
     }
 
     /// The real stage lands where the importer deletes its file after the

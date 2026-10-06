@@ -44,6 +44,9 @@ struct MacCommandActions {
 
     /// Opens the Settings window: Voice & Speed… away from the reader.
     var openSettings: () -> Void = {}
+    /// Brings the main window back, closed or minimized (M5), before a
+    /// command that acts in it: the app delegate's Dock-click reopen.
+    var showMainWindow: () -> Void = {}
     /// The reader's Follow the voice, while it offers one (`FocusedValues`).
     var followVoice: (() -> Void)?
     /// The focused Library card's Delete…, while one has focus.
@@ -98,6 +101,9 @@ struct MacCommandActions {
     @discardableResult
     func perform(_ command: MacCommand) -> Bool {
         guard isEnabled(command) else { return false }
+        // Its window first: a panel, a pushed screen or a focused field in
+        // a closed or minimized window would wait there unseen.
+        if needsMainWindow(command) { showMainWindow() }
         switch command {
         case .playPause: togglePlayback()
         case .back15: playback.skip(seconds: -PlaybackController.skipInterval)
@@ -120,6 +126,7 @@ struct MacCommandActions {
                 ui.searchFocus = .contents
             } else {
                 ui.searchFocus = .classics
+                focusClassicsSearchOn14()
             }
         case .deleteBook: deleteBook?()
         case .toggleContents: ui.isContentsShown.toggle()
@@ -131,6 +138,7 @@ struct MacCommandActions {
         case .addClassic:
             showClassics()
             ui.searchFocus = .classics
+            focusClassicsSearchOn14()
         case .closeWindow: NSApp.keyWindow?.performClose(nil)
         case .settings, .fullScreen, .minimize, .hide, .quit: return false
         }
@@ -193,7 +201,24 @@ struct MacCommandActions {
         return ReaderTextSize.steps.indices.contains(next) ? next : nil
     }
 
+    /// The commands that act in the main window: File's adds, Find,
+    /// Contents, Back, and Voice & Speed… in the reader. The rest act on
+    /// playback, wherever the window is.
+    func needsMainWindow(_ command: MacCommand) -> Bool {
+        switch command {
+        case .addFromFiles, .addClassic, .find, .toggleContents, .back: return true
+        case .voiceAndSpeed: return place.isReader
+        default: return false
+        }
+    }
+
     // MARK: - Private
+
+    /// macOS 14 has no `searchFocused`, so Classics' toolbar field is
+    /// focused through its window once Classics shows (`MacToolbarSearch`).
+    private func focusClassicsSearchOn14() {
+        if #unavailable(macOS 15) { MacToolbarSearch.focusSoon() }
+    }
 
     private var hasBook: Bool { !(playback.content?.sentences.isEmpty ?? true) && playback.document != nil }
 
@@ -297,6 +322,51 @@ struct MacCommandActions {
     private func stepTextSize(bigger: Bool) {
         guard let next = Self.steppedTextSize(from: textSizeStep, bigger: bigger) else { return }
         defaults.set(next, forKey: ReaderTextSize.prefKey)
+    }
+}
+
+/// Focuses a window's toolbar search field: Classics' Find (⌘F) and Add a
+/// Classic… on macOS 14, where SwiftUI's `searchFocused` doesn't exist.
+@MainActor
+enum MacToolbarSearch {
+    /// The search field among a toolbar's items: a search item's own, or
+    /// one inside an item's view.
+    static func field(in items: [NSToolbarItem]) -> NSSearchField? {
+        for item in items {
+            if let search = item as? NSSearchToolbarItem { return search.searchField }
+            if let view = item.view, let field = searchField(in: view) { return field }
+        }
+        return nil
+    }
+
+    /// Puts the caret in `window`'s toolbar search field. False with none.
+    @discardableResult
+    static func focus(in window: NSWindow?) -> Bool {
+        guard let window, let items = window.toolbar?.items, let field = field(in: items) else { return false }
+        if let search = items.lazy.compactMap({ $0 as? NSSearchToolbarItem }).first(where: { $0.searchField === field }) {
+            search.beginSearchInteraction()
+            return true
+        }
+        return window.makeFirstResponder(field)
+    }
+
+    /// Focuses the field once the toolbar has it: a pushed Classics brings
+    /// its toolbar a moment later, so a few short tries, then none.
+    static func focusSoon(tries: Int = 10) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            MainActor.assumeIsolated {
+                guard !focus(in: NSApp.keyWindow ?? NSApp.mainWindow), tries > 1 else { return }
+                focusSoon(tries: tries - 1)
+            }
+        }
+    }
+
+    private static func searchField(in view: NSView) -> NSSearchField? {
+        if let field = view as? NSSearchField { return field }
+        for subview in view.subviews {
+            if let field = searchField(in: subview) { return field }
+        }
+        return nil
     }
 }
 

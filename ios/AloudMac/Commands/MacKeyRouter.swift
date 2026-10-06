@@ -15,8 +15,11 @@ import AppKit
 /// ⌘←, ⌘→ and ⌘⌫ are also text keys: with an editable field focused they go
 /// straight to it, so a menu item never takes the caret's moves. ↓ in a
 /// search field goes to the list under it when that list offers to take
-/// it (`MacSearchHandoff`), and to the field otherwise. Every other key
-/// passes through untouched. Installed once, by the app delegate.
+/// it (`MacSearchHandoff`), and to the field otherwise. ⌘Z in a field with
+/// typing to undo undoes the typing, never Undo Jump, whose menu item sits
+/// ahead of the system's Undo. ⌘=, the unshifted twin of ⌘+, runs Make
+/// Text Bigger. Every other key passes through untouched. Installed once,
+/// by the app delegate.
 ///
 /// The tail also answers Edit ▸ Paste that nothing earlier in the chain
 /// took, for the Library (`MacPasteTarget`).
@@ -78,6 +81,19 @@ final class MacKeyRouter {
             // ↓ from the search field into its results (M7), as Spotlight
             // does. The toolbar field's editor would take it for its caret
             // before the list could see it.
+            return nil
+        }
+        if let command = MacCommand.alternateCommand(for: event) {
+            // ⌘= has no menu item of its own: it runs Make Text Bigger here,
+            // as ⌘+ would from the menu.
+            run(command, in: window)
+            return nil
+        }
+        if MacCommand.command(for: event) == .undoJump, let window, Self.isEditableText(window.firstResponder),
+           let undo = window.firstResponder?.undoManager, undo.canUndo {
+            // ⌘Z in a field with typing to undo is the field's (the system
+            // Undo's), never Undo Jump ahead of it in the Edit menu.
+            undo.undo()
             return nil
         }
         guard let command = MacCommand.command(for: event), command.defersToEditableText else { return event }

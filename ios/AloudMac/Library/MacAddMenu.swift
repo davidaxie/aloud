@@ -80,6 +80,12 @@ final class MacFileIntake: ObservableObject {
     private(set) var holdsOpens = false
     /// Files still being copied, so a batch's hold outlasts a quick first add.
     private var staging = 0
+    /// The file being copied in before the importer has it (a cloud file
+    /// downloading, a large one copying): the import overlay shows it, with
+    /// Cancel, as it shows an add. nil once nothing is copying.
+    @Published private(set) var copyingName: String?
+    /// The batches still copying, which Cancel drops.
+    private var copyingBatches: [UUID: Task<Void, Never>] = [:]
     /// Files opened from outside the app this turn, admitted together on
     /// the next (`admitOpened(_:)`).
     private var gathered: [URL] = []
@@ -127,15 +133,29 @@ final class MacFileIntake: ObservableObject {
         // The open rule's clock starts here, not at the handoff: a user who
         // moves on while a cloud file downloads stays where they went.
         let startedAt = importer.navigation?.navigationGeneration
-        Task {
+        let batch = UUID()
+        copyingBatches[batch] = Task {
             var staged: [URL] = []
             var firstFailure: ImportFailure?
             for file in files {
+                guard !Task.isCancelled else { break }
+                copyingName = file.lastPathComponent
                 do {
                     staged.append(try await stage(file))
                 } catch {
                     firstFailure = firstFailure ?? Self.failure(for: error, isPDF: Self.isPDF(file))
                 }
+            }
+            copyingBatches[batch] = nil
+            if Task.isCancelled {
+                // Cancelled while copying: what landed goes, nothing of the
+                // batch is added, and no failure is shown for it. A read
+                // already under way can't be stopped; its copy goes here.
+                staged.forEach(Self.discardStaged)
+                staging -= files.count
+                if staging == 0 { copyingName = nil }
+                releaseHoldIfSettled()
+                return
             }
             // Held from the handoff, not the admit: a classic clicked while
             // a batch copies still opens. All at once, as one batch, so the
@@ -146,9 +166,27 @@ final class MacFileIntake: ObservableObject {
             if files.count > 1 || movedOn, !staged.isEmpty { holdsOpens = true }
             importer.importFiles(at: staged)
             staging -= files.count
+            if staging == 0 { copyingName = nil }
             if failure == nil { failure = firstFailure }
             releaseHoldIfSettled()
         }
+    }
+
+    /// Cancel on the import overlay, or Esc: drops the batches still being
+    /// copied and the importer's add and queue. The overlay goes at once.
+    func cancel() {
+        let batches = copyingBatches.values
+        copyingBatches = [:]
+        batches.forEach { $0.cancel() }
+        copyingName = nil
+        importer.cancel()
+    }
+
+    /// A staged copy whose batch was cancelled. Only the intake's own:
+    /// a test's in-place stage hands over the source itself.
+    private static func discardStaged(_ url: URL) {
+        guard DocumentImporter.isInboxCopy(url) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// One file opened from outside the app: Finder's Open With or a drop
@@ -360,6 +398,8 @@ final class MacFileIntake: ObservableObject {
     /// Copies `url` into its own folder under `root`, keeping its name: the
     /// importer titles a text file, and an untitled PDF, by that name. The
     /// source's security scope (a Files panel pick) is held for the read.
+    /// A symbolic link is followed: the library keeps a copy of the book,
+    /// never a link that a relaunch's sandbox or a moved original breaks.
     nonisolated static func stageCopy(of url: URL, into root: URL,
                                       read: CoordinatedRead) throws -> URL {
         let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -369,7 +409,7 @@ final class MacFileIntake: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try read(url) { readable in
-                try FileManager.default.copyItem(at: readable, to: destination)
+                try FileManager.default.copyItem(at: readable.resolvingSymlinksInPath(), to: destination)
             }
             return destination
         } catch {

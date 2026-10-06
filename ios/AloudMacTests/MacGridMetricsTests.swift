@@ -91,4 +91,25 @@ final class MacGridMetricsTests: XCTestCase {
         XCTAssertNil(metrics.neighbor(of: 11, moving: .right, count: count))
         XCTAssertNil(metrics.neighbor(of: 12, moving: .left, count: count), "an index past the grid")
     }
+
+    /// The Continue card is on the arrows' path: ↑ from the grid's first
+    /// row reaches it, ↓ from it lands on the first card, and the grid
+    /// still walks by its columns. Without a card, ↑ stays put.
+    func testUpFromTheFirstRowReachesTheContinueCard() {
+        let metrics = MacGridMetrics(windowWidth: 1000)
+        let hero = UUID()
+        let grid = (0..<12).map { _ in UUID() }
+        func target(_ from: UUID?, _ move: MacGridMetrics.Move, hero: UUID? = hero) -> UUID? {
+            MacLibraryView.focusTarget(from: from, moving: move, hero: hero, grid: grid, metrics: metrics)
+        }
+        XCTAssertEqual(target(grid[2], .up), hero, "↑ from the first row")
+        XCTAssertEqual(target(grid[0], .up), hero)
+        XCTAssertEqual(target(grid[7], .up), grid[2], "within the grid, by its columns")
+        XCTAssertEqual(target(hero, .down), grid[0], "↓ from the card")
+        XCTAssertNil(target(hero, .up))
+        XCTAssertNil(target(hero, .left))
+        XCTAssertNil(target(grid[2], .up, hero: nil), "no card: focus stays")
+        XCTAssertNil(target(grid[4], .right), "a row's end stays put")
+        XCTAssertNil(target(nil, .down), "nothing focused")
+    }
 }

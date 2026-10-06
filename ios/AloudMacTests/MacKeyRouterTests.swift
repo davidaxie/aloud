@@ -313,6 +313,40 @@ final class MacKeyRouterTests: XCTestCase {
         XCTAssertEqual(taken, ["second"])
     }
 
+    /// ⌘Z in a field with typing to undo is the field's: Undo Jump's menu
+    /// item, ahead of the system's Undo for 10 s after a jump, never sees
+    /// it. With nothing to undo there, or outside a field, ⌘Z goes on to
+    /// the menus as before.
+    func testCommandZInAFieldUndoesTheTypingNotTheJump() throws {
+        let (window, text) = makeWindowWithText(editable: true)
+        text.allowsUndo = true
+        text.insertText("pride", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(text.string, "pride")
+        XCTAssertTrue(try XCTUnwrap(text.undoManager).canUndo, "the typing can be undone")
+
+        let undo = MacShortcutsTests.key("z", code: 6, flags: .command, window: window)
+        XCTAssertNil(router.handle(undo, in: window), "the field's undo took it, before any menu")
+        XCTAssertEqual(text.string, "", "the typing was undone")
+        XCTAssertEqual(performed, [], "no Undo Jump")
+
+        let again = MacShortcutsTests.key("z", code: 6, flags: .command, window: window)
+        XCTAssertTrue(router.handle(again, in: window) === again, "nothing left to undo: the menus' ⌘Z")
+        let bare = makeWindow()
+        let menuUndo = MacShortcutsTests.key("z", code: 6, flags: .command, window: bare)
+        XCTAssertTrue(router.handle(menuUndo, in: bare) === menuUndo, "outside a field: Undo Jump's")
+    }
+
+    /// ⌘=, the unshifted key beside ⌘+, makes the text bigger: no menu
+    /// item carries it, so the router runs it, in a field or not.
+    func testCommandEqualsMakesTheTextBigger() throws {
+        XCTAssertNil(router.handle(MacShortcutsTests.key("=", code: 24, flags: .command), in: nil))
+        XCTAssertEqual(performed, [.biggerText])
+        let (window, text) = makeWindowWithText(editable: true)
+        XCTAssertNil(router.handle(MacShortcutsTests.key("=", code: 24, flags: .command, window: window), in: window))
+        XCTAssertEqual(performed, [.biggerText, .biggerText])
+        XCTAssertEqual(text.string, "", "never typed")
+    }
+
     // MARK: - Helpers
 
     /// ↓, which carries the function and keypad flags by itself.

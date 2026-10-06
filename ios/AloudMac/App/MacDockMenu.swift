@@ -33,7 +33,10 @@ final class MacDockMenu: NSObject {
         // validate them against.
         menu.autoenablesItems = false
 
-        let header = NSMenuItem(title: document.title, action: nil, keyEquivalent: "")
+        // The store's record is the live one: it carries a rename first,
+        // as Now Playing reads it.
+        let live = actions.store.documents.first { $0.id == document.id } ?? document
+        let header = NSMenuItem(title: live.title, action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
 
