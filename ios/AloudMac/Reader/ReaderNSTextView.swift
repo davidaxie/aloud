@@ -296,10 +296,19 @@ final class ReaderNSTextView: NSTextView {
     }
 
     /// The keys that extend a selection (⇧ with the arrows and their
-    /// friends) and ⌘A's selector.
+    /// friends: ⌘⇧ and ⌃⇧ with ← and → to the line's ends, ⇧Page Up and
+    /// ⇧Page Down, and the Emacs keys ⌃⇧B/F and ⌃⌥⇧B/F) and ⌘A's selector.
     static let selectionCommands: Set<Selector> = [
         #selector(NSResponder.moveLeftAndModifySelection(_:)),
         #selector(NSResponder.moveRightAndModifySelection(_:)),
+        #selector(NSResponder.moveBackwardAndModifySelection(_:)),
+        #selector(NSResponder.moveForwardAndModifySelection(_:)),
+        #selector(NSResponder.moveWordBackwardAndModifySelection(_:)),
+        #selector(NSResponder.moveWordForwardAndModifySelection(_:)),
+        #selector(NSResponder.moveToLeftEndOfLineAndModifySelection(_:)),
+        #selector(NSResponder.moveToRightEndOfLineAndModifySelection(_:)),
+        #selector(NSResponder.pageUpAndModifySelection(_:)),
+        #selector(NSResponder.pageDownAndModifySelection(_:)),
         #selector(NSResponder.moveUpAndModifySelection(_:)),
         #selector(NSResponder.moveDownAndModifySelection(_:)),
         #selector(NSResponder.moveWordLeftAndModifySelection(_:)),

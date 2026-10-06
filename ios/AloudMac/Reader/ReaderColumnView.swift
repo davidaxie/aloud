@@ -32,7 +32,8 @@ import SwiftUI
 ///   band stays above.
 /// - `colophon` (R24): at `.ended` the end mark becomes it, fading in.
 /// - `focusRequest`: any change puts the keyboard on the text (Contents
-///   closing, M11).
+///   closing, M11). A book opening puts it there too, unless a field is
+///   being typed in.
 /// - Out: `voiceOffscreen`, the Follow chip's arrow while not following;
 ///   `onPlaySentence`, a click or Play from Here (`playFromSentence(_:on:)`);
 ///   and `onTextUnderTopBar`, for the toolbar's hairline.
@@ -182,6 +183,10 @@ struct ReaderColumnView: NSViewRepresentable {
         /// Set when a click lands: a click that began on moving text only
         /// stops it (R15).
         private var clickBeganWhileScrolling = false
+        /// A single click's play, held for the double-click interval: the
+        /// next click landing in time (a double- or triple-click selecting
+        /// a word or a paragraph) cancels it.
+        private var pendingClickPlay: DispatchWorkItem?
         /// Moves of our own in progress (offsets, rebuilds): the clip view's
         /// bounds moving then is not the reader scrolling.
         private var programmaticMoves = 0
@@ -219,6 +224,11 @@ struct ReaderColumnView: NSViewRepresentable {
         /// Test seam: whether momentum is still moving the page, or stopped
         /// it a moment ago (the touch of the click that lands on it).
         var isCoasting: (ReaderScrollView) -> Bool = { $0.isCoastingOrJustStopped }
+        /// Test seam: how long a single click waits for a second before it
+        /// plays.
+        var clickPlayDelay: () -> TimeInterval = { NSEvent.doubleClickInterval }
+        /// A single click is waiting out the double-click interval (tests).
+        var isClickPlayPending: Bool { pendingClickPlay != nil }
 
         #if DEBUG
         private let publishesProbe = UITestHooks.isUITestLaunch
@@ -376,6 +386,7 @@ struct ReaderColumnView: NSViewRepresentable {
             NotificationCenter.default.removeObserver(self)
             discreteScrollEnd?.cancel()
             discreteScrollEnd = nil
+            cancelClickPlay()
             stopGlideInPlace()
             endAnchor()
         }
@@ -397,7 +408,11 @@ struct ReaderColumnView: NSViewRepresentable {
                 // A text size: the same column re-laid out around its anchor.
                 changeTextSize(to: newParent)
             } else if builtHash != newParent.content.contentHash || builtFontSize != newParent.fontSize {
+                let opening = builtHash.isEmpty
                 rebuild(content: newParent.content, fontSize: newParent.fontSize)
+                // A book opening: the scroll keys work at once, with no
+                // click (which plays) to give the page the keyboard.
+                if opening, !builtHash.isEmpty { focusText(sparingAField: true) }
                 // A fresh column starts on the voice.
                 lastFollowRequest = newParent.followRequest
                 isFollowing = true
@@ -474,13 +489,19 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         /// Light/dark and Increase Contrast only recolor (the Mac has no
-        /// Bold Text), so the offset still frames the same passage.
+        /// Bold Text), so the offset still frames the same passage, and the
+        /// same ranges hold the reader's selection and VoiceOver's cursor.
         func rebuildForAppearanceChange() {
             guard let textView, !builtHash.isEmpty, builtHash == parent.content.contentHash,
                   Self.look(of: textView.effectiveAppearance) != builtLook else { return }
             let active = activeSentence
             let offset = contentOffsetY
-            rebuild(content: parent.content, fontSize: parent.fontSize)
+            let rebuildPage = { self.rebuild(content: self.parent.content, fontSize: self.parent.fontSize) }
+            if let access = textView.readerAccessibility {
+                access.keepingCursor(through: rebuildPage)
+            } else {
+                rebuildPage()
+            }
             follow.pendingPlacement = false
             setActiveSentence(active, scroll: false)
             setActiveWord(parent.activeWord)
@@ -726,11 +747,15 @@ struct ReaderColumnView: NSViewRepresentable {
 
         /// Puts keyboard focus on the text, a turn later: after SwiftUI has
         /// taken the closed Contents panel, and its focus, out of the window.
-        func focusText() {
+        /// `sparingAField` (a book opening) leaves a field being typed in
+        /// alone: ⌘F's Contents search, opened before the text loaded.
+        func focusText(sparingAField: Bool = false) {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, let textView = self.textView, let window = textView.window,
                           window.firstResponder !== textView else { return }
+                    if sparingAField, let editor = window.firstResponder as? NSTextView,
+                       editor.isFieldEditor { return }
                     // Taking focus never scrolls the page; were AppKit to,
                     // it would be a move of ours.
                     self.movingProgrammatically { _ = window.makeFirstResponder(textView) }
@@ -1415,6 +1440,8 @@ struct ReaderColumnView: NSViewRepresentable {
         /// The mouse is down on the page, before AppKit tracks a click or a
         /// drag.
         func clickLanded() {
+            // The second click of a double-click: the first one's play is off.
+            cancelClickPlay()
             let gliding = isGliding
             let coasting = scrollView.map(isCoasting) ?? false
             clickBeganWhileScrolling = coasting || gliding
@@ -1429,7 +1456,7 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         /// The click AppKit tracked has ended: one click, with no selection
-        /// made, plays from its sentence.
+        /// made, plays from its sentence, unless a second click follows.
         func clickEnded(at point: CGPoint, clickCount: Int, selectionMade: Bool) {
             let wasScrolling = clickBeganWhileScrolling
             clickBeganWhileScrolling = false
@@ -1438,14 +1465,34 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         /// A click plays from the clicked sentence in any state, unless it
-        /// landed on moving text: then it only stopped the scroll.
+        /// landed on moving text: then it only stopped the scroll. The play
+        /// waits out the double-click interval: AppKit ends a double-click's
+        /// first click as a plain one, and a double- or triple-click selects
+        /// (for Copy or Look Up), never plays.
         func handleClick(at point: CGPoint, isDecelerating: Bool) {
             if isDecelerating {
                 userScrollEnded()
                 return
             }
             guard let id = sentence(at: point) else { return }
-            parent.onPlaySentence(id)
+            cancelClickPlay()
+            let hash = builtHash
+            let play = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.pendingClickPlay = nil
+                    // The same text the click landed on.
+                    guard self.builtHash == hash else { return }
+                    self.parent.onPlaySentence(id)
+                }
+            }
+            pendingClickPlay = play
+            DispatchQueue.main.asyncAfter(deadline: .now() + clickPlayDelay(), execute: play)
+        }
+
+        private func cancelClickPlay() {
+            pendingClickPlay?.cancel()
+            pendingClickPlay = nil
         }
 
         /// The sentence under `point` (page coordinates); nil between

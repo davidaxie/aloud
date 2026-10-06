@@ -331,6 +331,45 @@ final class MacReaderAccessibilityTests: XCTestCase {
         XCTAssertNotNil(page.textView.accessibilityValue())
     }
 
+    /// Light/dark or Increase Contrast rebuilds the column in its new
+    /// colors over the same text: VoiceOver's cursor, and a reader's
+    /// selection for Copy, stay where they were, as through a text-size
+    /// step.
+    func testAnAppearanceChangeKeepsTheCursorAndTheSelection() throws {
+        final class Edits: @unchecked Sendable { var count = 0 }
+        let book = Self.book(chapters: 1, paragraphs: 4, perParagraph: 3, hash: "a11y-appearance")
+        let page = try makePage(content: book, active: 5)
+        let edits = Edits()
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: page.textView.textStorage,
+            queue: nil) { _ in edits.count += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let cursor = NSRange(location: page.ranges[9].location, length: 0)
+        page.textView.setAccessibilitySelectedTextRange(cursor)
+        XCTAssertEqual(page.textView.accessibilityLabel(), book.sentences[9].text)
+
+        page.textView.appearance = NSAppearance(named: Self.otherLook(than: page.textView.effectiveAppearance))
+        page.coordinator.rebuildForAppearanceChange()
+        XCTAssertGreaterThan(edits.count, 0, "rebuilt in the new colors")
+        XCTAssertEqual(page.textView.selectedRange(), cursor, "VoiceOver's cursor stays")
+        XCTAssertEqual(page.textView.accessibilityLabel(), book.sentences[9].text)
+        let action = try XCTUnwrap(page.textView.accessibilityCustomActions()?.first)
+        XCTAssertEqual(action.handler?(), true)
+        XCTAssertEqual(page.played.ids, [9], "Play from here starts at the cursor, not the playhead")
+
+        page.textView.setSelectedRange(page.ranges[10])
+        let before = edits.count
+        page.textView.appearance = NSAppearance(named: Self.otherLook(than: page.textView.effectiveAppearance))
+        page.coordinator.rebuildForAppearanceChange()
+        XCTAssertGreaterThan(edits.count, before, "rebuilt again")
+        XCTAssertEqual(page.textView.selectedRange(), page.ranges[10], "the selection stays for Copy")
+    }
+
+    /// Light if `appearance` is dark, else dark: a change of look.
+    private static func otherLook(than appearance: NSAppearance) -> NSAppearance.Name {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .aqua : .darkAqua
+    }
+
     /// Every point on the page, beside, below and between the lines, the
     /// colophon's included, maps to a character in the text or to none:
     /// never past the end, and never a trap.

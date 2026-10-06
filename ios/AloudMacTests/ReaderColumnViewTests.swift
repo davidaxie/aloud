@@ -54,6 +54,7 @@ final class ReaderColumnViewTests: XCTestCase {
         let point = try page.point(inSentence: clicked)
         textView.onClickLanded?()
         textView.onClickEnded?(point, 1, false)
+        settleClick(on: page)
         let rightClick = try page.rightClick(at: point)
         _ = textView.menu(for: rightClick)
         textView.doCommand(by: #selector(NSResponder.scrollPageDown(_:)))
@@ -141,23 +142,60 @@ final class ReaderColumnViewTests: XCTestCase {
     // MARK: - Click to play (R15)
 
     /// A click inside sentence N maps to N through the shared layout and
-    /// plays from it; a double-click and a drag (each leaves a selection)
-    /// play nothing more.
+    /// plays from it, once the double-click interval is out; a double-click
+    /// and a drag (each leaves a selection) play nothing more.
     func testAClickInASentencePlaysFromIt() throws {
         let page = try makePage(sentences: 60, active: 0)
         let id = try page.singleLineSentence(near: 9)
         let point = try page.point(inSentence: id)
         XCTAssertEqual(page.coordinator.sentence(at: point), id)
+        XCTAssertEqual(page.view.makeCoordinator().clickPlayDelay(), NSEvent.doubleClickInterval,
+                       "a click waits for the system's double-click interval")
 
         page.textView.onClickLanded?()
         page.textView.onClickEnded?(point, 1, false)
+        XCTAssertTrue(page.coordinator.isClickPlayPending, "a second click may still come")
+        XCTAssertEqual(page.played.ids, [])
+        settleClick(on: page)
         XCTAssertEqual(page.played.ids, [id])
 
         page.textView.onClickLanded?()
         page.textView.onClickEnded?(point, 2, true)
         page.textView.onClickLanded?()
         page.textView.onClickEnded?(point, 1, true)
+        settleClick(on: page)
         XCTAssertEqual(page.played.ids, [id], "a selection is not a click to play")
+    }
+
+    /// A double-click selects a word and a triple-click a paragraph (for
+    /// Copy or Look Up), and neither plays: AppKit ends the first click of
+    /// each as a plain one, with nothing selected yet, and its play waits
+    /// out the double-click interval, which the next click landing cancels.
+    func testADoubleOrTripleClickSelectsWithoutPlaying() throws {
+        let page = try makePage(sentences: 60, active: 0)
+        let id = try page.singleLineSentence(near: 9)
+        let point = try page.point(inSentence: id)
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 2, true)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [], "a double-click selects, never plays")
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 2, true)
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 3, true)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [], "nor does a triple-click")
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [id], "a lone click still plays")
     }
 
     /// The play-from path itself: a click while paused starts the book at
@@ -173,6 +211,7 @@ final class ReaderColumnViewTests: XCTestCase {
         let point = try page.point(inSentence: id)
         page.textView.onClickLanded?()
         page.textView.onClickEnded?(point, 1, false)
+        settleClick(on: page)
         XCTAssertEqual(rig.controller.currentSentence, id)
         XCTAssertTrue([.buffering, .playing].contains(rig.controller.status), "\(rig.controller.status)")
     }
@@ -192,10 +231,12 @@ final class ReaderColumnViewTests: XCTestCase {
         page.textView.onClickLanded?()
         page.coordinator.isCoasting = { _ in false }
         page.textView.onClickEnded?(point, 1, false)
+        XCTAssertFalse(page.coordinator.isClickPlayPending)
         XCTAssertEqual(rig.controller.currentSentence, before, "a click on moving text only stops it")
 
         page.textView.onClickLanded?()
         page.textView.onClickEnded?(point, 1, false)
+        settleClick(on: page)
         XCTAssertEqual(rig.controller.currentSentence, id)
     }
 
@@ -269,6 +310,16 @@ final class ReaderColumnViewTests: XCTestCase {
         let turn = expectation(description: "a turn of the main queue")
         DispatchQueue.main.async { turn.fulfill() }
         wait(for: [turn], timeout: 2)
+    }
+
+    /// Lets a single click's held play run: the rig's double-click interval
+    /// is 0, so it runs on the main queue's next turns.
+    private func settleClick(on page: Page) {
+        let deadline = Date().addingTimeInterval(2)
+        while page.coordinator.isClickPlayPending, Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertFalse(page.coordinator.isClickPlayPending, "the click's play ran")
     }
 
     // MARK: - The right-click menu (M14)
@@ -359,6 +410,34 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(spy.calls, ["try:cancelOperation:"])
     }
 
+    /// Every key the system's bindings read as extending the selection
+    /// does, for Copy: ⌘⇧ and ⌃⇧ with ← and → to the line's ends, ⇧Page Up
+    /// and ⇧Page Down (and ⌃⇧V), ⌃⇧B/F and ⌃⌥⇧B/F. None is swallowed, none
+    /// goes on up the chain, and the text never changes.
+    func testTheSelectionKeysExtendTheSelection() throws {
+        let page = try makePage(sentences: 20, active: 0)
+        let textView = page.textView
+        let spy = ResponderSpy()
+        textView.nextResponder = spy
+        let text = textView.string
+        // Inside sentence 9's first word, so mid-line.
+        let caret = NSRange(location: page.coordinator.sentenceRanges[9].location + 4, length: 0)
+
+        let selectors = ["moveToLeftEndOfLineAndModifySelection:", "moveToRightEndOfLineAndModifySelection:",
+                         "pageUpAndModifySelection:", "pageDownAndModifySelection:",
+                         "moveBackwardAndModifySelection:", "moveForwardAndModifySelection:",
+                         "moveWordBackwardAndModifySelection:", "moveWordForwardAndModifySelection:"]
+        for name in selectors {
+            let selector = NSSelectorFromString(name)
+            XCTAssertTrue(ReaderNSTextView.selectionCommands.contains(selector), name)
+            textView.setSelectedRange(caret)
+            textView.doCommand(by: selector)
+            XCTAssertGreaterThan(textView.selectedRange().length, 0, "\(name) extends the selection")
+        }
+        XCTAssertEqual(spy.calls, [], "no selector went on up the chain")
+        XCTAssertEqual(textView.string, text)
+    }
+
     /// Space, ← and → are the app's: `MacKeyRouter` runs them at once while
     /// the read-only page has focus, and the page never sees them. ⌘← and
     /// ⌘→ go on to the menus. One that reaches the page anyway goes to the
@@ -385,6 +464,42 @@ final class ReaderColumnViewTests: XCTestCase {
         textView.keyDown(with: MacShortcutsTests.key(" ", code: 49, window: page.window))
         XCTAssertEqual(performed, [.playPause, .back15, .forward15, .playPause])
         XCTAssertEqual(textView.string, text, "nothing typed")
+    }
+
+    /// A book opening puts the keyboard on its text, a turn later: the
+    /// scroll keys work at once, with no click (which plays) to focus the
+    /// page. A field being typed in keeps it (⌘F's search, opened while the
+    /// text loaded).
+    func testABookOpeningPutsTheKeyboardOnTheText() throws {
+        let page = try makePage(sentences: 60, active: 0)
+        let offset = page.offset
+        nextMainTurn()
+        XCTAssertTrue(page.window.firstResponder === page.textView, "the page has the keys")
+        XCTAssertEqual(page.offset, offset, accuracy: 0.5, "taking focus never scrolls")
+        XCTAssertEqual(page.played.ids, [])
+
+        let view = ReaderColumnView(content: Self.content(count: 20), fontSize: 19, activeSentence: 0,
+                                    activeWord: -1, voiceOffscreen: .constant(nil), onPlaySentence: { _ in })
+        let coordinator = view.makeCoordinator()
+        coordinator.isCoasting = { _ in false }
+        let scrollView = coordinator.makeScrollView()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        windows.append(window)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 600))
+        window.contentView = container
+        scrollView.frame = NSRect(x: 0, y: 0, width: 1000, height: 560)
+        container.addSubview(scrollView)
+        let field = NSSearchField(frame: NSRect(x: 20, y: 568, width: 240, height: 24))
+        container.addSubview(field)
+        _ = window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView, "the field is being edited")
+        XCTAssertTrue(editor.isFieldEditor)
+
+        coordinator.update(to: view)
+        nextMainTurn()
+        XCTAssertTrue(window.firstResponder === editor, "the field keeps the keyboard")
     }
 
     // MARK: - Calm follow (M15, R16)
@@ -725,6 +840,8 @@ final class ReaderColumnViewTests: XCTestCase {
         let coordinator = view.makeCoordinator()
         coordinator.reduceMotion = { reduceMotion }
         coordinator.isCoasting = { _ in false }
+        // A single click plays on the next turns, not half a second on.
+        coordinator.clickPlayDelay = { 0 }
         let scrollView = coordinator.makeScrollView()
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled],
                               backing: .buffered, defer: false)

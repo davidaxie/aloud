@@ -125,8 +125,9 @@ struct MacContentsPanel: View {
         }
         // A stop recorded, or the toggle shown or hidden, while the list is
         // open: the cursor stays on its row, never the one that slid under it.
+        // A results cursor stays on its result.
         .onChange(of: listLayout) { old, new in
-            cursor = MacContents.remap(cursor, from: old, to: new)
+            cursor = MacContents.remap(cursor, from: old, to: new, in: currentMode)
         }
         .onAppear {
             MacSearchHandoff.shared.offer(by: handoffOwner) { focusList() }

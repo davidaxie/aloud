@@ -52,8 +52,11 @@ extension MacContents {
     /// The keyboard cursor found again after the list changed under it (a
     /// stop recorded while Contents is open, the toggle coming or going): a
     /// chapter stays on its chapter, the toggle on the toggle, a place on
-    /// its position, clamped into the new list.
-    static func remap(_ cursor: Int?, from old: ListLayout, to new: ListLayout) -> Int? {
+    /// its position, clamped into the new list. Only the list in `.chapters`
+    /// counts the places: in any other mode the cursor is a result's index
+    /// (or none), which a stop recorded never moves, and it stays.
+    static func remap(_ cursor: Int?, from old: ListLayout, to new: ListLayout, in mode: Mode) -> Int? {
+        guard mode == .chapters else { return cursor }
         guard let cursor else { return nil }
         guard new.count > 0 else { return nil }
         guard let row = old.row(at: cursor) else { return min(cursor, new.count - 1) }
