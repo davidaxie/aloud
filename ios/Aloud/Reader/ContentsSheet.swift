@@ -470,7 +470,7 @@ struct ContentsSheet: View {
     }
 
     private var countLabel: String {
-        results.count == 1 ? "1 match" : "\(results.count) matches"
+        ContentsSearch.countLabel(results.count)
     }
 
     private func resultRow(_ match: SentenceMatch) -> some View {
@@ -478,8 +478,8 @@ struct ContentsSheet: View {
             playback.jump(to: match.sentenceID, origin: .searchResult)
             dismiss()
         } label: {
-            ContentsResultLabel(match: match, location: navigation.location(ofSentence: match.sentenceID,
-                                                                            page: match.page))
+            ContentsResultLabel(match: match, location: navigation.searchLocation(ofSentence: match.sentenceID,
+                                                                                  page: match.page))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Space.sheetGutter)
                 .padding(.vertical, Theme.Space.sm)
@@ -493,7 +493,7 @@ struct ContentsSheet: View {
     private func emptyState(for query: String) -> some View {
         VStack {
             Spacer()
-            Text("No matches for \u{201C}\(query)\u{201D}")
+            Text(ContentsSearch.noMatchesLabel(query))
                 .font(Theme.font(.callout))
                 .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
@@ -531,8 +531,12 @@ struct ContentsSheet: View {
             scanTask = scan
             let found = await scan.value
             guard !scan.isCancelled, !Task.isCancelled else { return }
+            let previousCount: Int? = searchedQuery == nil ? nil : results.count
             results = found
             searchedQuery = trimmed
+            // Focus stays in the field: VoiceOver hears what landed.
+            ContentsSearch.announceResults(count: found.count, query: trimmed,
+                                           previousCount: previousCount, muted: playback.isOutputMuted)
         }
     }
 }
@@ -574,7 +578,8 @@ private struct ContentsPlaceLabel: View {
 struct ContentsResultLabel: View {
 
     let match: SentenceMatch
-    let location: String
+    /// nil in text without a chapter list: the sentence says where.
+    let location: String?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -595,11 +600,13 @@ struct ContentsResultLabel: View {
 
             // "BOOK ONE: 1805 · CHAPTER XVIII" tells same-phrase hits apart,
             // so at the accessibility sizes it wraps instead of truncating.
-            Text(location)
-                .font(Theme.font(.footnote))
-                .foregroundStyle(Theme.textFaint)
-                .lineLimit(isAccessibilitySize ? nil : 1)
-                .multilineTextAlignment(.leading)
+            if let location {
+                Text(location)
+                    .font(Theme.font(.footnote))
+                    .foregroundStyle(Theme.textFaint)
+                    .lineLimit(isAccessibilitySize ? nil : 1)
+                    .multilineTextAlignment(.leading)
+            }
         }
     }
 

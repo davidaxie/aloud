@@ -222,4 +222,36 @@ final class ContentsResultLabelLayoutTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Spoken results
+
+    /// Focus stays in the search field, so VoiceOver hears a search land:
+    /// the count, or the no-matches line, once per change of count. Typing
+    /// on through the same results, or on into nothing, says nothing more.
+    func testALandedSearchIsAnnouncedOncePerCount() {
+        func line(_ count: Int, _ previous: Int?) -> String? {
+            ContentsSearch.resultsAnnouncement(count: count, query: "whale", previousCount: previous)
+        }
+        XCTAssertEqual(line(3, nil), "3 matches")
+        XCTAssertEqual(line(1, nil), "1 match")
+        XCTAssertEqual(line(0, nil), "No matches for \u{201C}whale\u{201D}")
+        XCTAssertEqual(line(2, 3), "2 matches")
+        XCTAssertEqual(line(0, 3), "No matches for \u{201C}whale\u{201D}")
+        XCTAssertNil(line(3, 3))
+        XCTAssertNil(line(0, 0))
+    }
+
+    /// Through the app's one announcement path: a muted process only logs it.
+    @MainActor
+    func testTheResultsAnnouncementGoesThroughTheOneAnnouncementPath() {
+        #if DEBUG
+        let log = UITestAnnouncementLog.shared
+        let query = "q\(UUID().uuidString.prefix(6))"
+        ContentsSearch.announceResults(count: 0, query: query, previousCount: nil, muted: true)
+        XCTAssertEqual(log.entries.last, ContentsSearch.noMatchesLabel(query))
+        let before = log.entries
+        ContentsSearch.announceResults(count: 0, query: query + "x", previousCount: 0, muted: true)
+        XCTAssertEqual(log.entries, before, "typing on into nothing stays quiet")
+        #endif
+    }
 }

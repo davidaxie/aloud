@@ -59,6 +59,59 @@ final class LaunchRestoreTests: XCTestCase {
         XCTAssertNil(LaunchRestore.readerToReopen(lastReaderID: reading.id, documents: [reading], enabled: false))
     }
 
+    /// One rule with Continue: the reader that comes back is the book a Play
+    /// from outside the app (or the Continue listening shortcut) at launch
+    /// plays. A book opened and paused in its first sentence isn't started,
+    /// so Continue plays the book before it; reopening that reader would
+    /// stop the other book, or show it while the other plays.
+    func testTheReopenedReaderIsTheBookContinuePlays() {
+        var started = book(progress: 0.42)
+        started.lastOpenedAt = Date().addingTimeInterval(-600)
+        var unstarted = book(progress: 0)
+        unstarted.lastOpenedAt = Date().addingTimeInterval(-60)
+        let shelf = [started, unstarted]
+
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: shelf)?.id, started.id)
+        XCTAssertNil(LaunchRestore.readerToReopen(lastReaderID: unstarted.id, documents: shelf, enabled: true),
+                     "Continue would play another book under it")
+        XCTAssertEqual(LaunchRestore.readerToReopen(lastReaderID: started.id, documents: shelf, enabled: true),
+                       started.id)
+    }
+
+    /// A sleep timer (or any unattended stop) in a book's last minute: its
+    /// record reads Finished, yet the stop's line promises one tap resumes
+    /// there. After a relaunch its reader still comes back, and Continue
+    /// (remote Play, the shortcut, the card) offers it, not another book.
+    /// Without that stop, or with a stored 1.0, it is at its end.
+    func testAStopInTheLastMinuteKeepsItsBookOnOfferAfterARelaunch() {
+        var other = book(progress: 0.3)
+        other.lastOpenedAt = Date().addingTimeInterval(-600)
+        var stopped = book(progress: 0.995)
+        stopped.lastOpenedAt = Date().addingTimeInterval(-60)
+        XCTAssertTrue(stopped.isFinished, "the record reads Finished")
+        let stop = PlaybackStop(reason: .sleepTimer, documentID: stopped.id)
+        let shelf = [other, stopped]
+
+        XCTAssertFalse(DocumentStore.isAtItsEnd(stopped, stop: stop))
+        XCTAssertEqual(LaunchRestore.readerToReopen(lastReaderID: stopped.id, documents: shelf, stop: stop,
+                                                    enabled: true), stopped.id)
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: shelf, stop: stop)?.id, stopped.id)
+        XCTAssertEqual(ShelfLayout(for: shelf, stop: stop).hero?.id, stopped.id)
+
+        XCTAssertTrue(DocumentStore.isAtItsEnd(stopped, stop: nil))
+        XCTAssertNil(LaunchRestore.readerToReopen(lastReaderID: stopped.id, documents: shelf, enabled: true))
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: shelf)?.id, other.id)
+        let elsewhere = PlaybackStop(reason: .sleepTimer, documentID: other.id)
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: shelf, stop: elsewhere)?.id, other.id,
+                       "another book's stop holds nothing here")
+
+        var heard = stopped
+        heard.progressFraction = 1
+        XCTAssertTrue(DocumentStore.isAtItsEnd(heard, stop: stop), "a stored 1.0 is always its end")
+        XCTAssertNil(LaunchRestore.readerToReopen(lastReaderID: heard.id, documents: [other, heard], stop: stop,
+                                                  enabled: true))
+    }
+
     func testRestoreIsOffInTestsUnlessAsked() {
         XCTAssertTrue(LaunchRestore.isEnabled(xcTestLoaded: false, uiTestLaunch: false, restoreRequested: false))
         XCTAssertFalse(LaunchRestore.isEnabled(xcTestLoaded: true, uiTestLaunch: false, restoreRequested: false),
@@ -150,5 +203,37 @@ final class LaunchRestoreTests: XCTestCase {
         store.flushPendingProgress()
         let after = try decoder.decode(Index.self, from: Data(contentsOf: indexURL))
         XCTAssertEqual(after.documents.first?.progressSentence, 42, "a stop writes the place at once")
+    }
+
+    // MARK: - What an interrupted add leaves
+
+    /// An add the process didn't live through (iOS ended it while the Adding
+    /// card showed, Quit on the Mac) leaves its copy and content cache in
+    /// the library folder, never on the shelf. The launch sweep removes a
+    /// book's files no record claims, and nothing else: the shelf's books,
+    /// library.json, places.json and any name that isn't a book's.
+    func testTheLaunchSweepRemovesOnlyFilesNoRecordClaims() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-orphans-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let id = UUID()
+        let kept = LibraryDocument(id: id, title: "T", fileName: "\(id.uuidString).pdf", addedAt: Date(),
+                                   pageCount: 10, sentenceCount: 100, contentHash: "h", kind: .pdf)
+        let orphan = UUID().uuidString
+        let names = [kept.fileName, "\(kept.id.uuidString).content.json",
+                     "\(orphan).pdf", "\(orphan).content.json", "\(UUID().uuidString).txt",
+                     "library.json", "places.json", "notes.txt", "Shared.pdf"]
+        for name in names {
+            try Data("x".utf8).write(to: folder.appendingPathComponent(name))
+        }
+
+        let removed = DocumentStore.removeOrphanedFiles(in: folder, keeping: [kept])
+
+        XCTAssertEqual(removed.count, 3, "the interrupted adds' copies and cache")
+        let left = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path))
+        XCTAssertEqual(left, [kept.fileName, "\(kept.id.uuidString).content.json",
+                              "library.json", "places.json", "notes.txt", "Shared.pdf"])
+        XCTAssertTrue(DocumentStore.removeOrphanedFiles(in: folder, keeping: [kept]).isEmpty, "once")
     }
 }

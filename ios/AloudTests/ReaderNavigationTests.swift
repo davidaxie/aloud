@@ -150,4 +150,49 @@ final class ReaderNavigationTests: XCTestCase {
         }
         XCTAssertEqual(navigation.labels.pageLabel(0), "Page 1")
     }
+
+    // MARK: - Search hits
+
+    /// Chapterless text: its one chapter is titled by the book's first
+    /// sentence, which would sit under every search hit alike and read like
+    /// a chapter name. A hit there has no footnote (the sentence says
+    /// where, as in "Where you stopped"); chaptered text and PDFs keep theirs.
+    func testASearchHitInChapterlessTextHasNoLocation() {
+        let sentences = (0..<4).map {
+            Sentence(id: $0, text: "It was a bright cold day in April, and the clocks struck \($0).",
+                     para: $0, page: 1)
+        }
+        let content = DocContent(title: "T", pageCount: 1, sentences: sentences,
+                                 paragraphs: [], contentHash: "h")
+        let chapterless = ReaderNavigation(content: content, kind: .text)
+        XCTAssertFalse(chapterless.hasChapterList)
+        for sentence in sentences {
+            XCTAssertNil(chapterless.searchLocation(ofSentence: sentence.id, page: sentence.page))
+        }
+
+        let chaptered = ReaderNavigation(content: DocContent(title: "T", pageCount: 2, sentences: [
+            Sentence(id: 0, text: "CHAPTER I.", para: 0, page: 1),
+            Sentence(id: 1, text: "The whale.", para: 1, page: 1),
+            Sentence(id: 2, text: "CHAPTER II.", para: 2, page: 2),
+            Sentence(id: 3, text: "The whale again.", para: 3, page: 2),
+        ], paragraphs: [], contentHash: "h2"), kind: .text)
+        XCTAssertEqual(chaptered.searchLocation(ofSentence: 3, page: 2), "CHAPTER II")
+        XCTAssertEqual(ReaderNavigation(content: makeContent(pages: [1, 2]), kind: .pdf)
+            .searchLocation(ofSentence: 1, page: 2), "Page 2")
+    }
+
+    /// A page-range PDF with more runs than Contents lists is grouped into
+    /// rows ("Pages 5–8"). A search hit still names its own run, as the
+    /// ungrouped rows would: a hit on page 5 is "Page 5" like one on page 6,
+    /// never its group's four pages.
+    func testASearchHitInAGroupedPageRangePDFNamesItsOwnRun() {
+        let content = makeContent(pages: Array(1...60))
+        let navigation = ReaderNavigation(content: content, kind: .pdf)
+        XCTAssertLessThan(navigation.chapters.count, 60, "grouped")
+        XCTAssertTrue(navigation.title(ofChapter: 1).hasPrefix("Pages "), "a row stands for several pages")
+        for sentence in content.sentences {
+            XCTAssertEqual(navigation.location(ofSentence: sentence.id, page: sentence.page),
+                           "Page \(sentence.page)")
+        }
+    }
 }

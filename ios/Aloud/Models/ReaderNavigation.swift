@@ -153,6 +153,9 @@ struct ReaderNavigation {
     /// A page-range PDF's single pages, when Contents groups them into rows:
     /// Next Page still moves one page. Empty otherwise.
     private let pageRuns: [DerivedChapter]
+    /// Labels over `pageRuns`, when Contents groups them: a search hit names
+    /// its own run ("Page 6", "Pages 6–7"), never its group's "Pages 5–8".
+    private let runLabels: PageLabels?
 
     init(content: DocContent, kind: DocKind) {
         // One pass for chapters and word sums: this runs at reader open, inside
@@ -170,10 +173,13 @@ struct ReaderNavigation {
             self.sectionTitleByPage = [:]
             self.containerPages = []
             self.pageRuns = []
+            self.runLabels = nil
             return
         }
         let raw = kind == .pdf ? Self.pageRows(index.chapters) : index.chapters
-        self.pageRuns = kind == .pdf && raw.count < index.chapters.count ? index.chapters : []
+        let runs = kind == .pdf && raw.count < index.chapters.count ? index.chapters : []
+        self.pageRuns = runs
+        self.runLabels = runs.isEmpty ? nil : PageLabels(content: content, kind: kind, chapters: runs)
         let grouping = Self.grouping(raw, kind: kind, sentences: content.sentences)
         let labels = PageLabels(content: content, kind: kind, chapters: raw)
         self.chapters = grouping.chapters
@@ -217,13 +223,27 @@ struct ReaderNavigation {
     }
 
     /// Where a search hit is: "Tiny Speck · Page 63" in a mapped PDF (the
-    /// sentence picks the chapter, so two on one page stay apart), else
-    /// `qualifiedTitle(forPage:)`.
+    /// sentence picks the chapter, so two on one page stay apart); in a
+    /// page-range PDF whose runs Contents groups, the hit's own run, as the
+    /// ungrouped rows would name it (a group's "Pages 5–8" would claim four
+    /// pages for a hit on page 5, and only for one at a group's start);
+    /// else `qualifiedTitle(forPage:)`.
     func location(ofSentence sentence: Int, page: Int) -> String {
+        if let runLabels { return runLabels.pageRangeLabel(page) }
         guard kind == .pdf, rowKind == .chapters, let index = chapterIndex(containing: sentence) else {
             return qualifiedTitle(forPage: page)
         }
         return "\(rowTitles[index]) · \(labels.pageLabel(page))"
+    }
+
+    /// A search result's footnote: `location(ofSentence:page:)`, or nil in
+    /// text without a chapter list. Its one chapter is titled by the book's
+    /// first sentence, which would sit under every hit alike and read like a
+    /// chapter name; the hit's own sentence says where, as in "Where you
+    /// stopped" (`PlaceHistoryRows.location`).
+    func searchLocation(ofSentence sentence: Int, page: Int) -> String? {
+        guard kind == .pdf || hasChapterList else { return nil }
+        return location(ofSentence: sentence, page: page)
     }
 
     private var sentenceCount: Int { wordsBefore.count - 1 }
@@ -630,5 +650,39 @@ struct ReaderPositionLine: Equatable {
         }
         let time = minutesLeft.map { "\(ListeningEstimate.spokenPhrase(minutes: $0)) left" } ?? "finished"
         return "\(title), \(time)"
+    }
+}
+
+// MARK: - Search results, spoken
+
+extension ContentsSearch {
+
+    /// "1 match", "12 matches": the count over a search's results.
+    static func countLabel(_ count: Int) -> String {
+        count == 1 ? "1 match" : "\(count) matches"
+    }
+
+    /// What a search with no results shows.
+    static func noMatchesLabel(_ query: String) -> String {
+        "No matches for \u{201C}\(query)\u{201D}"
+    }
+
+    /// What VoiceOver hears as a search lands, nil to stay quiet. Focus stays
+    /// in the field, so the count (or the no-matches line) is otherwise
+    /// silent. Only when the count changed since the last search that landed
+    /// (`previousCount`, nil after the field was cleared): typing on through
+    /// the same results, or on into nothing, says nothing more.
+    static func resultsAnnouncement(count: Int, query: String, previousCount: Int?) -> String? {
+        guard count != previousCount else { return nil }
+        return count == 0 ? noMatchesLabel(query) : countLabel(count)
+    }
+
+    /// Speaks `resultsAnnouncement` through the app's one announcement path,
+    /// so a muted process only logs it. Contents on the iPhone and the Mac
+    /// call this as each search lands.
+    @MainActor
+    static func announceResults(count: Int, query: String, previousCount: Int?, muted: Bool) {
+        guard let line = resultsAnnouncement(count: count, query: query, previousCount: previousCount) else { return }
+        PlaybackController.postAnnouncement(line, muted: muted)
     }
 }

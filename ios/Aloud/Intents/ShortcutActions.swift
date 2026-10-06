@@ -57,7 +57,8 @@ struct ShortcutActions {
         // The Continue card's hero, by the same rule, so the shortcut and the
         // card never disagree about which book is "yours".
         guard let book = DocumentStore.continueListeningCandidate(in: library.documents,
-                                                                  loadedID: loadedID) else {
+                                                                  loadedID: loadedID,
+                                                                  stop: playback.stopped) else {
             return .nothingToContinue
         }
         // Already speaking: continue means leave it alone, never pause or restart.
@@ -65,8 +66,10 @@ struct ShortcutActions {
         // Only a book at its end would restart. The loaded book asks the
         // controller: paused in its last minute, its record already reads
         // Finished, yet Play (and the card's circle) reads the rest. Any
-        // other Finished book reopens at its end.
-        let atEnd = loadedID == book.id ? playback.isAtEnd : book.isFinished
+        // other reopens at its end when Finished, unless a stop in its last
+        // minute is on record (after a relaunch): that one reads the rest.
+        let atEnd = loadedID == book.id ? playback.isAtEnd
+            : DocumentStore.isAtItsEnd(book, stop: playback.stopped)
         if atEnd { return .finished(title: book.title) }
         do {
             try await continuePlayback.resume(book, playback: playback,

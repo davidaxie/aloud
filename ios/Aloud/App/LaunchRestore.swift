@@ -40,12 +40,21 @@ enum LaunchRestore {
         return id
     }
 
-    /// The reader to reopen at launch: the last one showing, while its book
-    /// is still on the shelf and not Finished (a finished book's place is
-    /// its end, and the Library offers what's next).
-    static func readerToReopen(lastReaderID: UUID?, documents: [LibraryDocument], enabled: Bool) -> UUID? {
+    /// The reader to reopen at launch: the last one showing, when its book is
+    /// the one Continue would play with nothing loaded
+    /// (`DocumentStore.continueListeningCandidate`, given the controller's
+    /// `stop`). One rule for both, so a Play from the lock screen or the
+    /// Continue listening shortcut that launched the app plays the book
+    /// whose reader comes back, never another one under it (or stopped by
+    /// it). So the book is on the shelf, started, and not at its end: a
+    /// finished book's place is its end, and the Library offers what's next,
+    /// unless an unattended stop in its last minute is on record, whose line
+    /// promises one tap resumes there. A book opened but never started stays
+    /// on the shelf: Continue wouldn't play it.
+    static func readerToReopen(lastReaderID: UUID?, documents: [LibraryDocument],
+                               stop: PlaybackStop? = nil, enabled: Bool) -> UUID? {
         guard enabled, let id = lastReaderID,
-              let document = documents.first(where: { $0.id == id }), !document.isFinished else { return nil }
+              DocumentStore.continueListeningCandidate(in: documents, stop: stop)?.id == id else { return nil }
         return id
     }
 

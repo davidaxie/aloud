@@ -174,7 +174,7 @@ final class NowPlayingManagerTests: XCTestCase {
 
     /// At the end of the book (R24) a scrub onto the last sentence, the one
     /// the end is cued on, keeps the end: still .ended, so the colophon and
-    /// Listen again stay and the next Play starts from the top instead of
+    /// Listen again stay and Listen again starts from the top instead of
     /// finishing the book (and saying "The End") a second time. The time is
     /// republished at the end, so the lock-screen scrubber snaps back.
     func testAScrubOntoTheLastSentenceAtTheEndKeepsTheEnd() async throws {
@@ -314,6 +314,93 @@ final class NowPlayingManagerTests: XCTestCase {
         // above is the check there.
         guard !rig.statuses.contains(.error) else { return }
         XCTAssertTrue(rig.controller.isListenerPlaying, "the book plays, not a sample")
+    }
+
+    /// A book heard to its end stays loaded at its end (R24). A car's Play
+    /// on connect, or Play/Pause from AirPods or the lock screen, isn't
+    /// Listen again: nothing restarts, and the book keeps its end, its
+    /// Finished and its place. Listen again is in the app.
+    func testRemotePlayAtTheEndNeverRestartsTheBook() {
+        for command in [NowPlayingManager.RemoteTransportCommand.play, .togglePlayPause] {
+            let harness = makeHarness(at: 8, finished: true)
+            XCTAssertTrue(harness.rig.controller.isAtEnd, "a reopened Finished book is at its end")
+            let plays = harness.rig.controller.userPlayAction
+            let progressMark = harness.rig.progress.count
+
+            harness.manager.handle(command)
+
+            XCTAssertEqual(harness.rig.controller.status, .ended, "\(command) left the end")
+            XCTAssertTrue(harness.rig.controller.isAtEnd)
+            XCTAssertEqual(harness.rig.controller.currentSentence, 8, "\(command) restarted the book")
+            XCTAssertEqual(harness.rig.controller.userPlayAction, plays, "\(command) was a Play")
+            XCTAssertFalse(harness.rig.progress[progressMark...].contains { $0.sentence == 0 },
+                           "\(command) saved the start as the place")
+        }
+    }
+
+    // MARK: - Remote transport with no book loaded
+
+    /// With nothing loaded, the first Play/Pause starts the Continue card's
+    /// load (`onPlayWithNoBook`). A Pause, or a second Play/Pause, before it
+    /// lands stops it, as a second tap on the card's circle does: the book
+    /// never starts speaking after the listener pressed Pause.
+    func testAPauseOrASecondPressStopsTheContinueLoad() async {
+        for command in [NowPlayingManager.RemoteTransportCommand.pause, .togglePlayPause] {
+            let rig = PlaybackTestRig()
+            let manager = NowPlayingManager(publish: { _ in }, renderArtwork: { _ in nil })
+            manager.observe(playback: rig.controller)
+            let continuePlayback = ContinuePlayback()
+            manager.continuePlayback = continuePlayback
+            var continued = 0
+            manager.onPlayWithNoBook = { continued += 1 }
+            let book = rig.document, content = rig.content
+            // The first press's load, still extracting.
+            continuePlayback.toggle(book, playback: rig.controller, loader: {
+                try await Task.sleep(nanoseconds: 200_000_000)
+                return (book, content)
+            })
+            XCTAssertEqual(continuePlayback.pendingDocumentID, book.id)
+
+            manager.handle(command)
+
+            XCTAssertNil(continuePlayback.pendingDocumentID, "\(command) left the load running")
+            XCTAssertEqual(continued, 0, "\(command) continued the book")
+            _ = await rig.waitUntil(0.6) { rig.controller.document != nil }
+            XCTAssertNil(rig.controller.document, "the load landed after \(command)")
+            XCTAssertFalse(rig.statuses.contains(.playing), "\(command): the book spoke")
+        }
+    }
+
+    /// Play while that load runs joins it (Continue's own rule): nothing is
+    /// stopped. Pause and Play/Pause stop a load only with no book loaded.
+    func testRemotePlayJoinsTheContinueLoad() {
+        let rig = PlaybackTestRig()
+        let manager = NowPlayingManager(publish: { _ in }, renderArtwork: { _ in nil })
+        manager.observe(playback: rig.controller)
+        let continuePlayback = ContinuePlayback()
+        manager.continuePlayback = continuePlayback
+        var continued = 0
+        manager.onPlayWithNoBook = { continued += 1 }
+        let book = rig.document, content = rig.content
+        continuePlayback.toggle(book, playback: rig.controller, loader: {
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+            return (book, content)
+        })
+
+        manager.handle(.play)
+
+        XCTAssertEqual(continued, 1, "Play continues the book")
+        XCTAssertEqual(continuePlayback.pendingDocumentID, book.id, "the load runs on")
+        continuePlayback.cancel()
+
+        for command in NowPlayingManager.RemoteTransportCommand.allCases {
+            let stops = command == .pause || command == .togglePlayPause
+            XCTAssertEqual(NowPlayingManager.stopsLoadWithNoBook(command, hasBook: false, loading: true), stops,
+                           "\(command)")
+            XCTAssertFalse(NowPlayingManager.stopsLoadWithNoBook(command, hasBook: false, loading: false))
+            XCTAssertFalse(NowPlayingManager.stopsLoadWithNoBook(command, hasBook: true, loading: true),
+                           "a loaded book takes its own \(command)")
+        }
     }
 
     // MARK: - Library changes

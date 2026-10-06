@@ -39,7 +39,12 @@ final class DocumentStore: ObservableObject {
         self.pipeline = pipeline
         self.indexURL = indexURL ?? Self.libraryDir.appendingPathComponent("library.json")
         self.saveInterval = saveInterval
-        loadIndex()
+        let indexRead = loadIndex()
+        // The app's own library only, and never in hosted unit tests: their
+        // stores keep their records elsewhere but their files here.
+        if indexURL == nil, indexRead, NSClassFromString("XCTestCase") == nil {
+            Self.removeOrphanedFiles(in: Self.libraryDir, keeping: documents)
+        }
 
         // Synchronous too: it is posted on the main thread, and a suspended
         // app may never get another turn.
@@ -419,13 +424,15 @@ final class DocumentStore: ObservableObject {
     /// shelf, at any progress, Finished too, since the card is where it plays
     /// outside the reader. Otherwise the most recently listened in-progress
     /// document: opened (`lastOpenedAt != nil`), started
-    /// (`progressFraction > 0`) and not Finished (`LibraryDocument.isFinished`,
-    /// the one rule the shelf, the card and autoplay share). Ties and order
-    /// resolve by `lastOpenedAt` alone, never `addedAt`. Static and
+    /// (`progressFraction > 0`) and not at its end (`isAtItsEnd`: Finished,
+    /// the one rule the shelf, the card and autoplay share, unless `stop`,
+    /// the controller's unattended stop, holds it at its sentence). Ties and
+    /// order resolve by `lastOpenedAt` alone, never `addedAt`. Static and
     /// nonisolated so it's unit-testable without a store.
     nonisolated static func continueListeningCandidate(
         in documents: [LibraryDocument],
-        loadedID: UUID? = nil
+        loadedID: UUID? = nil,
+        stop: PlaybackStop? = nil
     ) -> LibraryDocument? {
         if let loadedID, let loaded = documents.first(where: { $0.id == loadedID }) {
             return loaded
@@ -434,9 +441,20 @@ final class DocumentStore: ObservableObject {
             .filter {
                 $0.lastOpenedAt != nil
                     && $0.progressFraction > 0
-                    && !$0.isFinished
+                    && !isAtItsEnd($0, stop: stop)
             }
             .max { ($0.lastOpenedAt ?? .distantPast) < ($1.lastOpenedAt ?? .distantPast) }
+    }
+
+    /// Whether a book that isn't loaded opens at its end (R24), by the
+    /// controller's own rule (`PlaybackController.reopensAtItsEnd`): Finished,
+    /// unless `stop` names it short of a stored 1.0. A sleep timer that
+    /// stopped it in its last minute promised one tap resumes there, after a
+    /// relaunch too, so Continue, remote Play and the launch restore still
+    /// offer it.
+    nonisolated static func isAtItsEnd(_ document: LibraryDocument, stop: PlaybackStop?) -> Bool {
+        PlaybackController.reopensAtItsEnd(document,
+                                           stop: stop?.documentID == document.id ? stop?.reason : nil)
     }
 
     // MARK: - Progress
@@ -573,13 +591,44 @@ final class DocumentStore: ObservableObject {
         persistIndex()
     }
 
-    private func loadIndex() {
-        guard let data = try? Data(contentsOf: indexURL),
-              let index = try? Self.decoder.decode(LibraryIndex.self, from: data)
-        else { return }
+    /// Whether the shelf on disk is known: true once library.json is read,
+    /// or when there is none yet (nothing was ever added); false for one
+    /// that exists but can't be read (a newer schema, a locked device).
+    @discardableResult
+    private func loadIndex() -> Bool {
+        guard let data = try? Data(contentsOf: indexURL) else {
+            return !FileManager.default.fileExists(atPath: indexURL.path)
+        }
+        guard let index = try? Self.decoder.decode(LibraryIndex.self, from: data) else { return false }
         documents = index.documents
         schemaVersion = index.version
         sortDocuments()
+        return true
+    }
+
+    /// Launch: a book's files (`<UUID>.pdf`, `.txt`, `.content.json`) that
+    /// no record claims are removed. An add the process didn't live through
+    /// (iOS ended it while the Adding card showed, Quit on the Mac) leaves
+    /// its copy and cache behind, never on the shelf and out of the
+    /// listener's reach. Only names that start with a UUID no record has,
+    /// and no record's file name: library.json, places.json and anything
+    /// else stay. Only after the index was read (`loadIndex`): one that
+    /// can't be read claims nothing, and its books must stay. Returns what
+    /// was removed.
+    @discardableResult
+    nonisolated static func removeOrphanedFiles(in folder: URL, keeping documents: [LibraryDocument]) -> [URL] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: folder.path) else { return [] }
+        let ids = Set(documents.map(\.id))
+        let fileNames = Set(documents.map(\.fileName))
+        var removed: [URL] = []
+        for name in names where !fileNames.contains(name) {
+            guard let dot = name.firstIndex(of: "."),
+                  let id = UUID(uuidString: String(name[..<dot])), !ids.contains(id) else { continue }
+            let url = folder.appendingPathComponent(name)
+            if (try? fm.removeItem(at: url)) != nil { removed.append(url) }
+        }
+        return removed
     }
 
     private func persistIndex() {
@@ -691,8 +740,8 @@ struct ShelfLayout {
     /// The shelf before the store's first publish.
     static let empty = ShelfLayout(hero: nil, grid: [])
 
-    init(for documents: [LibraryDocument], loadedID: UUID? = nil) {
-        let hero = DocumentStore.continueListeningCandidate(in: documents, loadedID: loadedID)
+    init(for documents: [LibraryDocument], loadedID: UUID? = nil, stop: PlaybackStop? = nil) {
+        let hero = DocumentStore.continueListeningCandidate(in: documents, loadedID: loadedID, stop: stop)
         self.hero = hero
         self.grid = hero.map { hero in documents.filter { $0.id != hero.id } } ?? documents
     }

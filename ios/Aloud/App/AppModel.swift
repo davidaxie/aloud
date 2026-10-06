@@ -210,7 +210,9 @@ final class AppModel: ObservableObject {
         restoreLastReader(LastReaderStore(defaults: defaults), enabled: LaunchRestore.isEnabled)
         flushProgressWhenListeningStops()
         // Play from the lock screen, headphones or media keys with no book
-        // open continues the Continue card's book, as the shortcut does.
+        // open continues the Continue card's book, as the shortcut does; a
+        // Pause or second Play/Pause while it loads stops the load.
+        nowPlaying.continuePlayback = continuePlayback
         nowPlaying.onPlayWithNoBook = { [weak self] in
             Task { @MainActor [weak self] in _ = await self?.shortcutActions.continueListening() }
         }
@@ -346,7 +348,8 @@ final class AppModel: ObservableObject {
     /// with the stack.
     func restoreLastReader(_ lastReader: LastReaderStore, enabled: Bool) {
         if let id = LaunchRestore.readerToReopen(lastReaderID: lastReader.load(),
-                                                 documents: documentStore.documents, enabled: enabled) {
+                                                 documents: documentStore.documents,
+                                                 stop: playback.stopped, enabled: enabled) {
             router.restoreReader(id)
         }
         router.$path

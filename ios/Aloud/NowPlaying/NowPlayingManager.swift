@@ -152,12 +152,18 @@ final class NowPlayingManager {
             // play() from .playing would cut and restart the sentence and
             // cancel a sleep timer's fade. A voice sample isn't the book
             // playing, so Play over one still continues it as the book.
-            if !playback.isListenerPlaying { playback.play() }
+            // At the end (R24) Play would start the book over and undo its
+            // Finished: a car's Play on connect isn't Listen again, so a
+            // finished book is never restarted from a pocket (as Continue
+            // listening refuses it); Listen again is in the app.
+            if !playback.isListenerPlaying && !playback.isAtEnd { playback.play() }
             return nil
         case .pause:
             playback.pause()
             return nil
         case .togglePlayPause:
+            // At the end only a voice sample over it has anything to pause.
+            if playback.isAtEnd && !playback.isActive { return nil }
             playback.togglePlayPause()
             return nil
         case .skipForward, .nextTrack:
@@ -171,11 +177,22 @@ final class NowPlayingManager {
     /// loaded (a fresh launch): the app continues the Continue card's book.
     var onPlayWithNoBook: (() -> Void)?
 
+    /// The Continue card's loads (AppModel's one ContinuePlayback), which
+    /// `onPlayWithNoBook` starts: a Pause, or a second Play/Pause, while one
+    /// runs stops it, as a second tap on the card's circle does.
+    weak var continuePlayback: ContinuePlayback?
+
     /// A system transport command, then a push at once: a skip can land on
     /// the sentence already showing (a restart), which no source reports.
     func handle(_ command: RemoteTransportCommand) {
         guard let playback else { return }
-        if Self.continuesWithNoBook(command, hasBook: playback.document != nil) {
+        let hasBook = playback.document != nil
+        if Self.stopsLoadWithNoBook(command, hasBook: hasBook,
+                                    loading: continuePlayback?.pendingDocumentID != nil) {
+            continuePlayback?.cancel()
+            return
+        }
+        if Self.continuesWithNoBook(command, hasBook: hasBook) {
             onPlayWithNoBook?()
             return
         }
@@ -187,6 +204,13 @@ final class NowPlayingManager {
     /// and the skips have nothing to act on.
     static func continuesWithNoBook(_ command: RemoteTransportCommand, hasBook: Bool) -> Bool {
         !hasBook && (command == .play || command == .togglePlayPause)
+    }
+
+    /// With nothing loaded yet but a Continue load running (the first
+    /// press's), Pause and Play/Pause stop the load: the book never starts
+    /// speaking after the listener pressed Pause. Play joins it.
+    static func stopsLoadWithNoBook(_ command: RemoteTransportCommand, hasBook: Bool, loading: Bool) -> Bool {
+        !hasBook && loading && (command == .pause || command == .togglePlayPause)
     }
 
     /// A lock-screen scrub to `position` (1x seconds into the published
