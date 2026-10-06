@@ -349,6 +349,13 @@ struct ReaderNavigation {
         return Double(wordsBefore[current] - base) / Double(total)
     }
 
+    /// The scrub's fill for the playhead: where `sentence` starts, or the
+    /// whole track once the book is finished, when its last sentence has
+    /// been heard, not just begun.
+    func scrubFill(of sentence: Int, in span: ClosedRange<Int>, isFinished: Bool) -> Double {
+        isFinished ? 1 : scrubFraction(of: sentence, in: span)
+    }
+
     /// The sentence whose start is nearest `fraction` of the way through
     /// `span` by words (ties go to the earlier one), clamped into the span.
     /// The inverse of `scrubFraction(of:in:)`.

@@ -315,6 +315,9 @@ final class AppModel: ObservableObject {
                         if self.playback.voice.engine == .kokoro {
                             self.playback.voice = self.engine.defaultVoice   // stand-in; pref kept
                         }
+                        // The install's switch to the removed voice goes
+                        // too, while System still reads ahead of its splice.
+                        self.playback.cancelVoiceHandoff()
                         self.kokoroEngine.release()
                     }
                 }

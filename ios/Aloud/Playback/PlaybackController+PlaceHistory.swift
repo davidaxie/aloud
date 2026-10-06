@@ -5,7 +5,8 @@ import Foundation
 // opens at the first audio that is the listener's own — never a voice
 // sample — and closes at every way listening ends: leaving active playback
 // (pause, every `stop(because:)`, a route pause, an interruption, an
-// error), switching books, closing the book and quitting while it plays.
+// error), a jump far enough to offer Undo while it plays (and that Undo),
+// switching books, closing the book and quitting while it plays.
 // The book playing to its end leaves no place: Finished already says where
 // it is. iOS ending the app mid-speech is recovered from the live marker at
 // the next launch (`takeRecoveredPlaceStop`).

@@ -96,18 +96,51 @@ final class PlaceStopRecordingTests: XCTestCase {
         XCTAssertEqual(pausedLog.stops, [])
     }
 
-    /// A far jump while playing leaves the place the session started from
-    /// as the listener's own; a short tap does not.
-    func testAFarJumpWhilePlayingMarksTheSessionMovedAway() async throws {
+    /// A far jump while playing reports the place it left, so the furthest
+    /// point reached outlives the 10 s Undo offer; listening on from the
+    /// target is a session of its own. A short tap keeps the one session.
+    func testAFarJumpWhilePlayingReportsThePlaceItLeft() async throws {
         let (rig, log) = try await playingRig(at: 2)
+        let left = rig.controller.currentSentence
+        let mark = rig.statuses.count
         rig.controller.jump(to: 30, origin: .chapter)
+        XCTAssertEqual(log.stops.count, 1, "the jump reports where it left")
+        let stop = try XCTUnwrap(log.stops.first)
+        XCTAssertEqual(stop.sentence, left)
+        XCTAssertEqual(stop.startSentence, 2)
+        XCTAssertFalse(stop.movedAway)
+
+        try await rig.waitUntilPlayingOrSkip(after: mark)
         rig.controller.pause(rampsOut: false)
-        XCTAssertEqual(log.stops.last?.movedAway, true)
+        XCTAssertEqual(log.stops.count, 2)
+        XCTAssertEqual(log.stops.last?.startSentence, 30, "listening on from the target is its own session")
 
         let (near, nearLog) = try await playingRig(at: 2)
         near.controller.jump(to: near.controller.currentSentence + 2, origin: .sentence)
+        XCTAssertEqual(nearLog.stops, [], "a short tap ends nothing")
         near.controller.pause(rampsOut: false)
-        XCTAssertEqual(nearLog.stops.last?.movedAway, false)
+        XCTAssertEqual(nearLog.stops.count, 1)
+        XCTAssertEqual(nearLog.stops.last?.startSentence, 2)
+    }
+
+    /// Undo while playing closes the jump's few seconds at the target, and
+    /// the session that reopens starts at the place left, which the
+    /// same-place rule folds into the jump's stop.
+    func testUndoWhilePlayingReopensTheSessionAtThePlaceLeft() async throws {
+        let (rig, log) = try await playingRig(at: 2)
+        let left = rig.controller.currentSentence
+        rig.controller.jump(to: 30, origin: .chapter)
+        var mark = rig.statuses.count
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+
+        mark = rig.statuses.count
+        rig.controller.undoJump()
+        XCTAssertEqual(log.stops.count, 2, "the jump's stop, then the target's")
+        XCTAssertEqual(log.stops.last?.startSentence, 30)
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        rig.controller.pause(rampsOut: false)
+        XCTAssertEqual(log.stops.count, 3)
+        XCTAssertEqual(log.stops.last?.startSentence, left)
     }
 
     /// While audio plays the live marker carries the session's start, so a

@@ -12,6 +12,9 @@ enum SynthesisSchedulerError: Error {
 /// Serializes synthesis into two FIFO lanes. `now` preempts the entire
 /// prefetch backlog; the prefetch lane is bounded (excess silently dropped);
 /// exactly one synthesis is in flight at a time. Results land in the cache.
+/// Queued work is only what someone still wants: a request whose last
+/// waiter gave up leaves its lane, and a prefetch someone waits on goes
+/// ahead of (and, in a full lane, displaces) the warm-ups no one waits on.
 actor SynthesisScheduler {
 
     private struct Waiter {
@@ -25,6 +28,9 @@ actor SynthesisScheduler {
         let voice: TtsVoice
         /// The pace asked of the engine (`NativeSpeed`); the key carries it.
         let speed: Double
+        /// Queued by `prefetch`: wanted in the cache with no one waiting, so
+        /// it stays when a waiter that joined it gives up.
+        var isWarmUp = false
         var waiters: [Waiter] = []
     }
 
@@ -71,8 +77,20 @@ actor SynthesisScheduler {
     func prefetch(_ text: String, voice: TtsVoice, speed: Double = 1.0, key: String) {
         guard cache.clip(forKey: key) == nil, !isQueued(key) else { return }
         guard prefetchLane.count < Self.prefetchBound else { return }
-        prefetchLane.append(Job(key: key, text: text, voice: voice, speed: speed))
+        prefetchLane.append(Job(key: key, text: text, voice: voice, speed: speed, isWarmUp: true))
         drainIfNeeded()
+    }
+
+    /// Warms `warmUps` in order, first dropping the warm-ups no one waits on
+    /// when `replacingWarmUps`: the cue moved, so the clips for where it was
+    /// are no longer wanted ahead of anything else. One call, so a drop can
+    /// never land between the new cue's warm-ups.
+    func prefetch(_ warmUps: [(text: String, key: String)], voice: TtsVoice, speed: Double = 1.0,
+                  replacingWarmUps: Bool) {
+        if replacingWarmUps { prefetchLane.removeAll { $0.waiters.isEmpty } }
+        for warmUp in warmUps {
+            prefetch(warmUp.text, voice: voice, speed: speed, key: warmUp.key)
+        }
     }
 
     /// Drops everything queued (the in-flight job finishes and still caches).
@@ -124,13 +142,26 @@ actor SynthesisScheduler {
                 nowLane.append(Job(key: key, text: text, voice: voice, speed: speed, waiters: [waiter]))
             }
         case .prefetch:
-            if let index = prefetchLane.firstIndex(where: { $0.key == key }) {
+            if let index = prefetchLane.firstIndex(where: { $0.key == key }),
+               !prefetchLane[index].waiters.isEmpty {
                 prefetchLane[index].waiters.append(waiter)
-            } else if prefetchLane.count >= Self.prefetchBound {
-                waiter.continuation.resume(throwing: SynthesisSchedulerError.backlogFull)
-                return
             } else {
-                prefetchLane.append(Job(key: key, text: text, voice: voice, speed: speed, waiters: [waiter]))
+                // The first to wait on it: ahead of every warm-up no one
+                // waits on (a stale cue's never holds up reading), and a
+                // full lane makes room by dropping the oldest of those.
+                // Refused only when the whole lane is waited on.
+                var job = prefetchLane.firstIndex(where: { $0.key == key }).map { prefetchLane.remove(at: $0) }
+                    ?? Job(key: key, text: text, voice: voice, speed: speed)
+                job.waiters = [waiter]
+                if prefetchLane.count >= Self.prefetchBound {
+                    guard let spare = prefetchLane.firstIndex(where: { $0.waiters.isEmpty }) else {
+                        waiter.continuation.resume(throwing: SynthesisSchedulerError.backlogFull)
+                        return
+                    }
+                    prefetchLane.remove(at: spare)
+                }
+                let slot = prefetchLane.firstIndex(where: { $0.waiters.isEmpty }) ?? prefetchLane.endIndex
+                prefetchLane.insert(job, at: slot)
             }
         }
         drainIfNeeded()
@@ -148,11 +179,16 @@ actor SynthesisScheduler {
         cancelledWaiters.insert(id)
     }
 
+    /// A job whose last waiter gave up leaves the lane (a warm-up stays):
+    /// rapid skips never make the sentence landed on wait behind the ones
+    /// skipped past.
     private func removeWaiter(id: UUID, from lane: inout [Job])
         -> CheckedContinuation<SynthesizedAudio, Error>? {
         for jobIndex in lane.indices {
             if let waiterIndex = lane[jobIndex].waiters.firstIndex(where: { $0.id == id }) {
-                return lane[jobIndex].waiters.remove(at: waiterIndex).continuation
+                let waiter = lane[jobIndex].waiters.remove(at: waiterIndex)
+                if lane[jobIndex].waiters.isEmpty, !lane[jobIndex].isWarmUp { lane.remove(at: jobIndex) }
+                return waiter.continuation
             }
         }
         return nil
@@ -214,4 +250,9 @@ actor SynthesisScheduler {
         if !prefetchLane.isEmpty { return prefetchLane.removeFirst() }
         return nil
     }
+
+    #if DEBUG
+    /// Test seam: the keys queued behind the one in flight, now lane first.
+    var queuedKeys: [String] { (nowLane + prefetchLane).map(\.key) }
+    #endif
 }

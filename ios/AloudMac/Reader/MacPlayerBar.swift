@@ -46,7 +46,7 @@ struct MacPlayerBar: View {
             ReaderMessageLine(message: message,
                               position: position,
                               onOpenContents: onToggleContents,
-                              onRetry: togglePlayback,
+                              onRetry: retry,
                               onBackFiveMinutes: backFiveMinutes)
             MacScrub(document: document, content: content, navigation: navigation)
                 .padding(.horizontal, Theme.Space.screenGutter)
@@ -205,11 +205,18 @@ struct MacPlayerBar: View {
 
     // MARK: - Actions
 
-    /// Play, pause, and the error line's Try again. Play from `.ended`
-    /// restarts the book and from `.error` the failed sentence, both inside
-    /// the controller. The Mac plays no transport haptics (M9).
+    /// Play and pause. Play from `.ended` restarts the book and from
+    /// `.error` the failed sentence, both inside the controller. The Mac
+    /// plays no transport haptics (M9).
     private func togglePlayback() {
         playback.togglePlayPause()
+    }
+
+    /// The error line's Try again: always Play, never the toggle. A voice
+    /// sample picked after the failure is active, so the toggle would pause
+    /// it and retry nothing; Play turns the sample into the retry.
+    private func retry() {
+        playback.play()
     }
 
     /// Keeps play or pause: a skip while paused moves the cue only.

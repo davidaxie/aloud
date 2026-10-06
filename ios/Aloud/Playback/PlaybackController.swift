@@ -595,6 +595,14 @@ final class PlaybackController: ObservableObject {
         return Double(time.sampleTime) / time.sampleRate
     }
 
+    /// What the output has still to present behind the render clock above
+    /// (wall seconds: the time-pitch, mixer and device downstream of the
+    /// player; zero rendering offline), and the time-pitch rate the render
+    /// pulls media at. The word tint subtracts the lag they make.
+    var outputLag: (latency: TimeInterval, timePitchRate: Double) {
+        (player.outputPresentationLatency, Double(timePitch.rate))
+    }
+
     /// Where a clip handed to the node now starts if the queue has run dry
     /// (synthesis slower than speech): a running node, playing or ramping
     /// out a pause, has moved on through silence to its live playhead; a
@@ -972,7 +980,7 @@ final class PlaybackController: ObservableObject {
             status = .paused   // `audition` still set: a sample stamps no resume anchor
             audition = nil
             currentSentence = target
-            cuePrefetch()
+            cuePrefetch(moved: true)   // the old cue's warm-ups never hold up Play here
         }
     }
 
@@ -1271,10 +1279,10 @@ final class PlaybackController: ObservableObject {
         let from = max(currentSentence, 0)
         jumpSerial &+= 1
         if Self.offersUndo(origin: origin, from: from, to: target) {
-            if isListenerPlaying {
-                placeSession?.movedAway = true   // "Where you stopped"
-                markLiveSession()                // and a session iOS ends keeps it
-            }
+            // "Where you stopped": the place left is a stop of its own, so
+            // the furthest point reached outlives the Undo offer. Listening
+            // on from the target opens a new session when it plays.
+            if isListenerPlaying { endPlaceSession() }
             if let live = undoableJump, live.documentID == document.id, currentSentence == live.toSentence {
                 undoableJump = UndoableJump(documentID: live.documentID,
                                             fromSentence: live.fromSentence,
@@ -1308,6 +1316,10 @@ final class PlaybackController: ObservableObject {
         jumpSerial &+= 1
         switch offer.fromStatus {
         case .playing, .buffering:
+            // The jump's few seconds at the target close as their own
+            // session, so the one reopening at the place left continues
+            // that sitting (PlaceHistory's same-place rule folds it in).
+            if isListenerPlaying { endPlaceSession() }
             seek(to: offer.fromSentence, andPlay: true)
         case .ended:
             restoreEnded(at: offer.fromSentence)
@@ -1822,8 +1834,12 @@ final class PlaybackController: ObservableObject {
     ///   once more;
     /// - no book: the sample line plays through the same graph.
     /// Only a change emits on `voiceSelections`: re-picking the selected
-    /// voice writes nothing (R5).
+    /// voice writes nothing (R5). A pick of the voice speaking while a
+    /// switch away from it is pending cancels the switch, and is a choice:
+    /// it emits, so the stored voice is the one kept.
     func selectVoice(_ newVoice: TtsVoice) {
+        let keepsAgainstASwitch = newVoice == voice && handoff != nil
+        if keepsAgainstASwitch { cancelVoiceHandoff() }   // a change cancels it in `voice`'s didSet
         let changed = newVoice != voice
         if let content, !content.sentences.isEmpty {
             if !isActive, currentSentence >= 0, audition == nil {
@@ -1839,7 +1855,17 @@ final class PlaybackController: ObservableObject {
             if changed { voice = newVoice }
             speakSample(in: newVoice)
         }
-        if changed { voiceSelections.send(newVoice) }
+        if changed || keepsAgainstASwitch { voiceSelections.send(newVoice) }
+    }
+
+    /// Drops a pending switch and keeps the voice speaking: a pick of that
+    /// voice, or the incoming voice's model removed (a removal always wins
+    /// over the install switch). Clips already fixed past the splice in the
+    /// incoming voice go too: the current sentence reloads in this one.
+    func cancelVoiceHandoff() {
+        guard let pending = handoff else { return }
+        handoff = nil   // first: an invalidate would commit a primed splice
+        if pending.spliceAt != nil, hasActiveSchedule { reloadCurrent() }
     }
 
     /// R5 install switch (and R11's thermal fallback): moves to `newVoice`
@@ -2048,23 +2074,33 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Warms the cache for the cued sentence and its successor (tap-while-paused cue).
-    private func cuePrefetch() {
-        cuePrefetch(from: currentSentence, through: currentSentence + 1, voice: voice)
+    /// `moved`: the cue left where it was, so the warm-ups still queued for
+    /// there are dropped first and never hold up the new place.
+    private func cuePrefetch(moved: Bool = false) {
+        cuePrefetch(from: currentSentence, through: currentSentence + 1, voice: voice, replacingWarmUps: moved)
     }
 
-    /// Warms the cache for sentences `first...last` (clamped) in `voice`.
-    private func cuePrefetch(from first: Int, through last: Int, voice: TtsVoice) {
+    /// Warms the cache for sentences `first...last` (clamped) in `voice`,
+    /// in order, after dropping the queued warm-ups when `replacingWarmUps`.
+    private func cuePrefetch(from first: Int, through last: Int, voice: TtsVoice,
+                             replacingWarmUps: Bool = false) {
         guard let content, first >= 0 else { return }
         let skip = skipBrackets
         let upper = min(last, content.sentences.count - 1)
         guard first <= upper else { return }
+        let pace = nativePace(for: voice)
+        var warmUps: [(text: String, key: String)] = []
         for index in first...upper where !skippedSentences.contains(index) {
             let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skip)
             guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let pace = nativePace(for: voice)
-            let key = AudioClipCache.key(voice: voice, skipBrackets: skip, contentHash: content.contentHash,
-                                         nativeSpeed: pace, sentenceID: index)
-            Task { await scheduler.prefetch(spoken, voice: voice, speed: pace, key: key) }
+            warmUps.append((text: spoken, key: AudioClipCache.key(voice: voice, skipBrackets: skip,
+                                                                  contentHash: content.contentHash,
+                                                                  nativeSpeed: pace, sentenceID: index)))
+        }
+        guard !warmUps.isEmpty || replacingWarmUps else { return }
+        // One call: the drop never lands between the new cue's warm-ups.
+        Task { [scheduler, warmUps] in
+            await scheduler.prefetch(warmUps, voice: voice, speed: pace, replacingWarmUps: replacingWarmUps)
         }
     }
 

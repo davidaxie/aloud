@@ -49,6 +49,35 @@ final class PlayerBarLintTests: XCTestCase {
                        "the scrub should never tell drags apart by where they started")
     }
 
+    /// The retry line's tap is Play, never the toggle (R11): a voice sample
+    /// picked after the failure is active, so the toggle paused it and
+    /// retried nothing. On the iPhone it ticks as a play (R20). Both bars.
+    func testRetryLineAlwaysPlays() throws {
+        let bar = try XCTUnwrap(SourceTree.sources(only: ["Reader/PlayerBarView.swift"])["Reader/PlayerBarView.swift"])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: ["Reader/MacPlayerBar.swift"])
+        let mac = try XCTUnwrap(macSources["Reader/MacPlayerBar.swift"])
+        for (name, source) in [("PlayerBarView", bar), ("MacPlayerBar", mac)] {
+            XCTAssertTrue(Self.code(source).contains("onRetry: retry,"), "\(name)'s retry line should play, never toggle")
+            let body = try XCTUnwrap(Self.closure(after: "func retry()", in: source), "\(name) has no retry()")
+            let retry = Self.code(body)
+            XCTAssertTrue(retry.contains("playback.play()"), "\(name)'s retry should play:\n\(retry)")
+            XCTAssertFalse(retry.contains("togglePlayPause"), "\(name)'s retry should never toggle:\n\(retry)")
+        }
+        let retry = try XCTUnwrap(Self.closure(after: "func retry()", in: bar))
+        XCTAssertTrue(Self.code(retry).contains("TransportHaptics.emit(.play)"))
+    }
+
+    /// A finished book's track is full (ReaderNavigation.scrubFill), the
+    /// fill and the slider value both, never stopped at where the last
+    /// sentence starts.
+    func testAFinishedBookFillsTheScrub() throws {
+        let bar = try XCTUnwrap(SourceTree.sources(only: ["Reader/PlayerBarView.swift"])["Reader/PlayerBarView.swift"])
+        let code = Self.code(bar)
+        XCTAssertEqual(code.components(separatedBy: "scrubFill(of:").count - 1, 2, "fill and slider value")
+        XCTAssertFalse(code.contains("scrubFraction(of: drag?.target ?? playhead"))
+        XCTAssertFalse(code.contains("scrubFraction(of: playhead"))
+    }
+
     /// `source` without its line comments.
     private static func code(_ source: String) -> String {
         source.split(separator: "\n", omittingEmptySubsequences: false)

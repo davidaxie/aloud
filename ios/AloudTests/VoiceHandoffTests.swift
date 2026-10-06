@@ -260,6 +260,51 @@ final class VoiceHandoffTests: XCTestCase {
         XCTAssertEqual(selections, [PlaybackTestRig.voiceB.id])
     }
 
+    /// The System voice standing in during the switch, picked again: the
+    /// switch is cancelled, so Michael never takes over at the splice, and
+    /// the pick is the listener's choice, so it is stored.
+    func testPickingTheSpeakingVoiceDuringHandoffCancelsIt() async throws {
+        let neural = FakeNeuralEngine(warm: true)
+        let rig = makeRig(neural)
+        try await startPlaying(rig)
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        rig.controller.selectVoice(PlaybackTestRig.voiceA)
+        await elapse(1.5)   // well past where the splice was fixed
+
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA, "the pick wins")
+        XCTAssertFalse(rig.announcements.contains("Now reading in Michael"))
+        let queued = Self.scheduled(rig.events)
+        XCTAssertFalse(queued.contains { $0.voiceID == Self.michael.id }, "nothing past the splice in Michael")
+        XCTAssertTrue(queued.contains { $0.voiceID == PlaybackTestRig.voiceA.id }, "reading went on")
+        XCTAssertEqual(selections, [PlaybackTestRig.voiceA.id], "a pick against a pending switch is stored")
+    }
+
+    /// The model removed while its install switch is primed (AppModel calls
+    /// this): the switch goes with the clips fixed past its splice, the
+    /// System voice reads on, and nothing is announced or stored.
+    func testCancellingAPrimedHandoffKeepsTheVoiceSpeaking() async throws {
+        let neural = FakeNeuralEngine(warm: true)
+        let rig = makeRig(neural)
+        try await startPlaying(rig)
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        await elapse(0.15)   // the top-up may hand the splice to the node
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA, "primed, not yet committed")
+        let mark = rig.events.count
+        rig.controller.cancelVoiceHandoff()
+        await elapse(1.5)
+
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
+        XCTAssertFalse(rig.announcements.contains("Now reading in Michael"))
+        XCTAssertNil(rig.controller.notice)
+        let after = Self.scheduled(rig.events[mark...])
+        XCTAssertFalse(after.isEmpty, "reading went on")
+        XCTAssertTrue(after.allSatisfy { $0.voiceID == PlaybackTestRig.voiceA.id }, "no Michael after the cancel: \(after)")
+        XCTAssertEqual(selections, [])
+        rig.controller.pause(rampsOut: false)
+    }
+
     func testSeekAfterPrimingCommitsBeforeRestart() async throws {
         let neural = FakeNeuralEngine(warm: true)
         let rig = makeRig(neural)

@@ -47,7 +47,7 @@ struct PlayerBarView: View {
             ReaderMessageLine(message: message,
                               position: position,
                               onOpenContents: { showContents = true },
-                              onRetry: togglePlayback,
+                              onRetry: retry,
                               onBackFiveMinutes: backFiveMinutes)
             // Inside the gutter, so a back swipe from the screen edge never
             // lands on the drag gesture.
@@ -106,8 +106,8 @@ struct PlayerBarView: View {
                 Capsule().fill(Theme.line)
                 Capsule()
                     .fill(Theme.accent)
-                    .frame(width: max(4, width * navigation.scrubFraction(of: drag?.target ?? playhead,
-                                                                         in: span)))
+                    .frame(width: max(4, width * navigation.scrubFill(of: drag?.target ?? playhead, in: span,
+                                                                     isFinished: drag == nil && playback.isAtEnd)))
             }
             .frame(height: 4)
             .frame(maxHeight: .infinity, alignment: .center)
@@ -130,8 +130,9 @@ struct PlayerBarView: View {
         .accessibilityRepresentation {
             // Constant: every assistive step arrives as the adjustable action
             // below, never as a write to the value.
-            Slider(value: .constant(navigation.scrubFraction(of: playhead,
-                                                             in: navigation.scrubSpan(at: playhead))),
+            Slider(value: .constant(navigation.scrubFill(of: playhead,
+                                                         in: navigation.scrubSpan(at: playhead),
+                                                         isFinished: playback.isAtEnd)),
                    in: 0...1)
                 // The whole touch row, so the element's frame is the one the
                 // drag uses: a Slider's own ideal height is a thin track, and
@@ -342,11 +343,19 @@ struct PlayerBarView: View {
 
     // MARK: - Actions
 
-    /// Play, pause, and the retry line's tap. Play from `.ended` restarts the
-    /// book and from `.error` the failed sentence, both inside `play()`.
+    /// Play and pause. Play from `.ended` restarts the book and from
+    /// `.error` the failed sentence, both inside `play()`.
     private func togglePlayback() {
         TransportHaptics.emitToggle(isActive: playback.isActive)
         playback.togglePlayPause()
+    }
+
+    /// The retry line's tap: always Play, never the toggle. A voice sample
+    /// picked after the failure is active, so the toggle would pause it
+    /// and retry nothing; Play turns the sample into the retry.
+    private func retry() {
+        TransportHaptics.emit(.play)
+        playback.play()
     }
 
     /// Keeps play/pause: a skip while paused moves the cue, never starts

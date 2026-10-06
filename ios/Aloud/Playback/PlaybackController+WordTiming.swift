@@ -171,7 +171,19 @@ extension PlaybackController {
                                    playhead: schedulingPlayhead, compression: compression)
     }
 
-    /// Ticker body: playhead media time − clip start → word index,
+    /// The media time being heard: the render clock less what the output has
+    /// still to present (`latency` wall seconds, pulled at `timePitchRate`).
+    /// The sentence advances when its audio is heard (`.dataPlayedBack`),
+    /// so the word tint reads the same clock, never ahead of the voice by
+    /// a latency that grows with speed (a Bluetooth route's ~0.2 s).
+    nonisolated static func heardMediaSeconds(rendered: TimeInterval,
+                                              latency: TimeInterval,
+                                              timePitchRate: Double) -> TimeInterval {
+        guard latency.isFinite, latency > 0, timePitchRate.isFinite, timePitchRate > 0 else { return rendered }
+        return rendered - latency * timePitchRate
+    }
+
+    /// Ticker body: heard media time − clip start → word index,
     /// published ONLY on change. O(log words) per frame, zero allocation.
     private func wordTimingTick() {
         guard status == .playing else { return }
@@ -179,8 +191,10 @@ extension PlaybackController {
         guard sentence >= 0,
               let clip = wordTiming.clip(for: sentence),
               !clip.windows.isEmpty,
-              let now = playerMediaSeconds else { return }
+              let rendered = playerMediaSeconds else { return }
 
+        let lag = outputLag
+        let now = Self.heardMediaSeconds(rendered: rendered, latency: lag.latency, timePitchRate: lag.timePitchRate)
         let index = WordTimingEstimator.wordIndex(at: now - clip.start, in: clip.windows)
         if wordTiming.lastPublished != (sentence, index) {
             wordTiming.lastPublished = (sentence, index)

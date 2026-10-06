@@ -60,6 +60,7 @@ final class CatchingUpTests: XCTestCase {
         private let holding: Int
         private let lock = NSLock()
         private var requests = 0
+        private var texts: [String] = []
         private var released = false
         private var waiting: CheckedContinuation<Void, Never>?
 
@@ -71,6 +72,7 @@ final class CatchingUpTests: XCTestCase {
         func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
             let mine = lock.withLock { () -> Int in
                 defer { requests += 1 }
+                texts.append(text)
                 return requests
             }
             if mine == holding {
@@ -87,6 +89,8 @@ final class CatchingUpTests: XCTestCase {
         }
 
         var isHolding: Bool { lock.withLock { waiting != nil } }
+        /// Every text asked for, in the order synthesis began.
+        var requestedTexts: [String] { lock.withLock { texts } }
 
         func release() {
             let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
@@ -170,5 +174,131 @@ final class CatchingUpTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(rig.controller.currentSentence, 4, "reading moved on")
         XCTAssertFalse(rig.statuses[mark...].contains(.buffering), "kept up: no dry spell, got \(rig.statuses)")
         rig.controller.pause(rampsOut: false)
+    }
+
+    // MARK: - Work no one wants
+
+    private static let voice = PlaybackTestRig.voiceA
+
+    /// A scheduler whose first synthesis is parked until `release()`.
+    private func parkedScheduler() async throws -> (SynthesisScheduler, HeldEngine) {
+        let held = HeldEngine(voices: [Self.voice], holding: 0)
+        addTeardownBlock { held.release() }   // never leave a synthesis parked
+        let scheduler = SynthesisScheduler(engine: held, cache: AudioClipCache())
+        await scheduler.prefetch("Parked.", voice: Self.voice, key: "parked")
+        let parked = await poll { held.isHolding }
+        try XCTSkipUnless(parked, "the first synthesis never started")
+        return (scheduler, held)
+    }
+
+    private func poll(_ timeout: TimeInterval = 5, _ condition: () async -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()) {
+            if Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return true
+    }
+
+    /// Rapid skips while playing: each new start gives up its wait for the
+    /// last one's sentence. A sentence no one waits for any more leaves the
+    /// now lane, so the one landed on is synthesized next, not after every
+    /// sentence skipped past.
+    func testASentenceNoOneWaitsForLeavesTheNowLane() async throws {
+        let (scheduler, held) = try await parkedScheduler()
+        var skippedPast: [Task<SynthesizedAudio, Error>] = []
+        for index in 1...3 {
+            let key = "skipped\(index)"
+            skippedPast.append(Task {
+                try await scheduler.synthesize("Skipped \(index).", voice: Self.voice, key: key, priority: .now)
+            })
+            let queued = await poll { await scheduler.queuedKeys.contains(key) }
+            XCTAssertTrue(queued)
+        }
+        for task in skippedPast {
+            task.cancel()
+            do {
+                _ = try await task.value
+                XCTFail("a cancelled wait should end in CancellationError")
+            } catch {
+                XCTAssertTrue(error is CancellationError, "\(error)")
+            }
+        }
+        let leftQueued = await scheduler.queuedKeys
+        XCTAssertEqual(leftQueued, [], "no one waits for them")
+
+        let landed = Task {
+            try await scheduler.synthesize("Landed.", voice: Self.voice, key: "landed", priority: .now)
+        }
+        let queued = await poll { await scheduler.queuedKeys.contains("landed") }
+        XCTAssertTrue(queued)
+        held.release()
+        _ = try await landed.value
+        XCTAssertEqual(held.requestedTexts, ["Parked.", "Landed."])
+    }
+
+    /// A warm-up is wanted with no one waiting: a waiter that joined it and
+    /// gave up leaves it queued.
+    func testAWarmUpStaysWhenAWaiterGivesUp() async throws {
+        let (scheduler, held) = try await parkedScheduler()
+        await scheduler.prefetch("Warm.", voice: Self.voice, key: "warm")
+        let joined = Task {
+            try await scheduler.synthesize("Warm.", voice: Self.voice, key: "warm", priority: .prefetch)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        joined.cancel()
+        _ = try? await joined.value
+        let leftQueued = await scheduler.queuedKeys
+        XCTAssertEqual(leftQueued, ["warm"])
+        held.release()
+    }
+
+    /// Paused skips fill the prefetch lane with warm-ups for places left
+    /// behind. Reading's own look-ahead, which waits, goes ahead of them,
+    /// and a full lane makes room for it instead of refusing it (a refusal
+    /// counted as a synthesis failure: a skipped sentence, or the System
+    /// voice).
+    func testAWaitedPrefetchDisplacesStaleWarmUps() async throws {
+        let (scheduler, held) = try await parkedScheduler()
+        for index in 1...8 {
+            await scheduler.prefetch("Stale \(index).", voice: Self.voice, key: "stale\(index)")
+        }
+        let full = await scheduler.queuedKeys
+        XCTAssertEqual(full.count, 8)
+
+        let lookAhead = Task {
+            try await scheduler.synthesize("Ahead.", voice: Self.voice, key: "ahead", priority: .prefetch)
+        }
+        let queued = await poll { await scheduler.queuedKeys.first == "ahead" }
+        XCTAssertTrue(queued, "the look-ahead goes ahead of the warm-ups")
+        let lane = await scheduler.queuedKeys
+        XCTAssertEqual(lane.count, 8, "the lane stays bounded")
+        XCTAssertFalse(lane.contains("stale1"), "the oldest warm-up made room")
+
+        held.release()
+        _ = try await lookAhead.value
+        XCTAssertEqual(Array(held.requestedTexts.prefix(2)), ["Parked.", "Ahead."])
+    }
+
+    /// A paused seek moves the cue: the warm-ups still queued for where it
+    /// was are dropped, so they never hold up Play at the new place.
+    func testAPausedSeekDropsTheOldCuesWarmUps() async throws {
+        let held = HeldEngine(voices: [PlaybackTestRig.voiceA], holding: 0)
+        addTeardownBlock { held.release() }
+        let rig = PlaybackTestRig(sentences: 40, extraRoutes: [PlaybackTestRig.voiceA.id: held])
+        rig.loadDefault(at: 0)
+        let parked = await rig.waitUntil { held.isHolding }
+        try XCTSkipUnless(parked, "the cue's warm-up never started")
+
+        rig.controller.seek(to: 10, andPlay: false)
+        rig.controller.seek(to: 20, andPlay: false)
+        let sentences = { () async -> [Int] in
+            await rig.scheduler.queuedKeys.compactMap { key in key.split(separator: "|").last.flatMap { Int($0) } }
+        }
+        let settled = await poll { await sentences().contains(21) }
+        XCTAssertTrue(settled)
+        let queued = await sentences()
+        XCTAssertEqual(queued, [20, 21], "only the new cue is warmed")
+        held.release()
     }
 }

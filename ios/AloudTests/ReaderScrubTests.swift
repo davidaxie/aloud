@@ -72,6 +72,18 @@ final class ReaderScrubTests: XCTestCase {
         XCTAssertEqual(navigation.scrubFraction(of: 2, in: 0...2), 0.4, accuracy: 1e-9)
     }
 
+    /// At the end of the book the playhead stays on the last sentence, whose
+    /// start is short of the track's end (empty in a one-sentence final
+    /// chapter): a finished book's fill is the whole track, beside the
+    /// line's "Finished".
+    func testAFinishedBookFillsTheTrack() {
+        let navigation = weighted
+        XCTAssertEqual(navigation.scrubFill(of: 2, in: 0...2, isFinished: false), 0.4, accuracy: 1e-9)
+        XCTAssertEqual(navigation.scrubFill(of: 2, in: 0...2, isFinished: true), 1)
+        XCTAssertEqual(navigation.scrubFill(of: 2, in: 2...2, isFinished: false), 0)
+        XCTAssertEqual(navigation.scrubFill(of: 2, in: 2...2, isFinished: true), 1)
+    }
+
     func testFractionPicksTheNearestSentenceStart() {
         let navigation = weighted
         XCTAssertEqual(navigation.sentence(atFraction: 0.39, in: 0...2), 2)

@@ -186,4 +186,19 @@ final class WordTimingEstimatorTests: XCTestCase {
     func testWordIndexEmptyWindows() {
         XCTAssertEqual(WordTimingEstimator.wordIndex(at: 0, in: []), -1)
     }
+
+    // MARK: - The heard clock
+
+    /// The tint reads what is heard, as the sentence advance does: the
+    /// render clock less the output's presentation latency, pulled at the
+    /// time-pitch rate, so the lead never grows with speed. Offline (no
+    /// latency) it is the render clock.
+    func testHeardTimeTrailsTheRenderClockByTheOutputLatency() {
+        let heard = PlaybackController.heardMediaSeconds
+        XCTAssertEqual(heard(5, 0.2, 1.67), 5 - 0.334, accuracy: accuracy)
+        XCTAssertEqual(heard(5, 0.2, 0.5), 4.9, accuracy: accuracy)
+        XCTAssertEqual(heard(5, 0, 2), 5)
+        XCTAssertEqual(heard(5, .nan, 2), 5)
+        XCTAssertEqual(heard(5, 0.2, 0), 5)
+    }
 }
