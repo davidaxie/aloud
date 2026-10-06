@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One public-domain classic bundled with the app (Bookshelf/*.txt).
 struct BookshelfBook: Codable, Identifiable, Hashable {
@@ -61,9 +62,9 @@ struct BookshelfShelf: Identifiable {
 
 // MARK: - Index
 
-/// The catalog, shelved and searchable. Built once at launch: every folded
-/// string search compares against is precomputed here, so a keystroke is one
-/// pass of substring checks over ~450 books.
+/// The catalog, shelved and searchable. Built once at launch: every string
+/// search compares against is folded to search words here, so a keystroke is
+/// one pass of substring checks over ~450 books.
 struct BookshelfIndex {
 
     let books: [BookshelfBook]
@@ -84,10 +85,11 @@ struct BookshelfIndex {
         let haystack: String
 
         init(_ book: BookshelfBook) {
-            title = BookshelfIndex.fold(book.title)
+            // Title and author fold apart, so initials never join across them.
+            title = BookshelfIndex.searchWords(book.title).joined(separator: " ")
             sortTitle = Self.droppingArticle(title)
             titleWords = Self.words(title)
-            let author = BookshelfIndex.fold(book.author)
+            let author = BookshelfIndex.searchWords(book.author).joined(separator: " ")
             authorWords = Self.words(author)
             haystack = title + " " + author
         }
@@ -109,9 +111,9 @@ struct BookshelfIndex {
             return title
         }
 
-        // Apostrophes stay inside a word, so "aesop's" is one word.
+        /// `text` is already search words, one space apart.
         private static func words(_ text: String) -> [Substring] {
-            text.split { !($0.isLetter || $0.isNumber || $0 == "'") }
+            text.split(separator: " ")
         }
     }
 
@@ -143,9 +145,12 @@ struct BookshelfIndex {
     func search(_ query: String) -> [BookshelfBook]? {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let q = Self.fold(trimmed)
-        let tokens = q.split(whereSeparator: \.isWhitespace).map(String.init)
+        // A letter last is a word still being typed: "h. g. w" is on its way
+        // to "wells", not a third initial.
+        let typing = trimmed.last.map { $0.isLetter || $0.isNumber } ?? false
+        let tokens = Self.searchWords(trimmed, lastWordUnfinished: typing)
         guard !tokens.isEmpty else { return nil }
+        let q = tokens.joined(separator: " ")
 
         var hits: [(rank: Int, index: Int)] = []
         for (index, key) in keys.enumerated()
@@ -164,16 +169,60 @@ struct BookshelfIndex {
             .replacingOccurrences(of: "\u{2018}", with: "'")
             .replacingOccurrences(of: "\u{2019}", with: "'")
     }
+
+    /// The words search compares, the same for a book and a query: folded,
+    /// "&" read as "and", apostrophes dropped (so "gullivers" finds
+    /// "Gulliver’s"), split at any other punctuation, and a run of
+    /// single-letter initials joined, so "H.G.", "H. G." and "HG" are all
+    /// "hg". With `lastWordUnfinished`, a single letter at the end stays its
+    /// own word, since it may be the start of the next one.
+    static func searchWords(_ text: String, lastWordUnfinished: Bool = false) -> [String] {
+        let raw = fold(text)
+            .replacingOccurrences(of: "&", with: " and ")
+            .replacingOccurrences(of: "'", with: "")
+            .split { !($0.isLetter || $0.isNumber) }
+        var words: [String] = []
+        var initials = ""
+        for (index, word) in raw.enumerated() {
+            let isInitial = word.count == 1 && word.first?.isLetter == true
+            let keptApart = lastWordUnfinished && index == raw.count - 1 && !initials.isEmpty
+            if isInitial && !keptApart {
+                initials += word
+                continue
+            }
+            if !initials.isEmpty { words.append(initials) }
+            initials = ""
+            words.append(String(word))
+        }
+        if !initials.isEmpty { words.append(initials) }
+        return words
+    }
 }
 
 /// Loader for the bundled Classics Bookshelf (Resources/Bookshelf/catalog.json).
 enum BookshelfCatalog {
 
+    private static let log = Logger(subsystem: "com.davidxie.Aloud", category: "bookshelf")
+
     static func load(from bundle: Bundle = .main) -> [BookshelfBook] {
         guard let url = bundledURL(resource: "catalog", extension: "json", in: bundle),
-              let data = try? Data(contentsOf: url),
-              let catalog = try? JSONDecoder().decode(Catalog.self, from: data)
+              let data = try? Data(contentsOf: url)
         else { return [] }
+        return books(inCatalog: data)
+    }
+
+    /// The books of a catalog.json, one entry at a time: an entry that
+    /// doesn't decode (a year of "c. 1600", an id in quotes) is skipped and
+    /// logged, so one bad row never empties the shelf. Empty when the file
+    /// itself doesn't read.
+    static func books(inCatalog data: Data) -> [BookshelfBook] {
+        guard let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else {
+            log.error("catalog.json doesn't decode; the Classics shelf is empty")
+            return []
+        }
+        for (index, error) in catalog.skipped {
+            log.error("catalog.json skips books[\(index)]: \(String(describing: error), privacy: .public)")
+        }
         return catalog.books
     }
 
@@ -190,7 +239,34 @@ enum BookshelfCatalog {
             ?? bundle.url(forResource: resource, withExtension: ext)
     }
 
-    private struct Catalog: Codable {
+    private struct Catalog: Decodable {
         let books: [BookshelfBook]
+        /// The entries left out, by position, and why.
+        let skipped: [(index: Int, error: Error)]
+
+        private enum CodingKeys: String, CodingKey { case books }
+
+        init(from decoder: Decoder) throws {
+            var entries = try decoder.container(keyedBy: CodingKeys.self).nestedUnkeyedContainer(forKey: .books)
+            var books: [BookshelfBook] = []
+            var skipped: [(index: Int, error: Error)] = []
+            while !entries.isAtEnd {
+                let index = entries.currentIndex
+                do {
+                    books.append(try entries.decode(BookshelfBook.self))
+                } catch {
+                    skipped.append((index, error))
+                    // A failed decode leaves the cursor in place; step over the entry.
+                    _ = try entries.decode(Skipped.self)
+                }
+            }
+            self.books = books
+            self.skipped = skipped
+        }
+    }
+
+    /// Any one entry, read as nothing.
+    private struct Skipped: Decodable {
+        init(from decoder: Decoder) throws {}
     }
 }

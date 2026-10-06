@@ -12,7 +12,7 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: Aloud
+      - path: Aloud                                 # Resources/PrivacyInfo.xcprivacy rides along as a resource
         excludes:
           - "Resources/Bookshelf/**"
           - "Resources/KokoroAssets/**"
@@ -37,6 +37,10 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        # A generated Info.plist takes its version and build from these,
+        # over Aloud/Info.plist's; unset, the app ships with neither.
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -94,7 +98,7 @@ targets:
           - "Settings/ListeningSheet.swift"
           - "Settings/SettingsView.swift"
           - "Theme/SheetGrabber.swift"
-      - path: AloudMac
+      - path: AloudMac                              # with Resources/PrivacyInfo.xcprivacy, the Mac's own manifest
         excludes: ["Info.plist", "*.entitlements"]
       - path: Aloud/Resources/Bookshelf               # the Classics shelf, as on the iPhone
         type: folder

@@ -60,6 +60,14 @@ final class BookshelfCatalogTests: XCTestCase {
               + shelves.map { "\($0.section.title) \($0.books.count)" }.joined(separator: ", "))
     }
 
+    /// Every book the catalog lists ships beside it. A sync from an empty
+    /// or half-synced books/ once emptied the folder but kept the old
+    /// catalog, and every Classics row failed to open.
+    func testEveryCatalogBookIsBundled() {
+        let missing = books.filter { BookshelfCatalog.bundledURL(for: $0) == nil }
+        XCTAssertEqual(missing.map(\.file), [], "run ios/sync_bookshelf.sh against a complete books/")
+    }
+
     // MARK: - The catalog lint (tools/catalog_normalize.py title_violations)
 
     private static let word = try! NSRegularExpression(pattern: "[^\\W_](?:[\\w'\u{2019}-]*[^\\W_])?")

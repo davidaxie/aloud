@@ -162,7 +162,9 @@ img.save(OUT, "PNG")
 print(f"    ok  : icon {S}x{S} -> {OUT}")
 PYICON
 
-uv run --with pillow --python "$VENV_PY" "$WORK/make_icon.py" "$WORK/icon_1024.png"
+# Pinned: uv fetches Pillow from PyPI here and runs it, so one known release,
+# never whatever is newest that day.
+uv run --with 'pillow==12.3.0' --python "$VENV_PY" "$WORK/make_icon.py" "$WORK/icon_1024.png"
 
 ICONSET="$WORK/Aloud.iconset"
 mkdir -p "$ICONSET"

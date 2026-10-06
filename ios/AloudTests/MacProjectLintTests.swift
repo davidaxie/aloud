@@ -206,6 +206,68 @@ final class MacProjectLintTests: XCTestCase {
     }
 }
 
+/// What App Store Connect needs from every app target in ios/project.yml,
+/// the iPhone's as much as the Mac's:
+/// - a version and a build: with GENERATE_INFOPLIST_FILE, the bundle takes
+///   both from MARKETING_VERSION and CURRENT_PROJECT_VERSION, and a target
+///   without them ships with neither, whatever its Info.plist says;
+/// - one privacy manifest each, inside its own sources and outside the
+///   other's (PrivacyManifestLintTests checks what they declare).
+///
+/// Here, beside MacProjectLintTests, for its reader of XcodeGen's YAML.
+final class ReleaseProjectLintTests: XCTestCase {
+
+    private static let manifests = ["Aloud": "Aloud/Resources/PrivacyInfo.xcprivacy",
+                                    "AloudMac": "AloudMac/Resources/PrivacyInfo.xcprivacy"]
+
+    func testEveryAppTargetCarriesItsVersion() throws {
+        let spec = try Self.spec()
+        let apps = spec.keys(["targets"]).filter { spec.value(["targets", $0, "type"]) == "application" }
+        XCTAssertEqual(Set(apps), Set(Self.manifests.keys), "the reader sees both apps")
+        for app in apps {
+            let base = ["targets", app, "settings", "base"]
+            XCTAssertEqual(spec.value(base + ["GENERATE_INFOPLIST_FILE"]), "YES", app)
+            let version = spec.value(base + ["MARKETING_VERSION"]) ?? ""
+            let build = spec.value(base + ["CURRENT_PROJECT_VERSION"]) ?? ""
+            XCTAssertNotNil(version.range(of: #"^\d+(\.\d+){0,2}$"#, options: .regularExpression),
+                            "\(app) MARKETING_VERSION '\(version)'")
+            XCTAssertNotNil(build.range(of: #"^\d+(\.\d+){0,2}$"#, options: .regularExpression),
+                            "\(app) CURRENT_PROJECT_VERSION '\(build)'")
+            for config in spec.keys(["targets", app, "settings", "configs"]) {
+                for key in ["MARKETING_VERSION", "CURRENT_PROJECT_VERSION"] {
+                    XCTAssertNil(spec.value(["targets", app, "settings", "configs", config, key]),
+                                 "\(app) \(config): one \(key), in base")
+                }
+            }
+        }
+    }
+
+    /// Each app's sources take its own manifest and leave the other's out:
+    /// two files of one name in a bundle fail the build.
+    func testEachAppShipsItsOwnPrivacyManifest() throws {
+        let spec = try Self.spec()
+        for path in Self.manifests.values {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: SourceTree.iosRoot.appendingPathComponent(path).path),
+                          path)
+        }
+        let iOSExcludes = try XCTUnwrap(spec.sourceExcludes(target: "Aloud", path: "Aloud"))
+        let macExcludes = try XCTUnwrap(spec.sourceExcludes(target: "AloudMac", path: "AloudMac"))
+        let iOSManifest = "Resources/PrivacyInfo.xcprivacy"
+        XCTAssertFalse(SourceTree.isExcluded(iOSManifest, by: iOSExcludes), "the iPhone app takes its manifest")
+        XCTAssertTrue(MacExclusions.excludes(iOSManifest), "the Mac leaves the iPhone's manifest out")
+        XCTAssertFalse(macExcludes.contains { fnmatch($0, "PrivacyInfo.xcprivacy", 0) == 0 || $0.hasPrefix("Resources") },
+                       "the Mac takes its own")
+        XCTAssertFalse(spec.lines.contains { $0.text.contains("xcprivacy") }, "neither is re-added by hand")
+    }
+
+    private static func spec() throws -> Spec {
+        guard let text = try? String(contentsOf: SourceTree.projectSpec, encoding: .utf8) else {
+            throw XCTSkip("Can't read \(SourceTree.projectSpec.path) from this test host")
+        }
+        return Spec(text)
+    }
+}
+
 /// XcodeGen's YAML as these lints need it: nested mappings by indentation,
 /// block lists ("- item"), inline lists ("[a, b]"), double-quoted scalars and
 /// comments. Flow mappings ("{ a: b }") are read as plain values.

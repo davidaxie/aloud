@@ -60,6 +60,70 @@ final class BookshelfSearchTests: XCTestCase {
         XCTAssertEqual(ids("sherlock return"), [108])
     }
 
+    // MARK: - Punctuation and initials
+
+    /// The catalog spells initials "H. G." and keeps "&" and apostrophes;
+    /// people type "h.g.", "hg", "and" and "gullivers".
+    private lazy var punctuated = BookshelfIndex(books: [
+        book(35, "The Time Machine", "H. G. Wells", words: 32_000),
+        book(1719, "The Man Who Was Thursday", "G. K. Chesterton", words: 58_000),
+        book(829, "Gulliver\u{2019}s Travels", "Jonathan Swift", words: 104_000),
+        book(42, "The Strange Case of Dr. Jekyll and Mr. Hyde", "Robert Louis Stevenson", words: 25_000),
+        book(7, "Aladdin & Co.", "Herbert Quick", words: 90_000),
+        book(46, "A Christmas Carol", "Charles Dickens", words: 29_000),
+    ])
+
+    private func punctuatedIDs(_ query: String) -> [Int]? {
+        punctuated.search(query)?.map(\.gutenbergID)
+    }
+
+    func testInitialsMatchHoweverTheyArePunctuated() {
+        for query in ["h.g. wells", "H. G. Wells", "hg wells", "h g wells", "h.g.wells", "h.g."] {
+            XCTAssertEqual(punctuatedIDs(query), [35], query)
+        }
+        for query in ["g.k. chesterton", "gk chesterton", "g. k. chesterton"] {
+            XCTAssertEqual(punctuatedIDs(query), [1719], query)
+        }
+    }
+
+    /// Typing "h.g. wells" a letter at a time never drops to no match.
+    func testInitialsKeepMatchingWhileTyped() {
+        let typed = "h.g. wells"
+        for end in typed.indices.dropFirst() + [typed.endIndex] {
+            let prefix = String(typed[..<end])
+            XCTAssertTrue(punctuatedIDs(prefix)?.contains(35) == true, prefix)
+        }
+        XCTAssertEqual(punctuatedIDs("h. g. w"), [35], "a last letter may start the next word")
+    }
+
+    func testAmpersandIsAnd() {
+        XCTAssertEqual(punctuatedIDs("jekyll & hyde"), [42])
+        XCTAssertEqual(punctuatedIDs("dr jekyll & mr hyde"), [42])
+        XCTAssertEqual(punctuatedIDs("aladdin & co"), [7])
+        XCTAssertEqual(punctuatedIDs("aladdin and co"), [7], "both ways")
+    }
+
+    func testApostrophesAndStrayPunctuationAreOptional() {
+        XCTAssertEqual(punctuatedIDs("gullivers travels"), [829])
+        XCTAssertEqual(punctuatedIDs("gulliver's travels"), [829])
+        XCTAssertEqual(punctuatedIDs("gulliver"), [829])
+        XCTAssertEqual(punctuatedIDs("time machine,"), [35])
+        XCTAssertEqual(punctuatedIDs("dr. jekyll"), [42])
+        XCTAssertEqual(ids("aesops fables"), [19994])
+        XCTAssertEqual(ids("sherlock holmes,"), [108])
+    }
+
+    /// A lone "a" is a word, not an initial joined to the next one.
+    func testSingleLetterWordsStillMatch() {
+        XCTAssertEqual(punctuatedIDs("a christmas carol"), [46])
+        XCTAssertEqual(punctuatedIDs("christmas carol"), [46])
+    }
+
+    func testPunctuationAloneShowsTheShelves() {
+        XCTAssertNil(punctuated.search("..."))
+        XCTAssertNil(punctuated.search(" , "))
+    }
+
     func testBookLookupByID() {
         XCTAssertEqual(index.book(gutenbergID: 158)?.title, "Emma")
         XCTAssertNil(index.book(gutenbergID: 1))
