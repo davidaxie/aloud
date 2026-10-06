@@ -6,8 +6,13 @@ module-level singleton (see ``kokoro_engine``) when this module is imported.
 
 Synthesis does NOT run in FastAPI's threadpool. Every request is handed to a
 single worker thread (see ``synth_queue``) because the phonemizer underneath
-Kokoro is not thread-safe; the handler blocks until that worker is done. Waiting
-requests are ordered ``now`` before ``prefetch``.
+Kokoro is not thread-safe; the handler waits until that worker is done, and
+drops the job if the client hangs up first. Waiting requests are ordered
+``now`` before ``prefetch``.
+
+Only this machine may use the server. Requests must name ``localhost`` or
+``127.0.0.1`` as their Host (so a DNS-rebinding page is refused), and browsers
+only let pages served from those hosts read the responses.
 
 Endpoints
     GET  /health      -> engine status, warm flag, queue depth, voice count
@@ -18,6 +23,12 @@ Environment variables:
     ALOUD_QUEUE_MAX  Max WAITING prefetch requests before /synthesize answers
                      429 + Retry-After. Default 8. `now` requests are never
                      rejected for depth.
+    ALOUD_ALLOWED_HOSTS  Comma-separated Host names to accept, replacing the
+                     default "localhost,127.0.0.1". Needed only when the server
+                     is opened to the LAN on purpose (ALOUD_HOST in run.py).
+    ALOUD_CORS_ORIGINS  Comma-separated extra browser origins allowed to call
+                     the API. Pages on localhost or 127.0.0.1, any port, are
+                     always allowed.
 """
 
 from __future__ import annotations
@@ -25,6 +36,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+from typing import Any
 
 # Configure logging BEFORE importing the engine so the one-time model-load
 # message (emitted at import time by kokoro_engine) is actually captured at
@@ -32,9 +44,11 @@ import os
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("aloud.app")
 
+import anyio
 import soundfile as sf
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -74,13 +88,103 @@ synth_queue = SynthQueue(
 )
 synth_queue.start()
 
-# Permissive CORS — this is a localhost dev tool consumed by a local frontend.
+# Input bounds. Both clients cap a chunk at 350 characters, so these only stop
+# requests no reader sends: one oversized job would hold the single worker for
+# hours, with memory growing in step with the text.
+MAX_TEXT_CHARS = 2000
+MAX_VOICE_CHARS = 64
+MAX_BODY_BYTES = 64 * 1024
+
+# How often a waiting /synthesize request checks whether its client is still
+# there. Completion itself wakes the handler at once; this only bounds how long
+# an abandoned job can sit in the queue before it is dropped.
+_DISCONNECT_POLL_SECS = 0.25
+
+# Any page served from this machine, on any port: the Vite dev server (which
+# moves off 5173 when that port is taken) and the built UI on whichever port the
+# backend landed on. A page from anywhere else cannot have one of these origins.
+_LOCAL_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    """Read a comma-separated environment variable, or ``default`` when unset."""
+    items = [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+    return items or default
+
+
+class _BodySizeLimit:
+    """Refuse request bodies over ``max_bytes`` before anything parses them.
+
+    Checks the declared Content-Length, then counts the bytes actually streamed,
+    since a chunked request declares none. The body is buffered (it is small by
+    construction) and handed on unchanged; later receives, such as the
+    disconnect the /synthesize handler watches for, go to the server as usual.
+    """
+
+    def __init__(self, app: Any, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length" and value.strip().isdigit() and int(value) > self.max_bytes:
+                await self._too_large(scope, receive, send)
+                return
+
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > self.max_bytes:
+                await self._too_large(scope, receive, send)
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay() -> dict:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+    async def _too_large(self, scope: dict, receive: Any, send: Any) -> None:
+        logger.warning("413 request body over %d bytes | path=%s", self.max_bytes, scope.get("path"))
+        response = JSONResponse(
+            status_code=413,
+            content={"error": f"request body is larger than {self.max_bytes} bytes", "retryable": False},
+        )
+        await response(scope, receive, send)
+
+
+# Registered innermost first: the host check runs before everything, and CORS
+# wraps the body limit so even a 413 is readable by the page that caused it.
+app.add_middleware(_BodySizeLimit, max_bytes=MAX_BODY_BYTES)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_env_list("ALOUD_CORS_ORIGINS", []),
+    allow_origin_regex=_LOCAL_ORIGIN_REGEX,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_env_list("ALOUD_ALLOWED_HOSTS", ["localhost", "127.0.0.1"]),
 )
 
 
@@ -126,7 +230,7 @@ def _error(
         "%d %s | voice=%s speed=%.2f priority=%s text=%r",
         status,
         message,
-        req.voice,
+        truncate_for_log(req.voice, MAX_VOICE_CHARS),
         req.speed,
         _priority_of(req),
         truncate_for_log(req.text),
@@ -168,12 +272,38 @@ def voices() -> dict:
     }
 
 
+def _encode_wav(samples: Any, sample_rate: int) -> bytes:
+    """Encode a float32 waveform as 16-bit PCM WAV, entirely in memory."""
+    buf = io.BytesIO()
+    sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")
+    buf.seek(0)
+    return buf.read()
+
+
+async def _wait_for_job(job: Any, request: Request) -> bool:
+    """Wait for the worker to finish ``job`` without holding the event loop.
+
+    Returns False, after cancelling the job, when the client hangs up first. The
+    web player aborts every request it no longer needs (a seek, a voice change,
+    its own 30 s timeout); without this the worker would still synthesize each
+    abandoned sentence, in order, before the one the listener is waiting on.
+    """
+    while not await anyio.to_thread.run_sync(job.done.wait, _DISCONNECT_POLL_SECS):
+        if await request.is_disconnected():
+            synth_queue.cancel(job)
+            return False
+    return True
+
+
 @app.post("/synthesize")
-def synthesize(req: SynthesizeRequest) -> Response:
+async def synthesize(req: SynthesizeRequest, request: Request) -> Response:
     """Synthesize speech and return a 16-bit PCM WAV.
 
     - 200 with ``Content-Type: audio/wav`` and raw WAV bytes on success.
-    - 400 on empty/invalid text — **not** retryable, the client skips it.
+    - 400 on empty/invalid text or an over-long voice id — **not** retryable,
+      the client skips it.
+    - 413 when the text is over ``MAX_TEXT_CHARS`` or the body is over
+      ``MAX_BODY_BYTES`` — **not** retryable.
     - 429 + ``Retry-After: 1`` when the prefetch backlog is full.
     - 500 on synthesis failure.
     - 503 + ``Retry-After: 2`` when the model is not loaded.
@@ -181,24 +311,47 @@ def synthesize(req: SynthesizeRequest) -> Response:
     Every error body carries ``retryable`` so the clients' retry policy is a
     property of the response rather than a guess about the status code.
 
-    The call runs on the single synthesis worker; this handler's threadpool
-    thread parks until the worker is done.
+    The call runs on the single synthesis worker. If the client hangs up while
+    the job is still waiting, the job is dropped and never synthesized.
     """
     # Validate text up front so we return a clean 400 rather than a 500.
     if not req.text or not req.text.strip():
         return _error(400, "text must be a non-empty string", retryable=False, req=req)
+    if len(req.text) > MAX_TEXT_CHARS:
+        return _error(
+            413, f"text is longer than {MAX_TEXT_CHARS} characters", retryable=False, req=req
+        )
+    if len(req.voice) > MAX_VOICE_CHARS:
+        return _error(
+            400, f"voice is longer than {MAX_VOICE_CHARS} characters", retryable=False, req=req
+        )
 
     if not engine.model_loaded:
         return _error(503, "speech model is not loaded", retryable=True, req=req, retry_after=2)
 
     try:
-        samples, sample_rate = synth_queue.submit(
-            req.text, req.voice, req.speed, _priority_of(req)
-        )
+        job = synth_queue.enqueue(req.text, req.voice, req.speed, _priority_of(req))
     except QueueFullError as exc:
         # Shed speculative load honestly instead of queueing without bound. The
         # client backs off and re-asks; the listener never notices.
         return _error(429, str(exc), retryable=True, req=req, retry_after=1)
+    except Exception as exc:  # noqa: BLE001 — e.g. the queue is shutting down
+        logger.exception("Could not queue synthesis")
+        return _error(500, f"synthesis failed: {exc}", retryable=True, req=req)
+
+    if not await _wait_for_job(job, request):
+        # Nobody is left to read a response; 499 is the conventional
+        # "client closed request" and only shows up in the access log.
+        logger.info(
+            "Client left; dropped %s job | voice=%s text=%r",
+            job.priority,
+            truncate_for_log(req.voice, MAX_VOICE_CHARS),
+            truncate_for_log(req.text),
+        )
+        return Response(status_code=499)
+
+    try:
+        samples, sample_rate = synth_queue.result(job)
     except ValueError as exc:
         # Defensive: engine also guards against empty text.
         return _error(400, str(exc), retryable=False, req=req)
@@ -206,14 +359,10 @@ def synthesize(req: SynthesizeRequest) -> Response:
         logger.exception("Synthesis failed")
         return _error(500, f"synthesis failed: {exc}", retryable=True, req=req)
 
-    # Encode the float32 waveform to WAV (PCM 16-bit) entirely in memory. This
-    # runs on the request thread, off the worker, so encoding never delays the
-    # next sentence's inference.
+    # Encode on a threadpool thread, off both the event loop and the worker, so
+    # encoding never delays another request or the next sentence's inference.
     try:
-        buf = io.BytesIO()
-        sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")
-        buf.seek(0)
-        wav_bytes = buf.read()
+        wav_bytes = await anyio.to_thread.run_sync(_encode_wav, samples, sample_rate)
     except Exception as exc:  # noqa: BLE001
         logger.exception("WAV encoding failed")
         return _error(500, f"encoding failed: {exc}", retryable=True, req=req)

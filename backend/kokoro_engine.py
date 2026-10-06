@@ -29,6 +29,7 @@ import time
 import numpy as np
 from kokoro_onnx import Kokoro
 
+from phoneme_batches import split_for_model
 from text_normalize import normalize_for_tts
 from voices import VoiceMeta, build_voice_metadata, lang_for_voice
 
@@ -107,6 +108,8 @@ class KokoroEngine:
         - An unknown ``voice`` falls back to the default voice.
         - ``lang`` is derived from the voice id (e.g. a British voice uses
           en-gb) so pronunciation matches the voice.
+        - A punctuation-free stretch too long for the model (a row of numbers,
+          say) is split at spaces and spoken in full rather than failing.
         - Concurrent callers are serialized; only one inference runs at a time.
 
         Returns ``(samples, sample_rate)`` where samples is a float32 waveform.
@@ -130,10 +133,20 @@ class KokoroEngine:
 
         lang = lang_for_voice(voice)
         with self._lock:
-            samples, sample_rate = self._kokoro.create(
-                text, voice=voice, speed=clamped_speed, lang=lang
-            )
-        return samples, sample_rate
+            # Phonemize here rather than inside create() so a punctuation-free
+            # run too long for the model can be split first (see
+            # phoneme_batches); create() would otherwise crash on it.
+            phonemes = self._kokoro.tokenizer.phonemize(text, lang)
+            parts = [
+                self._kokoro.create(
+                    piece, voice=voice, speed=clamped_speed, lang=lang, is_phonemes=True
+                )
+                for piece in split_for_model(phonemes)
+            ]
+        sample_rate = parts[0][1]
+        if len(parts) == 1:
+            return parts[0][0], sample_rate
+        return np.concatenate([samples for samples, _ in parts]), sample_rate
 
 
 # Module-level singleton: constructed once when this module is first imported.

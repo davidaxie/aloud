@@ -24,6 +24,11 @@ backlog; within a class the order is FIFO.
 Only prefetch jobs count against the queue bound. Rejecting a ``now`` job for
 depth would reintroduce the exact stall this module exists to remove.
 
+A job the client has given up on is dropped, not run. The web player aborts
+every request it no longer needs (a seek, a voice change, its own 30 s
+timeout); the HTTP layer notices the hang-up and calls :meth:`SynthQueue.cancel`,
+so the sentence the listener is waiting on never queues behind abandoned ones.
+
 If throughput ever has to exceed one stream, it must come from separate
 PROCESSES — each with its own espeak-ng state — never from more threads here.
 """
@@ -52,6 +57,10 @@ _WARMUP_TEXT = "Aloud is ready."
 _LOG_TEXT_CHARS = 120
 
 
+class JobCancelledError(RuntimeError):
+    """Raised by :meth:`SynthQueue.result` for a job cancelled before it ran."""
+
+
 class QueueFullError(RuntimeError):
     """Raised by :meth:`SynthQueue.submit` when the prefetch backlog is full.
 
@@ -66,9 +75,13 @@ class QueueFullError(RuntimeError):
         self.limit = limit
 
 
-@dataclass
+@dataclass(eq=False)
 class _Job:
-    """One queued synthesis. ``done`` hands the result back to the HTTP thread."""
+    """One queued synthesis. ``done`` hands the result back to the HTTP thread.
+
+    Compared by identity, so :meth:`SynthQueue.cancel` removes this job and never
+    an identical-looking one queued by another request.
+    """
 
     text: str
     voice: str
@@ -78,6 +91,7 @@ class _Job:
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
     error: BaseException | None = None
+    cancelled: bool = False
 
 
 def truncate_for_log(text: str, limit: int = _LOG_TEXT_CHARS) -> str:
@@ -162,6 +176,15 @@ class SynthQueue:
         Raises :class:`QueueFullError` — before doing any work — when a prefetch
         arrives with the backlog already at ``ALOUD_QUEUE_MAX``.
         """
+        return self.result(self.enqueue(text, voice, speed, priority))
+
+    def enqueue(self, text: str, voice: str, speed: float, priority: str = PRIORITY_NOW) -> _Job:
+        """Queue a synthesis without waiting for it.
+
+        The caller then waits with :meth:`result`, or gives the job up with
+        :meth:`cancel` when its client goes away. Raises :class:`QueueFullError`
+        exactly as :meth:`submit` does.
+        """
         job = _Job(text=text, voice=voice, speed=speed, priority=priority)
 
         with self._cv:
@@ -176,11 +199,39 @@ class SynthQueue:
                 self._now.append(job)
             self._cv.notify()
 
+        return job
+
+    def result(self, job: _Job) -> Any:
+        """Block until ``job`` is finished; return its result or raise its error."""
         job.done.wait()
 
         if job.error is not None:
             raise job.error
         return job.result
+
+    def cancel(self, job: _Job) -> bool:
+        """Give up on ``job`` because nobody is waiting for it any more.
+
+        A job still waiting is taken out of its lane, so the worker never spends
+        a second on it, and returns True. A job already in flight cannot be
+        interrupted; it finishes, its result is thrown away, and this returns
+        False.
+        """
+        with self._cv:
+            job.cancelled = True
+            removed = False
+            for lane in (self._now, self._prefetch):
+                try:
+                    lane.remove(job)
+                except ValueError:
+                    continue
+                removed = True
+                break
+        if removed:
+            job.error = JobCancelledError("the client stopped waiting for this sentence")
+            job.done.set()
+            logger.debug("dropped abandoned %s job voice=%s", job.priority, job.voice)
+        return removed
 
     # -- worker -----------------------------------------------------------
 

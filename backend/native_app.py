@@ -14,6 +14,7 @@ closed, the server is asked to shut down and the process exits cleanly.
 
 Environment variables:
     ALOUD_PORT      Force a specific port (otherwise prefer 8000, else a free one).
+                    Anything that is not a port number is ignored with a warning.
     ALOUD_HEADLESS  If set to "1", start the server, wait for health, print the
                     URL, then exit 0 — everything except opening the window. Used
                     for smoke-testing without popping a GUI.
@@ -52,7 +53,7 @@ DEFAULT_PORT = 8000
 PROBE_TIMEOUT_SECS = 1.0
 
 
-def _port_in_use(port: int) -> bool:
+def port_in_use(port: int) -> bool:
     """True if anything is accepting connections on ``HOST:port``.
 
     This is deliberately a CONNECT test rather than a bind test. Binding
@@ -75,7 +76,7 @@ def probe_backend(port: int) -> dict | None:
     that happens to own the port. Only a payload naming the kokoro engine counts,
     so we never attach a window to an unrelated dev server.
     """
-    if not _port_in_use(port):
+    if not port_in_use(port):
         return None
     try:
         with urllib.request.urlopen(
@@ -98,38 +99,60 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def env_port() -> int | None:
+    """ALOUD_PORT as a port number, or None when it is unset or not a port.
+
+    Read in one place so every caller falls back the same way; a typo here
+    used to be ignored by one function and crash the next.
+    """
+    raw = os.environ.get("ALOUD_PORT", "").strip()
+    if not raw:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        port = -1
+    if not 0 < port < 65536:
+        logger.warning("Ignoring invalid ALOUD_PORT=%r; using %d", raw, DEFAULT_PORT)
+        return None
+    return port
+
+
 def find_running_backend() -> int | None:
     """Port of an Aloud backend that is already serving, or None.
 
     Attaching to it beats starting a rival (F4.6): a second process means a
     second model load and a coin flip over which one answers a given request.
     """
-    env_port = os.environ.get("ALOUD_PORT")
-    try:
-        candidate = int(env_port) if env_port else DEFAULT_PORT
-    except ValueError:
-        candidate = DEFAULT_PORT
+    candidate = env_port() or DEFAULT_PORT
     return candidate if probe_backend(candidate) is not None else None
 
 
 def choose_port() -> int:
     """Pick the port to SERVE on: ALOUD_PORT, else 8000 if truly unused, else any free port."""
-    env_port = os.environ.get("ALOUD_PORT")
-    if env_port:
-        return int(env_port)
-    if not _port_in_use(DEFAULT_PORT):
+    forced = env_port()
+    if forced is not None:
+        return forced
+    if not port_in_use(DEFAULT_PORT):
         return DEFAULT_PORT
     port = _find_free_port()
     logger.info("Port %d is already in use; using free port %d instead", DEFAULT_PORT, port)
     return port
 
 
-def _wait_for_health(base_url: str, timeout: float) -> bool:
+def _wait_for_health(
+    base_url: str, timeout: float, server_thread: threading.Thread | None = None
+) -> bool:
     """Poll ``<base_url>/health`` until the backend answers or ``timeout`` elapses.
 
     "warming" counts as up. The engine's first inference costs ~4s, and the UI
     shows that as a transient notice — blocking here would trade a warm-up
     message for four seconds of nothing at all.
+
+    Only an answer naming the kokoro engine counts, as in ``probe_backend``, so
+    another service that owns the port never gets the window. If
+    ``server_thread`` (our own uvicorn) stops, it could not bind the port, and
+    this gives up at once instead of waiting out the timeout.
     """
     deadline = time.monotonic() + timeout
     health_url = f"{base_url}/health"
@@ -138,10 +161,16 @@ def _wait_for_health(base_url: str, timeout: float) -> bool:
             with urllib.request.urlopen(health_url, timeout=2.0) as resp:
                 if resp.status == 200:
                     payload = json.loads(resp.read().decode("utf-8"))
-                    if payload.get("status") in ("ok", "warming"):
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("engine") == "kokoro"
+                        and payload.get("status") in ("ok", "warming")
+                    ):
                         return True
         except (urllib.error.URLError, ConnectionError, OSError, ValueError):
             pass  # Server not up yet — keep polling.
+        if server_thread is not None and not server_thread.is_alive():
+            return False
         time.sleep(0.25)
     return False
 
@@ -183,7 +212,15 @@ def main() -> int:
             server_thread.join(timeout=5.0)
 
     logger.info("Waiting for backend health at %s/health ...", base_url)
-    if not _wait_for_health(base_url, HEALTH_TIMEOUT_SECS):
+    if not _wait_for_health(base_url, HEALTH_TIMEOUT_SECS, server_thread):
+        if server_thread is not None and not server_thread.is_alive():
+            logger.error(
+                "The backend stopped before it was ready, most likely because port %d "
+                "is in use by another program (see the error above). Stop that "
+                "program, or set ALOUD_PORT to a free port.",
+                port,
+            )
+            return 1
         logger.error(
             "Backend did not become healthy within %.0fs — giving up.",
             HEALTH_TIMEOUT_SECS,
