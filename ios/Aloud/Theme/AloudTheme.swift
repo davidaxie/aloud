@@ -44,13 +44,20 @@ enum Theme {
     static let textMuted = dynamic(light: 0x6A5B45, dark: 0xA99A7C,
                                    highContrast: (0x5A4A34, 0xC2B497))
     /// Tertiary text on SOLID grounds only — never on `accentSoft` (use
-    /// `textMuted` there).
-    static let textFaint = dynamic(light: 0x77694E, dark: 0x93856A)
+    /// `textMuted` there). Increase Contrast lifts it to ≥ 5.6:1, still a
+    /// tier under `textMuted`.
+    static let textFaint = dynamic(light: 0x77694E, dark: 0x93856A,
+                                   highContrast: (0x6A5B45, 0xA99A7C))
 
     // MARK: Lines
 
-    static let line = dynamic(light: 0xE9E1D0, dark: 0x2B2417)
-    static let lineStrong = dynamic(light: 0xD7CBB1, dark: 0x3E3423)
+    // Quiet edges by default. Increase Contrast takes every control edge
+    // (chips, the stepper card, capsules) to ≥ 3:1 on bg, bgTint, surface
+    // and surface2, with lineStrong still the heavier of the two.
+    static let line = dynamic(light: 0xE9E1D0, dark: 0x2B2417,
+                              highContrast: (0x8E7C5C, 0x7A6A4E))
+    static let lineStrong = dynamic(light: 0xD7CBB1, dark: 0x3E3423,
+                                    highContrast: (0x7D6B4C, 0x8C7B5D))
 
     // MARK: Accent family (one hue only)
 
@@ -59,8 +66,10 @@ enum Theme {
     /// text label (3.80:1 light) — use `accentStrong` for those.
     static let accent = dynamic(light: 0xA87434, dark: 0xC99A5B)
     /// Accent text and links, fills that carry a text label (a `bg` label on
-    /// it is 5.50:1), and the word underline.
-    static let accentStrong = dynamic(light: 0x8A5B22, dark: 0xE0B478)
+    /// it is 5.50:1), and the word underline. Increase Contrast deepens it
+    /// with the sentence fill, so the underline on the fill only gains.
+    static let accentStrong = dynamic(light: 0x8A5B22, dark: 0xE0B478,
+                                      highContrast: (0x7A4C17, 0xEBC690))
     static let accentSoft = dynamic(light: 0xA87434, dark: 0xC99A5B,
                                     lightAlpha: 0.12, darkAlpha: 0.20)
     /// Sentence fill, drawn beneath the text: findable at a glance against
@@ -136,9 +145,10 @@ enum Theme {
     }
 
     /// Serif at the reader's own size (the reading column sizes itself from
-    /// the Aa stepper, which is seeded from the system text size).
+    /// the Aa stepper, which is seeded from the system text size). Fixed:
+    /// the column ignores Dynamic Type, so a preview of it must too.
     static func readerSerif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        Font.custom(serifFamilyName, size: size).weight(weight)
+        Font.custom(serifFamilyName, fixedSize: size).weight(weight)
     }
 
     static let serifFamilyName: String = {

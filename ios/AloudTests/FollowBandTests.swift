@@ -36,6 +36,32 @@ final class FollowBandTests: XCTestCase {
         XCTAssertFalse(FollowBand.contains(line(1_080, height: 300), in: viewport), "still not above the band")
     }
 
+    /// Past the word that would be read below the band with the sentence
+    /// parked on the landing line (210pt down it here), following tracks the
+    /// spoken word instead, wherever the text has scrolled to.
+    func testATallSentenceIsFollowedByItsSpokenWordPastTheBand() {
+        let sentence = line(1_140, height: 600)
+        XCTAssertTrue(FollowBand.isTall(sentence, in: viewport))
+        XCTAssertFalse(FollowBand.isTall(line(1_140, height: 260), in: viewport), "260pt fits the band")
+
+        let early = line(1_140 + 170)   // parked, it ends at 1,340: in the band
+        XCTAssertEqual(FollowBand.followed(sentence: sentence, word: early, in: viewport), sentence)
+        let late = line(1_140 + 190)    // parked, it would end at 1,360: below the band
+        XCTAssertEqual(FollowBand.followed(sentence: sentence, word: late, in: viewport), late)
+        XCTAssertFalse(FollowBand.contains(late, in: viewport), "so it glides up to the landing line")
+
+        // The same word once the text has moved up for it: still the word.
+        let scrolled = sentence.offsetBy(dx: 0, dy: -200)
+        let lifted = late.offsetBy(dx: 0, dy: -200)
+        XCTAssertEqual(FollowBand.followed(sentence: scrolled, word: lifted, in: viewport), lifted)
+        XCTAssertTrue(FollowBand.contains(lifted, in: viewport), "in the band, so nothing moves")
+
+        XCTAssertEqual(FollowBand.followed(sentence: sentence, word: nil, in: viewport), sentence)
+        let short = line(1_140, height: 60)
+        XCTAssertEqual(FollowBand.followed(sentence: short, word: line(1_170), in: viewport), short,
+                       "a sentence that fits the band is followed whole")
+    }
+
     // MARK: - Landing
 
     func testLandingPutsTheSentenceTopAtTwentyEightPercent() {

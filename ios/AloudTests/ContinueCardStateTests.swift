@@ -70,6 +70,30 @@ final class ContinueCardStateTests: XCTestCase {
         XCTAssertEqual(ContinueListeningCopy.value(isSpeaking: false, spokenSubtitle: "X"), "X")
     }
 
+    /// The card says "playing" only while the voice is heard, as its circle
+    /// does: a circle load, a first clip or a Kokoro warm-up shows the Pause
+    /// glyph too, in silence.
+    func testOnlyAudiblePlaybackCountsAsSpeaking() {
+        func state(_ status: PlayerStatus, preparing: Bool = false) -> PlayButtonState {
+            PlayButtonState(status: status, isPreparingVoice: preparing, reduceMotion: false)
+        }
+        XCTAssertTrue(ContinueListeningCopy.isSpeaking(state(.playing)))
+        XCTAssertEqual(state(.buffering).glyph, .pause, "buffering shows Pause")
+        XCTAssertFalse(ContinueListeningCopy.isSpeaking(state(.buffering)), "buffering is silent")
+        XCTAssertFalse(ContinueListeningCopy.isSpeaking(state(.buffering, preparing: true)))
+        for status in [PlayerStatus.idle, .paused, .ended, .error] {
+            XCTAssertFalse(ContinueListeningCopy.isSpeaking(state(status)), "\(status)")
+        }
+        // The hero while its circle loads the book.
+        let id = UUID()
+        let pending = PlayButtonState(status: ContinuePlayback.effectiveStatus(documentID: id, loadedID: nil,
+                                                                               status: .idle, pendingID: id),
+                                      isPreparingVoice: false, reduceMotion: false)
+        XCTAssertEqual(ContinueListeningCopy.value(isSpeaking: ContinueListeningCopy.isSpeaking(pending),
+                                                   spokenSubtitle: "1 hour left"),
+                       "1 hour left", "never \"playing\" while it loads")
+    }
+
     func testHint() {
         XCTAssertEqual(ContinueListeningCopy.hint(isSpeaking: false, opensPlaying: true), "Resumes playing")
         XCTAssertEqual(ContinueListeningCopy.hint(isSpeaking: true, opensPlaying: false), "Opens the book")
@@ -199,6 +223,29 @@ final class ContinueCardStateTests: XCTestCase {
         let twoLines = height(subtitle: NaturalVoiceCopy.offer)
         let space = height(subtitle: NaturalVoiceCopy.offerLine(modelState: .failed(.notEnoughSpace)))
         XCTAssertGreaterThan(space, twoLines + 8, "the space line should get a third line, not an ellipsis")
+    }
+
+    /// Display Zoom on a 6.1-inch phone that offers the natural voice: a
+    /// 320pt screen, a 280pt card, and a text column so narrow that the
+    /// space line needs four or five lines. A three-line limit cut off the
+    /// space it asks for, the part the listener can act on.
+    @MainActor
+    func testTheSpaceLineIsNeverCutOnANarrowCard() {
+        func height(subtitle: String) -> CGFloat {
+            let card = ShelfHeroCard(eyebrow: ContinueListeningCopy.eyebrow,
+                                     title: "The Strange Case of Dr Jekyll and Mr Hyde", subtitle: subtitle) {
+                Color.clear
+            } accessory: {
+                Color.clear.frame(width: Theme.PlayCircle.compactDiameter, height: Theme.PlayCircle.compactDiameter)
+            }
+            .environment(\.dynamicTypeSize, .xxxLarge)
+            return UIHostingController(rootView: card)
+                .sizeThatFits(in: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+                .height
+        }
+        let threeLines = height(subtitle: "One\nTwo\nSix")
+        let space = height(subtitle: NaturalVoiceCopy.offerLine(modelState: .failed(.notEnoughSpace)))
+        XCTAssertGreaterThan(space, threeLines + 8, "the space line should wrap on, not end in an ellipsis")
     }
 
     func testEstimateWhenNothingOutranksIt() {

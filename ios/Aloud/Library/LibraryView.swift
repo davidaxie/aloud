@@ -242,6 +242,7 @@ struct LibraryView: View {
     /// haptic answers a tap that will start the voice (R20).
     private func open(_ document: LibraryDocument) {
         if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }
+        continuePlayback.readerOpens(document.id)
         router.open(document)
     }
 

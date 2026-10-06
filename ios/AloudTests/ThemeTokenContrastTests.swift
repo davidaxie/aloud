@@ -147,4 +147,40 @@ final class ThemeTokenContrastTests: XCTestCase {
             }
         }
     }
+
+    /// Control edges (chips, the stepper card, capsules) reach the 3:1
+    /// non-text minimum on every solid ground under Increase Contrast.
+    func testIncreaseContrastTakesEdgesToThreeToOne() {
+        for appearance in Appearance.all where appearance.highContrast {
+            for edge in [("line", Theme.line), ("lineStrong", Theme.lineStrong)] {
+                for ground in Self.solidGrounds {
+                    let ratio = contrast(edge.1, on: ground.color, appearance)
+                    XCTAssertGreaterThanOrEqual(ratio, 3, "\(edge.0) on \(ground.name), \(appearance): "
+                                                + String(format: "%.2f:1", ratio))
+                }
+            }
+        }
+    }
+
+    /// Increase Contrast never lowers a ratio it is meant to raise: the
+    /// word underline on the (darker) sentence fill, and the faint tier.
+    func testIncreaseContrastNeverLowersTheUnderlineOrTheFaintTier() {
+        func underline(_ appearance: Appearance) -> CGFloat {
+            contrast(Theme.accentStrong, on: Theme.highlightBg, over: Theme.bg, appearance)
+        }
+        for dark in [false, true] {
+            let normal = Appearance(dark: dark, highContrast: false)
+            let high = Appearance(dark: dark, highContrast: true)
+            XCTAssertGreaterThanOrEqual(underline(high), underline(normal),
+                                        "the word underline on the sentence fill, \(high)")
+            for ground in Self.solidGrounds {
+                XCTAssertGreaterThan(contrast(Theme.textFaint, on: ground.color, high),
+                                     contrast(Theme.textFaint, on: ground.color, normal),
+                                     "textFaint on \(ground.name), \(high)")
+                XCTAssertLessThan(contrast(Theme.textFaint, on: ground.color, high),
+                                  contrast(Theme.textMuted, on: ground.color, high),
+                                  "textFaint stays a tier under textMuted on \(ground.name), \(high)")
+            }
+        }
+    }
 }

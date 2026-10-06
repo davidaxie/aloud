@@ -28,10 +28,29 @@ enum FollowBand {
     static func contains(_ sentence: CGRect, in viewport: CGRect) -> Bool {
         let height = viewport.height
         guard sentence.minY >= viewport.minY + top * height - 0.5 else { return false }
-        if sentence.height > (bottom - top) * height {
+        if isTall(sentence, in: viewport) {
             return sentence.minY <= viewport.minY + landing * height + 1
         }
         return sentence.maxY <= viewport.minY + bottom * height + 0.5
+    }
+
+    /// Whether the sentence is taller than the band, so it can never fit.
+    static func isTall(_ sentence: CGRect, in viewport: CGRect) -> Bool {
+        sentence.height > (bottom - top) * viewport.height
+    }
+
+    /// What following keeps in the band while `word` is spoken. A sentence
+    /// taller than the band parks its top on the landing line (`contains`)
+    /// for as long as the spoken word still sits above the band's bottom
+    /// from there; past that, following tracks the word's line, landing it
+    /// on the landing line, so the end of a long sentence at a large text
+    /// size is never read under the player bar. The choice depends only on
+    /// where the word sits in its sentence, never on the scroll, so a
+    /// relayout re-checking the band never pulls the text back up.
+    static func followed(sentence: CGRect, word: CGRect?, in viewport: CGRect) -> CGRect {
+        guard let word, isTall(sentence, in: viewport) else { return sentence }
+        let parkedWordMaxY = landing * viewport.height + (word.maxY - sentence.minY)
+        return parkedWordMaxY <= bottom * viewport.height + 0.5 ? sentence : word
     }
 
     /// The contentOffset.y that puts `sentenceMinY` on the landing line,

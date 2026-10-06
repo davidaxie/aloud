@@ -123,8 +123,12 @@ struct AppearanceView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // The glyph sits in a fixed 44pt button.
+        // The glyph sits in a fixed 44pt button; a long press past the cap
+        // shows it large.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .largeContentViewerIfAvailable {
+            Label(label, systemImage: systemImage)
+        }
         .disabled(!enabled)
         .accessibilityLabel(label)
         .accessibilityValue("\(currentPointsLabel) point")

@@ -29,10 +29,10 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
                           paragraphs: paragraphs, contentHash: "follow-\(count)-\(chapterAt ?? 0)")
     }
 
-    private func makeColumn(count: Int = 160, chapterAt: Int? = nil, obscuredBottom: CGFloat = 0,
-                            reduceMotion: Bool = false, taps: Taps = Taps(), arrow: Arrow = Arrow())
+    private func makeColumn(count: Int = 160, content custom: DocContent? = nil, chapterAt: Int? = nil,
+                            obscuredBottom: CGFloat = 0, reduceMotion: Bool = false, taps: Taps = Taps(), arrow: Arrow = Arrow())
         throws -> (coordinator: ReaderTextView.Coordinator, textView: ReaderUITextView) {
-        let content = lines(count, chapterAt: chapterAt)
+        let content = custom ?? lines(count, chapterAt: chapterAt)
         // A chaptered text book gets the Chapters rotor.
         let navigation = chapterAt.map { _ in ReaderNavigation(content: content, kind: .text) }
         let parent = ReaderTextView(content: content, isChapterBook: chapterAt != nil, navigation: navigation,
@@ -617,5 +617,131 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         let (coordinator, _) = try makeColumn(obscuredBottom: 300)
         let viewport = try XCTUnwrap(coordinator.viewport())
         XCTAssertEqual(viewport.height, 800 - 300, accuracy: 0.5)
+    }
+
+    /// A three-finger scroll that can't move the text (up at its top, or
+    /// sideways on this vertical column) gets no scroll-end callback: it
+    /// must not stop following while the voice is still in view.
+    func testAVoiceOverScrollThatMovesNothingKeepsFollowing() throws {
+        let (coordinator, textView) = try makeColumn()
+        let before = textView.contentOffset
+        for direction: UIAccessibilityScrollDirection in [.up, .left, .right] {
+            guard !textView.accessibilityScroll(direction) else { continue }
+            XCTAssertEqual(textView.contentOffset, before, "\(direction.rawValue) moved nothing")
+            XCTAssertTrue(coordinator.isFollowing, "\(direction.rawValue) took nothing over")
+            XCTAssertNil(coordinator.voiceOffscreen)
+        }
+    }
+
+    /// R16 at a large text size on a short screen: a sentence taller than
+    /// the band parks its top on the landing line, then following tracks
+    /// the underlined word, so the end of a long sentence is never read
+    /// below the band (under the player bar).
+    func testASentenceTallerThanTheBandKeepsItsSpokenWordInTheBand() throws {
+        let words = (0..<240).map { "word\($0)" }
+        var sentences = (0..<40).map { Sentence(id: $0, text: "Line \($0) is short.", para: $0, page: 1) }
+        sentences[20] = Sentence(id: 20, text: words.joined(separator: " ") + ".", para: 20, page: 1)
+        let paragraphs = (0..<40).map { Paragraph(id: $0, sentenceIDs: $0..<($0 + 1), page: 1) }
+        let content = DocContent(title: "Long", pageCount: 1, sentences: sentences, paragraphs: paragraphs,
+                                 contentHash: "follow-long-sentence")
+        let (coordinator, textView) = try makeColumn(content: content)
+
+        coordinator.setActiveSentence(20, scroll: true)
+        let sentence = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        var viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertTrue(FollowBand.isTall(sentence, in: viewport), "the sentence can't fit in the band")
+        let startY = textView.contentOffset.y
+
+        // Tokens alternate word and space: word n is token 2n.
+        for word in words.indices {
+            coordinator.setActiveWord(2 * word, follows: true)
+            let rect = try XCTUnwrap(coordinator.activeWordRect())
+            viewport = try XCTUnwrap(coordinator.viewport())
+            XCTAssertLessThanOrEqual(rect.maxY, viewport.minY + FollowBand.bottom * viewport.height + 0.5,
+                                     "word \(word) is read in the band")
+            XCTAssertGreaterThanOrEqual(rect.minY, viewport.minY + FollowBand.top * viewport.height - 0.5,
+                                        "word \(word) is read in the band")
+        }
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertGreaterThan(textView.contentOffset.y, startY, "the text moved up with the voice")
+
+        // A relayout re-checks the band without pulling the text back up
+        // to the sentence's top.
+        settleLayout(textView)
+        coordinator.followIfNeeded(animated: false)
+        let last = try XCTUnwrap(coordinator.activeWordRect())
+        viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertTrue(FollowBand.contains(last, in: viewport), "the last word stays in the band")
+    }
+
+    /// The traits the column was built for, flipped to the other
+    /// appearance; false when this host does not apply an override to a view
+    /// outside a window.
+    private func flipAppearance(_ textView: ReaderUITextView) -> Bool {
+        let original = textView.traitCollection.userInterfaceStyle
+        textView.overrideUserInterfaceStyle = original == .dark ? .light : .dark
+        textView.updateTraitsIfNeeded()
+        return textView.traitCollection.userInterfaceStyle != original
+    }
+
+    /// With Appearance on System, iOS flips light/dark and back while the
+    /// app is in the background, to snapshot it for the app switcher. Each
+    /// flip set the whole book again on the main thread; now neither does,
+    /// and a real change made meanwhile is rebuilt once the app is back.
+    func testTheAppSwitchersSnapshotFlipsRebuildNothing() throws {
+        let (coordinator, textView) = try makeColumn()
+        let builds = coordinator.columnBuilds
+        coordinator.isInBackground = { true }
+        guard flipAppearance(textView) else { throw XCTSkip("This host doesn't override traits outside a window") }
+        coordinator.rebuildForTraitChange()
+        textView.overrideUserInterfaceStyle = .unspecified
+        textView.updateTraitsIfNeeded()
+        coordinator.rebuildForTraitChange()
+        XCTAssertEqual(coordinator.columnBuilds, builds, "both snapshot flips leave the column as built")
+
+        coordinator.isInBackground = { false }
+        coordinator.appBecameActive()
+        XCTAssertEqual(coordinator.columnBuilds, builds, "back with the look it was built for: nothing to redo")
+
+        coordinator.isInBackground = { true }
+        XCTAssertTrue(flipAppearance(textView))
+        coordinator.rebuildForTraitChange()
+        XCTAssertEqual(coordinator.columnBuilds, builds, "a real change waits for the app to be active")
+        coordinator.isInBackground = { false }
+        coordinator.appBecameActive()
+        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "and is rebuilt once it is")
+    }
+
+    /// A light/dark flip rebuilds the column, which drops its layout. A
+    /// reader who scrolled away from the voice deep in a long book keeps
+    /// the passage they were reading: TextKit's estimate of everything
+    /// above it is thousands of points off, so the raw offset framed
+    /// another passage.
+    func testALightDarkFlipKeepsThePassageOnScreen() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(count: 1_200, taps: taps)
+        coordinator.isInBackground = { false }
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(1_100, scroll: true)
+        coordinator.resumeFollowing()
+        runLayoutPasses(textView)
+        coordinator.userTookOverScroll()   // the reader reads on there, not following
+        let builds = coordinator.columnBuilds
+
+        func sentenceMidScreen() throws -> Int {
+            let viewport = try XCTUnwrap(coordinator.viewport())
+            coordinator.handleTap(at: CGPoint(x: textView.textContainerInset.left + 8, y: viewport.midY),
+                                  isDecelerating: false)
+            return try XCTUnwrap(taps.sentences.last)
+        }
+        let before = try sentenceMidScreen()
+
+        guard flipAppearance(textView) else { throw XCTSkip("This host doesn't override traits outside a window") }
+        coordinator.rebuildForTraitChange()
+        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "one rebuild for the flip")
+        runLayoutPasses(textView)
+
+        XCTAssertFalse(coordinator.isFollowing)
+        XCTAssertEqual(try sentenceMidScreen(), before, "the same passage is on screen")
     }
 }

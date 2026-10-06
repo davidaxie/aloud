@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -102,7 +103,7 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         if coordinator.activeWordToken != activeWord {
-            coordinator.setActiveWord(activeWord)
+            coordinator.setActiveWord(activeWord, follows: true)
         }
 
         if obscuredBottomChanged {
@@ -124,9 +125,13 @@ struct ReaderTextView: UIViewRepresentable {
 
         private(set) var builtHash = ""
         private(set) var builtFontSize: CGFloat = 0
-        /// Whether the built string uses the Bold Text face; a flip reflows
-        /// every line, so a trait rebuild can't keep the raw offset.
-        private var builtBoldText = false
+        /// The traits the built string was set and colored for. A trait
+        /// change that leaves them as built rebuilds nothing; a Bold Text
+        /// flip reflows every line.
+        private var builtLook: TraitLook?
+        /// Whole-column builds, the costliest thing the reader makes (a
+        /// trait flip must not pay for one it doesn't need). Test seam.
+        private(set) var columnBuilds = 0
         private(set) var activeSentence = -1
 
         private var sentenceRanges: [NSRange] = []
@@ -180,6 +185,12 @@ struct ReaderTextView: UIViewRepresentable {
         /// Test seam: whether a flick is still coasting. A view outside a
         /// window never decelerates.
         var isCoasting: (UIScrollView) -> Bool = { $0.isDecelerating }
+        /// Test seam: whether the app is in the background, where iOS flips
+        /// light/dark only to snapshot it for the app switcher.
+        var isInBackground: @MainActor () -> Bool = { UIApplication.shared.applicationState == .background }
+        /// Hears the app become active, to catch a look change the
+        /// background skipped (`rebuildForTraitChange`).
+        private var activation: AnyCancellable?
 
         // VoiceOver (R12a)
         /// The sentence the rotor is on; nil = the playhead's. Cleared on
@@ -225,6 +236,9 @@ struct ReaderTextView: UIViewRepresentable {
             self.textView = textView
             textView.onTraitChange = { [weak self] in self?.rebuildForTraitChange() }
             textView.onLayout = { [weak self] in self?.handleLayout() }
+            activation = NotificationCenter.default
+                .publisher(for: UIApplication.didBecomeActiveNotification)
+                .sink { [weak self] _ in Task { @MainActor in self?.appBecameActive() } }
 
             textView.accessibilityHint = ReaderRotor.textHint
             textView.accessibilityUserInputLabels = ["Text"]
@@ -243,6 +257,7 @@ struct ReaderTextView: UIViewRepresentable {
             }
             textView.onAccessibilityFocusLost = { [weak self] in self?.accessibilitySentence = nil }
             textView.onAccessibilityScroll = { [weak self] in self?.userTookOverScroll() }
+            textView.onAccessibilityScrollIgnored = { [weak self] in self?.userScrollEnded() }
 
             #if DEBUG
             if publishesProbe { ReaderFollowProbe.shared.reset() }
@@ -267,7 +282,8 @@ struct ReaderTextView: UIViewRepresentable {
             removeColophonVeil()
             builtHash = content.contentHash
             builtFontSize = fontSize
-            builtBoldText = textView.traitCollection.legibilityWeight == .bold
+            builtLook = TraitLook(textView.traitCollection)
+            columnBuilds += 1
             textView.highlightLayer.clearSentence()
             activeSentence = -1
             wordRangeCache = [:]
@@ -287,19 +303,29 @@ struct ReaderTextView: UIViewRepresentable {
 
         /// Dynamic colors resolve at attribute-set time in some paths; rebuilding on
         /// light/dark flips keeps the column and highlight correct.
+        ///
+        /// Only a look the string wasn't built for rebuilds it, and never in
+        /// the background: there iOS flips light/dark and back just to take
+        /// the app switcher's snapshots, and each flip would set the whole
+        /// book again on the main thread. A real change made meanwhile is
+        /// caught when the app is active again (`appBecameActive`).
         func rebuildForTraitChange() {
             guard builtHash == parent.content.contentHash, let textView else { return }
+            let look = TraitLook(textView.traitCollection)
+            guard look != builtLook, !isInBackground() else { return }
             let active = activeSentence
             let offset = textView.contentOffset
-            let wasBoldText = builtBoldText
+            let anchor = viewportAnchor()
+            let wasBoldText = builtLook?.boldText
             rebuild(content: parent.content, fontSize: parent.fontSize)
             // Light/dark and Increase Contrast only recolor (metrics are
-            // identical), so the raw offset still frames the same passage.
+            // identical), so the passage on screen is put back where it was.
             // Bold Text swaps the serif's face and reflows the whole book:
             // the old offset would land a paused reader on another passage.
-            let reflowed = builtBoldText != wasBoldText
+            let reflowed = look.boldText != wasBoldText
             if !reflowed {
-                follow.pendingPlacement = false   // trait flip preserves the offset instead
+                follow.pendingPlacement = false   // trait flip preserves the passage instead
+                putBack(anchor, else: offset)
             }
             setActiveSentence(active, scroll: false)
             setActiveWord(parent.activeWord)
@@ -308,9 +334,39 @@ struct ReaderTextView: UIViewRepresentable {
                 // (mirrors the size-change rebuild).
                 isFollowing = true
                 Task { @MainActor [weak self] in self?.placeActiveSentence() }
-            } else {
-                textView.setContentOffset(offset, animated: false)
             }
+        }
+
+        /// The app is active again: rebuilds for a look that changed while
+        /// it was in the background, else nothing.
+        func appBecameActive() {
+            rebuildForTraitChange()
+        }
+
+        /// The character at the top of the viewport and how far below its
+        /// line's top the viewport starts, on the layout as it stands.
+        private func viewportAnchor() -> (character: Int, below: CGFloat)? {
+            guard let textView, let viewport = viewport(),
+                  let character = characterOffset(at: CGPoint(x: textView.textContainerInset.left + 1,
+                                                              y: viewport.minY + 1)),
+                  let rect = boundingRect(for: NSRange(location: character, length: 1)) else { return nil }
+            return (character, viewport.minY - rect.minY)
+        }
+
+        /// Puts `anchor` back at the top of the viewport after a rebuild.
+        /// The rebuild dropped the layout above it, and TextKit 2 would
+        /// frame the raw offset on estimated heights, thousands of points
+        /// off deep in a book: the anchor is laid out for real first.
+        private func putBack(_ anchor: (character: Int, below: CGFloat)?, else offset: CGPoint) {
+            guard let textView else { return }
+            let range = anchor.map { NSRange(location: $0.character, length: 1) }
+            if let range, range.upperBound <= textView.textStorage.length { ensureLayout(through: range) }
+            guard let anchor, let range, let rect = boundingRect(for: range) else {
+                textView.setContentOffset(offset, animated: false)
+                return
+            }
+            let y = max(rect.minY + anchor.below - textView.adjustedContentInset.top, restingOffsets().lowerBound)
+            textView.setContentOffset(CGPoint(x: offset.x, y: y), animated: false)
         }
 
         // MARK: End of the book (R24)
@@ -414,8 +470,10 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// Word layer: an accent underline under the spoken word, drawn in
-        /// the highlight layer. Glyph metrics never change.
-        func setActiveWord(_ token: Int) {
+        /// the highlight layer. Glyph metrics never change. A word tick
+        /// `follows`: through a sentence taller than the band, following
+        /// keeps the spoken word on screen (`FollowBand.followed`).
+        func setActiveWord(_ token: Int, follows: Bool = false) {
             guard textView != nil else { return }
             var newRange: NSRange?
             if token >= 0,
@@ -428,6 +486,15 @@ struct ReaderTextView: UIViewRepresentable {
             let slide = activeWordRange != nil
             activeWordRange = newRange
             renderWordUnderline(animated: slide)
+            if follows, newRange != nil, isFollowing { followIfNeeded(animated: true) }
+        }
+
+        /// The underlined word's laid-out rect in content coordinates, like
+        /// `viewport()`; nil without one.
+        func activeWordRect() -> CGRect? {
+            guard let range = activeWordRange else { return nil }
+            let union = segments(for: range).reduce(CGRect.null) { $0.union($1.frame) }
+            return union.isNull ? nil : union
         }
 
         private func renderWordUnderline(animated: Bool) {
@@ -481,9 +548,10 @@ struct ReaderTextView: UIViewRepresentable {
         /// line. Never moves under a finger.
         func followIfNeeded(animated: Bool) {
             guard isFollowing, let textView, !textView.isTracking, !textView.isDragging,
-                  let rect = activeSentenceRect(), let viewport = viewport(),
-                  !FollowBand.contains(rect, in: viewport),
-                  let target = landingTarget() else { return }
+                  let sentence = activeSentenceRect(), let viewport = viewport() else { return }
+            let rect = followedRect(sentence: sentence, in: viewport)
+            guard !FollowBand.contains(rect, in: viewport),
+                  let target = rect == sentence ? landingTarget() : landingOffset(for: rect) else { return }
             // Nothing within a point: pinned at an end of the text.
             switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
                                            animated: animated, reaim: false) {
@@ -491,6 +559,13 @@ struct ReaderTextView: UIViewRepresentable {
             case .glide(let y): scroll(toY: y, animated: true)
             case .jump(let y, _): scroll(toY: y, animated: false)
             }
+        }
+
+        /// `FollowBand.followed` for the active sentence: the spoken word is
+        /// measured only for a sentence taller than the band.
+        private func followedRect(sentence: CGRect, in viewport: CGRect) -> CGRect {
+            guard shownColophon == nil, FollowBand.isTall(sentence, in: viewport) else { return sentence }
+            return FollowBand.followed(sentence: sentence, word: activeWordRect(), in: viewport)
         }
 
         /// Play, a jump, Undo or the Follow chip: follow again and bring the
@@ -1127,6 +1202,9 @@ final class ReaderUITextView: UITextView {
     var onMagicTap: (@MainActor () -> Bool)?
     var onAccessibilityFocusLost: (@MainActor () -> Void)?
     var onAccessibilityScroll: (@MainActor () -> Void)?
+    /// A VoiceOver scroll that moved nothing (at an end of the text, or
+    /// sideways): it ends at once.
+    var onAccessibilityScrollIgnored: (@MainActor () -> Void)?
 
     /// The hint where it differs from the stored one: "" over the colophon
     /// (R24), whose double-tap does nothing; nil keeps the stored hint.
@@ -1169,10 +1247,14 @@ final class ReaderUITextView: UITextView {
         onAccessibilityFocusLost?()
     }
 
-    /// A three-finger scroll is the user taking over, like a drag.
+    /// A three-finger scroll is the user taking over, like a drag. One that
+    /// can't move the text gets no scroll-end callback, so it ends here:
+    /// following comes back while the voice is in view, as after a drag.
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
         onAccessibilityScroll?()
-        return super.accessibilityScroll(direction)
+        let scrolled = super.accessibilityScroll(direction)
+        if !scrolled { onAccessibilityScrollIgnored?() }
+        return scrolled
     }
 
     override func layoutSubviews() {
@@ -1206,6 +1288,22 @@ final class ReaderUITextView: UITextView {
             || previousTraitCollection?.legibilityWeight != traitCollection.legibilityWeight {
             onTraitChange?()
         }
+    }
+}
+
+// MARK: - Trait look
+
+/// What the column's string is set and colored for: light/dark, Increase
+/// Contrast and Bold Text (which also swaps the serif's face).
+struct TraitLook: Equatable {
+    let style: UIUserInterfaceStyle
+    let contrast: UIAccessibilityContrast
+    let boldText: Bool
+
+    init(_ traits: UITraitCollection) {
+        style = traits.userInterfaceStyle
+        contrast = traits.accessibilityContrast
+        boldText = traits.legibilityWeight == .bold
     }
 }
 

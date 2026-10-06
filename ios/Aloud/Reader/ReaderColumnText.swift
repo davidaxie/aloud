@@ -239,6 +239,13 @@ enum ReaderColumnText {
         return mark
     }
 
+    /// The size of the "· · ·" end mark and the PDF page numerals: they grow
+    /// with the text size steps (24pt beside 40pt text), never below 12pt,
+    /// as the column's only page landmark.
+    static func markFontSize(fontSize: CGFloat) -> CGFloat {
+        max(12, (fontSize * 0.6).rounded())
+    }
+
     /// The "· · ·" end mark's and the PDF page numerals' look.
     private static func markAttributes(fontSize: CGFloat, ink: ReaderInk) -> [NSAttributedString.Key: Any] {
         let markStyle = NSMutableParagraphStyle()
@@ -246,7 +253,7 @@ enum ReaderColumnText {
         markStyle.paragraphSpacingBefore = (fontSize * 1.2).rounded()
         markStyle.paragraphSpacing = (fontSize * 1.6).rounded()
         return [
-            .font: MarkFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+            .font: MarkFont.monospacedDigitSystemFont(ofSize: markFontSize(fontSize: fontSize), weight: .medium),
             .foregroundColor: ink.textMuted,
             .kern: 1.2,
             .paragraphStyle: markStyle,

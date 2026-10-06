@@ -33,6 +33,15 @@ enum ContinueListeningCopy {
         return document.spokenListeningSubtitle(rate: rate)
     }
 
+    /// Speaking means heard: the card says "playing" only when its circle
+    /// does. A circle load or a buffer shows the Pause glyph too, but the
+    /// voice is silent until the first clip lands.
+    static func isSpeaking(_ state: PlayButtonState) -> Bool {
+        state.glyph == .pause && state.value == playing.value
+    }
+
+    private static let playing = PlayButtonState(status: .playing, isPreparingVoice: false, reduceMotion: false)
+
     static func value(isSpeaking: Bool, spokenSubtitle: String) -> String {
         isSpeaking ? "playing, \(spokenSubtitle)" : spokenSubtitle
     }
@@ -80,7 +89,7 @@ struct ContinueListeningCard<Actions: View>: View {
         self.actions = actions()
     }
 
-    private var isSpeaking: Bool { playState.glyph == .pause }
+    private var isSpeaking: Bool { ContinueListeningCopy.isSpeaking(playState) }
 
     var body: some View {
         Button(action: onOpen) {
@@ -213,10 +222,11 @@ struct ShelfHeroCard<Cover: View, Accessory: View>: View {
                     // Amontillado" truncated despite its two-line limit.
                     titleText.lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                    // Wraps at large text sizes instead of truncating the time left.
-                    // Three lines: the natural voice's space line needs them
-                    // from xLarge beside the cover and circle on a 375pt phone.
-                    subtitleText.lineLimit(3)
+                    // Wraps instead of truncating, at any length: the natural
+                    // voice's space line ends on the space it needs, and
+                    // beside the cover and circle on a narrow screen
+                    // (Display Zoom) it runs to four or five lines.
+                    subtitleText
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

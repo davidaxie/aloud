@@ -73,6 +73,13 @@ final class ContinuePlayback: ObservableObject {
         finish()
     }
 
+    /// A book opens in the reader: a circle or shortcut load of another
+    /// book stops, so it can't take the controller from the page on screen.
+    /// A load of the same book carries on, and the reader joins it.
+    func readerOpens(_ documentID: UUID) {
+        if let pending = pendingDocumentID, pending != documentID { cancel() }
+    }
+
     /// Mark as finished and Delete: the controller lets go of the book, and
     /// a circle or shortcut load of it stops. Left running, that load would
     /// reopen a just-finished book at its end and play it from the top, and
@@ -85,7 +92,9 @@ final class ContinuePlayback: ObservableObject {
 
     /// The one load path for a tap and the shortcut: load, `onLoaded`, then
     /// play unless the listener already hears the book. Starting a load
-    /// cancels the one before it.
+    /// cancels the one before it. A reader that put another book in the
+    /// controller meanwhile (any open path: a grid card, a Classics add,
+    /// Open in) keeps it: the late result is dropped, silently.
     @discardableResult
     private func start(_ document: LibraryDocument, playback: PlaybackController,
                        loader: @escaping Loader,
@@ -93,7 +102,11 @@ final class ContinuePlayback: ObservableObject {
                        onFailure: @escaping @MainActor () -> Void) -> Task<Void, Error> {
         cancel()
         let id = document.id
+        let heldAtStart = playback.document?.id
         pendingDocumentID = id
+        // Whether the controller now holds a book that is neither this one
+        // nor the one it held when the tap came.
+        let takenOver = { playback.document.map { $0.id != id && $0.id != heldAtStart } ?? false }
         let load = Task { [weak self] in
             let loaded: (document: LibraryDocument, content: DocContent)
             do {
@@ -102,11 +115,13 @@ final class ContinuePlayback: ObservableObject {
                 // Cancelled, or another tap took over while it loaded: silent.
                 guard let self, !Task.isCancelled, self.pendingDocumentID == id else { throw CancellationError() }
                 self.finish()
+                if takenOver() { throw CancellationError() }
                 if !(error is CancellationError) { onFailure() }
                 throw error
             }
             guard let self, !Task.isCancelled, self.pendingDocumentID == id else { throw CancellationError() }
             self.finish()
+            if takenOver() { throw CancellationError() }
             playback.load(document: loaded.document, content: loaded.content)
             onLoaded(id)
             // A reader that opened the book meanwhile may already be

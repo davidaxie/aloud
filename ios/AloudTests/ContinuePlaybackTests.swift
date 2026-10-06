@@ -274,4 +274,66 @@ final class ContinuePlaybackTests: XCTestCase {
         XCTAssertFalse(h.rig.statuses[mark...].contains(.buffering), "the voice was never restarted")
         XCTAssertFalse(h.rig.events[eventMark...].contains(.stopped), "the schedule was never flushed")
     }
+
+    // MARK: - Another book opened meanwhile
+
+    /// The reader opens a different book while the circle's load runs (any
+    /// open path, cancel or not): the late load must not take the
+    /// controller from the page on screen, nor play over it.
+    func testAReaderThatOpenedAnotherBookMeanwhileKeepsIt() async {
+        let h = Harness()
+        h.tap()
+        let other = PlaybackTestRig.makeDocument(hash: "other", sentences: 12)
+        h.rig.controller.load(document: other, content: PlaybackTestRig.makeContent(hash: "other", count: 12))
+
+        h.gate.open()
+        let finished = await h.rig.waitUntil { h.continuePlayback.pendingDocumentID == nil }
+        XCTAssertTrue(finished, "the arc stops")
+        _ = await h.rig.waitUntil(0.3) { false }
+        XCTAssertEqual(h.rig.controller.document?.id, other.id, "the reader's book stays in the controller")
+        XCTAssertEqual(h.loadedIDs, [])
+        XCTAssertEqual(h.failures, 0)
+        XCTAssertFalse(h.rig.statuses.contains(.buffering), "nothing played over the reader")
+    }
+
+    /// The loaded book is replaced by a tap on another book's circle, as
+    /// before: only a book loaded since the tap wins.
+    func testATapOnAnotherBooksCircleStillReplacesTheLoadedBook() async throws {
+        let h = Harness()
+        let held = PlaybackTestRig.makeDocument(hash: "held", sentences: 12)
+        h.rig.controller.load(document: held, content: PlaybackTestRig.makeContent(hash: "held", count: 12))
+        h.tap()
+
+        h.gate.open()
+        let loaded = await h.rig.waitUntil { h.rig.controller.document?.id == h.rig.document.id }
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(h.loadedIDs, [h.rig.document.id])
+        try await h.rig.waitUntilPlayingOrSkip()
+    }
+
+    /// The shelf opens another book: the circle's load stops at once. The
+    /// same book's load carries on, for the reader to join.
+    func testOpeningAnotherBookCancelsTheLoad() async {
+        let h = Harness()
+        h.tap()
+        h.continuePlayback.readerOpens(h.rig.document.id)
+        XCTAssertEqual(h.continuePlayback.pendingDocumentID, h.rig.document.id, "the same book carries on")
+
+        h.continuePlayback.readerOpens(UUID())
+        XCTAssertNil(h.continuePlayback.pendingDocumentID, "another book stops it")
+        h.gate.open()
+        _ = await h.rig.waitUntil(0.3) { false }
+        XCTAssertNil(h.rig.controller.document)
+        XCTAssertEqual(h.loadedIDs, [])
+        XCTAssertEqual(h.failures, 0)
+    }
+
+    /// Every shelf open path goes through `readerOpens` before the router.
+    func testTheShelfStopsTheCirclesLoadWhenItOpensABook() throws {
+        let sources = try SourceTree.sources(only: ["Library/LibraryView.swift"])
+        let library = try XCTUnwrap(sources["Library/LibraryView.swift"])
+        let open = try XCTUnwrap(Self.slice(of: library, from: "private func open(_ document: LibraryDocument)",
+                                            to: "router.open(document)"))
+        XCTAssertTrue(open.contains("continuePlayback.readerOpens(document.id)"))
+    }
 }

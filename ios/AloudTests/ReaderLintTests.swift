@@ -66,6 +66,30 @@ final class ReaderLintTests: XCTestCase {
         }
     }
 
+    /// A control whose glyph is capped below the accessibility sizes shows
+    /// it large on a long press (the A- and A+ steppers in the Aa sheet).
+    func testCappedControlsInTheAppearanceSheetOfferTheLargeContentViewer() throws {
+        let path = "Reader/AppearanceSheet.swift"
+        let code = codeLines(try XCTUnwrap(try SourceTree.sources(only: [path])[path]))
+        let caps = code.indices.filter { code[$0].contains(".dynamicTypeSize(...") }
+        XCTAssertFalse(caps.isEmpty)
+        for cap in caps {
+            let after = code[cap..<min(cap + 4, code.endIndex)]
+            XCTAssertTrue(after.contains { $0.contains(".largeContentViewerIfAvailable") },
+                          "\(path): \(code[cap].trimmingCharacters(in: .whitespaces)) has no Large Content Viewer")
+        }
+    }
+
+    /// The Aa sample previews the column, which ignores Dynamic Type: the
+    /// reader serif is a fixed size, never one that scales with .body.
+    func testTheReaderSerifIsAFixedSize() throws {
+        let path = "Theme/AloudTheme.swift"
+        let theme = try XCTUnwrap(try SourceTree.sources(only: [path])[path])
+        let start = try XCTUnwrap(theme.range(of: "static func readerSerif("))
+        let body = theme[start.upperBound...].prefix { $0 != "}" }
+        XCTAssertTrue(body.contains("Font.custom(serifFamilyName, fixedSize: size)"), String(body))
+    }
+
     func testUITestsReadThePlayheadThroughTheHelpers() throws {
         let uiTests = try SourceTree.sources(in: SourceTree.uiTestsRoot)
         XCTAssertEqual(SourceTree.occurrences(of: "[\"reader.sentence\"]", in: uiTests), 0,

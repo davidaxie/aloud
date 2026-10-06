@@ -175,6 +175,28 @@ final class ReaderColumnTextTests: XCTestCase {
         XCTAssertEqual(rules.drawn.first?.color, .orange)
     }
 
+    /// The page numerals and the end mark grow with the text size steps
+    /// (16 to 40pt, the largest for low vision), never below 12pt, and keep
+    /// their tabular digits.
+    @MainActor
+    func testPageNumeralsAndTheEndMarkScaleWithTheText() throws {
+        let content = makeContent([
+            [("First page text.", 1)],
+            [("Second page text.", 2)],
+        ])
+        for (size, expected) in [(CGFloat(16), CGFloat(12)), (19, 12), (21, 13), (30, 18), (40, 24)] {
+            XCTAssertEqual(ReaderColumnText.markFontSize(fontSize: size), expected, "\(size)pt text")
+            let built = ReaderColumnText.makeAttributedString(content: content, fontSize: size, isChapterBook: false)
+            let numeral = (built.string.string as NSString).range(of: "\n2\n")
+            XCTAssertNotEqual(numeral.location, NSNotFound)
+            let numeralFont = try XCTUnwrap(font(at: numeral.location + 1, in: built.string))
+            XCTAssertEqual(numeralFont.pointSize, expected, "the page numeral beside \(size)pt text")
+            XCTAssertEqual(font(at: built.endMarkRange.location, in: built.string)?.pointSize, expected,
+                           "the end mark beside \(size)pt text")
+            XCTAssertEqual(numeralFont, UIFont.monospacedDigitSystemFont(ofSize: expected, weight: .medium))
+        }
+    }
+
     @MainActor
     func testTheColophonTakesItsRuleAndColorsFromTheInk() {
         let rules = Rules()
