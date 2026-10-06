@@ -28,7 +28,7 @@ import {
   type HealthReport,
   type SynthPriority,
 } from '../shared/protocol'
-import type { Voice } from '../shared/types'
+import type { ReaderEngineState, Voice } from '../shared/types'
 
 /** Per-attempt ceiling. A request still running after this is treated as a timeout. */
 const ATTEMPT_TIMEOUT_MS = 30_000
@@ -41,7 +41,7 @@ const BACKOFF_MS = [250, 750]
 let nextRequestId = 1
 
 /** The page must be reloaded after this — no amount of retrying brings it back. */
-const RELOADED_MESSAGE = 'Aloud was reloaded — refresh this page to keep reading.'
+export const RELOADED_MESSAGE = 'Aloud was reloaded — refresh this page to keep reading.'
 
 // ── errors ──────────────────────────────────────────────────────────────────
 
@@ -65,10 +65,21 @@ export class SynthesisError extends Error {
   readonly timedOut: boolean
   /** Total attempts made (1 = failed on the first try). */
   readonly attempts: number
+  /**
+   * The extension was reloaded under this page. Also `status: 0`, but the
+   * message is the one to show: the backend is fine and the page needs a refresh.
+   */
+  readonly reloaded: boolean
 
   constructor(
     message: string,
-    opts: { status: number; retryable: boolean; timedOut?: boolean; attempts?: number },
+    opts: {
+      status: number
+      retryable: boolean
+      timedOut?: boolean
+      attempts?: number
+      reloaded?: boolean
+    },
   ) {
     super(message)
     this.name = 'SynthesisError'
@@ -76,6 +87,7 @@ export class SynthesisError extends Error {
     this.retryable = opts.retryable
     this.timedOut = opts.timedOut ?? false
     this.attempts = opts.attempts ?? 1
+    this.reloaded = opts.reloaded ?? false
   }
 }
 
@@ -91,6 +103,10 @@ function abortError(): DOMException {
 /** The extension was reloaded/updated out from under this page. */
 function isContextInvalidated(err: unknown): boolean {
   return err instanceof Error && /context invalidated|receiving end does not exist/i.test(err.message)
+}
+
+function reloadedError(attempts: number): SynthesisError {
+  return new SynthesisError(RELOADED_MESSAGE, { status: 0, retryable: false, attempts, reloaded: true })
 }
 
 /**
@@ -121,25 +137,43 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 
 // ── health / voices ─────────────────────────────────────────────────────────
 
-const OFFLINE: HealthReport = { state: 'offline', voiceCount: 0, warm: false, queueDepth: 0 }
+/** A health report as the page sees it, where the extension itself can be the one gone. */
+export type PageHealth = Omit<HealthReport, 'state'> & { state: ReaderEngineState }
+
+const OFFLINE: PageHealth = { state: 'offline', voiceCount: 0, warm: false, queueDepth: 0 }
+const RELOADED: PageHealth = { ...OFFLINE, state: 'reloaded' }
 
 /**
  * How is the local speech engine? Never throws.
  *
  * The full report is returned rather than a boolean because `warming` and
  * `offline` demand different copy: one fixes itself, the other needs the user to
- * go start a server.
+ * go start a server. `reloaded` needs a third: the backend is fine, this page
+ * has lost the extension and must be refreshed.
  */
-export async function getHealth(): Promise<HealthReport> {
+export async function getHealth(): Promise<PageHealth> {
   try {
     const res = (await chrome.runtime.sendMessage({ kind: 'health' } satisfies BgRequest)) as
       | BgResponse
       | undefined
     if (res?.kind !== 'health') return OFFLINE
     return { state: res.state, voiceCount: res.voiceCount, warm: res.warm, queueDepth: res.queueDepth }
-  } catch {
-    return OFFLINE
+  } catch (err) {
+    return isContextInvalidated(err) ? RELOADED : OFFLINE
   }
+}
+
+/** Chrome's current keyboard shortcuts, by action. Empty strings when unknown or unbound. */
+export async function getShortcuts(): Promise<{ toggle: string; next: string; prev: string }> {
+  try {
+    const res = (await chrome.runtime.sendMessage({ kind: 'shortcuts' } satisfies BgRequest)) as
+      | BgResponse
+      | undefined
+    if (res?.kind === 'shortcuts') return { toggle: res.toggle, next: res.next, prev: res.prev }
+  } catch {
+    // fall through: a tooltip without a shortcut is still a tooltip
+  }
+  return { toggle: '', next: '', prev: '' }
 }
 
 /** The installed voice roster. Returns an empty list if the backend is down. */
@@ -238,12 +272,8 @@ async function attemptSynthesize(
     // A dead message port. If the extension was reloaded the page is beyond
     // saving and retrying is pointless; anything else may just be a worker that
     // got evicted mid-flight, which the next attempt will respawn.
-    const fatal = isContextInvalidated(outcome.err)
-    throw new SynthesisError(fatal ? RELOADED_MESSAGE : 'Speech engine unreachable.', {
-      status: 0,
-      retryable: !fatal,
-      attempts,
-    })
+    if (isContextInvalidated(outcome.err)) throw reloadedError(attempts)
+    throw new SynthesisError('Speech engine unreachable.', { status: 0, retryable: true, attempts })
   }
 
   const res = outcome.res
@@ -283,14 +313,18 @@ export async function synthesize(req: SynthRequest, signal?: AbortSignal): Promi
       return await attemptSynthesize(req, attempt, signal)
     } catch (err) {
       if (isAbortError(err)) throw err
+      // A stale content script's sendMessage throws synchronously, before any
+      // race starts — it must still read as "reloaded", not as an engine fault.
       const se =
         err instanceof SynthesisError
           ? err
-          : new SynthesisError(err instanceof Error ? err.message : String(err), {
-              status: 0,
-              retryable: false,
-              attempts: attempt + 1,
-            })
+          : isContextInvalidated(err)
+            ? reloadedError(attempt + 1)
+            : new SynthesisError(err instanceof Error ? err.message : String(err), {
+                status: 0,
+                retryable: false,
+                attempts: attempt + 1,
+              })
       if (!se.retryable || attempt >= MAX_RETRIES) throw se
       const backoff = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]
       // The server knows its own queue depth better than our fixed curve does.

@@ -133,8 +133,30 @@ async function refreshTab() {
   if (snapshot?.kind === 'state' && snapshot.state.active) {
     const { index, total, status } = snapshot.state
     const position = index >= 0 ? index + 1 : 0
-    setHint(status === 'ended' ? 'Finished this page.' : `Sentence ${position} of ${total}.`)
+    setHint(
+      status !== 'ended'
+        ? `Sentence ${position} of ${total}.`
+        : snapshot.state.truncated
+          ? 'Read as far as Aloud can on one page. Select text further on to keep reading.'
+          : 'Finished this page.',
+    )
   }
+}
+
+// ── shortcuts ───────────────────────────────────────────────────────────────
+
+/**
+ * Show the keys Chrome really bound, not the manifest's suggestions: Chrome
+ * drops a suggestion that clashes with its own shortcuts, and users rebind.
+ */
+async function renderShortcuts() {
+  const bound = new Map((await chrome.commands.getAll()).map((c) => [c.name, c.shortcut ?? '']))
+  const keys: Array<[string, string]> = [
+    ['key-toggle', 'toggle-read'],
+    ['key-prev', 'prev-sentence'],
+    ['key-next', 'next-sentence'],
+  ]
+  for (const [id, command] of keys) $(id).textContent = bound.get(command) || 'not set'
 }
 
 // ── settings ────────────────────────────────────────────────────────────────
@@ -204,7 +226,7 @@ async function main() {
   prefs = await loadPrefs()
   renderPrefs()
   wire()
-  await Promise.all([refreshTab(), refreshEngine()])
+  await Promise.all([refreshTab(), refreshEngine(), renderShortcuts().catch(() => {})])
   renderPrefs()
 }
 

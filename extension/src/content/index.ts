@@ -15,10 +15,11 @@
 
 import { loadPrefs, savePrefs, watchPrefs } from '../shared/prefs'
 import type { TabAction, TabRequest, TabResponse, TabStateSnapshot } from '../shared/protocol'
-import type { EngineState, PlayerStatus, Prefs, ReadDoc, Voice } from '../shared/types'
-import { getHealth, getVoices } from './api'
-import { extractPage, extractSelection, offsetOf, type Extraction } from './extract'
+import type { PlayerStatus, Prefs, ReadDoc, ReaderEngineState, Voice } from '../shared/types'
+import { getHealth, getShortcuts, getVoices } from './api'
+import { extractPage, extractSelection, extractText, offsetOf, type Extraction } from './extract'
 import { Highlighter } from './highlight'
+import { watchNavigation } from './navigation'
 import { AloudPlayer } from './player'
 import { PlayerBar, showToast } from './ui'
 
@@ -39,10 +40,38 @@ if (window.__aloudReaderInjected) {
   console.debug('[Aloud] reader already present')
 } else {
   window.__aloudReaderInjected = true
-  void main()
+  void main(listenNow())
 }
 
-async function main() {
+type Reply = (response?: TabResponse) => void
+type Responder = (msg: TabRequest) => TabResponse | undefined
+
+/**
+ * Listen BEFORE anything async. The service worker sends its command as soon as
+ * executeScript returns, which is before main() is through loadPrefs(), and
+ * Chrome does not hold a message for a listener added later — so the first
+ * Alt+A of a session could vanish. Early messages wait here, with their reply
+ * channel held open, until main() hands over its responder.
+ */
+function listenNow(): (ready: Responder) => void {
+  let respond: Responder | null = null
+  const waiting: Array<{ msg: TabRequest; reply: Reply }> = []
+  chrome.runtime.onMessage.addListener((msg: TabRequest, _sender, sendResponse: Reply) => {
+    if (!respond) {
+      waiting.push({ msg, reply: sendResponse })
+      return true // answered once main() is ready
+    }
+    const res = respond(msg)
+    if (res) sendResponse(res)
+    return false
+  })
+  return (ready) => {
+    respond = ready
+    for (const { msg, reply } of waiting.splice(0)) reply(ready(msg))
+  }
+}
+
+async function main(onReady: (respond: Responder) => void) {
   let prefs: Prefs = await loadPrefs()
 
   let extraction: Extraction | null = null
@@ -53,7 +82,7 @@ async function main() {
   let status: PlayerStatus = 'idle'
   let error: string | null = null
   let sentenceIndex = -1
-  let engine: EngineState = 'ok'
+  let engine: ReaderEngineState = 'ok'
   let bufferAhead = 0
   let readyThrough = -1
 
@@ -72,6 +101,11 @@ async function main() {
       sentenceIndex = index
       paintSentence()
       paintBar()
+      // An app can swap the article out with no history entry at all. Deferred:
+      // this runs inside the player's own move, which teardown must not cut.
+      setTimeout(() => {
+        if (extraction && !extraction.root.isConnected) teardown()
+      })
     },
     onWord: (tokenIndex) => paintWord(tokenIndex),
     // A skipped sentence is a transient toast, never a stop (F1.5, F4.3).
@@ -96,6 +130,7 @@ async function main() {
       voiceId: prefs.voiceId,
       rate: prefs.rate,
       engine,
+      truncated: extraction?.truncated ?? false,
       bufferAhead,
       readyThrough,
     })
@@ -164,13 +199,21 @@ async function main() {
         onVoice: (voiceId) => void savePrefs({ voiceId }),
         onRate: (rate) => void savePrefs({ rate }),
       })
+      void getShortcuts().then((keys) => bar?.setShortcuts(keys))
     }
   }
 
-  /** Parse the page (or the selection) and start reading it. */
-  function start(mode: 'page' | 'selection'): boolean {
+  /**
+   * Parse the page (or the selection) and start reading it. `text` is a
+   * selection Chrome reported from a frame this script can't reach.
+   */
+  function start(mode: 'page' | 'selection', text?: string): boolean {
     const host = bar?.host ?? null
-    const next = mode === 'selection' ? extractSelection(host) : extractPage(host)
+    const next = text
+      ? extractText(text)
+      : mode === 'selection'
+        ? extractSelection(host)
+        : extractPage(host)
 
     if (!next) {
       showToastOnce(
@@ -244,7 +287,8 @@ async function main() {
 
   function scheduleHealth() {
     clearTimeout(healthTimer)
-    if (!isActive()) return
+    // Once the extension is gone from this page, nothing will ever answer.
+    if (!isActive() || engine === 'reloaded') return
     const unsettled = engine !== 'ok' || status === 'buffering' || status === 'error'
     healthTimer = window.setTimeout(
       () => void pollHealth(),
@@ -254,7 +298,7 @@ async function main() {
 
   // ── external commands (service worker / popup) ────────────────────────────
 
-  function handle(action: TabAction) {
+  function handle(action: TabAction, text?: string) {
     switch (action) {
       case 'start':
         // Already reading this page? Treat it as resume rather than restart, so
@@ -263,7 +307,7 @@ async function main() {
         else start('page')
         break
       case 'start-selection':
-        start('selection')
+        start('selection', text)
         break
       case 'toggle':
         if (isActive()) player.toggle()
@@ -282,24 +326,19 @@ async function main() {
     }
   }
 
-  chrome.runtime.onMessage.addListener(
-    (msg: TabRequest, _sender, sendResponse: (r: TabResponse) => void) => {
-      switch (msg.kind) {
-        case 'ping':
-          sendResponse({ kind: 'pong' })
-          return false
-        case 'command':
-          handle(msg.action)
-          sendResponse({ kind: 'ok' })
-          return false
-        case 'state':
-          sendResponse({ kind: 'state', state: snapshot() })
-          return false
-        default:
-          return false
-      }
-    },
-  )
+  onReady((msg) => {
+    switch (msg.kind) {
+      case 'ping':
+        return { kind: 'pong' }
+      case 'command':
+        handle(msg.action, msg.text)
+        return { kind: 'ok' }
+      case 'state':
+        return { kind: 'state', state: snapshot() }
+      default:
+        return undefined
+    }
+  })
 
   function snapshot(): TabStateSnapshot {
     return {
@@ -309,6 +348,7 @@ async function main() {
       total: player.total,
       title: extraction?.title ?? '',
       error,
+      truncated: extraction?.truncated ?? false,
     }
   }
 
@@ -388,9 +428,9 @@ async function main() {
   )
 
   // ── in-page keys ──────────────────────────────────────────────────────────
-  // Deliberately minimal: Alt+A / Alt+← / Alt+→ are real browser commands
-  // (they work even when the page steals focus), so the only key we claim here
-  // is Escape, and only while reading and not while typing.
+  // Deliberately minimal: play/pause and next/previous are real browser
+  // commands (they work even when the page steals focus), so the only key we
+  // claim here is Escape, and only while reading and not while typing.
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !isActive()) return
@@ -403,15 +443,8 @@ async function main() {
 
   // Client-side navigation swaps the article out from under our Ranges; stop
   // rather than highlight nonsense in the new page.
-  let lastPath = location.pathname + location.search
-  const onNavigate = () => {
-    const path = location.pathname + location.search
-    if (path !== lastPath) {
-      lastPath = path
-      if (isActive()) teardown()
-    }
-  }
-  window.addEventListener('popstate', onNavigate)
-  window.addEventListener('hashchange', onNavigate)
+  watchNavigation(window, () => {
+    if (isActive()) teardown()
+  })
   window.addEventListener('pagehide', () => teardown())
 }

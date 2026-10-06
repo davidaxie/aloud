@@ -63,8 +63,8 @@ chrome.runtime.onInstalled.addListener(() => {
  * matters is that it stops being an unhandled rejection that kills the worker
  * mid-synthesis. The popup path reports the same failure properly.
  */
-function dispatchQuietly(tabId: number, action: TabAction): void {
-  void dispatch(tabId, action).catch((err: unknown) => {
+function dispatchQuietly(tabId: number, action: TabAction, text?: string): void {
+  void dispatch(tabId, action, text).catch((err: unknown) => {
     console.warn('[Aloud]', errorMessage(err))
   })
 }
@@ -72,7 +72,12 @@ function dispatchQuietly(tabId: number, action: TabAction): void {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (tab?.id === undefined) return
   const action: TabAction = info.menuItemId === MENU_SELECTION ? 'start-selection' : 'start'
-  dispatchQuietly(tab.id, action)
+  // A selection inside a subframe (an embed, Chrome's PDF viewer) is invisible
+  // to the top frame's script, whose own selection is empty or stale, and
+  // activeTab can't reach a cross-origin frame. So the reader, which always
+  // lives in the top frame, reads the text Chrome reports instead.
+  const text = action === 'start-selection' && info.frameId ? info.selectionText : undefined
+  dispatchQuietly(tab.id, action, text)
 })
 
 // ── keyboard commands ───────────────────────────────────────────────────────
@@ -108,7 +113,7 @@ function isRestricted(url: string | undefined): boolean {
  * The ping-then-inject dance keeps injection idempotent: a second Alt+A must
  * reach the EXISTING reader (so it pauses) rather than spawn a second one.
  */
-async function dispatch(tabId: number, action: TabAction): Promise<void> {
+async function dispatch(tabId: number, action: TabAction, text?: string): Promise<void> {
   const tab = await chrome.tabs.get(tabId).catch(() => undefined)
   if (isRestricted(tab?.url)) throw new Error("Aloud can't read this page.")
 
@@ -124,7 +129,21 @@ async function dispatch(tabId: number, action: TabAction): Promise<void> {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
   }
 
-  await chrome.tabs.sendMessage<TabRequest, unknown>(tabId, { kind: 'command', action })
+  await chrome.tabs.sendMessage<TabRequest, unknown>(tabId, { kind: 'command', action, text })
+}
+
+/**
+ * The bindings Chrome actually gave our commands. Never assume the manifest's
+ * suggestions: Chrome drops one that clashes with its own shortcuts, and the
+ * user can rebind any of them at chrome://extensions/shortcuts.
+ */
+async function shortcuts(): Promise<{ toggle: string; next: string; prev: string }> {
+  const bound = new Map((await chrome.commands.getAll()).map((c) => [c.name, c.shortcut ?? '']))
+  return {
+    toggle: bound.get('toggle-read') ?? '',
+    next: bound.get('next-sentence') ?? '',
+    prev: bound.get('prev-sentence') ?? '',
+  }
 }
 
 // ── backend calls ───────────────────────────────────────────────────────────
@@ -363,6 +382,13 @@ chrome.runtime.onMessage.addListener(
         inflight.delete(key)
         return false // nothing to report back
       }
+
+      case 'shortcuts':
+        void shortcuts().then(
+          (keys) => sendResponse({ kind: 'shortcuts', ...keys }),
+          () => sendResponse({ kind: 'shortcuts', toggle: '', next: '', prev: '' }),
+        )
+        return true
 
       case 'activate':
         void dispatch(msg.tabId, msg.action).then(

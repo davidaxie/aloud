@@ -85,6 +85,13 @@ export type EngineState =
   | 'warming' // reachable, still doing its first inference
   | 'offline' // unreachable, or answering with something we don't understand
 
+/**
+ * The engine as a reader on a page sees it. `reloaded` is not the engine at all:
+ * the extension was reloaded or updated under the page, so nothing the page asks
+ * can be answered until it is refreshed — and the backend is not to blame.
+ */
+export type ReaderEngineState = EngineState | 'reloaded'
+
 /** Player lifecycle. */
 export type PlayerStatus =
   | 'idle' // nothing loaded

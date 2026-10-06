@@ -11,8 +11,9 @@
 // callbacks. It owns no playback state.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { EngineState, PlayerStatus, Voice } from '../shared/types'
+import type { PlayerStatus, ReaderEngineState, Voice } from '../shared/types'
 import { fillVoiceSelect } from '../shared/voices'
+import { RELOADED_MESSAGE } from './api'
 
 export interface BarView {
   status: PlayerStatus
@@ -24,8 +25,13 @@ export interface BarView {
   voices: Voice[]
   voiceId: string
   rate: number
-  /** What the speech engine is doing — `warming` is not a fault (§1.2). */
-  engine: EngineState
+  /**
+   * What the speech engine is doing — `warming` is not a fault (§1.2), and
+   * `reloaded` is not the engine at all but the extension gone from this page.
+   */
+  engine: ReaderEngineState
+  /** The page was longer than the reader's safety valves, so the end isn't the end. */
+  truncated: boolean
   /** Listening seconds of audio ready ahead of the playhead (F2.7). */
   bufferAhead: number
   /** Last sentence index whose audio is contiguously ready; -1 when none is. */
@@ -44,6 +50,25 @@ export interface BarCallbacks {
 }
 
 const RATE_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+
+/** Keyboard shortcuts as Chrome actually bound them; empty when the user has none. */
+export interface Shortcuts {
+  toggle: string
+  next: string
+  prev: string
+}
+
+/**
+ * A tooltip that names its shortcut only when one exists. The bindings come
+ * from chrome.commands, never from a constant: Chrome refuses a suggested key
+ * that clashes with one of its own, and the user can rebind any of them.
+ */
+export function withShortcut(label: string, shortcut: string | undefined): string {
+  return shortcut ? `${label} (${shortcut})` : label
+}
+
+/** The status line when the last sentence ends a page the reader cut short. */
+export const TRUNCATED_MESSAGE = 'Reached Aloud’s length limit — select later text to go on.'
 
 const ICONS = {
   play: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.1-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14Z"/></svg>',
@@ -271,7 +296,10 @@ type Tone = 'normal' | 'pending' | 'error'
  * styled as a fault, and `buffering` is the engine working as designed. Every
  * error names a cause and, where the user can act, an action.
  */
-function statusLine(view: BarView): { text: string; tone: Tone } {
+export function statusLine(view: BarView): { text: string; tone: Tone } {
+  // Nothing on this page can reach the extension any more; restarting the
+  // backend (what "offline" asks for) would not help.
+  if (view.engine === 'reloaded') return { text: RELOADED_MESSAGE, tone: 'error' }
   if (view.engine === 'offline') {
     return { text: 'Speech engine offline — start the Aloud backend.', tone: 'error' }
   }
@@ -280,7 +308,11 @@ function statusLine(view: BarView): { text: string; tone: Tone } {
     return { text: 'Warming up the voice engine…', tone: 'pending' }
   }
   if (view.status === 'buffering') return { text: 'Buffering…', tone: 'pending' }
-  if (view.status === 'ended') return { text: 'Finished', tone: 'normal' }
+  if (view.status === 'ended') {
+    return view.truncated
+      ? { text: TRUNCATED_MESSAGE, tone: 'pending' }
+      : { text: 'Finished', tone: 'normal' }
+  }
   const position = view.index >= 0 ? view.index + 1 : 0
   return { text: `${position} / ${view.total}`, tone: 'normal' }
 }
@@ -322,9 +354,9 @@ export class PlayerBar {
       <div class="track" role="progressbar" aria-label="Reading progress" aria-valuemin="0" aria-valuemax="100"><div class="buffer"></div><div class="fill"></div></div>
       <div class="row">
         <div class="transport">
-          <button class="icon" data-act="prev" title="Previous sentence (Alt+←)" aria-label="Previous sentence">${ICONS.prev}</button>
-          <button class="play" data-act="toggle" title="Play / pause (Alt+A)" aria-label="Play or pause">${ICONS.play}</button>
-          <button class="icon" data-act="next" title="Next sentence (Alt+→)" aria-label="Next sentence">${ICONS.next}</button>
+          <button class="icon" data-act="prev" title="Previous sentence" aria-label="Previous sentence">${ICONS.prev}</button>
+          <button class="play" data-act="toggle" title="Play / pause" aria-label="Play or pause">${ICONS.play}</button>
+          <button class="icon" data-act="next" title="Next sentence" aria-label="Next sentence">${ICONS.next}</button>
         </div>
         <div class="meta">
           <div class="title"></div>
@@ -396,6 +428,15 @@ export class PlayerBar {
       }
     }
     if (this.voiceEl.value !== voiceId) this.voiceEl.value = voiceId
+  }
+
+  /** Name the real keyboard shortcuts in the transport tooltips. */
+  setShortcuts(keys: Shortcuts) {
+    const label = { prev: 'Previous sentence', toggle: 'Play / pause', next: 'Next sentence' }
+    for (const act of ['prev', 'toggle', 'next'] as const) {
+      const button = this.root.querySelector(`[data-act="${act}"]`)
+      button?.setAttribute('title', withShortcut(label[act], keys[act]))
+    }
   }
 
   update(view: BarView) {

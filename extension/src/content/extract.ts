@@ -48,6 +48,11 @@ export interface Extraction {
   sentences: ReadSentence[]
   /** The element we decided holds the article — used to scope click-to-jump. */
   root: Element
+  /**
+   * True when a safety valve (MAX_TEXT / MAX_SENTENCES) cut the page short, so
+   * reaching the last sentence is not the end of the page and must not say so.
+   */
+  truncated: boolean
 }
 
 // ── what never gets read ────────────────────────────────────────────────────
@@ -59,6 +64,7 @@ const SKIP_TAGS = new Set([
   'SELECT', 'OPTION', 'TEXTAREA', 'INPUT', 'BUTTON', 'LABEL', 'FORM',
   'NAV', 'ASIDE', 'FOOTER', 'DIALOG', 'MENU',
   // Code blocks read terribly aloud; inline <code> inside a sentence is kept.
+  // The one exception is a PRE that IS the document — see plainTextPre().
   'PRE',
 ])
 
@@ -203,6 +209,46 @@ function findContentRoot(doc: Document): Element {
   return best
 }
 
+/**
+ * The <pre> that IS the document, when there is one.
+ *
+ * Chrome shows a text/plain response (a Gutenberg .txt, an RFC, a raw README) as
+ * `body > pre`. That PRE is the article, not a code block, so the SKIP_TAGS rule
+ * that keeps code out of speech must not swallow it. Outside a text/plain
+ * document we only trust a PRE that is the body's sole element and holds no code.
+ */
+function plainTextPre(doc: Document): Element | null {
+  const pre = doc.body?.firstElementChild
+  if (!pre || pre.tagName !== 'PRE') return null
+  if (doc.contentType === 'text/plain') return pre
+  const codeLike = pre.querySelector('code') !== null || /(^|\s)lang(uage)?-/.test(classId(pre))
+  return doc.body.childElementCount === 1 && !codeLike ? pre : null
+}
+
+/**
+ * Paragraphs of a plain-text run, as [start, end) spans of `text`.
+ *
+ * Plain text marks a paragraph with a blank line and wraps its lines at ~70
+ * columns, so a single newline is NOT a break: only a blank line (whitespace
+ * allowed) starts a new block.
+ */
+export function paragraphSpans(
+  text: string,
+  start: number,
+  end: number,
+): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = []
+  const blank = /\n[^\S\n]*(?:\n[^\S\n]*)+/g
+  blank.lastIndex = start
+  let from = start
+  for (let m = blank.exec(text); m && m.index < end; m = blank.exec(text)) {
+    if (/\S/.test(text.slice(from, m.index))) out.push({ start: from, end: m.index })
+    from = Math.min(end, m.index + m[0].length)
+  }
+  if (/\S/.test(text.slice(from, end))) out.push({ start: from, end })
+  return out
+}
+
 /** Best-effort human title for the player bar. */
 function pageTitle(doc: Document, root: Element): string {
   const h1 = root.querySelector('h1') ?? doc.querySelector('h1')
@@ -224,6 +270,8 @@ interface WalkState {
   restrict?: Range
   /** Our own injected UI, which must never be read back to the user. */
   uiHost: Element | null
+  /** Set when a safety valve stopped collection before the page ran out. */
+  truncated: boolean
 }
 
 function isHidden(el: Element): boolean {
@@ -298,7 +346,10 @@ function appendText(node: Text, state: WalkState) {
 
 function walk(el: Element, state: WalkState) {
   for (let child = el.firstChild; child; child = child.nextSibling) {
-    if (state.text.length > MAX_TEXT) return
+    if (state.text.length > MAX_TEXT) {
+      state.truncated = true
+      return
+    }
 
     if (child.nodeType === Node.TEXT_NODE) {
       appendText(child as Text, state)
@@ -331,28 +382,35 @@ function isSpeakable(normalized: string): boolean {
   return true
 }
 
-function buildSentences(state: WalkState): ReadSentence[] {
+/**
+ * Sentence-split every block. `plain` unwraps hard line breaks first: the
+ * sentence segmenter treats a newline as a hard stop, which would cut wrapped
+ * plain text into line fragments. Newline → space keeps every offset intact.
+ */
+function buildSentences(state: WalkState, plain = false): ReadSentence[] {
   const out: ReadSentence[] = []
   for (const block of state.blocks) {
-    if (out.length >= MAX_SENTENCES) break
     const body = state.text.slice(block.start, block.end)
     if (body.trim().length < 3) continue
 
-    for (const span of splitWithOffsets(body)) {
+    for (const span of splitWithOffsets(plain ? body.replace(/[\r\n]/g, ' ') : body)) {
       const start = block.start + span.start
       const end = block.start + span.end
       const raw = state.text.slice(start, end)
       const text = raw.replace(/\s+/g, ' ').trim()
       if (!isSpeakable(text)) continue
+      if (out.length >= MAX_SENTENCES) {
+        state.truncated = true
+        return out
+      }
       out.push({ id: out.length, raw, text, start, end, tokens: tokenizeSentence(raw) })
-      if (out.length >= MAX_SENTENCES) break
     }
   }
   return out
 }
 
-function run(root: Element, uiHost: Element | null, restrict?: Range): Extraction | null {
-  const state: WalkState = {
+function newState(uiHost: Element | null, restrict?: Range): WalkState {
+  return {
     text: '',
     slices: [],
     blocks: [],
@@ -360,11 +418,23 @@ function run(root: Element, uiHost: Element | null, restrict?: Range): Extractio
     blockHasText: false,
     restrict,
     uiHost,
+    truncated: false,
   }
+}
+
+/** `plain`: root is a plain-text PRE, whose paragraphs are its blank lines. */
+function run(
+  root: Element,
+  uiHost: Element | null,
+  restrict?: Range,
+  plain = false,
+): Extraction | null {
+  const state = newState(uiHost, restrict)
   walk(root, state)
   closeBlock(state)
+  if (plain) state.blocks = state.blocks.flatMap((b) => paragraphSpans(state.text, b.start, b.end))
 
-  const sentences = buildSentences(state)
+  const sentences = buildSentences(state, plain)
   if (sentences.length === 0) return null
 
   return {
@@ -373,12 +443,37 @@ function run(root: Element, uiHost: Element | null, restrict?: Range): Extractio
     slices: state.slices,
     sentences,
     root,
+    truncated: state.truncated,
   }
 }
 
 /** Extract the article from the current document. Returns null if there's no prose. */
 export function extractPage(uiHost: Element | null): Extraction | null {
+  const pre = plainTextPre(document)
+  if (pre) return run(pre, uiHost, undefined, true)
   return run(findContentRoot(document), uiHost)
+}
+
+/**
+ * Read text that has no reachable DOM behind it: a selection Chrome reported
+ * from a frame this script can't see into. There is nothing to highlight, so
+ * there are no slices — the text is read as plain text.
+ */
+export function extractText(text: string): Extraction | null {
+  const state = newState(null)
+  state.text = text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) : text
+  state.truncated = text.length > MAX_TEXT
+  state.blocks = paragraphSpans(state.text, 0, state.text.length)
+  const sentences = buildSentences(state, true)
+  if (sentences.length === 0) return null
+  return {
+    title: 'Selection',
+    text: state.text,
+    slices: [],
+    sentences,
+    root: document.body ?? document.documentElement,
+    truncated: state.truncated,
+  }
 }
 
 /**
@@ -393,11 +488,15 @@ export function extractSelection(uiHost: Element | null): Extraction | null {
   if (!range.toString().trim()) return null
 
   const ancestor = range.commonAncestorContainer
-  const root =
+  let root =
     ancestor.nodeType === Node.ELEMENT_NODE
       ? (ancestor as Element)
       : ancestor.parentElement ?? document.body
-  const extraction = run(root, uiHost, range)
+  // Select-all on a plain-text page anchors on <body>, whose walk would skip
+  // the PRE that holds every word; start inside it instead.
+  const pre = plainTextPre(document)
+  if (pre && root.contains(pre)) root = pre
+  const extraction = run(root, uiHost, range, pre !== null && pre.contains(root))
   if (extraction) extraction.title = 'Selection'
   return extraction
 }

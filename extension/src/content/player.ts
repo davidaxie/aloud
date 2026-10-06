@@ -31,7 +31,10 @@
 // transport retries (see api.ts), and a sentence that still fails is SKIPPED:
 // playback advances, the sentence is reported to the UI, and status stays
 // `playing`. Only a run of MAX_CONSECUTIVE_SKIPS failures — which is an engine
-// that has gone away, not a sentence that won't read — stops anything.
+// that has gone away, not a sentence that won't read — stops anything, and it
+// stops on the FIRST sentence of the run so resuming loses nothing. A request
+// that never reached an engine at all (backend down, extension reloaded) says
+// nothing about its sentence, so it is not skipped: playback stops right there.
 //
 // ── Cache invalidation ───────────────────────────────────────────────────────
 // The key embeds voice + skip-mode, so changing either routes future lookups to
@@ -91,6 +94,13 @@ const SEED_CHARS_PER_SECOND = 15
  * whole page skipping every sentence helps nobody.
  */
 const MAX_CONSECUTIVE_SKIPS = 3
+
+/**
+ * Chrome's autoplay policy refused to start audio. The keyboard shortcut and the
+ * popup reach the page from outside, so the page itself may never have had a
+ * click — and only a click on the page (the bar is on the page) unlocks its audio.
+ */
+const AUTOPLAY_BLOCKED_MESSAGE = 'Chrome blocked the audio — click play on the Aloud bar to start.'
 
 const NOW: SynthPriority = 'now'
 const PREFETCH: SynthPriority = 'prefetch'
@@ -185,8 +195,8 @@ export class AloudPlayer {
   // ── failure tracking ──────────────────────────────────────────────────────
   /** Sentences that failed every retry and were skipped. */
   private skipped = new Set<number>()
-  /** Skips since the last success. At MAX_CONSECUTIVE_SKIPS we stop and report. */
-  private consecutiveSkips = 0
+  /** Sentences skipped since the last success. At MAX_CONSECUTIVE_SKIPS we stop. */
+  private streak: number[] = []
 
   // Snapshot of the prefs that current audio was produced under, so applyPrefs()
   // knows what actually changed.
@@ -248,6 +258,9 @@ export class AloudPlayer {
       a.preservesPitch = true
       a.playbackRate = this.hooks.prefs().rate
       a.addEventListener('ended', () => this.onEnded())
+      // A clip that can't load or decode never fires 'ended'; without this the
+      // reader would sit on it forever, showing pause over silence.
+      a.addEventListener('error', () => this.onAudioError())
       // The natural (1.0x) WAV duration lands here; per-word windows are laid
       // out in media-time, so raising playbackRate speeds the highlight in step.
       a.addEventListener('loadedmetadata', () => this.onLoadedMetadata())
@@ -636,7 +649,7 @@ export class AloudPlayer {
 
     // A sentence that read successfully clears the failure streak AND the error
     // it produced: status is honest about the present, not the past (F4.1).
-    this.consecutiveSkips = 0
+    this.streak = []
 
     const audio = this.ensureAudio()
     // Adopt the tokens now so the 'loadedmetadata' fired by the next line has
@@ -656,11 +669,42 @@ export class AloudPlayer {
     try {
       await audio.play()
     } catch (err) {
-      // play() rejects if superseded (src swapped / paused) or blocked by the
-      // autoplay policy. Stale/abort rejections are expected and harmless.
+      // play() rejects if superseded (src swapped / paused) — expected and
+      // harmless — or because it can't play at all, which must not pass for
+      // playing.
       if (token !== this.playToken || isAbortError(err)) return
+      this.playRefused(i, err)
+      return
     }
     if (token === this.playToken) this.startWordLoop()
+  }
+
+  /**
+   * audio.play() said no. Autoplay policy (NotAllowedError) is the common case;
+   * stand down to `paused` and ask for the click that unlocks audio, so the next
+   * play resumes this sentence. Anything else means this clip will not play:
+   * skip it like a failed synthesis.
+   */
+  private playRefused(i: number, err: unknown) {
+    this.stopWordLoop()
+    if ((err as { name?: string } | null)?.name === 'NotAllowedError') {
+      this.wantPlaying = false
+      this.stopFilling()
+      this.setStatus('paused', AUTOPLAY_BLOCKED_MESSAGE)
+      return
+    }
+    // Both the 'error' event and the play() rejection report one bad clip;
+    // whichever arrives first acts, and the token turns the other stale.
+    this.playToken++
+    this.loadedIndex = -1
+    this.skipSentence(i, err)
+  }
+
+  /** The loaded clip failed to load or decode (see ensureAudio). */
+  private onAudioError() {
+    const i = this.loadedIndex
+    if (!this.wantPlaying || i < 0 || i !== this.index) return
+    this.playRefused(i, new DOMException('This sentence’s audio could not be played.', 'NotSupportedError'))
   }
 
   /**
@@ -673,15 +717,23 @@ export class AloudPlayer {
    */
   private skipSentence(i: number, err: unknown) {
     const message = describeFailure(err)
+
+    // Nothing reached an engine, so the sentence is not the problem. Skipping
+    // would only race through the opening of the page on the way to a stop.
+    if (err instanceof SynthesisError && err.status === 0) {
+      this.halt(i, message)
+      return
+    }
+
     this.skipped.add(i)
-    this.consecutiveSkips++
+    this.streak.push(i)
     this.hooks.onSkip(i, message)
 
-    if (this.consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-      this.wantPlaying = false
-      this.stopWordLoop()
-      this.stopFilling()
-      this.setStatus('error', message)
+    if (this.streak.length >= MAX_CONSECUTIVE_SKIPS) {
+      // Stop where the run began: those sentences were the engine's failure,
+      // not theirs, and resuming must read them rather than start past them.
+      for (const j of this.streak) this.skipped.delete(j)
+      this.halt(this.streak[0], message)
       return
     }
     if (!this.wantPlaying) {
@@ -696,6 +748,18 @@ export class AloudPlayer {
       return
     }
     void this.playIndex(i + 1)
+  }
+
+  /** Stop on sentence `i` with an error. play() starts again from exactly there. */
+  private halt(i: number, message: string) {
+    this.wantPlaying = false
+    this.playToken++
+    this.stopWordLoop()
+    this.stopFilling()
+    this.streak = []
+    this.loadedIndex = -1
+    this.setIndex(i)
+    this.setStatus('error', message)
   }
 
   /** Fired when a sentence finishes: auto-advance, or end the document. */
@@ -738,7 +802,10 @@ export class AloudPlayer {
       this.wantPlaying = true
       audio.playbackRate = this.hooks.prefs().rate
       this.setStatus('playing')
-      audio.play().catch(() => {})
+      const token = this.playToken
+      audio.play().catch((err: unknown) => {
+        if (token === this.playToken && !isAbortError(err)) this.playRefused(this.index, err)
+      })
       this.startFilling()
       this.startWordLoop()
       return
@@ -879,7 +946,7 @@ export class AloudPlayer {
     this.windows = []
     this.lastWordIndex = -1
     this.skipped.clear()
-    this.consecutiveSkips = 0
+    this.streak = []
     this.reportedBuffer = -1
     this.reportedThrough = -2
     this.hooks.onBuffer(0, -1)
@@ -903,10 +970,16 @@ export class AloudPlayer {
  */
 function describeFailure(err: unknown): string {
   if (err instanceof SynthesisError) {
+    // The backend is fine; the page lost the extension and must be refreshed.
+    if (err.reloaded) return err.message
     if (err.status === 400) return 'Skipped a sentence the voice engine couldn’t read.'
     if (err.status === 0) return 'Speech engine unreachable — is the Aloud backend running?'
     if (err.timedOut) return 'The voice engine took too long — skipped a sentence.'
     return 'Skipped a sentence the voice engine couldn’t read.'
+  }
+  // The clip arrived but the browser could not play it.
+  if ((err as { name?: string } | null)?.name === 'NotSupportedError') {
+    return 'Skipped a sentence the browser couldn’t play.'
   }
   return err instanceof Error && err.message ? err.message : 'Skipped an unreadable sentence.'
 }

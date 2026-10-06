@@ -53,6 +53,8 @@ export type BgRequest =
    * content script if it isn't there yet, then forwards the command.
    */
   | { kind: 'activate'; tabId: number; action: TabAction }
+  /** The keyboard shortcuts Chrome actually bound (content scripts can't ask). */
+  | { kind: 'shortcuts' }
 
 /** What `GET /health` told us, normalized (backend contract §1.2). */
 export interface HealthReport {
@@ -91,6 +93,8 @@ export type BgResponse =
   | { kind: 'synth'; ok: true; audio: string }
   | ({ kind: 'synth'; ok: false } & SynthFailure)
   | { kind: 'activate'; ok: boolean; error?: string }
+  /** Each command's current binding; empty when Chrome left it unassigned. */
+  | { kind: 'shortcuts'; toggle: string; next: string; prev: string }
   | { kind: 'error'; error: string }
 
 // ── service worker|popup → content script ───────────────────────────────────
@@ -111,7 +115,12 @@ export type TabAction =
 export type TabRequest =
   /** Liveness probe used to decide whether the content script needs injecting. */
   | { kind: 'ping' }
-  | { kind: 'command'; action: TabAction }
+  /**
+   * `text` rides along with `start-selection` when the selection lives in a
+   * subframe (an embed, Chrome's PDF viewer) that this frame's script can't see
+   * into: it is the text Chrome reported, read as plain text.
+   */
+  | { kind: 'command'; action: TabAction; text?: string }
   /** Popup asks what's happening in this tab. */
   | { kind: 'state' }
 
@@ -130,6 +139,8 @@ export interface TabStateSnapshot {
   total: number
   title: string
   error: string | null
+  /** The page was cut short by the reader's length limits. */
+  truncated: boolean
 }
 
 // ── base64 (chrome messaging is JSON-only, so WAV bytes travel as text) ──────
