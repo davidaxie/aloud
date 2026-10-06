@@ -38,9 +38,11 @@ final class PlaceHistoryStore {
     /// nothing.
     @ObservationIgnored private var hasSeenShelf = false
 
-    init(fileURL: URL = DocumentStore.libraryDir.appendingPathComponent("places.json")) {
-        self.fileURL = fileURL
-        books = Self.read(fileURL)
+    /// Nil `fileURL` is Library/places.json, beside library.json.
+    init(fileURL: URL? = nil) {
+        let url = fileURL ?? DocumentStore.libraryDir.appendingPathComponent("places.json")
+        self.fileURL = url
+        books = Self.read(url)
     }
 
     /// `documentID`'s places, newest first; none for another content hash.

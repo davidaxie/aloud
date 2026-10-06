@@ -38,7 +38,13 @@ actor ExtractionPipeline {
     /// file just has none), then the detectors run on the cached text. For
     /// a book imported before chapter maps, or by an older detector. The
     /// text and `contentHash` are untouched, so saved progress stays valid.
-    func addingChapters(to content: DocContent, pdfURL: URL) -> DocContent {
+    /// Touches no state of the pipeline, so it never waits behind an import
+    /// running on it.
+    nonisolated func addingChapters(to content: DocContent, pdfURL: URL) -> DocContent {
+        Self.addingChapters(to: content, pdfURL: pdfURL)
+    }
+
+    nonisolated static func addingChapters(to content: DocContent, pdfURL: URL) -> DocContent {
         var content = content
         let outline = PDFChapterDetector.outlineItems(at: pdfURL)
         content.chapterMap = PDFChapterDetector.chapterMap(for: content, outline: outline)

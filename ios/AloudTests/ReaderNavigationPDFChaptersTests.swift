@@ -35,6 +35,53 @@ final class ReaderNavigationPDFChaptersTests: XCTestCase {
         ])), kind: .pdf)
     }
 
+    // MARK: - Page steps
+
+    /// A PDF that lists pages, grouped into rows: Next Page still moves one
+    /// page, not one row of pages.
+    func testNextPageMovesOnePageWhereRowsGroupPages() {
+        let pages = Array(1...60)
+        let sentences = pages.flatMap { page in (0..<2).map { _ in page } }.enumerated().map { index, page in
+            Sentence(id: index, text: String(repeating: "Word ", count: 40) + "end.", para: index, page: page)
+        }
+        let content = DocContent(title: "Long", pageCount: 60, sentences: sentences, paragraphs: [],
+                                 contentHash: "long")
+        let navigation = ReaderNavigation(content: content, kind: .pdf)
+        XCTAssertLessThan(navigation.chapters.count, 60, "rows group the pages")
+        XCTAssertEqual(navigation.stepTarget(from: 0, forward: true, rate: 1), 2, "page 2's first sentence")
+        XCTAssertEqual(navigation.stepTarget(from: 3, forward: false, rate: 1), 2, "back to this page's start")
+        XCTAssertEqual(navigation.stepTarget(from: 2, forward: false, rate: 1), 0, "then the page before")
+        XCTAssertEqual(navigation.stepStart(containing: 3), 2)
+        XCTAssertNil(navigation.stepTarget(from: 119, forward: true, rate: 1), "past the last page")
+        // A mapped PDF steps by chapter.
+        XCTAssertEqual(chaptered.stepTarget(from: 0, forward: true, rate: 1),
+                       chaptered.adjustmentTarget(from: 0, forward: true, rate: 1))
+    }
+
+    // MARK: - Names outside Contents
+
+    /// VoiceOver's coarse rotor names what Contents lists.
+    func testTheRotorSaysChaptersForAMappedPDF() {
+        XCTAssertEqual(ReaderRotor.chapters.name(listing: chaptered, isChapterBook: false), "Chapters")
+        let pages = ReaderNavigation(content: content(map: nil), kind: .pdf)
+        XCTAssertEqual(ReaderRotor.chapters.name(listing: pages, isChapterBook: false), "Pages")
+        XCTAssertEqual(ReaderRotor.chapters.name(listing: nil, isChapterBook: true), "Chapters")
+        XCTAssertEqual(ReaderRotor.chapters.name(listing: nil, isChapterBook: false), "Pages")
+        XCTAssertEqual(ReaderRotor.sentences.name(listing: chaptered, isChapterBook: false), "Sentences")
+    }
+
+    /// Two chapters on one page keep their own titles in their rows.
+    func testRowsNameTheirOwnChapterOnASharedPage() {
+        let shared = ReaderNavigation(content: content(map: map([
+            Entry(title: "Front matter", sentence: 0, section: nil),
+            Entry(title: "One", sentence: 2, section: nil),
+            Entry(title: "Two", sentence: 4, section: nil),
+        ])), kind: .pdf)
+        XCTAssertEqual(shared.title(ofChapter: 1), "One")
+        XCTAssertEqual(shared.title(ofChapter: 2), "Two")
+        XCTAssertNotEqual(shared.rowIdentifier(at: 1), shared.rowIdentifier(at: 2))
+    }
+
     // MARK: - Chapters from the map
 
     func testAMapMakesChaptersSectionsAndLabels() {

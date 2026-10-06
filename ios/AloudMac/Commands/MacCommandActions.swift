@@ -150,8 +150,8 @@ struct MacCommandActions {
             case .retry: return MacMenuCopy.tryAgain
             case .listenAgain: return MacMenuCopy.listenAgain
             }
-        case .previousChapter: return isPDF ? MacMenuCopy.previousPage : MacMenuCopy.previousChapter
-        case .nextChapter: return isPDF ? MacMenuCopy.nextPage : MacMenuCopy.nextChapter
+        case .previousChapter: return listsPages ? MacMenuCopy.previousPage : MacMenuCopy.previousChapter
+        case .nextChapter: return listsPages ? MacMenuCopy.nextPage : MacMenuCopy.nextChapter
         case .toggleContents: return ui.isContentsShown ? MacMenuCopy.hideContents : MacMenuCopy.showContents
         default: return command.title
         }
@@ -235,23 +235,29 @@ struct MacCommandActions {
 
     private var isPDF: Bool { playback.document?.kind == .pdf }
 
+    /// A PDF whose Contents lists pages (no chapters found): the chapter
+    /// steps are page steps.
+    private var listsPages: Bool { navigation.map { $0.rowKind == .pages } ?? isPDF }
+
+    /// What End of Chapter does: a real chapter's end, never a page row's
+    /// (SleepTimer stops at chapters only in a chaptered book).
     private var endsAtChapter: Bool {
-        sleepTimer.isArmed ? sleepTimer.endsAtChapter : (navigation?.hasChapterList ?? false)
+        sleepTimer.isArmed ? sleepTimer.endsAtChapter : (navigation?.isChaptered ?? false)
     }
 
     /// ⌘← / ⌘→ (R14's rule for chapters): back goes to the current chapter's
     /// start, or restarts it when more than 3 s of its first sentence has
-    /// played, else the previous chapter's start. nil without a chapter list
-    /// or past either end.
+    /// played, else the previous chapter's start. In a PDF that lists pages
+    /// the step is one page, even where Contents groups pages into rows.
+    /// nil without a chapter list or past either end.
     private func chapterTarget(forward: Bool) -> Int? {
         guard let navigation, navigation.hasChapterList else { return nil }
         let current = max(playback.currentSentence, 0)
-        if !forward, let index = navigation.chapterIndex(containing: current),
-           navigation.chapters[index].startSentence == current,
+        if !forward, navigation.stepStart(containing: current) == current,
            playback.isActive, playback.currentSentenceElapsed > PlaybackController.restartThreshold {
             return current
         }
-        return navigation.adjustmentTarget(from: current, forward: forward, rate: playback.rate)
+        return navigation.stepTarget(from: current, forward: forward, rate: playback.rate)
     }
 
     /// A chapter step is a jump: it keeps play or pause and offers Undo

@@ -946,7 +946,8 @@ struct ReaderTextView: UIViewRepresentable {
         var colophonHint: String? { readsColophon ? "" : nil }
 
         private func makeRotor(_ rotor: ReaderRotor) -> UIAccessibilityCustomRotor {
-            UIAccessibilityCustomRotor(name: rotor.name(for: parent.isChapterBook ? .text : .pdf)) {
+            UIAccessibilityCustomRotor(name: rotor.name(listing: parent.navigation,
+                                                        isChapterBook: parent.isChapterBook)) {
                 [weak self] predicate in
                 self?.rotorStep(rotor, forward: predicate.searchDirection == .next)
             }

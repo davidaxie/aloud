@@ -271,11 +271,10 @@ struct ContentsSheet: View {
     }
 
     private func chapterRow(_ chapter: DerivedChapter, index: Int) -> some View {
-        let labels = navigation.labels
         let current = currentIndex
         let isCurrent = index == current
         let isCompleted = current.map { index < $0 } ?? false
-        let title = labels.contextTitle(forPage: chapter.page)
+        let title = navigation.title(ofChapter: index)
         // Rate-aware, like the shelf cards and the chapter line's time left: at
         // 2× a chapter takes half as long, and Contents says so. Computed once,
         // so the visible "8 min" and the spoken "8 minutes" are one number.
@@ -307,7 +306,7 @@ struct ContentsSheet: View {
         .accessibilityLabel(ContentsSearch.chapterAccessibilityLabel(title: title, minutes: minutes,
                                                                      isCurrent: isCurrent))
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
-        .accessibilityIdentifier("chapters.row.\(labels.displayPage(chapter.page))")
+        .accessibilityIdentifier(navigation.rowIdentifier(at: index))
     }
 
     /// Title with its listening time trailing. At accessibility sizes a
@@ -479,7 +478,8 @@ struct ContentsSheet: View {
             playback.jump(to: match.sentenceID, origin: .searchResult)
             dismiss()
         } label: {
-            ContentsResultLabel(match: match, location: navigation.qualifiedTitle(forPage: match.page))
+            ContentsResultLabel(match: match, location: navigation.location(ofSentence: match.sentenceID,
+                                                                            page: match.page))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Space.sheetGutter)
                 .padding(.vertical, Theme.Space.sm)

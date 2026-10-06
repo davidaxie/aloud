@@ -7,6 +7,24 @@ import XCTest
 @MainActor
 final class MacContentsPlacesTests: XCTestCase {
 
+    /// A stop recorded while the list is open: the cursor keeps its chapter
+    /// (Return opens what the ring is on, not its neighbour).
+    func testTheCursorKeepsItsRowWhenTheListChanges() {
+        let before = MacContents.listLayout(placeCount: 1, expanded: false, chapterCount: 10, hasChapterList: true)
+        let after = MacContents.listLayout(placeCount: 2, expanded: false, chapterCount: 10, hasChapterList: true)
+        let onChapter4 = before.index(of: .chapter(4))
+        XCTAssertEqual(after.row(at: MacContents.remap(onChapter4, from: before, to: after)!), .chapter(4))
+        let many = MacContents.listLayout(placeCount: 6, expanded: false, chapterCount: 10, hasChapterList: true)
+        XCTAssertEqual(many.row(at: MacContents.remap(onChapter4, from: before, to: many)!), .chapter(4),
+                       "past the toggle too")
+        let onToggle = many.index(of: .showEarlier)
+        let expanded = MacContents.listLayout(placeCount: 6, expanded: true, chapterCount: 10, hasChapterList: true)
+        XCTAssertEqual(expanded.row(at: MacContents.remap(onToggle, from: many, to: expanded)!), .showEarlier)
+        XCTAssertNil(MacContents.remap(nil, from: before, to: after), "no cursor stays none")
+        let empty = MacContents.listLayout(placeCount: 0, expanded: false, chapterCount: 0, hasChapterList: false)
+        XCTAssertNil(MacContents.remap(0, from: before, to: empty))
+    }
+
     func testPlacesThenTheToggleThenChapters() {
         let layout = MacContents.listLayout(placeCount: 6, expanded: false, chapterCount: 10, hasChapterList: true)
         XCTAssertEqual(layout.placeCount, 3)

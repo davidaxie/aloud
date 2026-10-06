@@ -325,8 +325,8 @@ final class PDFChapterTiersTests: XCTestCase {
         let long = String(repeating: "Long ", count: 20)
         let raw = [Entry(title: "A", sentence: 2, section: nil),
                    Entry(title: "B", sentence: 2, section: nil),
-                   Entry(title: "C", sentence: 5, section: nil),
-                   Entry(title: "D", sentence: 4, section: nil),
+                   Entry(title: "Gamma", sentence: 5, section: nil),
+                   Entry(title: "Delta", sentence: 4, section: nil),
                    Entry(title: long, sentence: 7, section: nil),
                    Entry(title: "Out", sentence: 10, section: nil)]
 
@@ -335,7 +335,7 @@ final class PDFChapterTiersTests: XCTestCase {
         // Six words of front text join the first entry instead of a row.
         XCTAssertEqual(entries.map(\.sentence), [0, 5, 7])
         XCTAssertEqual(entries[0].title, "B")
-        XCTAssertEqual(entries[1].title, "C")
+        XCTAssertEqual(entries[1].title, "Gamma")
         XCTAssertEqual(entries[2].title, DocContent.cleanedChapterTitle(long, maxLength: 80))
         XCTAssertTrue(entries[2].title.hasSuffix("\u{2026}"))
         XCTAssertLessThanOrEqual(entries[2].title.count, 81)

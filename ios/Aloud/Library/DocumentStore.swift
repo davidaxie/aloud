@@ -377,9 +377,13 @@ final class DocumentStore: ObservableObject {
     /// outline from the stored PDF, the detectors on the cached text) and
     /// saves it into the cache. The text and its hash don't change, so the
     /// reconcile after keeps progress. A book deleted meanwhile keeps no
-    /// cache; two loads at once write the same result.
+    /// cache; two loads at once write the same result. Off the extraction
+    /// pipeline, so opening a book never waits behind an import.
     private func backfillChapters(_ cached: DocContent, for document: LibraryDocument) async -> DocContent {
-        let content = await pipeline.addingChapters(to: cached, pdfURL: Self.fileURL(for: document))
+        let pdfURL = Self.fileURL(for: document)
+        let content = await Task.detached(priority: .userInitiated) {
+            ExtractionPipeline.addingChapters(to: cached, pdfURL: pdfURL)
+        }.value
         guard documents.contains(where: { $0.id == document.id }) else { return content }
         let url = Self.contentCacheURL(for: document.id)
         await Task.detached(priority: .utility) {
@@ -388,6 +392,11 @@ final class DocumentStore: ObservableObject {
             guard let data = try? encoder.encode(content) else { return }
             try? data.write(to: url, options: .atomic)
         }.value
+        // Deleted while the cache was written: the write must not bring
+        // the file back (back on the main actor, as delete is).
+        if !documents.contains(where: { $0.id == document.id }) {
+            try? FileManager.default.removeItem(at: url)
+        }
         return content
     }
 

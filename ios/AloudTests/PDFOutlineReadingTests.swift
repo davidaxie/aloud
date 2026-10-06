@@ -48,14 +48,17 @@ final class PDFOutlineReadingTests: XCTestCase {
         return root
     }
 
-    /// The five pages, written with their outline to a file of their own.
+    /// The five pages with the same bookmarks written into the file
+    /// (CoreGraphics: PDFKit doesn't save an outline set in code), Part One
+    /// on page 2.
     private func outlinedPDF() throws -> URL {
-        let source = temporaryURL()
-        try FixturePDF.write(pages: Self.pages, to: source)
-        let document = try XCTUnwrap(PDFDocument(url: source))
-        document.outlineRoot = try outline(for: document, partPage: 1)
         let url = temporaryURL()
-        XCTAssertTrue(document.write(to: url))
+        try FixturePDF.write(pages: Self.pages, to: url, outline: [
+            .init(title: "Preface", page: 1),
+            .init(title: "Part One", page: 2, children: [.init(title: "Chapter 1", page: 2),
+                                                          .init(title: "Chapter 2", page: 3)]),
+            .init(title: "Notes", page: 5),
+        ])
         return url
     }
 

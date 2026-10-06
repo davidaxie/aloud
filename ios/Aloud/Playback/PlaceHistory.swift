@@ -54,7 +54,7 @@ struct PlaceStop: Equatable, Sendable {
                          sentence: live.sentenceIndex, excerpt: nil,
                          startSentence: live.startSentence ?? live.sentenceIndex,
                          startedAt: startedAt, stoppedAt: live.wallClock,
-                         listenedSeconds: max(listened, 0), movedAway: false)
+                         listenedSeconds: max(listened, 0), movedAway: live.movedAway ?? false)
     }
 }
 

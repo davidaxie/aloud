@@ -63,28 +63,22 @@ enum PlaceHistoryRows {
     ///   after the chapter when its Contents lists titled chapters rather
     ///   than pages, "CHAPTER THREE · Page 41".
     static func location(of sentence: Sentence, in navigation: ReaderNavigation) -> String? {
-        let chapter = navigation.chapterIndex(containing: sentence.id).map { navigation.chapters[$0] }
         guard navigation.kind == .pdf else {
-            guard navigation.hasChapterList, let chapter else { return nil }
-            return navigation.qualifiedTitle(forPage: chapter.page)
+            guard navigation.hasChapterList,
+                  let index = navigation.chapterIndex(containing: sentence.id) else { return nil }
+            return navigation.qualifiedTitle(forPage: navigation.chapters[index].page)
         }
-        let page = navigation.labels.pageLabel(sentence.page)
-        guard navigation.hasChapterList, let chapter, !listsPages(navigation) else { return page }
-        let title = navigation.qualifiedTitle(forPage: chapter.page)
-        return isPageLabel(title, page: chapter.page, labels: navigation.labels) ? page : "\(title) · \(page)"
+        guard navigation.hasChapterList, !listsPages(navigation) else {
+            return navigation.labels.pageLabel(sentence.page)
+        }
+        // The chapter that holds the sentence, then its own page, once.
+        return navigation.location(ofSentence: sentence.id, page: sentence.page)
     }
 
     /// Whether Contents lists pages ("Page 12", "Pages 12–14") rather than
-    /// titled chapters: every PDF until PDFs list their own chapters.
+    /// titled chapters: a PDF with no chapters found.
     static func listsPages(_ navigation: ReaderNavigation) -> Bool {
-        guard navigation.kind == .pdf else { return false }
-        guard let first = navigation.chapters.first else { return true }
-        return isPageLabel(navigation.labels.contextTitle(forPage: first.page), page: first.page,
-                           labels: navigation.labels)
-    }
-
-    private static func isPageLabel(_ title: String, page: Int, labels: PageLabels) -> Bool {
-        title == labels.pageLabel(page) || title == labels.pageRangeLabel(page)
+        navigation.kind == .pdf && navigation.rowKind == .pages
     }
 }
 

@@ -16,6 +16,9 @@ struct LiveSession: Equatable, Codable, Sendable {
     /// Optional with defaults: a marker written before them still decodes.
     var startedAt: Date? = nil
     var startSentence: Int? = nil
+    /// Whether the listener jumped away during it ("Where you stopped" keeps
+    /// the place they left). Optional, so an older marker still decodes.
+    var movedAway: Bool? = nil
 }
 
 /// One-slot stop + the live-session marker (written while audio plays,

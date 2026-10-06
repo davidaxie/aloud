@@ -123,6 +123,11 @@ struct MacContentsPanel: View {
         .onChange(of: isListFocused) { _, focused in
             if focused, cursor == nil { cursor = initialCursor(mode) }
         }
+        // A stop recorded, or the toggle shown or hidden, while the list is
+        // open: the cursor stays on its row, never the one that slid under it.
+        .onChange(of: listLayout) { old, new in
+            cursor = MacContents.remap(cursor, from: old, to: new)
+        }
         .onAppear {
             MacSearchHandoff.shared.offer(by: handoffOwner) { focusList() }
         }
@@ -387,7 +392,8 @@ struct MacContentsPanel: View {
         Button {
             pickResult(index)
         } label: {
-            MacContentsResultLabel(match: match, location: navigation.qualifiedTitle(forPage: match.page),
+            MacContentsResultLabel(match: match, location: navigation.location(ofSentence: match.sentenceID,
+                                                                               page: match.page),
                                    scale: scale)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Space.sm)
@@ -655,15 +661,14 @@ enum MacContents {
     static func chapterRow(_ navigation: ReaderNavigation, index: Int, current: Int?,
                            rate: Double) -> MacContentsChapterRow {
         let chapter = navigation.chapters[index]
-        let labels = navigation.labels
         return MacContentsChapterRow(
             index: index,
-            title: labels.contextTitle(forPage: chapter.page),
+            title: navigation.title(ofChapter: index),
             minutes: chapter.estimatedMinutes(wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate),
             startSentence: chapter.startSentence,
             isCurrent: index == current,
             isCompleted: current.map { index < $0 } ?? false,
-            identifier: "chapters.row.\(labels.displayPage(chapter.page))")
+            identifier: navigation.rowIdentifier(at: index))
     }
 
     /// Every chapter's row, with the playhead's marked.

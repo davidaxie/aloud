@@ -33,8 +33,10 @@ final class PlaceHistoryRulesTests: XCTestCase {
     }
 
     func testNewestFirstAndCappedAtEight() {
-        let stops = (0..<10).map { stop(1_000 + $0 * 100, start: 950 + $0 * 100,
-                                        from: Double($0) * 1_000, to: Double($0) * 1_000 + 600) }
+        let stops = (0..<10).map { (index: Int) -> PlaceStop in
+            let from = Double(index) * 1_000
+            return stop(1_000 + index * 100, start: 950 + index * 100, from: from, to: from + 600)
+        }
         let places = record(stops)
         XCTAssertEqual(places.count, PlaceHistory.limit)
         XCTAssertEqual(sentences(places), [1_900, 1_800, 1_700, 1_600, 1_500, 1_400, 1_300, 1_200])

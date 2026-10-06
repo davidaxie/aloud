@@ -150,6 +150,9 @@ struct ReaderNavigation {
     /// Every page inside a titled section, containers included.
     private let sectionTitleByPage: [Int: String]
     private let containerPages: Set<Int>
+    /// A page-range PDF's single pages, when Contents groups them into rows:
+    /// Next Page still moves one page. Empty otherwise.
+    private let pageRuns: [DerivedChapter]
 
     init(content: DocContent, kind: DocKind) {
         // One pass for chapters and word sums: this runs at reader open, inside
@@ -166,9 +169,11 @@ struct ReaderNavigation {
             self.rowTitles = rows.chapters.map(\.title)
             self.sectionTitleByPage = [:]
             self.containerPages = []
+            self.pageRuns = []
             return
         }
         let raw = kind == .pdf ? Self.pageRows(index.chapters) : index.chapters
+        self.pageRuns = kind == .pdf && raw.count < index.chapters.count ? index.chapters : []
         let grouping = Self.grouping(raw, kind: kind, sentences: content.sentences)
         let labels = PageLabels(content: content, kind: kind, chapters: raw)
         self.chapters = grouping.chapters
@@ -380,6 +385,41 @@ struct ReaderNavigation {
             wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate,
             words: { wordsBefore[$0 + 1] - wordsBefore[$0] })
         return target == current ? nil : target
+    }
+
+    /// Next or Previous Chapter (Page, in a PDF that lists pages): the next
+    /// or previous step's start, or this step's start when the playhead is
+    /// past it. A step is a chapter, or one page where Contents groups pages
+    /// into rows. Without steps, as `adjustmentTarget`.
+    func stepTarget(from sentence: Int, forward: Bool, rate: Double) -> Int? {
+        guard !pageRuns.isEmpty, sentenceCount > 0 else {
+            return adjustmentTarget(from: sentence, forward: forward, rate: rate)
+        }
+        let current = min(max(sentence, 0), sentenceCount - 1)
+        guard let index = Self.run(containing: current, in: pageRuns) else { return nil }
+        if forward { return index + 1 < pageRuns.count ? pageRuns[index + 1].startSentence : nil }
+        let start = pageRuns[index].startSentence
+        if current > start { return start }
+        return index > 0 ? pageRuns[index - 1].startSentence : nil
+    }
+
+    /// The first sentence of the step holding `sentence` (`stepTarget`).
+    func stepStart(containing sentence: Int) -> Int? {
+        if !pageRuns.isEmpty {
+            return Self.run(containing: sentence, in: pageRuns).map { pageRuns[$0].startSentence }
+        }
+        return chapterIndex(containing: sentence).map { chapters[$0].startSentence }
+    }
+
+    /// The last of `runs` starting at or before `sentence` (binary search).
+    private static func run(containing sentence: Int, in runs: [DerivedChapter]) -> Int? {
+        guard !runs.isEmpty else { return nil }
+        var low = 0, high = runs.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if runs[mid].startSentence <= sentence { low = mid } else { high = mid - 1 }
+        }
+        return low
     }
 
     /// `span` clamped into the document; nil when the document is empty.

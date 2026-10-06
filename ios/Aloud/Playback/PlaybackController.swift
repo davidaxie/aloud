@@ -321,6 +321,10 @@ final class PlaybackController: ObservableObject {
     var lastPlaceStop: PlaceStop?
     /// The session iOS ended at the last launch, until AppModel takes it.
     var recoveredPlaceStop: PlaceStop?
+    /// The sentence iOS ended the app on, from the live marker: the book
+    /// reopens there, not at the last progress write (throttled to 2 s).
+    /// Applied once, by the first load of that book.
+    private var recoveredLiveSession: LiveSession?
 
     // MARK: - Dependencies & graph
 
@@ -517,6 +521,7 @@ final class PlaybackController: ObservableObject {
                                           monotonic: nil))
             pendingStopAnnouncement = .closedByIOS
             recoveredPlaceStop = PlaceStop.recovered(from: live)
+            recoveredLiveSession = live
         }
         stopped = stopStore.load()
 
@@ -636,7 +641,15 @@ final class PlaybackController: ObservableObject {
             // by an unattended stop (R11), keeps its saved sentence.
             let last = content.sentences.count - 1
             let atEnd = Self.reopensAtItsEnd(document, stop: stopReason(for: document.id))
-            let cue = atEnd ? last : min(max(document.progressSentence, 0), last)
+            let saved = min(max(document.progressSentence, 0), last)
+            // iOS ended the app mid-speech: the marker knows the sentence the
+            // last progress write (at most 2 s old) may not have reached.
+            var recovered: Int?
+            if let live = recoveredLiveSession, live.documentID == document.id {
+                recovered = min(max(live.sentenceIndex, 0), last)
+                recoveredLiveSession = nil
+            }
+            let cue = atEnd ? last : max(saved, recovered ?? saved)
             if atEnd { finishedCue = (cue, document.progressFraction) }
             currentSentence = cue
             if atEnd { status = .ended }
@@ -1058,7 +1071,8 @@ final class PlaybackController: ObservableObject {
                                        sentenceIndex: currentSentence,
                                        wallClock: Date(),
                                        startedAt: placeSession?.startedAt,
-                                       startSentence: placeSession?.startSentence))
+                                       startSentence: placeSession?.startSentence,
+                                       movedAway: placeSession?.movedAway))
     }
 
     // MARK: - Sleep-stop mechanics (R19)
@@ -1226,7 +1240,10 @@ final class PlaybackController: ObservableObject {
         let from = max(currentSentence, 0)
         jumpSerial &+= 1
         if Self.offersUndo(origin: origin, from: from, to: target) {
-            if isListenerPlaying { placeSession?.movedAway = true }   // "Where you stopped"
+            if isListenerPlaying {
+                placeSession?.movedAway = true   // "Where you stopped"
+                markLiveSession()                // and a session iOS ends keeps it
+            }
             if let live = undoableJump, live.documentID == document.id, currentSentence == live.toSentence {
                 undoableJump = UndoableJump(documentID: live.documentID,
                                             fromSentence: live.fromSentence,

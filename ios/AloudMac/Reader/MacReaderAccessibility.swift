@@ -82,8 +82,7 @@ final class MacReaderAccessibility {
         guard let coordinator else { return [] }
         let parent = coordinator.parent
         let kinds = ReaderRotor.available(content: parent.content, navigation: parent.navigation)
-        let docKind: DocKind = parent.isChapterBook ? .text : .pdf
-        let names = kinds.map { $0.name(for: docKind) }
+        let names = kinds.map { $0.name(listing: parent.navigation, isChapterBook: parent.isChapterBook) }
         if names != rotorNames {
             rotors = zip(kinds, names).map { kind, name in
                 NSAccessibilityCustomRotor(label: name, itemSearchDelegate: search(for: kind))
@@ -164,7 +163,7 @@ final class MacReaderAccessibility {
     /// title in a text book, "Page 12" (or "Pages 12–14") in a PDF.
     private static func chapterName(_ id: Int, navigation: ReaderNavigation?) -> String? {
         guard let navigation, let index = navigation.chapterIndex(containing: id) else { return nil }
-        return navigation.labels.contextTitle(forPage: navigation.chapters[index].page)
+        return navigation.title(ofChapter: index)
     }
 
     // MARK: VoiceOver's cursor

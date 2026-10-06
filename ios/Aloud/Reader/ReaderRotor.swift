@@ -22,6 +22,13 @@ enum ReaderRotor: CaseIterable {
         }
     }
 
+    /// The name for what the book's Contents lists: a PDF with real
+    /// chapters steps through Chapters, one without through Pages.
+    func name(listing navigation: ReaderNavigation?, isChapterBook: Bool) -> String {
+        if let navigation { return name(for: navigation.rowKind == .pages ? .pdf : .text) }
+        return name(for: isChapterBook ? .text : .pdf)
+    }
+
     /// The rotors worth offering, coarse to fine. O(1).
     static func available(content: DocContent, navigation: ReaderNavigation?) -> [ReaderRotor] {
         var rotors: [ReaderRotor] = []

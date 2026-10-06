@@ -4,6 +4,7 @@ import XCTest
 /// "Where you stopped" rows: when a place was left, read against a fixed
 /// clock, calendar and locale; what the place is called; which row is at
 /// the playhead; and what VoiceOver says.
+@MainActor
 final class PlaceHistoryRowsTests: XCTestCase {
 
     // MARK: - When
@@ -53,7 +54,10 @@ final class PlaceHistoryRowsTests: XCTestCase {
     }
 
     func testTheClockFollowsTheLocale() {
-        XCTAssertEqual(when(date(2026, 10, 6, 8, 23), locale: Locale(identifier: "en_GB")), "Today, 08:23")
+        // A 24-hour clock in Britain (whether the hour is padded is the
+        // system's call): no AM or PM.
+        let morning = when(date(2026, 10, 6, 8, 23), locale: Locale(identifier: "en_GB"))
+        XCTAssertTrue(morning == "Today, 8:23" || morning == "Today, 08:23", morning)
         XCTAssertEqual(when(date(2026, 10, 5, 20, 23), locale: Locale(identifier: "en_GB")), "Yesterday, 20:23")
     }
 
@@ -127,6 +131,23 @@ final class PlaceHistoryRowsTests: XCTestCase {
         XCTAssertEqual(built.map(\.location), ["Page 2"])
         XCTAssertEqual(built.first?.detail, "Today, 8:23 AM · Page 2")
         XCTAssertTrue(PlaceHistoryRows.listsPages(ReaderNavigation(content: content, kind: .pdf)))
+    }
+
+    /// A PDF with real chapters: the chapter that holds the sentence, then
+    /// its page, once, even with two chapters starting on one page.
+    func testAMappedPDFPlaceNamesItsChapterAndPageOnce() {
+        var content = PlaybackTestRig.makeContent(hash: "mapped", count: 8, pages: [0, 0, 1, 1, 1, 2, 2, 2])
+        content.chapterMap = ChapterMap(version: ChapterMap.currentVersion, source: .outline, entries: [
+            ChapterMap.Entry(title: "Front matter", sentence: 0, section: nil),
+            ChapterMap.Entry(title: "Short", sentence: 2, section: nil),
+            ChapterMap.Entry(title: "Next", sentence: 4, section: nil),
+            ChapterMap.Entry(title: "Last", sentence: 5, section: nil),
+        ])
+        let built = rows([entry(3, date(2026, 10, 6, 8, 23)), entry(7, date(2026, 10, 6, 7, 0))],
+                         content: content, kind: .pdf, playhead: 0)
+        XCTAssertEqual(built.map(\.location), ["Short · Page 2", "Last · Page 3"],
+                       "the sentence's own chapter, though Next also starts on page 2")
+        XCTAssertFalse(PlaceHistoryRows.listsPages(ReaderNavigation(content: content, kind: .pdf)))
     }
 
     /// Without a chapter list the sentence is the place: no location.

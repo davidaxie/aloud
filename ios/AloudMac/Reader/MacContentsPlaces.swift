@@ -49,6 +49,28 @@ extension MacContents {
         }
     }
 
+    /// The keyboard cursor found again after the list changed under it (a
+    /// stop recorded while Contents is open, the toggle coming or going): a
+    /// chapter stays on its chapter, the toggle on the toggle, a place on
+    /// its position, clamped into the new list.
+    static func remap(_ cursor: Int?, from old: ListLayout, to new: ListLayout) -> Int? {
+        guard let cursor else { return nil }
+        guard new.count > 0 else { return nil }
+        guard let row = old.row(at: cursor) else { return min(cursor, new.count - 1) }
+        let lastPlace: ListRow? = new.placeCount > 0 ? .place(new.placeCount - 1) : nil
+        let target: ListRow
+        switch row {
+        case .chapter(let index):
+            target = .chapter(min(index, max(new.chapterCount - 1, 0)))
+        case .showEarlier:
+            target = new.hasShowEarlier ? .showEarlier : (lastPlace ?? .chapter(0))
+        case .place(let index):
+            target = index < new.placeCount ? .place(index)
+                : (lastPlace ?? (new.hasShowEarlier ? .showEarlier : .chapter(0)))
+        }
+        return min(new.index(of: target), new.count - 1)
+    }
+
     /// The list for `placeCount` places (expanded or not) over
     /// `chapterCount` chapters.
     static func listLayout(placeCount total: Int, expanded: Bool,

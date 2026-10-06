@@ -151,4 +151,38 @@ final class PlaceStopRecordingTests: XCTestCase {
         XCTAssertNil(recovered?.contentHash, "AppModel fills in the library record's hash")
         XCTAssertNil(relaunched.takeRecoveredPlaceStop(), "once")
     }
+
+    /// The book reopens at the sentence iOS ended the app on, which the
+    /// throttled progress write may not have reached, so the reader and the
+    /// newest stop agree; and a jump away during that session survives.
+    func testARecoveredSessionReopensAtItsSentenceAndKeepsItsJump() {
+        let rig = PlaybackTestRig(sentences: 40)
+        rig.stopStore.markLive(LiveSession(documentID: rig.document.id, sentenceIndex: 17,
+                                           wallClock: Date(), startedAt: Date().addingTimeInterval(-60),
+                                           startSentence: 9, movedAway: true))
+        let engine = PlaybackTestRig.RecordingEngine(voices: [PlaybackTestRig.voiceA])
+        let cache = AudioClipCache()
+        let relaunched = PlaybackController(engine: engine,
+                                            defaultVoice: PlaybackTestRig.voiceA,
+                                            scheduler: SynthesisScheduler(engine: engine, cache: cache),
+                                            cache: cache,
+                                            audioSession: PlaybackTestRig.FakeAudioOutput(),
+                                            anchorStore: rig.anchorStore,
+                                            stopStore: rig.stopStore,
+                                            outputMuted: true)
+        XCTAssertEqual(relaunched.takeRecoveredPlaceStop()?.movedAway, true)
+
+        // The library's last write reached sentence 15 of the 17 heard.
+        var reopened = rig.document
+        reopened.progressSentence = 15
+        reopened.progressFraction = 15.0 / 40
+        relaunched.load(document: reopened, content: rig.content)
+        XCTAssertEqual(relaunched.currentSentence, 17, "the marker's sentence, not the older write")
+
+        // Only once: a later load of the book uses its saved place.
+        relaunched.unload()
+        reopened.progressSentence = 12
+        relaunched.load(document: reopened, content: rig.content)
+        XCTAssertEqual(relaunched.currentSentence, 12)
+    }
 }

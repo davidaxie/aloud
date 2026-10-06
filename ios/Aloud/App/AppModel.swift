@@ -214,6 +214,8 @@ final class AppModel: ObservableObject {
         nowPlaying.onPlayWithNoBook = { [weak self] in
             Task { @MainActor [weak self] in _ = await self?.shortcutActions.continueListening() }
         }
+        // "Where you stopped": each stop is recorded per book.
+        observePlaceHistory()
 
         // Persist progress even when playback continues outside the reader.
         // The controller's onProgress is the only progress writer.
