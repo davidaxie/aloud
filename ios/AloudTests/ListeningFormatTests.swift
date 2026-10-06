@@ -93,6 +93,55 @@ final class ListeningFormatTests: XCTestCase {
         XCTAssertEqual(ListeningFormat.shortName(michael), "Michael")
     }
 
+    // MARK: - Stand-in notes (F073, F095)
+
+    /// A blend whose voices file couldn't load stays in the list and says it
+    /// speaks as Michael; loaded, or before any load decides, it says
+    /// nothing more. A stock voice always speaks as itself.
+    func testABlendThatCannotLoadSaysItSpeaksAsItsFallback() throws {
+        XCTAssertEqual(KokoroVoiceBlends.all.count, 3)
+        for blend in KokoroVoiceBlends.all {
+            let voice = try XCTUnwrap(KokoroVoiceCatalog.curatedVoices.first { $0.id == blend.voiceID })
+            XCTAssertEqual(ListeningView.standInNote(for: voice, blendsAvailable: false, standingInFor: nil),
+                           "speaking as Michael for now", blend.name)
+            XCTAssertNil(ListeningView.standInNote(for: voice, blendsAvailable: true, standingInFor: nil))
+            XCTAssertNil(ListeningView.standInNote(for: voice, blendsAvailable: nil, standingInFor: nil))
+        }
+        XCTAssertNil(ListeningView.standInNote(for: KokoroVoiceCatalog.defaultVoice, blendsAvailable: false,
+                                               standingInFor: nil))
+
+        let velvet = try XCTUnwrap(KokoroVoiceCatalog.curatedVoices.first {
+            $0.id == KokoroVoiceBlends.all[0].voiceID
+        })
+        let subtitle = ListeningCopy.subtitle(velvet.subtitle, note: ListeningCopy.blendStandIn(speaker: "Michael"))
+        XCTAssertEqual(subtitle, velvet.subtitle + " \u{00B7} speaking as Michael for now")
+        XCTAssertEqual(ListeningView.accessibilityLabel(name: velvet.name, subtitle: subtitle,
+                                                        origin: "US \u{00B7} male"),
+                       "\(velvet.name), \(velvet.subtitle), speaking as Michael for now, US, male",
+                       "VoiceOver hears commas, never the middle dot")
+        XCTAssertEqual(ListeningCopy.subtitle(velvet.subtitle, note: nil), velvet.subtitle)
+    }
+
+    /// The System voice in use while a natural voice is the stored pick (the
+    /// device cooling, or the natural voice failed) says it stands in, so
+    /// picking it again, which changes nothing, is explained. Picked for
+    /// itself, it says nothing more.
+    func testTheSystemVoiceStandingInForANaturalVoiceSaysSo() {
+        let system = TtsVoice(id: AVSpeechEngine.systemVoiceID, name: "System voice", lang: "en-US",
+                              gender: "", engine: .avSpeech, quality: 1)
+        let natural = KokoroVoiceCatalog.defaultVoice
+        XCTAssertEqual(ListeningView.standInNote(for: system, blendsAvailable: nil, standingInFor: natural),
+                       "standing in for Michael")
+        XCTAssertEqual(ListeningCopy.subtitle("Built-in fallback",
+                                              note: ListeningView.standInNote(for: system, blendsAvailable: true,
+                                                                              standingInFor: natural)),
+                       "Built-in fallback \u{00B7} standing in for Michael")
+        XCTAssertNil(ListeningView.standInNote(for: system, blendsAvailable: nil, standingInFor: system))
+        XCTAssertNil(ListeningView.standInNote(for: system, blendsAvailable: false, standingInFor: nil))
+        XCTAssertNil(ListeningView.standInNote(for: natural, blendsAvailable: nil, standingInFor: natural),
+                     "a natural voice is never a stand-in")
+    }
+
     private let michael = TtsVoice(id: "kokoro:am_michael", name: "Michael", lang: "en-US",
                                    gender: "m", engine: .kokoro, quality: 2)
 }

@@ -24,7 +24,7 @@ final class ReaderMessageTests: XCTestCase {
         if let notice { return .notice(notice) }
         if offerVisible { return .naturalVoiceOffer }
         if modelState == .downloading(0.42) { return .downloadProgress(0.42) }
-        if modelState == .waitingForWiFi(0.3) { return .downloadWaiting }
+        if modelState == .waitingForWiFi(0.3) { return .downloadWaiting(NaturalVoiceCopy.waitingForWiFi) }
         if isPreparingVoice { return .preparingVoice }
         return nil
     }
@@ -102,7 +102,17 @@ final class ReaderMessageTests: XCTestCase {
         // Waiting for Wi-Fi sits with download progress, above preparing.
         XCTAssertEqual(ReaderMessage.resolve(stop: nil, notice: nil, offerVisible: false,
                                              modelState: .waitingForWiFi(0.6), isPreparingVoice: true),
-                       .downloadWaiting)
+                       .downloadWaiting(NaturalVoiceCopy.waitingForWiFi))
+        // F021: a run allowed onto cellular waits for any connection, and
+        // the line says so, as the download card does.
+        let anyConnection = ReaderMessage.resolve(stop: nil, notice: nil, offerVisible: false,
+                                                  modelState: .waitingForWiFi(0.6),
+                                                  waitingLine: NaturalVoiceCopy.waitingForConnection,
+                                                  isPreparingVoice: false)
+        XCTAssertEqual(anyConnection, .downloadWaiting(NaturalVoiceCopy.waitingForConnection))
+        XCTAssertEqual(anyConnection?.text, "Download paused · waiting for a connection")
+        XCTAssertEqual(anyConnection?.spokenText, "Download paused, waiting for a connection")
+        XCTAssertEqual(anyConnection?.slotKey, "download")
         // Failures show on the card (and the space line in the offer), never here.
         for failure in ModelManager.DownloadFailure.allCases {
             XCTAssertNil(ReaderMessage.resolve(stop: nil, notice: nil, offerVisible: false,
@@ -129,9 +139,9 @@ final class ReaderMessageTests: XCTestCase {
         XCTAssertEqual(ReaderMessage.naturalVoiceOffer.text, NaturalVoiceCopy.offer)
         XCTAssertEqual(ReaderMessage.downloadProgress(0.42).text, "Downloading natural voice · 42%")
         #if os(iOS)
-        XCTAssertEqual(ReaderMessage.downloadWaiting.text, "Download paused · waiting for Wi-Fi")
+        XCTAssertEqual(ReaderMessage.downloadWaiting(NaturalVoiceCopy.waitingForWiFi).text, "Download paused · waiting for Wi-Fi")
         #else
-        XCTAssertEqual(ReaderMessage.downloadWaiting.text, "Download paused · waiting for Wi-Fi or Ethernet")
+        XCTAssertEqual(ReaderMessage.downloadWaiting(NaturalVoiceCopy.waitingForWiFi).text, "Download paused · waiting for Wi-Fi or Ethernet")
         #endif
         XCTAssertEqual(ReaderMessage.preparingVoice.text, "Preparing voice…")
     }
@@ -140,7 +150,7 @@ final class ReaderMessageTests: XCTestCase {
         let messages: [ReaderMessage] = StopReason.allCases.map { .stopped($0) } + [
             .notice(michael), .notice(.fellBackToSystem), .notice(.backedUp(sentences: 2)),
             .notice(.skippedSentence), .notice(.coolingDown),
-            .naturalVoiceOffer, .downloadProgress(0.42), .downloadWaiting, .preparingVoice,
+            .naturalVoiceOffer, .downloadProgress(0.42), .downloadWaiting(NaturalVoiceCopy.waitingForWiFi), .preparingVoice,
         ]
         for message in messages {
             XCTAssertFalse(message.spokenText.contains("·"), "\(message): \(message.spokenText)")
@@ -148,10 +158,10 @@ final class ReaderMessageTests: XCTestCase {
         }
         #if os(iOS)
         XCTAssertEqual(ReaderMessage.stopped(.playbackError).spokenText, "Playback stopped, tap to try again")
-        XCTAssertEqual(ReaderMessage.downloadWaiting.spokenText, "Download paused, waiting for Wi-Fi")
+        XCTAssertEqual(ReaderMessage.downloadWaiting(NaturalVoiceCopy.waitingForWiFi).spokenText, "Download paused, waiting for Wi-Fi")
         #else
         XCTAssertEqual(ReaderMessage.stopped(.playbackError).spokenText, "Playback stopped")
-        XCTAssertEqual(ReaderMessage.downloadWaiting.spokenText, "Download paused, waiting for Wi-Fi or Ethernet")
+        XCTAssertEqual(ReaderMessage.downloadWaiting(NaturalVoiceCopy.waitingForWiFi).spokenText, "Download paused, waiting for Wi-Fi or Ethernet")
         #endif
         XCTAssertEqual(ReaderMessage.preparingVoice.spokenText, "Preparing voice")
     }
@@ -164,7 +174,7 @@ final class ReaderMessageTests: XCTestCase {
         XCTAssertEqual(ReaderMessage.downloadProgress(0.1).slotKey,
                        ReaderMessage.downloadProgress(0.9).slotKey,
                        "Progress ticks must not animate the slot")
-        XCTAssertEqual(ReaderMessage.downloadWaiting.slotKey, ReaderMessage.downloadProgress(0.5).slotKey,
+        XCTAssertEqual(ReaderMessage.downloadWaiting(NaturalVoiceCopy.waitingForWiFi).slotKey, ReaderMessage.downloadProgress(0.5).slotKey,
                        "Pausing for Wi-Fi is the same download line")
         XCTAssertEqual(ReaderMessage.notice(michael).slotKey, ReaderMessage.notice(.skippedSentence).slotKey)
 

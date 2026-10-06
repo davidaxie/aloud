@@ -481,6 +481,9 @@ final class PlaybackController: ObservableObject {
         0.94 + 0.0504 * Double(max(characters, 0))
     }
     private static let synthesisAttempts = 3   // 1 try + 2 retries per sentence
+    /// How long the top-up waits before asking again when the prefetch lane
+    /// refuses a sentence (`SynthesisSchedulerError.backlogFull`).
+    private static let backlogRetryNanoseconds: UInt64 = 200_000_000
     private static let skippedClipDuration = 0.05
 
     // MARK: - Init
@@ -1519,6 +1522,19 @@ final class PlaybackController: ObservableObject {
                     failedRunSkips = []   // the skips before it stand: the voice reads
                 } catch is CancellationError {
                     return
+                } catch SynthesisSchedulerError.backlogFull {
+                    // Not now, never a failed sentence (F016): the prefetch
+                    // lane is full of earlier work. Nothing is skipped or
+                    // counted toward the fallback, and a pending handoff
+                    // stands; the loop asks again after a beat, by when the
+                    // lane has room or this sentence is current and rides
+                    // the `now` lane, which clears it.
+                    do {
+                        try await Task.sleep(nanoseconds: Self.backlogRetryNanoseconds)
+                    } catch {
+                        return
+                    }
+                    continue
                 } catch {
                     guard token == playToken else { return }
                     // The incoming voice can't read: drop the handoff, and the
@@ -1594,6 +1610,10 @@ final class PlaybackController: ObservableObject {
                                                       priority: priority)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch SynthesisSchedulerError.backlogFull {
+                // A refusal, not a failure: the same full lane would refuse
+                // a retry at once too. The top-up asks again later.
+                throw SynthesisSchedulerError.backlogFull
             } catch {
                 lastError = error
             }

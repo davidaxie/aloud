@@ -7,7 +7,8 @@ import Foundation
 ///
 /// Nil from `resolve` means no message: the line shows the reader's
 /// position (chapter and time left) instead. Every string comes from the
-/// fixed copy tables (StopReason, PlaybackNotice, NaturalVoiceCopy).
+/// fixed copy tables (StopReason, PlaybackNotice, NaturalVoiceCopy), the
+/// waiting line through `ModelManager.waitingLine`.
 enum ReaderMessage: Equatable {
     /// Stopped tier: playback stopped without the listener asking, until
     /// the next Play.
@@ -16,24 +17,28 @@ enum ReaderMessage: Equatable {
     case notice(PlaybackNotice)
     case naturalVoiceOffer
     case downloadProgress(Double)
-    /// R21: the download is paused until Wi-Fi returns.
-    case downloadWaiting
+    /// R21: the download is paused until its network returns. The line
+    /// is the manager's `waitingLine`: Wi-Fi for a Wi-Fi-only run, any
+    /// connection for one allowed onto cellular.
+    case downloadWaiting(String)
     case preparingVoice
 
     /// A failed download resolves to nil here: the out-of-space line shows
     /// through the offer (`NaturalVoiceOffer.isVisible`), the other failures
-    /// on the download card.
+    /// on the download card. `waitingLine` is the manager's, so a run allowed
+    /// onto cellular that has no network says so, never "waiting for Wi-Fi".
     static func resolve(stop: StopReason?,
                         notice: PlaybackNotice?,
                         offerVisible: Bool,
                         modelState: ModelManager.ModelState,
+                        waitingLine: String = NaturalVoiceCopy.waitingForWiFi,
                         isPreparingVoice: Bool) -> ReaderMessage? {
         if let stop { return .stopped(stop) }
         if let notice { return .notice(notice) }
         if offerVisible { return .naturalVoiceOffer }
         switch modelState {
         case .downloading(let progress): return .downloadProgress(progress)
-        case .waitingForWiFi: return .downloadWaiting
+        case .waitingForWiFi: return .downloadWaiting(waitingLine)
         case .notInstalled, .installed, .failed: break
         }
         if isPreparingVoice { return .preparingVoice }
@@ -59,7 +64,7 @@ enum ReaderMessage: Equatable {
         case .notice(let notice): return notice.text
         case .naturalVoiceOffer: return NaturalVoiceCopy.offer
         case .downloadProgress(let progress): return NaturalVoiceCopy.downloading(progress)
-        case .downloadWaiting: return NaturalVoiceCopy.waitingForWiFi
+        case .downloadWaiting(let line): return line
         case .preparingVoice: return ListeningCopy.preparingVoice
         }
     }

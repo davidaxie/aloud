@@ -80,9 +80,10 @@ final class DocumentStore: ObservableObject {
         try Task.checkCancellation()
         let id = UUID()
         let destination = Self.libraryDir.appendingPathComponent("\(id.uuidString).pdf")
-        try await Self.copyFile(from: url, to: destination)
 
         do {
+            // Inside the cleanup: a copy that fails partway leaves nothing.
+            try await Self.copyFile(from: url, to: destination)
             // The library copy is named by UUID, so a PDF without Title
             // metadata is named after the file the user picked.
             let content = try await pipeline.extract(pdfURL: destination,
@@ -137,9 +138,10 @@ final class DocumentStore: ObservableObject {
         try Task.checkCancellation()
         let id = UUID()
         let destination = Self.libraryDir.appendingPathComponent("\(id.uuidString).txt")
-        try await Self.copyFile(from: url, to: destination)
 
         do {
+            // Inside the cleanup: a copy that fails partway leaves nothing.
+            try await Self.copyFile(from: url, to: destination)
             let content = try await pipeline.extractText(fileURL: destination, title: title, progress: progress)
             if let existing = Self.existingCopy(sourceHash: sourceHash, contentHash: content.contentHash,
                                                 kind: .text, in: documents) {
@@ -670,11 +672,15 @@ final class DocumentStore: ObservableObject {
 
     // MARK: - File helpers (off-main)
 
-    private static func copyFile(from source: URL, to destination: URL) async throws {
+    /// A copy of the book itself: copyItem copies a symlink as a link, which
+    /// in the library would point outside it, or nowhere once relative
+    /// (F038). The link's target is copied as a regular file instead.
+    static func copyFile(from source: URL, to destination: URL) async throws {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        let resolved = source.resolvingSymlinksInPath()
         try await Task.detached(priority: .userInitiated) {
-            try FileManager.default.copyItem(at: source, to: destination)
+            try FileManager.default.copyItem(at: resolved, to: destination)
         }.value
     }
 

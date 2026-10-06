@@ -88,7 +88,7 @@ final class MacPlayerBarTests: XCTestCase {
     private static let messages: [ReaderMessage?] = [nil]
         + StopReason.allCases.map { .stopped($0) }
         + [.notice(.fellBackToSystem), .notice(.coolingDown), .naturalVoiceOffer,
-           .downloadProgress(0.4), .downloadWaiting, .preparingVoice]
+           .downloadProgress(0.4), .downloadWaiting(NaturalVoiceCopy.waitingForWiFi), .preparingVoice]
 
     private static let chips: [ReaderChip?] = [nil, .undoJump, .moreClassics, .followVoice(.up)]
 

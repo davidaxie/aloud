@@ -84,6 +84,7 @@ struct PlayerBarView: View {
                               notice: playback.notice,
                               offerVisible: naturalVoiceOffer.isVisible,
                               modelState: modelManager.state,
+                              waitingLine: modelManager.waitingLine,
                               isPreparingVoice: playback.isPreparingVoice)
     }
 
@@ -314,8 +315,11 @@ struct PlayerBarView: View {
                 .contentShape(Rectangle())
         }
         // The glyph scales inside a fixed 44pt target, so growth stops at
-        // xxxLarge.
+        // xxxLarge; a long press past the cap shows it large.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .largeContentViewerIfAvailable {
+            Label(label, systemImage: systemImage)
+        }
         .accessibilityLabel(label)
         .accessibilityInputLabels([Text(inputLabel)])
         .accessibilityIdentifier(identifier)
@@ -327,10 +331,14 @@ struct PlayerBarView: View {
                                     reduceMotion: reduceMotion)
         return Button(action: togglePlayback) {
             PlayCircleFace(state: state)
-                // The glyph scales inside the fixed 54pt circle.
+                // The glyph scales inside the fixed 54pt circle; a long
+                // press past the cap shows it large.
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         }
         .buttonStyle(AccentCircleButtonStyle(diameter: Theme.PlayCircle.diameter))
+        .largeContentViewerIfAvailable {
+            Label(state.label, systemImage: state.glyph.rawValue)
+        }
         .accessibilityLabel(state.label)
         .accessibilityValue(state.value)
         .accessibilityIdentifier("player.play")

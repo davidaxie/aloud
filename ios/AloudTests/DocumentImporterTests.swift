@@ -757,4 +757,88 @@ final class DocumentImporterTests: XCTestCase {
         XCTAssertTrue(RootView.showsFailureAlert(failure: .pdfNoText, rootPresentation: nil))
         XCTAssertFalse(RootView.showsFailureAlert(failure: nil, rootPresentation: nil))
     }
+
+    // MARK: Open-in leftovers (F036)
+
+    /// A folder standing in for the Open-in Inbox, holding one copy an
+    /// earlier add never finished with.
+    private func makeLeftoverInbox() throws -> (folder: URL, leftover: URL) {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-inbox-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let leftover = folder.appendingPathComponent("Left Behind.pdf")
+        try Data("%PDF-1.4".utf8).write(to: leftover)
+        return (folder, leftover)
+    }
+
+    /// An add the app never finished (iOS ended it mid-import) leaves its
+    /// Open-in copy behind. The importer clears it once idle, never while
+    /// an add runs.
+    func testALeftoverInboxCopyIsClearedOnceIdleNeverMidAdd() async throws {
+        let (folder, leftover) = try makeLeftoverInbox()
+        let library = FakeLibrary(result: .success(Self.document(title: "Fixture")))
+        library.gatesImports = true
+        let importer = DocumentImporter(library: library, announce: { _ in }, inbox: folder)
+        importer.inboxSweepAge = -60   // anything already there counts as left over
+
+        importer.importFile(at: pickedURL("fixture.txt"))
+        let started = await waitUntil { library.pendingImports == 1 }
+        XCTAssertTrue(started)
+        await settle()
+        XCTAssertTrue(exists(leftover), "never swept while an add runs")
+
+        library.releaseImport()
+        let swept = await waitUntil { !exists(leftover) }
+        XCTAssertTrue(swept, "cleared once the importer is idle")
+        XCTAssertEqual(importer.phase, .idle)
+    }
+
+    /// A failure on screen holds the sweep with the queue; dismissing it
+    /// leaves the importer idle, and the leftover goes then.
+    func testALeftoverWaitsForAFailureToBeDismissed() async throws {
+        let (folder, leftover) = try makeLeftoverInbox()
+        let library = FakeLibrary(result: .failure(CocoaError(.fileReadCorruptFile)))
+        let importer = DocumentImporter(library: library, announce: { _ in }, inbox: folder)
+        importer.inboxSweepAge = -60
+
+        importer.importFile(at: pickedURL("broken.txt"))
+        let failed = await waitUntil { importer.failure != nil }
+        XCTAssertTrue(failed)
+        await settle()
+        XCTAssertTrue(exists(leftover), "not idle while the failure shows")
+
+        importer.dismissFailure()
+        XCTAssertFalse(exists(leftover))
+    }
+
+    /// A copy that has only just arrived may still be on its way to the
+    /// importer (a cold Open-in), so the sweep keeps it.
+    func testAnInboxCopyThatJustArrivedStays() async throws {
+        let (folder, fresh) = try makeLeftoverInbox()
+        let library = FakeLibrary(result: .success(Self.document(title: "Fixture")))
+        let importer = DocumentImporter(library: library, announce: { _ in }, inbox: folder)
+        XCTAssertEqual(importer.inboxSweepAge, 60)
+
+        importer.importFile(at: pickedURL("fixture.txt"))
+        let done = await waitUntil { importer.phase == .idle }
+        XCTAssertTrue(done)
+        await settle()
+        XCTAssertTrue(exists(fresh))
+
+        DocumentImporter.sweepLeftovers(in: folder, arrivedBefore: Date().addingTimeInterval(-60))
+        XCTAssertTrue(exists(fresh))
+        DocumentImporter.sweepLeftovers(in: folder, arrivedBefore: Date().addingTimeInterval(60))
+        XCTAssertFalse(exists(fresh))
+    }
+
+    /// The time an add holds against suspension is given back once, and a
+    /// second end is harmless (the add's end and the system's expiry).
+    func testBackgroundTimeEndsOnce() {
+        let held = PlatformBackgroundTask(name: "Adding a book")
+        held.end()
+        XCTAssertFalse(held.isHeld)
+        held.end()
+        XCTAssertFalse(held.isHeld)
+    }
 }

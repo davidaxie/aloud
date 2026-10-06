@@ -98,15 +98,18 @@ struct LibraryView: View {
             router.dismissRootPresentation(.filePicker)
             importer.handlePick(result)
         }
+        // The controller's unattended stop holds a book Finished by the
+        // slack rule at its sentence (`DocumentStore.isAtItsEnd`), as the
+        // shortcut and remote Play do.
         .onReceive(store.$documents) { documents in
-            shelf = ShelfLayout(for: documents, loadedID: loadedID)
+            shelf = ShelfLayout(for: documents, loadedID: loadedID, stop: model.playback.stopped)
         }
         // The plain publisher, like the store's, deduplicated here: only a
         // change of book reshapes the shelf.
         .onReceive(model.playback.$document) { document in
             guard document?.id != loadedID else { return }
             loadedID = document?.id
-            shelf = ShelfLayout(for: store.documents, loadedID: loadedID)
+            shelf = ShelfLayout(for: store.documents, loadedID: loadedID, stop: model.playback.stopped)
         }
         .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)

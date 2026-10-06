@@ -10,6 +10,25 @@ enum ListeningCopy {
     static let hintSentence = "Reads the current sentence in this voice"
     static let hintSample = "Reads a sample in this voice"
 
+    /// F073: a blend speaking as its stand-in speaker for the session (its
+    /// voices file couldn't be built). The row stays, and says so.
+    static func blendStandIn(speaker: String) -> String {
+        "speaking as \(speaker) for now"
+    }
+
+    /// F095: the System voice only standing in for the natural voice picked
+    /// (while the device cools, or after the natural voice failed), so a
+    /// pick of it, which changes nothing, has its reason in view.
+    static func systemStandIn(for voiceName: String) -> String {
+        "standing in for \(voiceName)"
+    }
+
+    /// A row's subtitle with its stand-in note, if any:
+    /// "Low, smooth narrator · speaking as Michael for now".
+    static func subtitle(_ described: String, note: String?) -> String {
+        [described, note ?? ""].filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
+    }
+
     /// A preset's spoken name, "1.25 times speed". "1.25×" is a numeral and
     /// a sign, not words (the element-description audit flags it), so the
     /// button shows it but says this. ListeningFormat's number, minus its ×.
@@ -247,9 +266,16 @@ struct ListeningView: View {
         let selected = voice.id == playback.voice.id
         let origin = Self.origin(for: voice)
         let resolvedName = voice.id == AVSpeechEngine.systemVoiceID ? systemVoiceName : nil
+        // Read only for the System row in use: the stored pick it may be
+        // standing in for (AppModel's engaged preference).
+        let preferred = selected && voice.engine != .kokoro ? model.thermalGuard.preferredVoice() : nil
+        let note = Self.standInNote(for: voice,
+                                    blendsAvailable: model.kokoroEngine.blendsAvailable,
+                                    standingInFor: preferred)
         let subtitle = selected && playback.isPreparingVoice
             ? ListeningCopy.preparingVoice
-            : (resolvedName ?? (voice.subtitle.isEmpty ? origin : voice.subtitle))
+            : ListeningCopy.subtitle(resolvedName ?? (voice.subtitle.isEmpty ? origin : voice.subtitle),
+                                     note: note)
         let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
         return Button {
             playback.selectVoice(voice)
@@ -306,6 +332,24 @@ struct ListeningView: View {
         .accessibilityIdentifier("voice.\(voice.id)")
     }
 
+    /// What a row says when its voice isn't what it names: a blend while
+    /// the blends couldn't load speaks as its fallback speaker (F073), and
+    /// the System voice in use while a natural voice is the stored pick
+    /// (`preferred`) only stands in for it (F095). Nil otherwise.
+    nonisolated static func standInNote(for voice: TtsVoice, blendsAvailable: Bool?,
+                                        standingInFor preferred: TtsVoice?) -> String? {
+        if blendsAvailable == false, let blend = KokoroVoiceBlends.blend(forVoiceID: voice.id) {
+            let speakerID = KokoroVoiceCatalog.voiceIDPrefix + blend.fallbackSpeaker
+            let speaker = KokoroVoiceCatalog.curatedVoices.first { $0.id == speakerID }?.name
+                ?? KokoroVoiceCatalog.defaultVoice.name
+            return ListeningCopy.blendStandIn(speaker: speaker)
+        }
+        if voice.engine != .kokoro, let preferred, preferred.engine == .kokoro {
+            return ListeningCopy.systemStandIn(for: preferred.name)
+        }
+        return nil
+    }
+
     /// "en-US" + "male" → "US · male" for the natural voices; the System
     /// voice has no origin to show.
     private static func origin(for voice: TtsVoice) -> String {
@@ -316,10 +360,12 @@ struct ListeningView: View {
 
     /// Starts with the visible name and subtitle: "Michael, Deep, warm
     /// narrator, US, male"; "System voice, Built-in fallback".
-    private static func accessibilityLabel(name: String, subtitle: String, origin: String) -> String {
+    nonisolated static func accessibilityLabel(name: String, subtitle: String, origin: String) -> String {
         // When the subtitle already is the origin, don't say it twice.
         let spokenOrigin = subtitle == origin ? "" : origin.replacingOccurrences(of: " · ", with: ", ")
-        return [name, subtitle, spokenOrigin].filter { !$0.isEmpty }.joined(separator: ", ")
+        // A stand-in note's middle dot is read aloud as a word otherwise.
+        let spokenSubtitle = subtitle.replacingOccurrences(of: " · ", with: ", ")
+        return [name, spokenSubtitle, spokenOrigin].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     // MARK: - Read asides and footer

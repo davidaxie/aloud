@@ -121,6 +121,18 @@ final class NeuralPrewarmTests: XCTestCase {
                       "the loaded book is the card even at 0%")
         XCTAssertFalse(NeuralPrewarm.continueCardVisible(pathIsEmpty: true, documents: [fresh], loadedID: UUID()),
                        "a loaded book that left the shelf shows nothing")
+
+        // F045: a sleep stop in the last minute reads Finished, yet the card
+        // offers it after a relaunch, so the card's warm-up follows the shelf.
+        var stoppedNearTheEnd = PlaybackTestRig.makeDocument(hash: "near-end", sentences: 10,
+                                                             progressSentence: 9, progressFraction: 0.995)
+        stoppedNearTheEnd.lastOpenedAt = Date()
+        XCTAssertTrue(stoppedNearTheEnd.isFinished, "the record reads Finished")
+        let stop = PlaybackStop(reason: .sleepTimer, documentID: stoppedNearTheEnd.id)
+        XCTAssertFalse(NeuralPrewarm.continueCardVisible(pathIsEmpty: true, documents: [stoppedNearTheEnd],
+                                                         loadedID: nil))
+        XCTAssertTrue(NeuralPrewarm.continueCardVisible(pathIsEmpty: true, documents: [stoppedNearTheEnd],
+                                                        loadedID: nil, stop: stop))
     }
 
     // MARK: - Warming

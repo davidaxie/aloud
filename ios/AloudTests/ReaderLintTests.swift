@@ -80,6 +80,24 @@ final class ReaderLintTests: XCTestCase {
         }
     }
 
+    /// The player bar's capped transport (Back 15, Forward 15 and Play)
+    /// shows its glyph large on a long press too (F099). The scrub preview
+    /// is a floating label, not a control, so it is left alone.
+    func testCappedTransportControlsOfferTheLargeContentViewer() throws {
+        let path = "Reader/PlayerBarView.swift"
+        let code = codeLines(try XCTUnwrap(try SourceTree.sources(only: [path])[path]))
+        var checked: Set<String> = []
+        for cap in code.indices where code[cap].contains(".dynamicTypeSize(...") {
+            let owner = code[...cap].last { $0.contains("func ") || $0.contains("var ") } ?? ""
+            guard let name = ["skipButton", "playButton"].first(where: { owner.contains($0) }) else { continue }
+            checked.insert(name)
+            let after = code[cap..<min(cap + 4, code.endIndex)]
+            XCTAssertTrue(after.contains { $0.contains(".largeContentViewerIfAvailable") },
+                          "\(path): \(name)'s cap has no Large Content Viewer")
+        }
+        XCTAssertEqual(checked, ["skipButton", "playButton"], "the lint reads both capped controls")
+    }
+
     /// The Aa sample previews the column, which ignores Dynamic Type: the
     /// reader serif is a fixed size, never one that scales with .body.
     func testTheReaderSerifIsAFixedSize() throws {

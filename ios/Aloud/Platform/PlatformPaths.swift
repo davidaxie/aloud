@@ -9,6 +9,12 @@ enum PlatformPaths {
         documents.appendingPathComponent("Library", isDirectory: true)
     }
 
+    /// Documents/Inbox, where iOS drops another app's Open-in copies. The
+    /// importer clears what an add that never finished left there (F036).
+    static var openInInbox: URL? {
+        documents.appendingPathComponent("Inbox", isDirectory: true)
+    }
+
     #if DEBUG
     /// Documents: the UI-test fixtures go into its Inbox, the folder iOS
     /// drops Open-in copies into.
@@ -25,6 +31,12 @@ enum PlatformPaths {
     /// out of the listener's way. The store creates it on first use.
     static var libraryRoot: URL {
         appFolder.appendingPathComponent("Library", isDirectory: true)
+    }
+
+    /// None: nothing drops copies on a Mac. Its intake stages its own
+    /// under Documents/Inbox and sweeps them itself (`MacFileIntake`).
+    static var openInInbox: URL? {
+        nil
     }
 
     #if DEBUG

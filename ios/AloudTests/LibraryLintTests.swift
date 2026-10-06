@@ -76,4 +76,16 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(commands.contains("loadedID: playback.document?.id,\n                                                 stop: playback.stopped)"),
                       "continueBook should pass the controller's stop")
     }
+
+    /// F045: every shelf the Library derives hears the controller's
+    /// unattended stop, so its hero is the book the shortcut and remote Play
+    /// would continue (`DocumentStore.isAtItsEnd`).
+    func testTheShelfHearsTheUnattendedStop() throws {
+        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let derivations = text.components(separatedBy: .newlines).filter { $0.contains("ShelfLayout(for:") }
+        XCTAssertEqual(derivations.count, 2, "the lint reads both derivations")
+        for line in derivations {
+            XCTAssertTrue(line.contains("stop: model.playback.stopped"), line)
+        }
+    }
 }

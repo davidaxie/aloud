@@ -203,4 +203,29 @@ final class SourceHashDedupeTests: XCTestCase {
         XCTAssertEqual(DocumentStore.existingCopy(sourceHash: pickedText, contentHash: nil,
                                                   kind: .text, in: shelf)?.id, text.id)
     }
+
+    /// F038: a file handed over as a symlink lands in the library as a copy
+    /// of the book, a regular file, never a link that points outside the
+    /// library (or nowhere, once a relative one is moved).
+    func testTheLibraryCopyOfASymlinkIsTheFileItPointsTo() async throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("aloud-symlink-\(UUID().uuidString)",
+                                                                   isDirectory: true)
+        let books = folder.appendingPathComponent("Books", isDirectory: true)
+        let desktop = folder.appendingPathComponent("Desktop", isDirectory: true)
+        try fm.createDirectory(at: books, withIntermediateDirectories: true)
+        try fm.createDirectory(at: desktop, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let bytes = Data("Call me Ishmael.".utf8)
+        try bytes.write(to: books.appendingPathComponent("novel.txt"))
+        let link = desktop.appendingPathComponent("novel.txt")
+        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: "../Books/novel.txt")
+
+        let copy = folder.appendingPathComponent("library-copy.txt")
+        try await DocumentStore.copyFile(from: link, to: copy)
+
+        let type = try fm.attributesOfItem(atPath: copy.path)[.type] as? FileAttributeType
+        XCTAssertEqual(type, .typeRegular, "the copy is the book, not a link")
+        XCTAssertEqual(try Data(contentsOf: copy), bytes)
+    }
 }

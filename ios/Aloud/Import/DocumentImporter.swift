@@ -84,11 +84,19 @@ final class DocumentImporter: ObservableObject {
     /// stale finished after the user moved on, so its result is dropped.
     private var token: UInt64 = 0
     private var current: Task<Void, Never>?
+    /// Where another app's Open-in copies arrive (the iPhone's
+    /// Documents/Inbox), cleared of leftovers when idle; nil on a Mac.
+    private let inbox: URL?
+    /// How long a copy has been in `inbox` before it counts as left over:
+    /// one that has only just arrived may still be on its way here.
+    var inboxSweepAge: TimeInterval = 60
 
     init(library: any LibraryAdding,
-         announce: @escaping (String) -> Void = DocumentImporter.postAnnouncement) {
+         announce: @escaping (String) -> Void = DocumentImporter.postAnnouncement,
+         inbox: URL? = PlatformPaths.openInInbox) {
         self.library = library
         self.announce = announce
+        self.inbox = inbox
     }
 
     /// Busy holds the queue: starting the next file mid-add, or over a
@@ -169,6 +177,9 @@ final class DocumentImporter: ObservableObject {
             }
         }
 
+        // Leaving the app mid-add finishes it rather than suspending it
+        // halfway with its copies on disk (F036).
+        let backgroundTime = PlatformBackgroundTask(name: "Adding a book")
         current = Task {
             do {
                 let document = isPDF
@@ -199,6 +210,8 @@ final class DocumentImporter: ObservableObject {
                 if let batch { endFile(of: batch) }
                 startNextQueued()
             }
+            sweepInboxIfIdle()
+            backgroundTime.end()
         }
     }
 
@@ -231,6 +244,7 @@ final class DocumentImporter: ObservableObject {
             announce(line)
         }
         startNextQueued()
+        sweepInboxIfIdle()
     }
 
     /// A Bookshelf row: adds the bundled book if needed and opens it. No
@@ -244,10 +258,12 @@ final class DocumentImporter: ObservableObject {
         addingClassicID = book.id
         let startedAt = navigation?.navigationGeneration
         let before = Set(library.documents.map(\.id))
+        let backgroundTime = PlatformBackgroundTask(name: "Adding a book")
         Task {
             defer {
                 addingClassicID = nil
                 startNextQueued()
+                backgroundTime.end()
             }
             do {
                 let document = try await library.addClassic(book)
@@ -335,6 +351,32 @@ final class DocumentImporter: ObservableObject {
     static func removeInboxCopy(_ url: URL) {
         guard isInboxCopy(url) else { return }
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Clears what an add that never finished left in the Open-in folder
+    /// (the app ended mid-import, F036). Only while nothing is being added
+    /// or waits its turn, so never during an import; never at launch, when
+    /// a cold Open-in's copy is there before its URL arrives; and only
+    /// copies at least `inboxSweepAge` old.
+    private func sweepInboxIfIdle() {
+        guard !isBusy, queued.isEmpty, let inbox else { return }
+        Self.sweepLeftovers(in: inbox, arrivedBefore: Date().addingTimeInterval(-inboxSweepAge))
+    }
+
+    /// Removes what arrived in `folder` before `cutoff`: by the date it was
+    /// added there, else its creation, else its last change.
+    nonisolated static func sweepLeftovers(in folder: URL, arrivedBefore cutoff: Date) {
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.addedToDirectoryDateKey, .creationDateKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys))
+        else { return }
+        for entry in entries {
+            let values = try? entry.resourceValues(forKeys: keys)
+            guard let arrived = values?.addedToDirectoryDate ?? values?.creationDate
+                    ?? values?.contentModificationDate,
+                  arrived < cutoff else { continue }
+            try? fm.removeItem(at: entry)
+        }
     }
 
     static func isInboxCopy(_ url: URL) -> Bool {

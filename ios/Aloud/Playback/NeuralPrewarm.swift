@@ -192,11 +192,14 @@ final class NeuralPrewarm {
         cardVisible || (warmsBeyondTheCard && (bookLoaded || launchPending))
     }
 
-    /// The Library is the root of the stack and has a Continue card to show.
+    /// The Library is the root of the stack and has a Continue card to show,
+    /// by the shelf's own rule: `stop`, the controller's unattended stop,
+    /// keeps a book Finished by the slack rule on the card (F045).
     nonisolated static func continueCardVisible(pathIsEmpty: Bool,
                                                 documents: [LibraryDocument],
-                                                loadedID: UUID?) -> Bool {
-        pathIsEmpty && ShelfLayout(for: documents, loadedID: loadedID).hero != nil
+                                                loadedID: UUID?,
+                                                stop: PlaybackStop? = nil) -> Bool {
+        pathIsEmpty && ShelfLayout(for: documents, loadedID: loadedID, stop: stop).hero != nil
     }
 
     /// Whether a memory warning at `pressure` frees the engine behind

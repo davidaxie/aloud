@@ -340,6 +340,63 @@ final class StopReasonTests: XCTestCase {
         XCTAssertNil(rig.controller.stopped, "a notice is not a stop")
     }
 
+    /// Refuses one sentence as a full prefetch lane does
+    /// (`SynthesisSchedulerError.backlogFull`), `times` times, then reads it.
+    private final class RefusingEngine: TtsEngine, @unchecked Sendable {
+        let voices: [TtsVoice]
+        private let base: any TtsEngine
+        private let prefix: String
+        private let lock = NSLock()
+        private var left: Int
+        private var count = 0
+
+        init(base: any TtsEngine, refusing prefix: String, times: Int) {
+            self.voices = base.voices
+            self.base = base
+            self.prefix = prefix
+            self.left = times
+        }
+
+        var refusals: Int { lock.withLock { count } }
+
+        func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            try await synthesize(text, voice: voice, speed: 1.0)
+        }
+
+        func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
+            let refuses = lock.withLock { () -> Bool in
+                guard text.hasPrefix(prefix), left > 0 else { return false }
+                left -= 1
+                count += 1
+                return true
+            }
+            if refuses { throw SynthesisSchedulerError.backlogFull }
+            return try await base.synthesize(text, voice: voice, speed: speed)
+        }
+    }
+
+    /// F016: a full prefetch lane is "not now". The refused sentence is
+    /// asked for again and read, never skipped with a notice, and three
+    /// refusals in a row are no failing voice.
+    func testAFullPrefetchLaneNeverSkipsASentence() async throws {
+        let base = PlaybackTestRig.RecordingEngine(voices: [PlaybackTestRig.voiceA], clipDuration: 0.25)
+        let refusing = RefusingEngine(base: base, refusing: "Line3 ", times: 3)
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25,
+                                  extraRoutes: [PlaybackTestRig.voiceA.id: refusing])
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+
+        let past = await rig.waitUntil(10) { rig.controller.currentSentence >= 5 }
+        XCTAssertTrue(past, "reading went on past the refused sentence")
+        XCTAssertEqual(refusing.refusals, 3)
+        XCTAssertTrue(base.requestedTexts.contains { $0.hasPrefix("Line3 ") }, "sentence 3 was read after all")
+        XCTAssertEqual(rig.controller.skippedSentences, [])
+        XCTAssertNotEqual(rig.controller.notice, .skippedSentence)
+        XCTAssertEqual(rig.announcements, [], "nothing to say: nothing was skipped")
+        XCTAssertNil(rig.controller.stopped)
+    }
+
     func testARepeatedNoticeIsAnnouncedOnce() async throws {
         let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25,
                                   failing: { $0.hasPrefix("Line3 ") || $0.hasPrefix("Line5 ") })

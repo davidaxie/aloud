@@ -200,6 +200,41 @@ enum PlatformActivity {
     #endif
 }
 
+/// Held while a book is being added, so leaving the app mid-import doesn't
+/// suspend it halfway, with its copies left on disk (F036). Ended once,
+/// by the add or by the system running out of time, whichever comes first.
+@MainActor
+final class PlatformBackgroundTask {
+    #if os(iOS)
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    /// Asks iOS for time to finish `name` should the app leave the screen.
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) {
+            // Out of time: give it back, or iOS ends the app. Held strongly
+            // until then, so the end always has its identifier.
+            MainActor.assumeIsolated { self.end() }
+        }
+    }
+
+    /// Whether the time asked for is still held.
+    var isHeld: Bool { identifier != .invalid }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+    #elseif os(macOS)
+    /// Nothing to ask for: a Mac app keeps running behind other windows.
+    init(name: String) {}
+
+    var isHeld: Bool { false }
+
+    func end() {}
+    #endif
+}
+
 #if os(macOS)
 /// The Mac's memory warning: the kernel's memory-pressure source, posted on
 /// the default center as `PlatformLifecycle.Event.memoryWarning` carrying
