@@ -26,6 +26,86 @@ struct DocContent: Codable {
     let sentences: [Sentence]
     let paragraphs: [Paragraph]
     let contentHash: String   // SHA256 of joined sentence text
+    /// PDFs only: the chapters worked out once, at import or on the first
+    /// open after the update that added them. nil means never derived (a
+    /// content cache older than chapter maps, a text book, synthetic test
+    /// content). Not part of `contentHash`, so deriving one keeps progress.
+    var chapterMap: ChapterMap? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case title, pageCount, sentences, paragraphs, contentHash, chapterMap
+    }
+}
+
+extension DocContent {
+
+    /// Synthesized but for the chapter map, which decodes leniently: a cache
+    /// written before the field existed has no key, and a map this build
+    /// can't read is treated as never derived (it is worked out again)
+    /// rather than costing the whole cache, and with it the book's progress.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        pageCount = try container.decode(Int.self, forKey: .pageCount)
+        sentences = try container.decode([Sentence].self, forKey: .sentences)
+        paragraphs = try container.decode([Paragraph].self, forKey: .paragraphs)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+        chapterMap = (try? container.decodeIfPresent(ChapterMap.self, forKey: .chapterMap)) ?? nil
+    }
+}
+
+// MARK: - Chapter map (PDFs)
+
+/// A PDF's chapters, stored in its content cache. Worked out once by
+/// `PDFChapterDetector` from the first source that yields at least two: the
+/// PDF's own outline (bookmarks), chapter headings in the text, or running
+/// headers at the tops of pages. `.none` means it was worked out and nothing
+/// was found; Contents then lists page ranges.
+struct ChapterMap: Codable, Equatable {
+
+    enum Source: String, Codable {
+        case outline, headings, runningHeaders, none
+    }
+
+    struct Entry: Codable, Equatable {
+        /// Display-ready.
+        let title: String
+        /// The chapter's first sentence: strictly increasing, the first 0.
+        let sentence: Int
+        /// The Part or Book heading the chapter sits under; nil outside one.
+        let section: String?
+    }
+
+    /// Bump whenever a detector changes: every PDF's map is worked out again
+    /// on its next open.
+    static let currentVersion = 1
+
+    let version: Int
+    let source: Source
+    let entries: [Entry]
+
+    /// The entries a navigation can trust, whatever the file holds: inside
+    /// `0..<sentenceCount`, strictly increasing (a repeated start keeps the
+    /// later entry), and starting at sentence 0 (a "Front matter" row is
+    /// added when the first entry starts later).
+    func sanitizedEntries(sentenceCount: Int) -> [Entry] {
+        guard sentenceCount > 0 else { return [] }
+        var result: [Entry] = []
+        for entry in entries where entry.sentence >= 0 && entry.sentence < sentenceCount {
+            if let last = result.last {
+                if entry.sentence == last.sentence {
+                    result[result.count - 1] = entry
+                    continue
+                }
+                if entry.sentence < last.sentence { continue }
+            }
+            result.append(entry)
+        }
+        if let first = result.first, first.sentence > 0 {
+            result.insert(Entry(title: PDFChapterDetector.frontMatterTitle, sentence: 0, section: nil), at: 0)
+        }
+        return result
+    }
 }
 
 // MARK: - Whole-document measures
@@ -46,8 +126,9 @@ extension DocContent {
 
 /// One entry in the reader's chapter drawer, derived from the page grouping
 /// the extractor already produces (text books: chapter headings become pages;
-/// PDFs: physical pages). `title` is the group's first sentence, cleaned for
-/// display — the drawer substitutes "Page N" for PDFs, which have no headings.
+/// PDFs: physical pages), or, for a PDF with a chapter map, one map entry.
+/// `title` is the group's first sentence, cleaned for display, or the entry's
+/// title; a PDF without chapters is labelled by page range instead.
 struct DerivedChapter: Identifiable, Equatable {
     let page: Int
     let title: String
@@ -55,7 +136,8 @@ struct DerivedChapter: Identifiable, Equatable {
     let sentenceCount: Int
     let wordCount: Int
 
-    var id: Int { page }
+    /// The start, not the page: two PDF chapters can start on one page.
+    var id: Int { startSentence }
 
     var lastSentence: Int { startSentence + sentenceCount - 1 }
 

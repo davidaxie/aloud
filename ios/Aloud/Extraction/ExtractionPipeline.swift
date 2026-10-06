@@ -25,10 +25,23 @@ actor ExtractionPipeline {
         let normalizedTitle = TextNormalizer.normalize(rawTitle)
         let title = normalizedTitle.isEmpty ? "Untitled" : normalizedTitle
 
-        let content = try Self.buildContent(title: title,
+        var content = try Self.buildContent(title: title,
                                             pageCount: output.pageCount,
                                             blocks: output.blocks)
+        content.chapterMap = PDFChapterDetector.chapterMap(for: content, outline: output.outline)
         progress?(1.0)
+        return content
+    }
+
+    /// `content` with a current chapter map: the PDF at `pdfURL` is opened
+    /// only for its outline (no text extraction; an unreadable or missing
+    /// file just has none), then the detectors run on the cached text. For
+    /// a book imported before chapter maps, or by an older detector. The
+    /// text and `contentHash` are untouched, so saved progress stays valid.
+    func addingChapters(to content: DocContent, pdfURL: URL) -> DocContent {
+        var content = content
+        let outline = PDFChapterDetector.outlineItems(at: pdfURL)
+        content.chapterMap = PDFChapterDetector.chapterMap(for: content, outline: outline)
         return content
     }
 

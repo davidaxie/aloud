@@ -28,6 +28,9 @@ struct PDFTextExtractor {
         let title: String?
         let pageCount: Int
         let blocks: [TextBlock]
+        /// The PDF's outline (bookmarks), read while the document is open,
+        /// for `PDFChapterDetector`. Empty when it has none.
+        var outline: [PDFOutlineItem] = []
     }
 
     func extract(url: URL, progress: ((Double) -> Void)? = nil) throws -> Output {
@@ -68,7 +71,8 @@ struct PDFTextExtractor {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty ? nil : $0 }
 
-        return Output(title: title, pageCount: pageCount, blocks: blocks)
+        return Output(title: title, pageCount: pageCount, blocks: blocks,
+                      outline: PDFChapterDetector.outlineItems(of: document))
     }
 
     // MARK: - Geometry types

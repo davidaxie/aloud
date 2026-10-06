@@ -4,9 +4,10 @@ import Foundation
 ///
 /// Page indices may arrive 0- or 1-based — a content cache written by an older
 /// extractor is reused without re-extraction — so every surface normalizes
-/// through `DocContent.pageOffset` and displays pages starting at 1. PDF pages
-/// carry no headings and read as "Page 12"; text books read as their chapter
-/// title. Contents (its chapter list and its search), the player bar's
+/// through `DocContent.pageOffset` and displays pages starting at 1. Text
+/// books read as their chapter title; a PDF with a chapter map reads as its
+/// chapters' titles on the pages they start on, and every other PDF page as
+/// "Page 12". Contents (its chapter list and its search), the player bar's
 /// chapter line and the reader's page marks all label through this, so no
 /// surface can say "Page 0" while another says "PAGE 1".
 struct PageLabels {
@@ -22,11 +23,14 @@ struct PageLabels {
     /// Page 5" would read as if pages 3 and 4 had gone missing.
     private let spanEndByPage: [Int: Int]
 
-    init(kind: DocKind, pageOffset: Int, pageCount: Int, chapters: [DerivedChapter]) {
+    /// `chapterTitles`: a PDF whose rows are real chapters (its chapter map)
+    /// names their start pages by title. Text books always do.
+    init(kind: DocKind, pageOffset: Int, pageCount: Int, chapters: [DerivedChapter],
+         chapterTitles: Bool = false) {
         self.kind = kind
         self.offset = pageOffset
-        // PDFs never consult chapter titles; skip the dictionary entirely.
-        self.titleByPage = kind == .pdf
+        // Page-range PDFs never consult chapter titles; skip the dictionary.
+        self.titleByPage = kind == .pdf && !chapterTitles
             ? [:]
             : Dictionary(chapters.map { ($0.page, $0.title) },
                          uniquingKeysWith: { first, _ in first })
@@ -35,11 +39,12 @@ struct PageLabels {
             : [:]
     }
 
-    init(content: DocContent, kind: DocKind, chapters: [DerivedChapter]) {
+    init(content: DocContent, kind: DocKind, chapters: [DerivedChapter], chapterTitles: Bool = false) {
         self.init(kind: kind,
                   pageOffset: content.pageOffset,
                   pageCount: content.pageCount,
-                  chapters: chapters)
+                  chapters: chapters,
+                  chapterTitles: chapterTitles)
     }
 
     /// Each row runs up to the page before the next row starts; the last runs
@@ -74,18 +79,18 @@ struct PageLabels {
         return "Pages \(displayPage(page))\u{2013}\(displayPage(end))"
     }
 
-    /// What a page is called to the reader: its page range for PDFs, its
-    /// chapter title for text books (falling back to the page label when a
-    /// page has no derived chapter).
+    /// What a page is called to the reader: its chapter title for text books
+    /// and for the start pages of a PDF's mapped chapters, else its page
+    /// range (falling back to the page label when a page starts no row).
     func contextTitle(forPage page: Int) -> String {
-        guard kind != .pdf, let title = titleByPage[page] else { return pageRangeLabel(page) }
-        return title
+        titleByPage[page] ?? pageRangeLabel(page)
     }
 }
 
 /// One Contents group (R17): the chapters under a Part, Book, Act or Epilogue
-/// heading, or the untitled run before the first such heading. A book with
-/// no such headings, a PDF and chapterless text are one untitled section.
+/// heading (a PDF's from its chapter map), or an untitled run outside one. A
+/// book with no such headings, a page-range PDF and chapterless text are one
+/// untitled section.
 /// `chapterRange` indexes `ReaderNavigation.chapters`.
 struct ContentsSection: Identifiable, Equatable {
     let title: String?
@@ -107,7 +112,26 @@ struct ContentsSection: Identifiable, Equatable {
 /// into the chapter after them, so "4 of 61", the scrub span, chapter steps
 /// and End of chapter all count real chapters, and Contents shows the
 /// containers as section headers instead of rows that hold one line.
+///
+/// A PDF with a usable `ChapterMap` gets the same treatment from the map:
+/// one chapter per entry, its Parts as sections, titles in the labels. Any
+/// other PDF lists page ranges: its page runs as they are when there are at
+/// most `maxPageRows`, else runs grouped into rows of about equal listening
+/// time.
 struct ReaderNavigation {
+
+    /// What a row is: a chapter (text, and PDFs with a chapter map) or a
+    /// page range (every other PDF).
+    enum RowKind: Equatable {
+        case chapters, pages
+    }
+
+    /// The most page-range rows Contents lists before grouping them.
+    static let maxPageRows = 25
+    /// Grouped page ranges: at least this many rows…
+    static let minPageGroups = 15
+    /// …of about this many minutes each at 1×, up to `maxPageRows`.
+    static let minutesPerPageGroup = 20.0
 
     /// Reading order. For text, a folded chapter starts at its first
     /// container heading and keeps the leaf's page and title.
@@ -118,7 +142,11 @@ struct ReaderNavigation {
     /// reads as its own heading.
     let labels: PageLabels
     let kind: DocKind
+    let rowKind: RowKind
     private let wordsBefore: [Int]
+    /// Each row's title, by index: entry titles for mapped chapters, which
+    /// two chapters starting on one page can't share through `labels`.
+    private let rowTitles: [String]
     /// Every page inside a titled section, containers included.
     private let sectionTitleByPage: [Int: String]
     private let containerPages: Set<Int>
@@ -127,12 +155,27 @@ struct ReaderNavigation {
         // One pass for chapters and word sums: this runs at reader open, inside
         // the R13 open-time budget. Folding is one more pass over the chapters.
         let index = content.navigationIndex()
-        let grouping = Self.grouping(index.chapters, kind: kind, sentences: content.sentences)
-        self.chapters = grouping.chapters
-        self.sections = grouping.sections
-        self.labels = PageLabels(content: content, kind: kind, chapters: index.chapters)
         self.kind = kind
         self.wordsBefore = index.wordsBefore
+        if kind == .pdf, let entries = Self.usableEntries(of: content) {
+            let rows = Self.pdfChapterRows(entries, content: content, wordsBefore: index.wordsBefore)
+            self.chapters = rows.chapters
+            self.sections = rows.sections
+            self.labels = PageLabels(content: content, kind: kind, chapters: rows.chapters, chapterTitles: true)
+            self.rowKind = .chapters
+            self.rowTitles = rows.chapters.map(\.title)
+            self.sectionTitleByPage = [:]
+            self.containerPages = []
+            return
+        }
+        let raw = kind == .pdf ? Self.pageRows(index.chapters) : index.chapters
+        let grouping = Self.grouping(raw, kind: kind, sentences: content.sentences)
+        let labels = PageLabels(content: content, kind: kind, chapters: raw)
+        self.chapters = grouping.chapters
+        self.sections = grouping.sections
+        self.labels = labels
+        self.rowKind = kind == .pdf ? .pages : .chapters
+        self.rowTitles = grouping.chapters.map { labels.contextTitle(forPage: $0.page) }
         self.sectionTitleByPage = grouping.sectionTitleByPage
         self.containerPages = grouping.containerPages
     }
@@ -140,8 +183,43 @@ struct ReaderNavigation {
     /// A list worth opening: a book of one chapter shows Contents search only.
     var hasChapterList: Bool { chapters.count >= 2 }
 
+    /// Rows that are real chapters, at least two: "4 of 61", a chapter-wide
+    /// scrub and End of chapter. Text with chapters, and mapped PDFs.
+    var isChaptered: Bool { rowKind == .chapters && hasChapterList }
+
     /// Contents draws section headers.
-    var isGrouped: Bool { !containerPages.isEmpty }
+    var isGrouped: Bool { sections.contains { $0.title != nil } }
+
+    /// Row `index` as Contents names it: the chapter's title, or the page
+    /// range ("Pages 21–37") of a page-range PDF.
+    func title(ofChapter index: Int) -> String {
+        rowTitles.indices.contains(index) ? rowTitles[index] : ""
+    }
+
+    /// Row `index`'s accessibility identifier, "chapters.row.<page>", with
+    /// ".<k>" for the k-th row (k ≥ 2) starting on the same page.
+    func rowIdentifier(at index: Int) -> String {
+        guard chapters.indices.contains(index) else { return "chapters.row" }
+        let page = chapters[index].page
+        var k = 1
+        var earlier = index - 1
+        while earlier >= 0, chapters[earlier].page == page {
+            k += 1
+            earlier -= 1
+        }
+        let base = "chapters.row.\(labels.displayPage(page))"
+        return k == 1 ? base : "\(base).\(k)"
+    }
+
+    /// Where a search hit is: "Tiny Speck · Page 63" in a mapped PDF (the
+    /// sentence picks the chapter, so two on one page stay apart), else
+    /// `qualifiedTitle(forPage:)`.
+    func location(ofSentence sentence: Int, page: Int) -> String {
+        guard kind == .pdf, rowKind == .chapters, let index = chapterIndex(containing: sentence) else {
+            return qualifiedTitle(forPage: page)
+        }
+        return "\(rowTitles[index]) · \(labels.pageLabel(page))"
+    }
 
     private var sentenceCount: Int { wordsBefore.count - 1 }
 
@@ -172,9 +250,9 @@ struct ReaderNavigation {
 
     /// The chapter line's position: where the listener is and how long is
     /// left at `rate`, counted from the current sentence to the end of its
-    /// chapter (chaptered text), or to the end of the document (PDFs, and text
-    /// with fewer than two chapters). `isFinished` replaces the time with
-    /// "Finished".
+    /// chapter (chaptered text and mapped PDFs), or to the end of the
+    /// document (page-range PDFs, and text with fewer than two chapters).
+    /// `isFinished` replaces the time with "Finished".
     func positionLine(at sentence: Int,
                       rate: Double,
                       documentTitle: String,
@@ -192,15 +270,16 @@ struct ReaderNavigation {
                                              wordsPerMinute: wordsPerMinute)
         }
 
+        if isChaptered {
+            return ReaderPositionLine(kind: .chapter(number: index + 1, count: chapters.count),
+                                      title: title(ofChapter: index),
+                                      minutesLeft: minutesLeft(through: chapter.lastSentence))
+        }
         switch kind {
         case .pdf:
             return ReaderPositionLine(kind: .pages,
-                                      title: labels.pageRangeLabel(chapter.page),
+                                      title: title(ofChapter: index),
                                       minutesLeft: minutesLeft(through: sentenceCount - 1))
-        case .text where hasChapterList:
-            return ReaderPositionLine(kind: .chapter(number: index + 1, count: chapters.count),
-                                      title: labels.contextTitle(forPage: chapter.page),
-                                      minutesLeft: minutesLeft(through: chapter.lastSentence))
         case .text:
             return ReaderPositionLine(kind: .book, title: documentTitle,
                                       minutesLeft: minutesLeft(through: sentenceCount - 1))
@@ -209,8 +288,12 @@ struct ReaderNavigation {
 
     /// A Contents row or search hit named with its section: "BOOK ONE: 1805 ·
     /// CHAPTER I" for a chapter page, "BOOK ONE: 1805" for the container's own
-    /// page. Ungrouped pages read as `labels.contextTitle(forPage:)`.
+    /// page. Ungrouped pages read as `labels.contextTitle(forPage:)`; a mapped
+    /// PDF's as "Tiny Speck · Page 63", the chapter holding the page.
     func qualifiedTitle(forPage page: Int) -> String {
+        if kind == .pdf, rowKind == .chapters, let index = lastChapter(startingAtOrBefore: page) {
+            return "\(rowTitles[index]) · \(labels.pageLabel(page))"
+        }
         guard let section = sectionTitleByPage[page] else { return labels.contextTitle(forPage: page) }
         return containerPages.contains(page) ? section : "\(section) · \(labels.contextTitle(forPage: page))"
     }
@@ -218,10 +301,11 @@ struct ReaderNavigation {
     // MARK: - Scrub (R12c, R17)
 
     /// What the scrub's track spans: the chapter holding `sentence` in
-    /// chaptered text, else the whole document. 0...0 when empty.
+    /// chaptered text and mapped PDFs, else the whole document. 0...0 when
+    /// empty.
     func scrubSpan(at sentence: Int) -> ClosedRange<Int> {
         guard sentenceCount > 0 else { return 0...0 }
-        if kind == .text, hasChapterList, let index = chapterIndex(containing: sentence) {
+        if isChaptered, let index = chapterIndex(containing: sentence) {
             let chapter = chapters[index]
             return chapter.startSentence...max(chapter.startSentence, min(chapter.lastSentence, sentenceCount - 1))
         }
@@ -275,8 +359,8 @@ struct ReaderNavigation {
         return Double(words) / (LibraryDocument.spokenWordsPerMinute * rate) * 60
     }
 
-    /// One VoiceOver adjust of the scrub: by chapter (text) or page row (PDF)
-    /// when there are at least two, else ±1 minute. Backward goes to the
+    /// One VoiceOver adjust of the scrub: by chapter (text, mapped PDFs) or
+    /// page row (other PDFs) when there are at least two, else ±1 minute. Backward goes to the
     /// current row's start when the playhead is past it. nil when there is
     /// nowhere to go; never `sentence` itself.
     func adjustmentTarget(from sentence: Int, forward: Bool, rate: Double) -> Int? {
@@ -304,6 +388,89 @@ struct ReaderNavigation {
         let lower = min(max(span.lowerBound, 0), sentenceCount - 1)
         let upper = min(max(span.upperBound, lower), sentenceCount - 1)
         return lower...upper
+    }
+
+    // MARK: - PDF rows
+
+    /// The map's entries when they make a list: a PDF whose map found
+    /// chapters and still holds two once sanitized against this text.
+    private static func usableEntries(of content: DocContent) -> [ChapterMap.Entry]? {
+        guard let map = content.chapterMap, map.source != ChapterMap.Source.none else { return nil }
+        let entries = map.sanitizedEntries(sentenceCount: content.sentences.count)
+        return entries.count >= 2 ? entries : nil
+    }
+
+    /// One chapter per entry, running to the next entry's start; sections
+    /// are the runs of entries sharing a `section`.
+    private static func pdfChapterRows(_ entries: [ChapterMap.Entry],
+                                       content: DocContent,
+                                       wordsBefore: [Int]) -> (chapters: [DerivedChapter], sections: [ContentsSection]) {
+        let sentences = content.sentences
+        var chapters: [DerivedChapter] = []
+        chapters.reserveCapacity(entries.count)
+        for (index, entry) in entries.enumerated() {
+            let start = entry.sentence
+            let end = index + 1 < entries.count ? entries[index + 1].sentence : sentences.count
+            chapters.append(DerivedChapter(page: sentences[start].page,
+                                           title: entry.title,
+                                           startSentence: start,
+                                           sentenceCount: end - start,
+                                           wordCount: wordsBefore[end] - wordsBefore[start]))
+        }
+        var sections: [ContentsSection] = []
+        var runStart = 0
+        for index in 1...entries.count where index == entries.count
+            || entries[index].section != entries[runStart].section {
+            sections.append(ContentsSection(title: entries[runStart].section, chapterRange: runStart..<index))
+            runStart = index
+        }
+        return (chapters, sections)
+    }
+
+    /// Page runs as rows when there are at most `maxPageRows`; else grouped,
+    /// at run boundaries, into `minPageGroups`…`maxPageRows` contiguous rows
+    /// of about equal words, `minutesPerPageGroup` each at 1×.
+    private static func pageRows(_ runs: [DerivedChapter]) -> [DerivedChapter] {
+        guard runs.count > maxPageRows else { return runs }
+        let total = runs.reduce(0) { $0 + $1.wordCount }
+        let minutes = Double(total) / (LibraryDocument.spokenWordsPerMinute * minutesPerPageGroup)
+        let target = min(maxPageRows, max(minPageGroups, Int(minutes.rounded())))
+        var rows: [DerivedChapter] = []
+        var group: [DerivedChapter] = []
+        var words = 0
+        func close() {
+            guard let first = group.first else { return }
+            rows.append(DerivedChapter(page: first.page,
+                                       title: first.title,
+                                       startSentence: first.startSentence,
+                                       sentenceCount: group.reduce(0) { $0 + $1.sentenceCount },
+                                       wordCount: group.reduce(0) { $0 + $1.wordCount }))
+            group.removeAll()
+        }
+        for run in runs {
+            // Close a row at a run boundary once it holds its share of words.
+            if !group.isEmpty, rows.count < target - 1,
+               Double(words) >= Double(total) * Double(rows.count + 1) / Double(target) {
+                close()
+            }
+            group.append(run)
+            words += run.wordCount
+        }
+        close()
+        return rows
+    }
+
+    /// The last chapter starting on or before `page` (chapter pages never
+    /// decrease); nil before the first.
+    private func lastChapter(startingAtOrBefore page: Int) -> Int? {
+        guard let first = chapters.first, first.page <= page else { return nil }
+        var low = 0
+        var high = chapters.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if chapters[mid].page <= page { low = mid } else { high = mid - 1 }
+        }
+        return low
     }
 
     // MARK: - Container folding (R17)
@@ -381,8 +548,9 @@ struct ReaderNavigation {
 }
 
 /// What the player bar's chapter line says when no message holds the slot:
-/// "Chapter IV · 4 of 61 · 8 min left", "<Title> · 12 min left" or
-/// "Pages 12–14 · 1 hr 12 min left". Durations come from ListeningEstimate.
+/// "Chapter IV · 4 of 61 · 8 min left" (a mapped PDF too: "Tiny Speck · 6 of
+/// 40 · 12 min left"), "<Title> · 12 min left" or "Pages 12–14 · 1 hr 12 min
+/// left". Durations come from ListeningEstimate.
 struct ReaderPositionLine: Equatable {
 
     enum Kind: Equatable {

@@ -344,7 +344,10 @@ final class DocumentStore: ObservableObject {
     /// Returns extracted content, from cache when valid, re-extracting otherwise.
     /// A content-hash mismatch resets stored progress rather than misplacing it.
     func content(for document: LibraryDocument) async throws -> DocContent {
-        if let cached = Self.readContentCache(for: document.id) {
+        if var cached = Self.readContentCache(for: document.id) {
+            if Self.needsChapterMap(cached, kind: document.kind) {
+                cached = await backfillChapters(cached, for: document)
+            }
             reconcile(document, against: cached)
             return cached
         }
@@ -361,6 +364,30 @@ final class DocumentStore: ObservableObject {
         }
         try Self.writeContentCache(content, for: document.id)
         reconcile(document, against: content)
+        return content
+    }
+
+    /// A PDF whose cached content has no chapter map, or one from an older
+    /// detector: imported before chapters, so it gets one on its next open.
+    nonisolated static func needsChapterMap(_ content: DocContent, kind: DocKind) -> Bool {
+        kind == .pdf && (content.chapterMap?.version ?? 0) < ChapterMap.currentVersion
+    }
+
+    /// Works out the cached PDF content's chapter map off the main actor (the
+    /// outline from the stored PDF, the detectors on the cached text) and
+    /// saves it into the cache. The text and its hash don't change, so the
+    /// reconcile after keeps progress. A book deleted meanwhile keeps no
+    /// cache; two loads at once write the same result.
+    private func backfillChapters(_ cached: DocContent, for document: LibraryDocument) async -> DocContent {
+        let content = await pipeline.addingChapters(to: cached, pdfURL: Self.fileURL(for: document))
+        guard documents.contains(where: { $0.id == document.id }) else { return content }
+        let url = Self.contentCacheURL(for: document.id)
+        await Task.detached(priority: .utility) {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            guard let data = try? encoder.encode(content) else { return }
+            try? data.write(to: url, options: .atomic)
+        }.value
         return content
     }
 

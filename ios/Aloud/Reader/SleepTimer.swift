@@ -244,7 +244,8 @@ final class SleepTimer: ObservableObject {
     }
 
     /// The sentence End of chapter stops after: the last of the folded
-    /// chapter holding `sentence` in text with a chapter list, else the
+    /// chapter holding `sentence` in text with a chapter list or a PDF with
+    /// a chapter map (`ReaderNavigation.isChaptered`), else the
     /// book's last.
     nonisolated static func chapterBoundary(navigation: ReaderNavigation, sentenceCount: Int,
                                             at sentence: Int) -> Int {
@@ -254,7 +255,7 @@ final class SleepTimer: ObservableObject {
     nonisolated private static func chapterSpan(navigation: ReaderNavigation, sentenceCount: Int,
                                                 at sentence: Int) -> ClosedRange<Int> {
         let last = max(sentenceCount - 1, 0)
-        guard navigation.kind == .text, navigation.hasChapterList,
+        guard navigation.isChaptered,
               let index = navigation.chapterIndex(containing: sentence) else { return 0...last }
         let chapter = navigation.chapters[index]
         let end = min(max(chapter.lastSentence, 0), last)
@@ -433,7 +434,7 @@ final class SleepTimer: ObservableObject {
         // A build for a book that has since been replaced is dropped.
         guard playback?.content?.contentHash == hash, navigation?.hash != hash else { return }
         navigation = (hash, built)
-        endsAtChapter = kind == .text && built.hasChapterList
+        endsAtChapter = built.isChaptered
     }
 
     // MARK: - Volume
