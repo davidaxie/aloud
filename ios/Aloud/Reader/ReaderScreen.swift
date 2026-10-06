@@ -264,6 +264,9 @@ struct ReaderScreen: View {
 
         do {
             let loaded = try await store.content(for: document)
+            // Popped or replaced while the text loaded: never load this book
+            // over the one now showing.
+            guard !Task.isCancelled else { return }
             content = loaded
             navigation = ReaderNavigation(content: loaded, kind: document.kind)
 
@@ -281,10 +284,11 @@ struct ReaderScreen: View {
                 playback.seek(to: match.id, andPlay: false)
             }
 
-            // R4: opening any book plays it; the controller declines for a
+            // R4: opening a book plays it; the controller declines for a
             // Finished book, a book already speaking, or a UI-test launch
-            // without -uitest-allow-autoplay.
-            playback.startAutoplay()
+            // without -uitest-allow-autoplay. A reader reopened at launch
+            // waits at its place for Play.
+            if router.takeAutoplayRequest(for: document.id) { playback.startAutoplay() }
         } catch {
             loadFailed = true
         }

@@ -34,4 +34,26 @@ final class MacKokoroOfflineSynthesisTests: XCTestCase {
         XCTAssertGreaterThan(peak, 0.01, "speech, not silence")
         XCTAssertLessThanOrEqual(peak, 1.5, "no runaway samples")
     }
+
+    /// Kokoro speaks faster itself (NativeSpeed): asked for 2x, the clip is
+    /// about the measured amount shorter, and says how much.
+    func testASentenceAtTwiceThePaceIsShorterByTheMeasuredAmount() async throws {
+        let directory = Self.modelDirectory
+        try XCTSkipUnless(FileManager.default.isReadableFile(
+            atPath: directory.appendingPathComponent("voices.bin").path), "no seeded model")
+        let engine = KokoroSherpaEngine(modelDirectory: directory)
+        defer { engine.release() }
+        let voice = engine.defaultVoice
+        let sentence = "The rain had stopped by morning, and the road into town was quiet and bright."
+        let natural = try await engine.synthesize(sentence, voice: voice, speed: 1.0)
+        let fast = try await engine.synthesize(sentence, voice: voice, speed: 2.0)
+        XCTAssertEqual(natural.nativeSpeed, 1.0)
+        XCTAssertEqual(fast.nativeSpeed, NativeSpeed.compression(speed: 2.0, voiceID: voice.id), accuracy: 1e-9)
+        let ratio = natural.duration / fast.duration
+        XCTAssertGreaterThan(ratio, 1.5, "faster speech is shorter")
+        XCTAssertLessThan(ratio, 2.2)
+        XCTAssertEqual(ratio, fast.nativeSpeed, accuracy: 0.25, "close to the measured compression")
+        let peak = fast.samples.reduce(Float(0)) { max($0, abs($1)) }
+        XCTAssertGreaterThan(peak, 0.01, "speech, not silence")
+    }
 }

@@ -167,12 +167,26 @@ final class NowPlayingManager {
         }
     }
 
+    /// Play from the lock screen, headphones or media keys with no book
+    /// loaded (a fresh launch): the app continues the Continue card's book.
+    var onPlayWithNoBook: (() -> Void)?
+
     /// A system transport command, then a push at once: a skip can land on
     /// the sentence already showing (a restart), which no source reports.
     func handle(_ command: RemoteTransportCommand) {
         guard let playback else { return }
+        if Self.continuesWithNoBook(command, hasBook: playback.document != nil) {
+            onPlayWithNoBook?()
+            return
+        }
         Self.perform(command, on: playback)
         refresh(force: true)
+    }
+
+    /// Play and Play/Pause with nothing loaded continue the last book; Pause
+    /// and the skips have nothing to act on.
+    static func continuesWithNoBook(_ command: RemoteTransportCommand, hasBook: Bool) -> Bool {
+        !hasBook && (command == .play || command == .togglePlayPause)
     }
 
     /// A lock-screen scrub to `position` (1x seconds into the published

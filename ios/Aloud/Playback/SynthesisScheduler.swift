@@ -23,6 +23,8 @@ actor SynthesisScheduler {
         let key: String
         let text: String
         let voice: TtsVoice
+        /// The pace asked of the engine (`NativeSpeed`); the key carries it.
+        let speed: Double
         var waiters: [Waiter] = []
     }
 
@@ -48,6 +50,7 @@ actor SynthesisScheduler {
     /// resumed with `CancellationError` and its slot released.
     func synthesize(_ text: String,
                     voice: TtsVoice,
+                    speed: Double = 1.0,
                     key: String,
                     priority: SynthesisPriority = .now) async throws -> SynthesizedAudio {
         if let hit = cache.clip(forKey: key) { return hit }
@@ -57,7 +60,7 @@ actor SynthesisScheduler {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 admit(Waiter(id: waiterID, continuation: continuation),
-                      key: key, text: text, voice: voice, priority: priority)
+                      key: key, text: text, voice: voice, speed: speed, priority: priority)
             }
         } onCancel: {
             Task { await self.cancelWaiter(waiterID) }
@@ -65,10 +68,10 @@ actor SynthesisScheduler {
     }
 
     /// Fire-and-forget warm-up of the cache via the prefetch lane.
-    func prefetch(_ text: String, voice: TtsVoice, key: String) {
+    func prefetch(_ text: String, voice: TtsVoice, speed: Double = 1.0, key: String) {
         guard cache.clip(forKey: key) == nil, !isQueued(key) else { return }
         guard prefetchLane.count < Self.prefetchBound else { return }
-        prefetchLane.append(Job(key: key, text: text, voice: voice))
+        prefetchLane.append(Job(key: key, text: text, voice: voice, speed: speed))
         drainIfNeeded()
     }
 
@@ -90,6 +93,7 @@ actor SynthesisScheduler {
                        key: String,
                        text: String,
                        voice: TtsVoice,
+                       speed: Double,
                        priority: SynthesisPriority) {
         if cancelledWaiters.remove(waiter.id) != nil {
             waiter.continuation.resume(throwing: CancellationError())
@@ -117,7 +121,7 @@ actor SynthesisScheduler {
             if let index = nowLane.firstIndex(where: { $0.key == key }) {
                 nowLane[index].waiters.append(waiter)
             } else {
-                nowLane.append(Job(key: key, text: text, voice: voice, waiters: [waiter]))
+                nowLane.append(Job(key: key, text: text, voice: voice, speed: speed, waiters: [waiter]))
             }
         case .prefetch:
             if let index = prefetchLane.firstIndex(where: { $0.key == key }) {
@@ -126,7 +130,7 @@ actor SynthesisScheduler {
                 waiter.continuation.resume(throwing: SynthesisSchedulerError.backlogFull)
                 return
             } else {
-                prefetchLane.append(Job(key: key, text: text, voice: voice, waiters: [waiter]))
+                prefetchLane.append(Job(key: key, text: text, voice: voice, speed: speed, waiters: [waiter]))
             }
         }
         drainIfNeeded()
@@ -185,7 +189,7 @@ actor SynthesisScheduler {
                 outcome = .success(hit)
             } else {
                 do {
-                    let clip = try await engine.synthesize(job.text, voice: job.voice)
+                    let clip = try await engine.synthesize(job.text, voice: job.voice, speed: job.speed)
                     cache.store(clip, forKey: job.key)
                     outcome = .success(clip)
                 } catch {

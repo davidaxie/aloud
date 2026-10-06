@@ -28,6 +28,7 @@ struct MacReaderScreen: View {
     @EnvironmentObject private var store: DocumentStore
     @EnvironmentObject private var playback: PlaybackController
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var router: LibraryRouter
     @Environment(MacUIState.self) private var ui
 
     @AppStorage(ReaderTextSize.prefKey) private var textSizeStep = ReaderTextSize.defaultStep
@@ -262,6 +263,9 @@ struct MacReaderScreen: View {
 
         do {
             let loaded = try await store.content(for: document)
+            // Replaced while the text loaded: never load this book over the
+            // one now showing.
+            guard !Task.isCancelled else { return }
             content = loaded
             navigation = MacNavigationCache.navigation(for: loaded, kind: document.kind)
 
@@ -277,10 +281,11 @@ struct MacReaderScreen: View {
                 playback.seek(to: match.id, andPlay: false)
             }
 
-            // R4: opening any book plays it; the controller declines for a
+            // R4: opening a book plays it; the controller declines for a
             // Finished book, a book already speaking, or a UI-test launch
-            // without -uitest-allow-autoplay.
-            playback.startAutoplay()
+            // without -uitest-allow-autoplay. A reader reopened at launch, or
+            // rebuilt when the window comes back, waits at its place.
+            if router.takeAutoplayRequest(for: documentID) { playback.startAutoplay() }
         } catch {
             loadFailed = true
         }

@@ -58,8 +58,12 @@ final class PlaybackTestRig {
         }
 
         func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            try await synthesize(text, voice: voice, speed: 1.0)
+        }
+
+        func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
             if failing(text) { throw TtsError.voiceUnavailable }
-            return try await base.synthesize(text, voice: voice)
+            return try await base.synthesize(text, voice: voice, speed: speed)
         }
     }
 
@@ -75,7 +79,12 @@ final class PlaybackTestRig {
         }
 
         func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
-            try await (routes[voice.id] ?? fallback).synthesize(text, voice: voice)
+            try await synthesize(text, voice: voice, speed: 1.0)
+        }
+
+        /// The pace reaches the routed engine (`NativeSpeed`).
+        func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
+            try await (routes[voice.id] ?? fallback).synthesize(text, voice: voice, speed: speed)
         }
     }
 

@@ -95,12 +95,27 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     }
 
     func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+        try await synthesize(text, voice: voice, speed: 1.0)
+    }
+
+    /// The paces Kokoro is asked for. sherpa-onnx only refuses 0 or less; its
+    /// duration predictor slurs well before 3x.
+    static let speedRange: ClosedRange<Double> = 0.5...3.0
+
+    /// Kokoro speaks faster itself: its predicted durations are divided by
+    /// `speed`, so the clip is shorter and cheaper to make, and nothing is
+    /// stretched afterwards for that part of the listener's speed. The clip
+    /// carries how much shorter it really is for this voice
+    /// (`NativeSpeed.compression`), which playback divides out.
+    func synthesize(_ text: String, voice: TtsVoice, speed requested: Double) async throws -> SynthesizedAudio {
         guard KokoroVoiceCatalog.speakerID(for: voice.id, blendsLoaded: false) != nil else {
             throw TtsError.voiceUnavailable
         }
+        let speed = requested.isFinite ? min(max(requested, Self.speedRange.lowerBound), Self.speedRange.upperBound) : 1.0
         let spoken = Self.spokenText(text, lang: voice.lang)
         guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .silence(duration: 0.1)
+            let compression = NativeSpeed.compression(speed: speed, voiceID: voice.id)
+            return .silence(duration: 0.1 / compression, nativeSpeed: compression)
         }
         try Task.checkCancellation()
 
@@ -117,16 +132,18 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
                         throw TtsError.voiceUnavailable
                     }
                     let start = Date()
-                    let audio = tts.generate(text: spoken, sid: sid, speed: 1.0)
+                    let audio = tts.generate(text: spoken, sid: sid, speed: Float(speed))
                     // sherpa-onnx returns a NULL audio pointer when it produces
                     // nothing (e.g. text its English frontend can't tokenize,
                     // like a CJK-only line); reading `.samples` would trap.
                     guard audio.audio != nil else { throw TtsError.emptyAudio }
                     let samples = audio.samples
-                    Self.log.info("kokoro synth \(String(format: "%.2f", Date().timeIntervalSince(start))) s → \(samples.count) samples (\(spoken.count) chars)")
+                    Self.log.info("kokoro synth \(String(format: "%.2f", Date().timeIntervalSince(start))) s → \(samples.count) samples (\(spoken.count) chars) at \(String(format: "%.2f", speed))x")
                     guard !samples.isEmpty else { throw TtsError.emptyAudio }
                     cont.resume(returning: SynthesizedAudio(samples: samples,
-                                                            sampleRate: Double(audio.sampleRate)))
+                                                            sampleRate: Double(audio.sampleRate),
+                                                            nativeSpeed: NativeSpeed.compression(
+                                                                speed: speed, voiceID: voice.id)))
                 } catch {
                     cont.resume(throwing: error)
                 }

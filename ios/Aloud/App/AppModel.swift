@@ -207,6 +207,13 @@ final class AppModel: ObservableObject {
         persistPreferenceChanges(to: defaults)
         observeModelState()
         observeTermination()
+        restoreLastReader(LastReaderStore(defaults: defaults), enabled: LaunchRestore.isEnabled)
+        flushProgressWhenListeningStops()
+        // Play from the lock screen, headphones or media keys with no book
+        // open continues the Continue card's book, as the shortcut does.
+        nowPlaying.onPlayWithNoBook = { [weak self] in
+            Task { @MainActor [weak self] in _ = await self?.shortcutActions.continueListening() }
+        }
 
         // Persist progress even when playback continues outside the reader.
         // The controller's onProgress is the only progress writer.
@@ -332,6 +339,36 @@ final class AppModel: ObservableObject {
     /// An orderly exit ends the live session, so the next launch doesn't
     /// report a closed-by-iOS stop. Synchronous: the process is going away
     /// (the notification is posted on the main thread).
+    /// Launch: reopens the reader that was showing when Aloud last closed,
+    /// paused at its place (`LaunchRestore`), then keeps the slot in step
+    /// with the stack.
+    func restoreLastReader(_ lastReader: LastReaderStore, enabled: Bool) {
+        if let id = LaunchRestore.readerToReopen(lastReaderID: lastReader.load(),
+                                                 documents: documentStore.documents, enabled: enabled) {
+            router.restoreReader(id)
+        }
+        router.$path
+            .map(LaunchRestore.readerID(in:))
+            .removeDuplicates()
+            .sink { lastReader.save($0) }
+            .store(in: &cancellables)
+    }
+
+    /// Every pause and stop writes the place to disk at once, not within the
+    /// store's 2 s: a suspended iPhone app can be ended without notice.
+    /// After the controller's own progress write (a natural end reports its
+    /// 1.0 just after the status changes), so on the next main-queue turn.
+    private func flushProgressWhenListeningStops() {
+        playback.$status
+            .map { $0 == .playing || $0 == .buffering }
+            .removeDuplicates()
+            .filter { !$0 }
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak documentStore] _ in documentStore?.flushPendingProgress() }
+            .store(in: &cancellables)
+    }
+
     private func observeTermination() {
         PlatformLifecycle.publisher(for: .willTerminate)
             .sink { [weak self] _ in

@@ -15,9 +15,15 @@ final class EngineRouter: TtsEngine {
     var voices: [TtsVoice] { kokoro.voices + system.voices }
 
     func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+        try await synthesize(text, voice: voice, speed: 1.0)
+    }
+
+    /// Forwards the pace: an engine that can't speak faster returns its
+    /// natural pace, and says so in the clip.
+    func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
         switch voice.engine {
-        case .kokoro: return try await kokoro.synthesize(text, voice: voice)
-        case .avSpeech: return try await system.synthesize(text, voice: voice)
+        case .kokoro: return try await kokoro.synthesize(text, voice: voice, speed: speed)
+        case .avSpeech: return try await system.synthesize(text, voice: voice, speed: speed)
         }
     }
 }

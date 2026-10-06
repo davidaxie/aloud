@@ -59,8 +59,12 @@ final class UITestFaultEngine: TtsEngine {
     var voices: [TtsVoice] { base.voices }
 
     func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+        try await synthesize(text, voice: voice, speed: 1.0)
+    }
+
+    func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
         if faults.shouldFail(text: text, engine: voice.engine) { throw TtsError.voiceUnavailable }
-        return try await base.synthesize(text, voice: voice)
+        return try await base.synthesize(text, voice: voice, speed: speed)
     }
 }
 

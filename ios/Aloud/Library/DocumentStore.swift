@@ -41,9 +41,12 @@ final class DocumentStore: ObservableObject {
         self.saveInterval = saveInterval
         loadIndex()
 
+        // Synchronous too: it is posted on the main thread, and a suspended
+        // app may never get another turn.
         PlatformLifecycle.publisher(for: .didEnterBackground, in: notifications)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.flushIndex() }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.flushIndex() }
+            }
             .store(in: &cancellables)
         // Synchronous, with no hop (it is posted on the main thread): the
         // process is going away, and a pending write would die with it. A
@@ -566,6 +569,12 @@ final class DocumentStore: ObservableObject {
             self.pendingSave = nil
             self.persistIndex()
         }
+    }
+
+    /// Writes a pending progress save now (playback stopped).
+    func flushPendingProgress() {
+        guard pendingSave != nil else { return }
+        flushIndex()
     }
 
     private func flushIndex() {

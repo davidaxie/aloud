@@ -69,8 +69,31 @@ final class PlaybackController: ObservableObject {
         didSet {
             let clamped = Self.clampedRate(rate)
             if clamped != rate { rate = clamped; return }
-            timePitch.rate = Float(rate)
+            applyTimePitchRate()
         }
+    }
+
+    /// How much shorter than 1x the clips playing now are
+    /// (`SynthesizedAudio.nativeSpeed`): Kokoro spoke that part of the
+    /// listener's speed itself, so the time-pitch unit plays only the rest.
+    private var playingCompression: Double = 1.0
+    /// The compression of the last clip handed to the node; nil before a
+    /// schedule's first. A clip of another one is switched to as it starts
+    /// (`scheduleCompressionSwitch`).
+    private var lastScheduledCompression: Double?
+
+    /// What the time-pitch unit is playing at now (tests).
+    var timePitchRate: Float { timePitch.rate }
+
+    /// The time-pitch unit's share of the listener's speed.
+    private func applyTimePitchRate() {
+        timePitch.rate = Float(rate / max(playingCompression, 0.1))
+    }
+
+    /// The pace Kokoro is asked for at the current speed (`NativeSpeed`);
+    /// the System voice keeps its own.
+    private func nativePace(for voice: TtsVoice) -> Double {
+        NativeSpeed.tier(for: rate, engine: voice.engine)
     }
 
     /// The speed range the time-pitch unit is driven at (`SpeedScale.range`).
@@ -465,6 +488,7 @@ final class PlaybackController: ObservableObject {
         // Touching mainMixerNode builds the output unit, an audio-server round
         // trip that aborted launch when it timed out.
         timePitch.rate = 1.0
+        timePitch.overlap = NativeSpeed.timePitchOverlap
 
         announce = { PlaybackController.postAnnouncement($0, muted: outputMuted) }
         emitHaptic = { TransportHaptics.emit($0) }
@@ -1053,7 +1077,8 @@ final class PlaybackController: ObservableObject {
 
     private func sentenceEnd(_ sentence: Int, clip: WordKaraokeState.Clip, now: TimeInterval) -> SentenceEnd {
         SentenceEnd(sentence: sentence,
-                    secondsFromNow: max(0, (clip.start + clip.duration - now) / rate))
+                    secondsFromNow: wordTiming.wallSeconds(from: now, to: clip.start + clip.duration, rate: rate,
+                                                           gapCompression: playingCompression))
     }
 
     /// The sleep timer's landing: the sentence it aimed at has been heard,
@@ -1164,7 +1189,7 @@ final class PlaybackController: ObservableObject {
         guard status == .playing,
               let now = playerMediaSeconds,
               let clip = wordTiming.clip(for: currentSentence) else { return 0 }
-        return max(0, now - clip.start) / rate
+        return max(0, now - clip.start) * clip.compression / rate
     }
 
     // MARK: - Jumps and Undo jump (R15)
@@ -1391,13 +1416,15 @@ final class PlaybackController: ObservableObject {
                 // Citation-only / aside-only sentences (spokenText == "" with
                 // skip-brackets on) ride this branch: a beat of silence whose
                 // completion callback advances to the next sentence.
-                clip = .silence(duration: Self.skippedClipDuration)
+                clip = .silence(duration: Self.skippedClipDuration, nativeSpeed: compressionForSilence)
             } else {
+                let pace = nativePace(for: clipVoice)
                 let key = AudioClipCache.key(voice: clipVoice, skipBrackets: skipBrackets,
-                                             contentHash: content.contentHash, sentenceID: next)
+                                             contentHash: content.contentHash, nativeSpeed: pace,
+                                             sentenceID: next)
                 let priority: SynthesisPriority = next == currentSentence ? .now : .prefetch
                 do {
-                    clip = try await synthesizeWithRetry(spoken, voice: clipVoice, key: key,
+                    clip = try await synthesizeWithRetry(spoken, voice: clipVoice, speed: pace, key: key,
                                                          priority: priority, token: token)
                     guard token == playToken else { return }
                     // The splice was fixed while this clip was synthesizing:
@@ -1470,6 +1497,7 @@ final class PlaybackController: ObservableObject {
 
     private func synthesizeWithRetry(_ text: String,
                                      voice: TtsVoice,
+                                     speed: Double,
                                      key: String,
                                      priority: SynthesisPriority,
                                      token: UInt64) async throws -> SynthesizedAudio {
@@ -1477,7 +1505,8 @@ final class PlaybackController: ObservableObject {
         for _ in 0..<Self.synthesisAttempts {
             guard token == playToken else { throw CancellationError() }
             do {
-                return try await scheduler.synthesize(text, voice: voice, key: key, priority: priority)
+                return try await scheduler.synthesize(text, voice: voice, speed: speed, key: key,
+                                                      priority: priority)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1488,8 +1517,35 @@ final class PlaybackController: ObservableObject {
     }
 
     private func scheduleSilence(forSentence index: Int, voice: TtsVoice, token: UInt64) {
-        scheduleClip(.silence(duration: Self.skippedClipDuration), forSentence: index,
-                     voice: voice, token: token)
+        scheduleClip(.silence(duration: Self.skippedClipDuration, nativeSpeed: compressionForSilence),
+                     forSentence: index, voice: voice, token: token)
+    }
+
+    /// A beat of silence keeps the compression already playing, so it never
+    /// switches the time-pitch unit by itself.
+    private var compressionForSilence: Double { lastScheduledCompression ?? playingCompression }
+
+    /// Clips of another compression follow (a voice handoff, or a speed pick
+    /// that changed Kokoro's pace): a one-frame marker ahead of them switches
+    /// the time-pitch unit as the node renders it, in the quiet between two
+    /// sentences. The clips already queued keep playing at the right speed.
+    private func scheduleCompressionSwitch(to compression: Double, in format: AVAudioFormat, token: UInt64) {
+        guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1),
+              let channels = marker.floatChannelData else {
+            playingCompression = compression
+            applyTimePitchRate()
+            return
+        }
+        marker.frameLength = 1
+        for channel in 0..<Int(format.channelCount) { channels[channel][0] = 0 }
+        player.scheduleBuffer(marker, at: nil, options: [], completionCallbackType: .dataRendered) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, token == self.playToken else { return }
+                self.playingCompression = compression
+                self.applyTimePitchRate()
+            }
+        }
+        wordTiming.appendGap(1 / format.sampleRate)
     }
 
     private func scheduleClip(_ clip: SynthesizedAudio, forSentence index: Int,
@@ -1503,6 +1559,19 @@ final class PlaybackController: ObservableObject {
             return
         }
 
+        let compression = clip.nativeSpeed > 0 ? clip.nativeSpeed : 1
+        if let last = lastScheduledCompression {
+            if abs(last - compression) > 0.0005 {
+                scheduleCompressionSwitch(to: compression, in: format, token: token)
+            }
+        } else {
+            // A schedule's first clip: the node is stopped, so the unit
+            // switches at once.
+            playingCompression = compression
+            applyTimePitchRate()
+        }
+        lastScheduledCompression = compression
+
         player.scheduleBuffer(buffer, at: nil, options: [],
                               completionCallbackType: completionCallbackType) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -1513,7 +1582,8 @@ final class PlaybackController: ObservableObject {
         lastScheduled = index
         wordTimingRecordScheduled(sentence: index,
                                   frameLength: buffer.frameLength,
-                                  sampleRate: format.sampleRate)
+                                  sampleRate: format.sampleRate,
+                                  compression: compression)
         setPreparingVoice(false)   // first clip through means the engine is warm
 
         if !hasActiveSchedule {
@@ -1627,6 +1697,7 @@ final class PlaybackController: ObservableObject {
         playToken &+= 1
         scheduleTask?.cancel()
         hasActiveSchedule = false
+        lastScheduledCompression = nil
         setPreparingVoice(false)
         frozenSentenceElapsed = nil
         player.stop()
@@ -1899,9 +1970,10 @@ final class PlaybackController: ObservableObject {
         for index in first...upper where !skippedSentences.contains(index) {
             let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skip)
             guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let key = AudioClipCache.key(voice: voice, skipBrackets: skip,
-                                         contentHash: content.contentHash, sentenceID: index)
-            Task { await scheduler.prefetch(spoken, voice: voice, key: key) }
+            let pace = nativePace(for: voice)
+            let key = AudioClipCache.key(voice: voice, skipBrackets: skip, contentHash: content.contentHash,
+                                         nativeSpeed: pace, sentenceID: index)
+            Task { await scheduler.prefetch(spoken, voice: voice, speed: pace, key: key) }
         }
     }
 
@@ -1920,8 +1992,10 @@ final class PlaybackController: ObservableObject {
             guard token == self.playToken, self.content == nil else { return }
             let clip: SynthesizedAudio
             do {
-                clip = try await self.scheduler.synthesize(Self.sampleLine, voice: voice,
-                                                           key: "sample|\(voice.id)", priority: .now)
+                let pace = self.nativePace(for: voice)
+                clip = try await self.scheduler.synthesize(
+                    Self.sampleLine, voice: voice, speed: pace,
+                    key: "sample|\(voice.id)|" + NativeSpeed.keyComponent(pace), priority: .now)
             } catch {
                 if token == self.playToken { self.setPreparingVoice(false) }
                 return
@@ -1933,6 +2007,8 @@ final class PlaybackController: ObservableObject {
             }
             guard let format = self.graphFormat,
                   let buffer = Self.pcmBuffer(from: clip, in: format) else { return }
+            self.playingCompression = clip.nativeSpeed > 0 ? clip.nativeSpeed : 1
+            self.applyTimePitchRate()
             if !self.isRampingVolume { self.setOutputVolume(1) }   // a hard start
             do { try self.startAudioHardware() } catch { return }
             self.player.scheduleBuffer(buffer, at: nil, options: [],

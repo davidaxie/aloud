@@ -49,7 +49,7 @@ final class AudioClipCacheTests: XCTestCase {
         let key = AudioClipCache.key(voice: voice, skipBrackets: true,
                                      contentHash: bookA, sentenceID: 7)
         XCTAssertTrue(key.hasPrefix(prefix))
-        XCTAssertEqual(key, prefix + "7")
+        XCTAssertEqual(key, prefix + "x100|7", "the pace, then the sentence")
     }
 
     // MARK: - Cross-document behavior (the stale-audio regression)

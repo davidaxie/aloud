@@ -1,6 +1,6 @@
 import Foundation
 
-/// In-memory LRU of synthesized clips, keyed `docHash|voice|skip|sentenceID`.
+/// In-memory LRU of synthesized clips, keyed `docHash|voice|skip|pace|sentenceID`.
 /// Small by design: a dozen sentence clips cover the playback look-ahead.
 ///
 /// The key carries document identity (a content-hash prefix): sentence
@@ -17,10 +17,12 @@ final class AudioClipCache: @unchecked Sendable {
         self.capacity = capacity
     }
 
-    static func key(voice: TtsVoice, skipBrackets: Bool,
-                    contentHash: String, sentenceID: Int) -> String {
+    /// `nativeSpeed` is the pace the engine is asked for (`NativeSpeed`):
+    /// a clip made at one pace never stands in for another.
+    static func key(voice: TtsVoice, skipBrackets: Bool, contentHash: String,
+                    nativeSpeed: Double = 1.0, sentenceID: Int) -> String {
         keyPrefix(voice: voice, skipBrackets: skipBrackets, contentHash: contentHash)
-            + String(sentenceID)
+            + NativeSpeed.keyComponent(nativeSpeed) + "|" + String(sentenceID)
     }
 
     /// Everything but the sentence index — `purge(keepingPrefix:)` with this

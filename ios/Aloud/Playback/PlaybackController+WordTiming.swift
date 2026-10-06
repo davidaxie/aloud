@@ -12,15 +12,20 @@ import Foundation
 /// dry while the node kept playing (`appendScheduled`; a clip queued while
 /// the node is paused starts where it will resume). `playerTime(forNodeTime:)`
 /// counts SOURCE frames consumed by the node — the time-pitch unit pulls
-/// frames faster at higher rates — so the position read each frame is already
-/// in 1× media seconds and windows never need re-deriving on speed changes.
+/// frames faster at higher rates — so the position read each frame is in the
+/// clip's own media seconds and windows never need re-deriving on speed
+/// changes. A clip Kokoro spoke faster (`Clip.compression`) is that much
+/// shorter in media time; wall time divides it back out (`wallSeconds`).
 @MainActor
 final class WordKaraokeState {
 
     struct Clip {
         let start: TimeInterval      // media-timeline offset of the clip's first frame
-        let duration: TimeInterval   // 1× seconds
+        let duration: TimeInterval   // the clip's own seconds, at the pace it was spoken
         let windows: [WordWindow]    // empty for silence / skipped sentences
+        /// How much shorter than 1x it was spoken (`SynthesizedAudio.nativeSpeed`):
+        /// its wall time at speed r is duration × compression / r.
+        var compression: Double = 1.0
     }
 
     /// Fires ~30×/s while the ticker runs; the controller maps time → word.
@@ -46,10 +51,32 @@ final class WordKaraokeState {
     /// the playhead has got to, and every later clip lines up behind it. Must
     /// be called in scheduling order (it is: `scheduleClip` is the only caller).
     func appendScheduled(sentence: Int, duration: TimeInterval, windows: [WordWindow],
-                         playhead: TimeInterval? = nil) {
+                         playhead: TimeInterval? = nil, compression: Double = 1.0) {
         let start = max(scheduledSeconds, playhead ?? 0)
-        clips[sentence] = Clip(start: start, duration: duration, windows: windows)
+        clips[sentence] = Clip(start: start, duration: duration, windows: windows, compression: compression)
         scheduledSeconds = start + duration
+    }
+
+    /// A buffer that belongs to no sentence (the compression switch's one
+    /// frame): later clips start after it.
+    func appendGap(_ seconds: TimeInterval) {
+        scheduledSeconds += max(seconds, 0)
+    }
+
+    /// Wall seconds the node takes from media time `from` to `to` at speed
+    /// `rate`: each clip's stretch at its own compression, and any stretch
+    /// no clip covers (a dry spell, a marker) at `gapCompression`.
+    func wallSeconds(from: TimeInterval, to: TimeInterval, rate: Double, gapCompression: Double) -> TimeInterval {
+        guard to > from, rate > 0 else { return 0 }
+        var wall = 0.0, covered = 0.0
+        for clip in clips.values {
+            let overlap = min(to, clip.start + clip.duration) - max(from, clip.start)
+            guard overlap > 0 else { continue }
+            wall += overlap * clip.compression
+            covered += overlap
+        }
+        wall += max(0, (to - from) - covered) * gapCompression
+        return wall / rate
     }
 
     /// Drop entries the playhead has moved past (look-behind of 1 sentence).
@@ -124,7 +151,8 @@ extension PlaybackController {
     /// get an empty window list so no word ever lights up for them.
     func wordTimingRecordScheduled(sentence: Int,
                                    frameLength: AVAudioFrameCount,
-                                   sampleRate: Double) {
+                                   sampleRate: Double,
+                                   compression: Double = 1.0) {
         guard sampleRate > 0 else { return }
         let duration = Double(frameLength) / sampleRate
         var windows: [WordWindow] = []
@@ -140,7 +168,7 @@ extension PlaybackController {
         // the node's playhead, so Back's 3 s rule (R14), the sleep landing
         // (R19) and the word tint read what was really heard.
         wordTiming.appendScheduled(sentence: sentence, duration: duration, windows: windows,
-                                   playhead: schedulingPlayhead)
+                                   playhead: schedulingPlayhead, compression: compression)
     }
 
     /// Ticker body: playhead media time − clip start → word index,

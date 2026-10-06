@@ -27,6 +27,7 @@ import SwiftUI
 /// - `-uitest-sleep-one-minute` adds a 1 min sleep-timer option.
 /// - `-uitest-seed-live-session` leaves a live-session marker, as if iOS
 ///   closed Aloud while it was speaking.
+/// - `-uitest-restore-session` reopens the last reader at launch.
 /// - `-uitest-haptic-log` exposes the transport haptic log (debug.haptics).
 /// - `-uitest-low-disk` reports 100 MB free to the download's space check.
 /// - `-uitest-damaged-model` installs 1-byte model files in the temporary
@@ -167,6 +168,10 @@ enum UITestHooks {
     /// init reads it as iOS having closed Aloud while it spoke.
     static var seedLiveSession: Bool { arguments.contains("-uitest-seed-live-session") }
 
+    /// `-uitest-restore-session`: reopen the last reader at launch, as a
+    /// normal launch does (UI-test launches start on the bare Library).
+    static var restoreSession: Bool { arguments.contains("-uitest-restore-session") }
+
     /// Expose TransportHaptics' log through the debug.haptics probe.
     static var hapticLog: Bool { arguments.contains("-uitest-haptic-log") }
 
@@ -295,6 +300,7 @@ enum UITestHooks {
     static var openFirstDoc: Bool { false }
     static var resetVoicePref: Bool { false }
     static var resetLibrary: Bool { false }
+    static var restoreSession: Bool { false }
     static var forcedColorScheme: ColorScheme? { nil }
     static var seekText: String? { nil }
     static var kokoroModelPath: String? { nil }

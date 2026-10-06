@@ -43,17 +43,38 @@ final class LibraryRouter: ObservableObject {
     /// ends means the user moved on, so the add must not open its book.
     private(set) var navigationGeneration: UInt64 = 0
 
+    /// The book a reader opened by `open` starts speaking (R4), asked once by
+    /// that reader. A reader shown any other way (reopened at launch, or
+    /// rebuilt when the Mac's window comes back) stays paused at its place.
+    private(set) var autoplayRequest: UUID?
+
     /// R4: the one way into the reader. The reader starts the book speaking on
     /// arrival. A reader already on top is replaced, never stacked; the same
     /// book is a no-op. R20 can attach its user-started-playback haptic here.
     func open(_ document: LibraryDocument) {
         let route = Route.reader(document.id)
         guard path.last != route else { return }
+        autoplayRequest = document.id
         if case .reader = path.last {
             path[path.count - 1] = route
         } else {
             path.append(route)
         }
+    }
+
+    /// Whether the reader for `id` was opened to play; true once.
+    func takeAutoplayRequest(for id: UUID) -> Bool {
+        guard autoplayRequest == id else { return false }
+        autoplayRequest = nil
+        return true
+    }
+
+    /// Launch: the reader that was showing when Aloud last closed, over the
+    /// Library, paused at its place. Only onto an untouched stack: an
+    /// Open-in or anything the listener did first wins.
+    func restoreReader(_ id: UUID) {
+        guard path.isEmpty, rootPresentation == nil else { return }
+        path = [.reader(id)]
     }
 
     func showBookshelf() {
