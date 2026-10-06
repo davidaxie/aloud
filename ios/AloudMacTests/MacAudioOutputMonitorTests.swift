@@ -167,6 +167,57 @@ final class MacAudioOutputMonitorTests: XCTestCase {
         XCTAssertEqual(settling.decisionAfterConfigurationChange(), .follow)
     }
 
+    /// The engine's own change can arrive while departing AirPods are still
+    /// listed and the speakers already the default. It waits for the HAL to
+    /// settle as a listener's change does, and by then reads as the stop it
+    /// is: speech never follows to the speakers.
+    func testAnEngineChangeWhileAirPodsLeaveNeverFollowsToTheSpeakers() {
+        let settling = MacAudioOutputMonitor(hardware: hal, settleInterval: 0.05)
+        var settledPauses = 0
+        settling.onRouteRequiresPause = { settledPauses += 1 }
+        let engine = AVAudioEngine()
+        settling.bindOutput(of: engine)
+        let posted = expectation(forNotification: .AVAudioEngineConfigurationChange, object: engine)
+        posted.isInverted = true
+
+        hal.defaultOutputDevice = speakers
+        XCTAssertEqual(settling.decisionAfterConfigurationChange(), .ignore, "nothing acted on before the HAL settles")
+        hal.remove(airPods)
+        wait(for: [posted], timeout: 0.3)
+        XCTAssertEqual(settledPauses, 1, "the vanished AirPods pause, never follow to the speakers")
+        XCTAssertEqual(hal.boundDevices, [airPods], "nothing rebinds to the speakers")
+        withExtendedLifetime(engine) {}
+    }
+
+    /// The listener's own switch reached first through the engine's change
+    /// (the engine stopped itself): once settled, the change is posted again
+    /// for the stopped engine, and followed.
+    func testAnEngineChangeOntoTheListenersSwitchIsFollowedOnceSettled() {
+        let settling = MacAudioOutputMonitor(hardware: hal, settleInterval: 0.05)
+        var settledPauses = 0
+        settling.onRouteRequiresPause = { settledPauses += 1 }
+        let engine = AVAudioEngine()   // never started, as after it stopped itself
+        settling.bindOutput(of: engine)
+        let posted = expectation(forNotification: .AVAudioEngineConfigurationChange, object: engine)
+
+        hal.defaultOutputDevice = usbDAC
+        XCTAssertEqual(settling.decisionAfterConfigurationChange(), .ignore, "not before the HAL settles")
+        wait(for: [posted], timeout: 1)
+        XCTAssertEqual(settling.decisionAfterConfigurationChange(), .follow, "the settled change is followed")
+        XCTAssertEqual(settledPauses, 0)
+        withExtendedLifetime(engine) {}
+    }
+
+    /// A format change on the bound device has nothing to fall through to:
+    /// followed at once, even with a settle.
+    func testAFormatChangeOnTheBoundDeviceIsFollowedAtOnce() {
+        let settling = MacAudioOutputMonitor(hardware: hal, settleInterval: 0.05)
+        let engine = AVAudioEngine()
+        settling.bindOutput(of: engine)
+        XCTAssertEqual(settling.decisionAfterConfigurationChange(), .follow)
+        withExtendedLifetime(engine) {}
+    }
+
     // MARK: - S8 · the route-lost fault
 
     func testSimulatedPrivateToPublicPauses() {

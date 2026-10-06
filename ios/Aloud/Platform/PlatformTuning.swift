@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// How a muted process (UI tests) keeps its audio silent.
@@ -23,9 +24,14 @@ enum PlatformTuning {
     /// Whether going to the background releases an idle neural voice, so
     /// iOS doesn't end the process for its memory.
     static let releasesNeuralOnBackground = true
-    /// How long the audio engine runs on once nothing plays: nil keeps it
-    /// running, as the iPhone always has.
-    static let idleEngineStopDelay: TimeInterval? = nil
+    /// How long the audio engine runs on once nothing plays. A running
+    /// engine keeps iOS from suspending a paused Aloud in the background,
+    /// rendering silence all night, and keeps the audio from an app it
+    /// interrupted; a minute after playback stops the engine stops and the
+    /// session goes (`notifyOthersOnDeactivation`). A shorter pause still
+    /// resumes mid-sentence; a longer one reads on from the sentence start,
+    /// and lock-screen Play claims the session again on the way.
+    static let idleEngineStopDelay: TimeInterval? = 60
     #elseif os(macOS)
     /// Two kept synthesis at 3.0x real time on an M4 Pro (10 P + 4 E
     /// cores), level with a listener at 2.95x, so reading fell behind.
@@ -76,6 +82,9 @@ enum PlatformAudio {
     /// Debug builds play aloud unless a test condition mutes them.
     static let debugBuildsStartMuted = false
     static let mutedOutputMode: MutedOutputMode = .deviceAtZeroVolume
+    /// Posted when the media server restarts, taking every audio object
+    /// made before it along (`PlaybackController.mediaServicesWereReset`).
+    static let mediaServicesReset: Notification.Name? = AVAudioSession.mediaServicesWereResetNotification
     #elseif os(macOS)
     /// A Debug build launched by anything but Xcode's Run action (Finder,
     /// `open`, a test) stays silent: `ALOUD_AUDIBLE=1` lifts it.
@@ -83,5 +92,7 @@ enum PlatformAudio {
     /// A muted Mac process opens no output device at all, so not even a
     /// stream of zeros can pull AirPods over from another device.
     static let mutedOutputMode: MutedOutputMode = .manualRendering
+    /// A Mac has no audio session, and no media server to reset under it.
+    static let mediaServicesReset: Notification.Name? = nil
     #endif
 }

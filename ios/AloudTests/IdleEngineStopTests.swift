@@ -42,38 +42,84 @@ final class IdleStopClock {
 }
 
 /// M19's idle stop as each platform tunes it: the Mac stops its engine 30 s
-/// after playback stops; the iPhone never arms the wait, so its engine runs
-/// exactly as it always has. Silent: the rig's muted controller, and the
-/// wait on a fake clock.
+/// after playback stops, the iPhone a minute after, and then gives its
+/// session back so iOS can suspend a paused Aloud. Silent: the rig's muted
+/// controller, and the wait on a fake clock.
 @MainActor
 final class IdleEngineStopTests: XCTestCase {
 
     func testTheDelayIsTunedPerPlatform() {
         #if os(iOS)
-        XCTAssertNil(PlatformTuning.idleEngineStopDelay, "the iPhone keeps its engine running")
+        XCTAssertEqual(PlatformTuning.idleEngineStopDelay, 60)
         #elseif os(macOS)
         XCTAssertEqual(PlatformTuning.idleEngineStopDelay, 30)
         #endif
         XCTAssertEqual(PlaybackTestRig().controller.idleEngineStopDelay, PlatformTuning.idleEngineStopDelay)
     }
 
-    /// With the platform's own tuning, a pause arms the wait only on a Mac.
-    func testAPauseArmsTheWaitOnlyWhereThePlatformStopsItsEngine() async throws {
+    private static func isScheduled(_ event: PlaybackController.AudioScheduleEvent) -> Bool {
+        if case .scheduled = event { return true }
+        return false
+    }
+
+    /// Reading at sentence 3 on the fake clock, with the platform's delay.
+    private func startReading() async throws -> (PlaybackTestRig, IdleStopClock) {
         let rig = PlaybackTestRig(sentences: 40, clipDuration: 1)
         let clock = IdleStopClock()
         clock.drive(rig.controller)
-        rig.loadDefault()
+        rig.loadDefault(at: 3)
         rig.controller.play()
         try await rig.waitUntilPlayingOrSkip()
-        rig.controller.pause()
+        return (rig, clock)
+    }
 
-        #if os(iOS)
-        XCTAssertEqual(clock.requestedDelays, [], "an iPhone never arms it")
-        clock.advance(by: 3_600)
-        XCTAssertTrue(rig.controller.isEngineRunning, "and its engine runs on")
-        #elseif os(macOS)
-        XCTAssertEqual(clock.requestedDelays.last, 30)
+    /// With the platform's own tuning, a pause arms the wait on both.
+    func testAPauseArmsTheWaitOnEveryPlatform() async throws {
+        let (rig, clock) = try await startReading()
+        rig.controller.pause()
+        XCTAssertEqual(clock.requestedDelays.last, PlatformTuning.idleEngineStopDelay)
         XCTAssertEqual(clock.pendingCount, 1)
-        #endif
+    }
+
+    /// The idle stop stops the engine, then gives the session back (an
+    /// iPhone's notifyOthersOnDeactivation; offline there is none). Play
+    /// claims it again and reads on from the same sentence's start: what
+    /// lock-screen Play after a long pause does.
+    func testTheIdleStopLetsTheSessionGoAndPlayClaimsItAgain() async throws {
+        let (rig, clock) = try await startReading()
+        rig.controller.pause()
+        let cue = rig.controller.currentSentence
+        let delay = try XCTUnwrap(PlatformTuning.idleEngineStopDelay)
+        clock.advance(by: delay)
+
+        XCTAssertFalse(rig.controller.isEngineRunning, "the engine stops")
+        let offline = rig.controller.rendersOffline
+        XCTAssertEqual(rig.audioSession.deactivations, offline ? 0 : 1, "then the session goes")
+
+        let activations = rig.audioSession.activations
+        let mark = rig.statuses.count
+        let eventMark = rig.events.count
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        XCTAssertTrue(rig.controller.isEngineRunning)
+        XCTAssertEqual(rig.audioSession.activations, activations + (offline ? 0 : 1), "Play claims the session")
+        XCTAssertEqual(rig.events[eventMark...].first(where: Self.isScheduled),
+                       .scheduled(sentence: cue, voiceID: PlaybackTestRig.voiceA.id),
+                       "from the same sentence's start")
+    }
+
+    /// An interruption's pause keeps the session past the idle stop, so the
+    /// interruption's end still resumes.
+    func testAnInterruptionKeepsTheSessionForItsEnd() async throws {
+        let (rig, clock) = try await startReading()
+        rig.audioSession.onInterruption?(.began)
+        XCTAssertEqual(rig.controller.status, .paused)
+        let delay = try XCTUnwrap(PlatformTuning.idleEngineStopDelay)
+        clock.advance(by: delay)
+        XCTAssertEqual(rig.audioSession.deactivations, 0)
+
+        let mark = rig.statuses.count
+        rig.audioSession.onInterruption?(.ended(shouldResume: true))
+        try await rig.waitUntilPlayingOrSkip(after: mark)
     }
 }

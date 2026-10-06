@@ -38,6 +38,12 @@ final class MacAudioOutputMonitor: AudioOutputMonitoring {
     /// the rule runs again and follows it.
     private let settleInterval: TimeInterval
     private var followPending = false
+    /// The engine stopped itself while the switch settled, so the settled
+    /// follow restarts it whatever it plays to now.
+    private var engineStoppedWhileSettling = false
+    /// The default output a settle confirmed as the listener's switch: a
+    /// change onto it is followed at once.
+    private var settledDevice: AudioObjectID?
 
     /// `hardware` nil is the system's HAL; tests inject a fake, and a zero
     /// `settleInterval` to follow at once.
@@ -67,13 +73,37 @@ final class MacAudioOutputMonitor: AudioOutputMonitoring {
         hardware.bind(engine, to: id)
         self.engine = engine
         bound = device(id)
+        settledDevice = nil
         hardware.watch(device: id)
     }
 
+    /// A stop acts at once. A follow onto another device waits for the HAL
+    /// to settle, as a listener's does (`hardwareChanged`): departing AirPods
+    /// can read as the speakers becoming the default while still listed,
+    /// and following then would carry speech to the speakers. Meanwhile
+    /// nothing acts (`.ignore`); once settled, the rule runs again and stops,
+    /// or posts the change again to be followed. A format change on the
+    /// bound device, or a switch already settled, is followed at once.
     func decisionAfterConfigurationChange() -> RouteDecision {
         let decision = currentDecision()
-        if case .stop = decision { settleAfterStop() }
+        switch decision {
+        case .stop:
+            settleAfterStop()
+        case .follow where followNeedsToSettle:
+            engineStoppedWhileSettling = true
+            settleThenFollow()
+            return .ignore
+        case .follow, .ignore:
+            break
+        }
         return decision
+    }
+
+    /// Whether following now would move the engine onto a device no settle
+    /// has confirmed yet.
+    private var followNeedsToSettle: Bool {
+        guard settleInterval > 0, let current = hardware.defaultOutputDevice else { return false }
+        return current != bound?.id && current != settledDevice
     }
 
     /// One device as the rule sees it: its transport, and the built-in
@@ -109,14 +139,20 @@ final class MacAudioOutputMonitor: AudioOutputMonitoring {
             // output before they leave the device list. Following at once
             // would carry speech to the speakers, so the rule runs again
             // once the HAL has settled, and stops then if they are gone.
-            guard !followPending else { return }
-            guard settleInterval > 0 else { return followIfStillChosen() }
-            followPending = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + settleInterval) { [weak self] in
-                MainActor.assumeIsolated { self?.followIfStillChosen() }
-            }
+            settleThenFollow()
         case .ignore:
             return
+        }
+    }
+
+    /// Runs the rule again once the HAL has settled (at once with no
+    /// settle), unless a run is already on its way.
+    private func settleThenFollow() {
+        guard !followPending else { return }
+        guard settleInterval > 0 else { return followIfStillChosen() }
+        followPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + settleInterval) { [weak self] in
+            MainActor.assumeIsolated { self?.followIfStillChosen() }
         }
     }
 
@@ -125,16 +161,22 @@ final class MacAudioOutputMonitor: AudioOutputMonitoring {
     /// listener picked, so it gets the change the engine posts for a format
     /// change, and the controller rebinds from the sentence start. The same
     /// device (the jack's source moving to headphones) has nothing to move,
-    /// and a stopped engine binds at the next Play.
+    /// and a stopped engine binds at the next Play, unless it stopped itself
+    /// while the switch settled: then the change is posted again, and the
+    /// controller restarts it on the output as it is now.
     private func followIfStillChosen() {
         followPending = false
+        let engineStopped = engineStoppedWhileSettling
+        engineStoppedWhileSettling = false
         switch currentDecision() {
         case .stop:
             settleAfterStop()
             onRouteRequiresPause?()
         case .follow:
-            guard let engine, engine.isRunning,
-                  let current = hardware.defaultOutputDevice, current != bound?.id else { return }
+            guard let current = hardware.defaultOutputDevice else { return }
+            settledDevice = current
+            guard let engine,
+                  (engine.isRunning && current != bound?.id) || (engineStopped && !engine.isRunning) else { return }
             NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
         case .ignore:
             return

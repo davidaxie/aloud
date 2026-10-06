@@ -163,20 +163,31 @@ final class PlaybackTestRig {
 
     /// The output monitor, driven by hand: `onRouteRequiresPause` and
     /// `onInterruption` are fired directly, a configuration change gets
-    /// `decision` (`.ignore`, as on an iPhone, unless a test sets it), and
-    /// what the controller asked is counted. Activation still goes to the
-    /// real session, as the app's does, so the engine starts as it always has.
+    /// `decision` (`.ignore` unless a test sets it), and what the controller
+    /// asked is counted. Activation still goes to the real session, as the
+    /// app's does, so the engine starts as it always has, unless a test sets
+    /// `activationError` (a call holding the audio).
     @MainActor
     final class FakeAudioOutput: AudioOutputMonitoring {
         var onInterruption: ((AudioInterruption) -> Void)?
         var onRouteRequiresPause: (() -> Void)?
         var decision: RouteDecision = .ignore
+        var activationError: (any Error)?
         private(set) var decisionsAsked = 0
         private(set) var bindings = 0
+        private(set) var activations = 0
+        private(set) var deactivations = 0
         private let session = PlatformAudioOutput.makeMonitor()
 
-        func activate() throws { try session.activate() }
-        func deactivate() { session.deactivate() }
+        func activate() throws {
+            activations += 1
+            if let activationError { throw activationError }
+            try session.activate()
+        }
+        func deactivate() {
+            deactivations += 1
+            session.deactivate()
+        }
         func bindOutput(of engine: AVAudioEngine) { bindings += 1 }
 
         func decisionAfterConfigurationChange() -> RouteDecision {

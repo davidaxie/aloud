@@ -2,7 +2,8 @@ import AVFoundation
 import Foundation
 
 /// Owns the shared `AVAudioSession`: spoken-audio playback category,
-/// interruption handling, and pause-on-unplug route changes. The iPhone's
+/// interruption handling, pause-on-unplug route changes, and following the
+/// engine onto a new output once the change settles. The iPhone's
 /// `AudioOutputMonitoring`.
 @MainActor
 final class AudioSessionManager: AudioOutputMonitoring {
@@ -10,10 +11,24 @@ final class AudioSessionManager: AudioOutputMonitoring {
     var onInterruption: ((AudioInterruption) -> Void)?
     var onRouteRequiresPause: (() -> Void)?
 
+    private let center: NotificationCenter
     private var observers: [NSObjectProtocol] = []
+    /// How long an engine's output change is left to settle before playback
+    /// follows it.
+    private let settleInterval: TimeInterval
+    /// The engine playback starts (`bindOutput`), whose changes are followed.
+    private weak var engine: AVAudioEngine?
+    private var followPending = false
+    /// The settled change this monitor posted is on its way to the
+    /// controller, which follows it.
+    private var followSettled = false
 
-    init() {
-        let center = NotificationCenter.default
+    /// `center` is where the session's notifications arrive: the app's
+    /// default center, or a private one in tests. A zero `settleInterval`
+    /// follows at once.
+    init(center: NotificationCenter = .default, settleInterval: TimeInterval = 0.5) {
+        self.center = center
+        self.settleInterval = settleInterval
 
         observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -36,28 +51,67 @@ final class AudioSessionManager: AudioOutputMonitoring {
 
     deinit {
         for observer in observers {
-            NotificationCenter.default.removeObserver(observer)
+            center.removeObserver(observer)
         }
     }
 
+    /// Claims the audio. A call, or an app that outranks Aloud, holding it
+    /// throws `AudioOutputHeldElsewhere`, so playback pauses as interrupted
+    /// rather than failed.
     func activate() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .spokenAudio)
-        try session.setActive(true)
+        do {
+            try session.setCategory(.playback, mode: .spokenAudio)
+            try session.setActive(true)
+        } catch where Self.isHeldElsewhere(error) {
+            throw AudioOutputHeldElsewhere()
+        }
     }
 
+    /// Gives the audio back once the engine has stopped (the idle stop), so
+    /// iOS can suspend a paused Aloud and an app it interrupted may resume.
     func deactivate() {
         try? AVAudioSession.sharedInstance()
             .setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    /// The session already plays to the route iOS picked.
-    func bindOutput(of engine: AVAudioEngine) {}
+    /// The session already plays to the route iOS picked; the engine is
+    /// remembered, so its output changes can be followed.
+    func bindOutput(of engine: AVAudioEngine) {
+        self.engine = engine
+    }
 
-    /// iOS reports an unplug as a route change (`onRouteRequiresPause`), so
-    /// the engine's own configuration change is left alone, as it always
-    /// was: a restart racing that pause could blip through the speaker.
-    func decisionAfterConfigurationChange() -> RouteDecision { .ignore }
+    /// The engine stopped itself: a new output (a car's Bluetooth, AirPods,
+    /// AirPlay) or a new format on this one. iOS reports an unplug apart, as
+    /// a route change (`onRouteRequiresPause`), in no fixed order with this
+    /// one, so the change settles first: following at once could race that
+    /// pause and blip through the speaker. Once settled, this monitor posts
+    /// the change again and playback follows the output as it is then: a
+    /// paused controller only rewires, a playing one reads on from the
+    /// sentence start. Before anything has played there is nothing to follow.
+    func decisionAfterConfigurationChange() -> RouteDecision {
+        if followSettled {
+            followSettled = false
+            return .follow
+        }
+        guard engine != nil else { return .ignore }
+        guard settleInterval > 0 else { return .follow }
+        guard !followPending else { return .ignore }
+        followPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + settleInterval) { [weak self] in
+            MainActor.assumeIsolated { self?.followSettledChange() }
+        }
+        return .ignore
+    }
+
+    /// The change, settled. An engine running again was started on the
+    /// output as it is now (a Play in the meantime): nothing to follow.
+    private func followSettledChange() {
+        followPending = false
+        guard let engine, !engine.isRunning else { return }
+        followSettled = true
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+    }
 
     // MARK: - Reading the notifications
 
@@ -81,5 +135,14 @@ final class AudioSessionManager: AudioOutputMonitoring {
         guard let rawReason = userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return false }
         return reason == .oldDeviceUnavailable
+    }
+
+    /// A call or a higher-priority session holds the audio: activation is
+    /// refused (`insufficientPriority`), or Aloud may not interrupt it
+    /// (`cannotInterruptOthers`).
+    nonisolated static func isHeldElsewhere(_ error: Error) -> Bool {
+        let code = (error as NSError).code
+        return code == AVAudioSession.ErrorCode.insufficientPriority.rawValue
+            || code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue
     }
 }

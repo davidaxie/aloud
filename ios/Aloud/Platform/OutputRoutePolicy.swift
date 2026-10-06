@@ -57,6 +57,11 @@ enum RouteDecision: Equatable, Sendable {
     case ignore
 }
 
+/// What `AudioOutputMonitoring.activate()` throws when a call, or an app
+/// that outranks Aloud, holds the audio: playback pauses as interrupted,
+/// not failed. Only an iPhone throws it.
+struct AudioOutputHeldElsewhere: Error, Equatable {}
+
 /// The headphones rule (M12), pure so both hosts test the same table.
 /// Speech never falls through to the speakers: it stops when the device
 /// that was playing disappears, or when the built-in output's source moves

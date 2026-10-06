@@ -199,8 +199,8 @@ final class PlaybackController: ObservableObject {
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
 
     /// M19: how long the engine runs on once nothing plays before it stops
-    /// (`PlatformTuning.idleEngineStopDelay`); nil keeps it running, as on
-    /// an iPhone. Tests set it.
+    /// (`PlatformTuning.idleEngineStopDelay`); nil keeps it running. Tests
+    /// set it.
     var idleEngineStopDelay: TimeInterval? = PlatformTuning.idleEngineStopDelay
     /// Runs the idle stop: `fire` on the main actor after `delay` seconds,
     /// unless the returned item is cancelled first. Tests pass a fake clock.
@@ -355,9 +355,12 @@ final class PlaybackController: ObservableObject {
     private let anchorStore: ResumeAnchorStore
     private let stopStore: PlaybackStopStore
 
-    private let audioEngine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
-    private let timePitch = AVAudioUnitTimePitch()
+    /// Made anew only after a media-services reset (`mediaServicesWereReset`).
+    private var audioEngine = PlaybackController.makeAudioEngine()
+    private var player = AVAudioPlayerNode()
+    private var timePitch = AVAudioUnitTimePitch()
+    /// S7b: the observer of `audioEngine`'s own output changes.
+    private var engineConfigurationObserver: NSObjectProtocol?
     private var graphFormat: AVAudioFormat?
     /// When a scheduled clip counts as finished: once heard through the
     /// device, or, rendering offline with no device to present it, once
@@ -485,8 +488,9 @@ final class PlaybackController: ObservableObject {
     /// `audioSession` is the platform's output monitor
     /// (`PlatformAudioOutput.makeMonitor()`), labelled as before the Mac.
     /// A muted controller stays silent the platform's way
-    /// (`mutedOutputMode`). `lifecycle` is where the system-sleep event
-    /// arrives: the platform's center, or a private one in tests.
+    /// (`mutedOutputMode`). `lifecycle` is where the system-sleep event and
+    /// an iPhone's media-services reset arrive: the platform's centers, or a
+    /// private one in tests.
     init(engine: any TtsEngine,
          kokoro: (any WarmableTtsEngine)? = nil,
          defaultVoice: TtsVoice,
@@ -516,13 +520,10 @@ final class PlaybackController: ObservableObject {
         self.isAutoplaySuppressed = autoplaySuppressed
         self.voice = defaultVoice
 
-        audioEngine.attach(player)
-        audioEngine.attach(timePitch)
         // The level is only remembered here: connecting the graph writes it.
         // Touching mainMixerNode builds the output unit, an audio-server round
         // trip that aborted launch when it timed out.
-        timePitch.rate = 1.0
-        timePitch.overlap = NativeSpeed.timePitchOverlap
+        assembleAudioGraph()
 
         announce = { PlaybackController.postAnnouncement($0, muted: outputMuted) }
         emitHaptic = { TransportHaptics.emit($0) }
@@ -549,25 +550,31 @@ final class PlaybackController: ObservableObject {
         audioOutput.onRouteRequiresPause = { [weak self] in
             self?.stop(because: .headphonesDisconnected)
         }
-        // S7b: the engine stopped itself over an output change. Posted on
-        // whichever thread noticed it.
-        systemObservers.append((.default, NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor in self?.outputConfigurationChanged() }
-        }))
         // S11: synchronous, on the main thread that posts it, so the stop is
         // recorded before the machine sleeps. An iPhone never posts it.
         let sleepCenter = lifecycle ?? PlatformLifecycle.center(for: .systemWillSleep)
         systemObservers.append((sleepCenter, PlatformLifecycle.observe(.systemWillSleep, in: sleepCenter) { [weak self] _ in
             MainActor.assumeIsolated { self?.systemWillSleep() }
         }))
+        // The media server restarted under the app (an iPhone's; a Mac has
+        // none). Posted on whichever thread noticed it.
+        if let reset = PlatformAudio.mediaServicesReset {
+            let sessionCenter = lifecycle ?? NotificationCenter.default
+            systemObservers.append((sessionCenter, sessionCenter.addObserver(
+                forName: reset, object: nil, queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor in self?.mediaServicesWereReset() }
+            }))
+        }
         configureWordTiming()
     }
 
     deinit {
         for observer in systemObservers {
             observer.center.removeObserver(observer.token)
+        }
+        if let engineConfigurationObserver {
+            NotificationCenter.default.removeObserver(engineConfigurationObserver)
         }
         PlatformActivity.end(activity)
         idleEngineStopItem?.cancel()
@@ -766,8 +773,14 @@ final class PlaybackController: ObservableObject {
             if auditionWasSpeaking { didEnterActivePlayback() }
             return
         }
+        // The system stopped the engine under the pause (an interruption, an
+        // output change): the node let its queue go with it, as at the idle
+        // stop, so Play reads on from the same sentence's start.
+        if status == .paused, hasActiveSchedule, !audioEngine.isRunning {
+            invalidateSchedule()
+        }
         if status == .paused, hasActiveSchedule {
-            do { try startAudioHardware() } catch { failPlayback(); return }
+            do { try startAudioHardware() } catch { audioHardwareFailed(error); return }
             pendingFadeIn = nil
             frozenSentenceElapsed = nil
             if isRampingToPause {
@@ -1651,7 +1664,7 @@ final class PlaybackController: ObservableObject {
             // pause (or any non-playing state) must never make sound.
             guard status == .buffering || status == .playing else { return }
             let fadeIn = applyColdStartLevel()
-            do { try startAudioHardware() } catch { failPlayback(); return }
+            do { try startAudioHardware() } catch { audioHardwareFailed(error); return }
             player.play()
             hasActiveSchedule = true
             if status == .buffering { status = .playing }
@@ -1667,6 +1680,10 @@ final class PlaybackController: ObservableObject {
         // A boundary inside a pause's 120 ms ramp still counts: the audio
         // really did reach it.
         guard token == playToken, isActive || isRampingToPause, let content else { return }
+        // An engine that stopped itself (an output change, an interruption)
+        // flushed its queue and called every completion at once: nobody
+        // heard those clips, so the place stays where it is.
+        guard audioEngine.isRunning else { return }
         // A sample handed back to the end (`returnAuditionToTheEnd`) is
         // there already: its clip ending inside the ramp is no second end
         // (no haptic, announcement or progress write), and the ramp's own
@@ -1772,6 +1789,20 @@ final class PlaybackController: ObservableObject {
         status = .error
         audition = nil
         record(.playbackError)   // mid-audition too: the error is real
+    }
+
+    /// The hardware wouldn't start. A call, or an app that outranks Aloud,
+    /// holding the audio (`AudioOutputHeldElsewhere`) is an interruption,
+    /// not a failure: playback pauses with that reason, and the
+    /// interruption's end resumes it when iOS says it may. Anything else
+    /// fails.
+    private func audioHardwareFailed(_ error: Error) {
+        guard error is AudioOutputHeldElsewhere else { return failPlayback() }
+        let auditioning = audition != nil
+        if isActive { pause(rampsOut: false) }
+        guard !auditioning else { return }
+        record(.interrupted)
+        resumeAfterInterruption = true
     }
 
     // MARK: - Speed / voice / skip changes
@@ -2197,6 +2228,47 @@ final class PlaybackController: ObservableObject {
         return nil
     }
 
+    /// The app's one audio engine, made here alone: at init, and anew after
+    /// a media-services reset.
+    private nonisolated static func makeAudioEngine() -> AVAudioEngine { AVAudioEngine() }
+
+    /// Attaches the nodes to the engine, unconnected, and listens for the
+    /// engine's own output changes (S7b, posted on whichever thread noticed
+    /// them). The first clip connects the graph (`connectGraph`).
+    private func assembleAudioGraph() {
+        audioEngine.attach(player)
+        audioEngine.attach(timePitch)
+        timePitch.rate = 1.0
+        timePitch.overlap = NativeSpeed.timePitchOverlap
+        if let engineConfigurationObserver {
+            NotificationCenter.default.removeObserver(engineConfigurationObserver)
+        }
+        engineConfigurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.outputConfigurationChanged() }
+        }
+    }
+
+    /// iPhone: the media server restarted, and every audio object made
+    /// before it went with it, so Apple's answer is to make them anew.
+    /// Playback stops with the honest reason, whose one-tap retry now works;
+    /// the engine and its nodes are rebuilt, and the next Play schedules
+    /// afresh from the sentence start, claiming the session on the way.
+    func mediaServicesWereReset() {
+        stop(because: .playbackError)
+        if hasActiveSchedule { invalidateSchedule() }
+        #if DEBUG
+        renderPump?.stop()
+        renderPump = nil
+        #endif
+        audioEngine = Self.makeAudioEngine()
+        player = AVAudioPlayerNode()
+        timePitch = AVAudioUnitTimePitch()
+        graphFormat = nil
+        assembleAudioGraph()
+    }
+
     private func connectGraph(sampleRate: Double) {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: sampleRate,
@@ -2218,11 +2290,19 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Starts the engine; the level is the caller's (`applyColdStartLevel`,
-    /// the warm resume's ramp).
+    /// the warm resume's ramp). Throws `AudioOutputHeldElsewhere` when a
+    /// call holds the audio.
     private func startAudioHardware() throws {
         // Offline there is no session or device to claim.
         if !rendersOffline {
-            try? audioOutput.activate()   // session failure alone shouldn't block simulator playback
+            do {
+                try audioOutput.activate()
+            } catch let heldElsewhere as AudioOutputHeldElsewhere {
+                throw heldElsewhere
+            } catch {
+                // Any other session failure alone shouldn't block simulator
+                // playback.
+            }
         }
         if !audioEngine.isRunning {
             if !rendersOffline { audioOutput.bindOutput(of: audioEngine) }
@@ -2308,7 +2388,11 @@ final class PlaybackController: ObservableObject {
     /// across a stopped engine): Play reads on from the start of the same
     /// sentence, fading in like any start, and `startAudioHardware` starts
     /// the engine again on the way, behind the same fences as every start.
-    /// Offline (muted), the pump stops with it.
+    /// Offline (muted), the pump stops with it. Then, on an iPhone, the
+    /// session goes (never before the engine stops, which iOS refuses), so a
+    /// paused Aloud can be suspended and an app it interrupted may resume;
+    /// Play claims it again. Not while an interruption may still hand the
+    /// audio back: its end resumes through the same Play.
     private func stopIdleEngine() {
         idleEngineStopItem = nil
         guard !isActive else { return }
@@ -2322,6 +2406,7 @@ final class PlaybackController: ObservableObject {
         #if DEBUG
         renderPump?.stop()
         #endif
+        if !rendersOffline, !resumeAfterInterruption { audioOutput.deactivate() }
     }
 
     /// The idle stop's clock outside tests.
@@ -2397,9 +2482,9 @@ final class PlaybackController: ObservableObject {
     // MARK: - Output changes and sleep (S7b, S11)
 
     /// The engine stopped itself because its output device or format
-    /// changed. The monitor decides what playback does: an iPhone ignores
-    /// it, as it always has (an unplug arrives as `onRouteRequiresPause`); a
-    /// Mac stops with the honest reason, or follows the new device.
+    /// changed. The monitor decides what playback does: it stops with the
+    /// honest reason, or follows the new output (on an iPhone, and on a Mac
+    /// switching devices, once the change has settled: `.ignore` until then).
     func outputConfigurationChanged() {
         switch audioOutput.decisionAfterConfigurationChange() {
         case .ignore:
@@ -2503,6 +2588,18 @@ extension PlaybackController {
     func postEngineConfigurationChange() {
         NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: audioEngine)
     }
+
+    /// Stops the engine under the controller, as the system does for an
+    /// interruption or an output change: the node flushes its queue and
+    /// calls every completion at once. Offline, the pump stops with it.
+    func stopEngineAsTheSystemWould() {
+        let engine = audioEngine
+        withEngineHeld { engine.stop() }
+        renderPump?.stop()
+    }
+
+    /// Which engine plays now: a new one after a media-services reset.
+    var engineIdentity: ObjectIdentifier { ObjectIdentifier(audioEngine) }
 
     /// A rendered buffer's absolute peak and how long it lasts.
     typealias PeakReport = @Sendable (_ peak: Float, _ seconds: TimeInterval) -> Void
