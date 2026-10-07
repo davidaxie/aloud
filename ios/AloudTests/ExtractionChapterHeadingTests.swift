@@ -411,4 +411,55 @@ final class ExtractionChapterHeadingTests: XCTestCase {
             .joined(separator: "\n\n"))
         XCTAssertEqual(marked.pageCount, 2)
     }
+
+    /// K003: named matter (a Prologue, an Epilogue) and one stray marker
+    /// heading leave the "1", "2", "3" chapters standing beside them.
+    func testBareNumeralChaptersStandBesideNamedMatterAndOneStrayMarker() async throws {
+        let epilogue = try await extract(["1", body, "2", body, "3", body, "EPILOGUE", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(epilogue.derivedChapters.map(\.title), ["Chapter 1", "Chapter 2", "Chapter 3", "EPILOGUE"])
+
+        let prologue = try await extract(["The Long Road", "PROLOGUE", body, "1", body, "2", body, "3", body,
+                                          "Epilogue", body].joined(separator: "\n\n"))
+        XCTAssertEqual(prologue.derivedChapters.map(\.title).suffix(5),
+                       ["PROLOGUE", "Chapter 1", "Chapter 2", "Chapter 3", "Epilogue"])
+
+        // The Birth of Tragedy: a lone "I." over a preface's sections 2 and 3.
+        let stray = try await extract(["An Attempt at Self-Criticism", "I.", body, "2.", body, "3.", body,
+                                       "1.", body, "2.", body, "3.", body].joined(separator: "\n\n"))
+        XCTAssertEqual(stray.pageCount, 5)
+        XCTAssertEqual(stray.derivedChapters.map(\.title).suffix(4), ["Chapter I", "Chapter 1", "Chapter 2", "Chapter 3"])
+
+        // A numeral right under the marker shares its page.
+        let book = try await extract(["The Long Road", "BOOK ONE", "1", body, "2", body, "3", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(book.pageCount, 4)
+        XCTAssertEqual(book.sentences.first { $0.text == "1" }?.page,
+                       book.sentences.first { $0.text == "BOOK ONE" }?.page)
+    }
+
+    /// K018: back matter numbered from 1 again (notes, a sequel's excerpt)
+    /// keeps the chapters found before it; a second story numbered from 1
+    /// still marks sections.
+    func testBackMatterNumberedFromOneKeepsTheChapters() async throws {
+        let note = "See the letter of March, which the author kept."
+        let notes = try await extract(["1", body, "2", body, "3", body, "4", body,
+                                       "NOTES", "1", note, "2", note, "3", note].joined(separator: "\n\n"))
+        XCTAssertEqual(notes.derivedChapters.map(\.title), ["Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4"])
+
+        let excerpt = try await extract(["1", body, "2", body, "3", body, "4", body, "5", body,
+                                         "Read on for an excerpt from the next book.", "1", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(excerpt.pageCount, 5)
+
+        // A stray "1" mid-book leaves the chapters after it standing.
+        let stray = try await extract(["1", body, "2", body, "1", note, body, "3", body, "4", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(stray.pageCount, 4)
+
+        let stories = try await extract(["The First Story", "1", body, "2", body, "3", body, "4", body,
+                                         "The Second Story", "1", body, "2", body, "3", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(stories.pageCount, 1)
+    }
 }

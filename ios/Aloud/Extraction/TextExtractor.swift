@@ -31,18 +31,28 @@ struct TextExtractor {
 
         var blocks: [TextBlock] = []
         var page = 1
+        var markers: Set<Int> = []
         for (index, paragraph) in kept.enumerated() {
-            if Self.isChapterHeading(paragraph) && !blocks.isEmpty && Self.headsText(index, in: kept) {
-                page += 1
+            if Self.isChapterHeading(paragraph) && Self.headsText(index, in: kept) {
+                markers.insert(index)
+                if !blocks.isEmpty { page += 1 }
             }
             blocks.append(TextBlock(text: paragraph, page: page))
         }
-        // No marker headings: the chapters may be numbered "1", "2", "3".
-        if page == 1 {
+        // No marker headings number the book: the chapters may be numbered
+        // "1", "2", "3". Named matter (a Prologue, an Epilogue) and one stray
+        // marker keep their pages beside them; numbers under two or more
+        // markers number sections.
+        if markers.filter({ !Self.isNamedMatter(kept[$0]) }).count <= 1 {
             let numbered = Self.numberedChapterHeadings(in: kept)
             if !numbered.isEmpty {
+                page = 1
                 blocks = kept.enumerated().map { index, paragraph in
-                    if index > 0 && numbered.contains(index) { page += 1 }
+                    // A numeral right under a marker ("BOOK ONE" over "1") shares its page.
+                    if index > 0 && (markers.contains(index)
+                                     || numbered.contains(index) && !markers.contains(index - 1)) {
+                        page += 1
+                    }
                     return TextBlock(text: paragraph, page: page)
                 }
             }
@@ -1273,7 +1283,9 @@ struct TextExtractor {
     /// "room…") never heads text, and neither does a Contents entry ("1" +
     /// "Title" + "2"). Text is running text or a short sentence ("She never
     /// wrote back."), not a Title Case title. Numbering that starts over at 1
-    /// numbers sections, not chapters, so it starts none.
+    /// numbers sections, not chapters, so it starts none — unless it is back
+    /// matter after the last chapter: notes, an afterword's sections or a
+    /// sequel's excerpt.
     private static func numberedChapterHeadings(in paragraphs: [String]) -> Set<Int> {
         func number(_ index: Int) -> Int? {
             guard paragraphs[index].utf8.count <= 8,
@@ -1290,16 +1302,33 @@ struct TextExtractor {
             }
             return false
         }
-        var found: [Int] = []
+        // Each 1 starts a run; a number joins the latest run it continues,
+        // so a stray "1" mid-book leaves the chapters after it in the first.
+        var runs: [[Int]] = []
         for index in paragraphs.indices {
             guard let value = number(index), opensText(index) else { continue }
-            if value == found.count + 1 {
-                found.append(index)
-            } else if value == 1 {
-                return []
+            if value == 1 {
+                runs.append([index])
+            } else if let run = runs.indices.last(where: { value == runs[$0].count + 1 }) {
+                runs[run].append(index)
             }
         }
-        return found.count >= 3 ? Set(found) : []
+        guard let first = runs.first, first.count >= 3 else { return [] }
+        // Back matter is short: under a quarter of the chapters' length.
+        if let restart = runs.dropFirst().first(where: { $0[0] > first[first.count - 1] })?[0] {
+            func words(_ range: Range<Int>) -> Int { paragraphs[range].reduce(0) { $0 + wordCount($1) } }
+            guard words(restart..<paragraphs.count) * 4 < words(first[0]..<restart) else { return [] }
+        }
+        return Set(first)
+    }
+
+    /// A heading for named matter rather than a numbered division:
+    /// "PROLOGUE", "Epilogue", "FIRST EPILOGUE: 1813 - 20".
+    private static let namedMatterRegex =
+        #/^(?:(?:FIRST|SECOND|THIRD|FOURTH|FINAL|LAST)\s+)?(?:PROLOGUE|Prologue|EPILOGUE|Epilogue)\b/#
+
+    private static func isNamedMatter(_ heading: String) -> Bool {
+        heading.trimmingCharacters(in: .whitespaces).firstMatch(of: namedMatterRegex) != nil
     }
 
     // MARK: - Italics
