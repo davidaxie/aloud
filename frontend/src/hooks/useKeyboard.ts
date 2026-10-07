@@ -37,6 +37,8 @@ export function useKeyboard(): void {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return
+      // A dropped PDF is parsing while the open book waits behind the loading view.
+      if (useStore.getState().status === 'loading') return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (isTypingTarget(e.target)) return
       // Space/Arrows on a focused control (Play, Prev/Next, sliders…) belong to

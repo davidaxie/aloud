@@ -7,6 +7,7 @@ import { useCallback, useEffect } from 'react'
 import { getHealth, getVoices } from './lib/api'
 import { guardFileDrops, isPdf } from './lib/dropGuard'
 import { watchEngine } from './lib/engineWatch'
+import { openPdf } from './lib/intake'
 import { loadPdf } from './lib/pdf'
 import { player } from './lib/player'
 import { useStore } from './store'
@@ -31,11 +32,6 @@ export default function App() {
   const setEngineState = useStore((s) => s.setEngineState)
   const setVoices = useStore((s) => s.setVoices)
   const setVoiceId = useStore((s) => s.setVoiceId)
-  const setDoc = useStore((s) => s.setDoc)
-  const setFileName = useStore((s) => s.setFileName)
-  const setStatus = useStore((s) => s.setStatus)
-  const setLoadProgress = useStore((s) => s.setLoadProgress)
-  const setError = useStore((s) => s.setError)
   const reset = useStore((s) => s.reset)
 
   // ── Bootstrap: probe the backend and load the voice roster. ────────────────
@@ -65,6 +61,8 @@ export default function App() {
       getEngineState: () => useStore.getState().engineState,
       setEngineState,
       onHealthy: async () => {
+        // A banner saying the engine is offline is now false (G016).
+        player.engineRecovered()
         if (useStore.getState().voices.length === 0) await loadVoicesOnce()
       },
       subscribe: (listener) =>
@@ -80,36 +78,8 @@ export default function App() {
   }, [setEngineState, setVoices, setVoiceId])
 
   // ── PDF intake. ────────────────────────────────────────────────────────────
-  const handleFile = useCallback(
-    async (file: File) => {
-      setError(null)
-      setFileName(file.name)
-      setStatus('loading')
-      setLoadProgress(0)
-      try {
-        const parsed = await loadPdf(file, (p) => setLoadProgress(p))
-        setDoc(parsed)
-        // The player owns audio; loading may throw in stub builds, so guard it
-        // without discarding the successfully-parsed document.
-        try {
-          player.load(parsed)
-        } catch (err) {
-          console.error('player.load failed', err)
-        }
-        setStatus('ready')
-      } catch (err) {
-        setDoc(null)
-        setFileName(null)
-        setStatus('error')
-        setError(
-          err instanceof Error
-            ? `Could not read that PDF — ${err.message}`
-            : 'Could not read that PDF.',
-        )
-      }
-    },
-    [setDoc, setError, setFileName, setLoadProgress, setStatus],
-  )
+  // Parses first, so a file that can't be read leaves an open book in place.
+  const handleFile = useCallback((file: File) => openPdf(file, { loadPdf, player }), [])
 
   const handleReset = useCallback(() => {
     try {
@@ -122,7 +92,8 @@ export default function App() {
 
   // ── Drops anywhere on the page. ────────────────────────────────────────────
   // Without this, a PDF dropped on the reader opens in place of the app and the
-  // reading session is lost. A dropped PDF replaces the open document instead.
+  // reading session is lost. A dropped PDF replaces the open document once it
+  // has parsed; one that can't be read leaves it open.
   useEffect(
     () =>
       guardFileDrops(window, (file) => {
@@ -131,10 +102,9 @@ export default function App() {
           useStore.getState().pushToast('That file isn\u2019t a PDF')
           return
         }
-        if (useStore.getState().doc) handleReset()
         void handleFile(file)
       }),
-    [handleFile, handleReset],
+    [handleFile],
   )
 
   const isLoading = status === 'loading'

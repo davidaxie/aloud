@@ -12,6 +12,7 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { Doc, Paragraph, Sentence } from '../types'
 import { chunkParagraph } from './chunker'
+import { dropStrayJoiners } from './joiners'
 import { bundledCMapReaderFactory } from './pdfCMaps'
 import { type Line, runningHeadersByPage, stripNoise, typicalGap } from './pdfHeaders'
 
@@ -73,8 +74,11 @@ function normalizeText(input: string): string {
 
   // 2. Strip characters that must never reach display or TTS:
   //    - soft hyphen U+00AD (a discretionary hyphen; invisible, must not speak)
-  //    - zero-width space/non-joiner/joiner U+200B/200C/200D and BOM U+FEFF
-  s = s.replace(/[\u00AD\u200B\u200C\u200D\uFEFF]/g, '')
+  //    - zero-width space U+200B and BOM U+FEFF
+  s = s.replace(/[\u00AD\u200B\uFEFF]/g, '')
+  //    - zero-width non-joiner/joiner U+200C/200D, except where they shape an
+  //      emoji sequence or a non-Latin word (see ./joiners)
+  s = dropStrayJoiners(s)
   //    - control chars: C0 (except tab/LF/CR) + DEL + C1 (U+0080-U+009F).
   //      Normal whitespace is preserved here and collapsed in step 5.
   // eslint-disable-next-line no-control-regex

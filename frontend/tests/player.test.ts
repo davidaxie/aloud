@@ -12,6 +12,10 @@ let audioEl: FakeAudio | null = null
 let synthBodies: Array<{ text: string; priority?: string }> = []
 /** Sentence texts the fake backend answers 400 for (it is up, it just can't read them). */
 let unreadable = new Set<string>()
+/** The fake backend's prefetch lane is full: it answers 429 to look-ahead. */
+let busyPrefetch = false
+/** The fake backend is not running: every /synthesize fails in transport. */
+let backendDown = false
 
 class FakeAudio extends EventTarget {
   preload = ''
@@ -60,6 +64,13 @@ Object.assign(globalThis, {
     if (String(url).endsWith('/synthesize')) {
       const body = JSON.parse(String(init?.body))
       synthBodies.push(body)
+      if (backendDown) throw new TypeError('Failed to fetch')
+      if (busyPrefetch && body.priority === 'prefetch') {
+        return new Response(JSON.stringify({ detail: 'busy', retryable: true }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '0' },
+        })
+      }
       if (unreadable.has(body.text)) {
         return new Response(JSON.stringify({ detail: 'no phonemes', retryable: false }), {
           status: 400,
@@ -92,10 +103,15 @@ async function settle() {
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0))
 }
 
+/** Outlast api.ts's retry backoff (250 ms + 750 ms) for a failing request. */
+const outlastRetries = () => new Promise((r) => setTimeout(r, 1300))
+
 beforeEach(() => {
   playOutcomes = []
   synthBodies = []
   unreadable = new Set()
+  busyPrefetch = false
+  backendDown = false
   state().reset()
   player.load(doc)
 })
@@ -187,4 +203,56 @@ test('a run of sentences the backend answers 400 for stops without calling it of
   assert.notEqual(state().engineState, 'offline')
   assert.ok(state().error)
   assert.doesNotMatch(state().error ?? '', /offline/i)
+})
+
+test('G033: a run of unplayable clips says to press Play, not to reload the page', async () => {
+  const bad = () => new DOMException('no supported source', 'NotSupportedError')
+  playOutcomes = [bad(), bad(), bad()]
+  player.play()
+  await settle()
+  assert.equal(state().status, 'error')
+  // A reload loses the open document and the place in it.
+  assert.doesNotMatch(state().error ?? '', /reload/i)
+  assert.match(state().error ?? '', /press Play/)
+})
+
+test('G032: look-ahead turned away as busy is asked again, not marked unreadable', async () => {
+  busyPrefetch = true
+  player.play()
+  await settle()
+  assert.equal(state().currentSentence, 0)
+  // Sentence 0 ends while sentence 1's look-ahead is still being retried.
+  audioEl!.dispatchEvent(new Event('ended'))
+  await outlastRetries()
+  await settle()
+  assert.deepEqual(state().skippedSentences, [])
+  assert.equal(state().currentSentence, 1)
+  assert.equal(state().status, 'playing')
+  assert.ok(
+    synthBodies.some((b) => b.text === 'Sentence number 1.' && b.priority === 'now'),
+    'sentence 1 is asked for again in the now lane',
+  )
+})
+
+test('G016: the engine coming back clears the offline banner playback left', async () => {
+  backendDown = true
+  player.play()
+  await outlastRetries()
+  await settle()
+  assert.equal(state().engineState, 'offline')
+  assert.match(state().error ?? '', /offline/)
+
+  backendDown = false
+  player.engineRecovered() // App calls this on each healthy /health answer
+  assert.equal(state().error, null)
+  assert.equal(state().status, 'paused')
+  assert.equal(state().currentSentence, 0)
+})
+
+test('G016: a healthy probe leaves other errors alone', () => {
+  state().setError('Could not read that PDF \u2014 it is locked.')
+  state().setStatus('error')
+  player.engineRecovered()
+  assert.match(state().error ?? '', /Could not read/)
+  assert.equal(state().status, 'error')
 })

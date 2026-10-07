@@ -70,6 +70,16 @@ export function detectRunningHeaders(pageLines: Line[][]): Set<string> {
   return repeating
 }
 
+/**
+ * The number a numbered heading leads with — "Step 3", "Question 12:", "Day 4 —
+ * Arrival" — or null. A page label ("Page 3", "p. 3") is a folio, not a heading.
+ */
+export function headingNumber(text: string): string | null {
+  const m = /^\s*(\p{L}+)\.?\s*(\d+)/u.exec(text)
+  if (!m || /^(page|pg|p)$/i.test(m[1])) return null
+  return m[2]
+}
+
 /** A part-of-the-book header needs this many pages... */
 export const MINIMUM_RUN = 3
 /** ...no more than this many pages apart (a chapter opening or blank between). */
@@ -82,14 +92,16 @@ export const MAXIMUM_RUN_GAP = 4
  * the pages. Such a line is set apart from the body by a paragraph gap, sits at
  * the same height in the same size, and recurs at least MINIMUM_RUN times no
  * more than MAXIMUM_RUN_GAP pages apart. A chapter's title on its opening page
- * sits lower or larger, so it stays.
+ * sits lower or larger, so it stays. So do numbered headings that open pages
+ * ("Step 1", "Step 2", …): they fold to one key, but a running head keeps its
+ * leading number ("Chapter 3 · 47") while a heading counts up.
  */
 export function runningHeadersByPage(pageLines: Line[][]): Set<string>[] {
   const global = detectRunningHeaders(pageLines)
   const byPage = pageLines.map(() => new Set(global))
   if (pageLines.length < MINIMUM_RUN) return byPage
 
-  const seen = new Map<string, Array<{ page: number; y: number; height: number }>>()
+  const seen = new Map<string, Array<{ page: number; y: number; height: number; text: string }>>()
   pageLines.forEach((lines, page) => {
     const n = lines.length
     if (n < 3) return
@@ -103,13 +115,14 @@ export function runningHeadersByPage(pageLines: Line[][]): Set<string>[] {
       if (!apart || key.length < 2 || isPageNumberLine(line.text) || keys.has(key)) continue
       keys.add(key)
       const hits = seen.get(key) ?? []
-      hits.push({ page, y: line.y, height: line.height })
+      hits.push({ page, y: line.y, height: line.height, text: line.text })
       seen.set(key, hits)
     }
   })
 
   for (const [key, hits] of seen) {
     if (hits.length < MINIMUM_RUN || global.has(key)) continue
+    if (new Set(hits.map((h) => headingNumber(h.text))).size > 1) continue
     const y = median(hits.map((h) => h.y))
     const height = median(hits.map((h) => h.height))
     const placed = hits.filter(

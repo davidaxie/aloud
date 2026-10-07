@@ -18,3 +18,13 @@ test('F062: the engine watch replaces the one-shot health poll', () => {
 test('F063: file drops anywhere on the window are guarded', () => {
   assert.match(app, /guardFileDrops\(window,/)
 })
+
+test('G015: a dropped PDF is parsed before the open book is closed', () => {
+  assert.match(app, /openPdf\(file, \{ loadPdf, player \}\)/)
+  const drop = app.slice(app.indexOf('guardFileDrops(window,'), app.indexOf('[handleFile]'))
+  assert.doesNotMatch(drop, /handleReset\(\)/, 'tearing the book down first loses it when the drop is unreadable')
+})
+
+test('G016: a healthy /health answer clears a stale engine-offline banner', () => {
+  assert.match(app, /onHealthy: async \(\) => \{[^}]*player\.engineRecovered\(\)/)
+})

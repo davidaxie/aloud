@@ -56,6 +56,8 @@ export interface Player {
   setSkipSkippable(skip: boolean): void
   /** Stop, clear buffers, and detach the current document. */
   stop(): void
+  /** /health answered ok again: drop a stale engine-offline banner. */
+  engineRecovered(): void
 }
 
 /** Max number of live object URLs / cache entries kept at once (LRU). */
@@ -68,6 +70,10 @@ const SILENT = 'silent:'
 const HAS_SPEAKABLE = /[\p{L}\p{N}]/u
 /** Unreadable sentences in a row before playback gives up and reports it. */
 const MAX_CONSECUTIVE_SKIPS = 3
+/** What playback says when it can't reach the backend at all. */
+const ENGINE_OFFLINE = 'Speech engine offline \u2014 is the backend running?'
+/** A busy (queue full) or warming backend: says nothing about the sentence. */
+const BUSY_STATUSES = new Set([429, 503])
 
 /** Convenience accessor for the freshest store state on every call. */
 const store = () => useStore.getState()
@@ -81,6 +87,8 @@ interface CacheEntry {
   url: string | null
   /** Aborts the underlying fetch when the entry becomes stale. */
   controller: AbortController
+  /** The backend queue lane it was requested in. */
+  priority: SynthesisPriority
 }
 
 function errorName(err: unknown): string | undefined {
@@ -283,6 +291,7 @@ class PlayerImpl implements Player {
       key,
       url: null,
       controller,
+      priority,
       // Throwaway placeholder; overwritten on the next line. Keeps the type honest
       // without an `undefined!` cast.
       promise: Promise.resolve(''),
@@ -403,6 +412,15 @@ class PlayerImpl implements Player {
       // API contract says. Only a transport failure means the engine is down,
       // so a run of unreadable sentences stops without blaming the engine.
       if (err instanceof SynthesisError && err.status !== null) {
+        // Look-ahead the backend turned away as busy (429, prefetch lane full)
+        // or warming (503) says nothing about this sentence: ask again in the
+        // 'now' lane, which is never turned away for being full. synth()
+        // already dropped the failed entry, so ensure() makes a fresh one.
+        if (entry.priority === 'prefetch' && BUSY_STATUSES.has(err.status)) {
+          if (this.wantPlaying) this.playIndex(i)
+          else this.ensure(i).promise.catch(() => {})
+          return
+        }
         if (!this.skip(i)) {
           this.stopAfterSkips(
             'The speech engine couldn\u2019t read these sentences \u2014 try skipping ahead.',
@@ -507,7 +525,10 @@ class PlayerImpl implements Player {
   /** Skip an unplayable sentence, or stop with an error after too many in a row. */
   private skipUnplayable(i: number) {
     if (this.skip(i)) return
-    this.stopAfterSkips('Couldn\u2019t play the audio for these sentences \u2014 try reloading the page.')
+    // Not "reload the page": that would lose the open document and the place in it.
+    this.stopAfterSkips(
+      'Couldn\u2019t play the audio for these sentences \u2014 press Play to try again, or skip ahead.',
+    )
   }
 
   /** Too many sentences failed in a row: stop and say why (the engine itself is up). */
@@ -549,11 +570,20 @@ class PlayerImpl implements Player {
     this.consecutiveSkips = 0
     const s = store()
     s.setEngineState('offline')
-    s.setError('Speech engine offline — is the backend running?')
+    s.setError(ENGINE_OFFLINE)
     s.setStatus('error')
   }
 
   // ── public API ────────────────────────────────────────────────────────────────
+
+  engineRecovered() {
+    const s = store()
+    if (s.error !== ENGINE_OFFLINE) return
+    // The backend is back: the banner would now be false. Playback stays where
+    // it stopped, paused, ready for Play.
+    s.setError(null)
+    if (s.status === 'error') s.setStatus(this.doc ? 'paused' : 'idle')
+  }
 
   load(doc: Doc) {
     this.stop()

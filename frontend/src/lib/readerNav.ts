@@ -4,24 +4,33 @@
 // The sentences form one roving-tabindex group: a single tab stop (the sentence
 // last focused, else the one being read, else the first), with the arrow keys,
 // Home and End moving focus inside it. A book of thousands of sentences is then
-// one Tab to cross, not thousands, on the way to the player controls. Enter and
-// Space both activate a sentence (play from here), per the ARIA button pattern.
+// one Tab to cross, not thousands, on the way to the player controls. Enter
+// plays from the focused sentence. Space and ←/→ stay the app's transport keys
+// (play/pause, previous/next sentence) even with a sentence focused — a click
+// leaves focus on the sentence, and Space must still pause rather than restart
+// it. ↑/↓, Home and End move focus without touching playback.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type SentenceKeyAction = 'seek' | 'next' | 'prev' | 'first' | 'last'
+/** Focus moves inside the group; playback is untouched. */
+export type SentenceFocusMove = 'next' | 'prev' | 'first' | 'last'
+
+export type SentenceKeyAction = 'seek' | 'toggle' | 'step-next' | 'step-prev' | SentenceFocusMove
 
 /** What a key pressed on a focused sentence does, or null to leave it alone. */
 export function sentenceKeyAction(key: string): SentenceKeyAction | null {
   switch (key) {
     case 'Enter':
+      return 'seek'
     case ' ':
     case 'Spacebar': // legacy alias
-      return 'seek'
-    case 'ArrowDown':
+      return 'toggle'
     case 'ArrowRight':
+      return 'step-next'
+    case 'ArrowLeft':
+      return 'step-prev'
+    case 'ArrowDown':
       return 'next'
     case 'ArrowUp':
-    case 'ArrowLeft':
       return 'prev'
     case 'Home':
       return 'first'
@@ -35,7 +44,7 @@ export function sentenceKeyAction(key: string): SentenceKeyAction | null {
 /** The sentence focus moves to from `sid` for a movement action, clamped to the document. */
 export function sentenceFocusTarget(
   sid: number,
-  action: Exclude<SentenceKeyAction, 'seek'>,
+  action: SentenceFocusMove,
   count: number,
 ): number {
   const last = Math.max(0, count - 1)

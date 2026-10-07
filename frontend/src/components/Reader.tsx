@@ -13,7 +13,8 @@
 // Keyboard: the sentences are one roving-tabindex group (see ../lib/readerNav),
 // so the whole book is a single Tab stop on the way to the player controls. A
 // sentence keeps the same element whether or not it is active, so focus stays
-// put when playback reaches or leaves it.
+// put when playback reaches or leaves it — which is why Space and ←/→ on a
+// focused sentence still drive the transport, as the header hint says.
 // ─────────────────────────────────────────────────────────────────────────────
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { player } from '../lib/player'
@@ -36,19 +37,37 @@ function seek(sid: number) {
   player.seekTo(sid)
 }
 
-/** Enter or Space plays from the sentence; arrows, Home and End move focus. */
+/**
+ * Enter plays from the sentence. Space plays/pauses and ←/→ step sentences, as
+ * they do anywhere on the page (focus follows the step); ↑/↓, Home and End
+ * move focus.
+ */
 function onSentenceKeyDown(e: React.KeyboardEvent, sid: number, count: number) {
   if (e.metaKey || e.ctrlKey || e.altKey) return
   const action = sentenceKeyAction(e.key)
   if (!action) return
   e.preventDefault()
-  if (action === 'seek') {
-    seek(sid)
-    return
-  }
-  const target = sentenceFocusTarget(sid, action, count)
   const reader = (e.currentTarget as HTMLElement).closest('.reader')
-  reader?.querySelector<HTMLElement>(`[data-sentence="${target}"]`)?.focus()
+  const focus = (target: number) =>
+    reader?.querySelector<HTMLElement>(`[data-sentence="${target}"]`)?.focus()
+  switch (action) {
+    case 'seek':
+      seek(sid)
+      return
+    case 'toggle':
+      player.toggle()
+      return
+    case 'step-next':
+      player.next()
+      focus(useStore.getState().currentSentence)
+      return
+    case 'step-prev':
+      player.prev()
+      focus(useStore.getState().currentSentence)
+      return
+    default:
+      focus(sentenceFocusTarget(sid, action, count))
+  }
 }
 
 /**

@@ -1,23 +1,35 @@
-// F066 / F067: the reader's sentences are one roving-tabindex group, and Space
-// activates a focused sentence like Enter does.
+// F066 / F067: the reader's sentences are one roving-tabindex group, and Enter
+// activates a focused sentence. G013: Space and ←/→ stay the transport keys.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { sentenceFocusTarget, sentenceKeyAction, tabStopSentence } from '../src/lib/readerNav.ts'
 
-test('F066: Space and Enter both activate a focused sentence', () => {
-  assert.equal(sentenceKeyAction(' '), 'seek')
-  assert.equal(sentenceKeyAction('Spacebar'), 'seek')
+test('F066: Enter activates a focused sentence', () => {
   assert.equal(sentenceKeyAction('Enter'), 'seek')
   assert.equal(sentenceKeyAction('a'), null)
   assert.equal(sentenceKeyAction('Tab'), null)
 })
 
-test('F067: arrows, Home and End move focus inside the group, clamped', () => {
+test('G013: Space and the side arrows stay transport keys on a focused sentence', () => {
+  // A click leaves focus on the sentence. Space must then pause, not restart
+  // the clicked sentence, and the arrows must step playback, as the header says.
+  assert.equal(sentenceKeyAction(' '), 'toggle')
+  assert.equal(sentenceKeyAction('Spacebar'), 'toggle')
+  assert.equal(sentenceKeyAction('ArrowRight'), 'step-next')
+  assert.equal(sentenceKeyAction('ArrowLeft'), 'step-prev')
+})
+
+test('G013: the reader sends Space and the side arrows to the player', () => {
+  const src = readFileSync(new URL('../src/components/Reader.tsx', import.meta.url), 'utf8')
+  assert.match(src, /case 'toggle':\s*player\.toggle\(\)/)
+  assert.match(src, /case 'step-next':\s*player\.next\(\)/)
+  assert.match(src, /case 'step-prev':\s*player\.prev\(\)/)
+})
+
+test('F067: up/down arrows, Home and End move focus inside the group, clamped', () => {
   assert.equal(sentenceKeyAction('ArrowDown'), 'next')
-  assert.equal(sentenceKeyAction('ArrowRight'), 'next')
   assert.equal(sentenceKeyAction('ArrowUp'), 'prev')
-  assert.equal(sentenceKeyAction('ArrowLeft'), 'prev')
   assert.equal(sentenceFocusTarget(4, 'next', 10), 5)
   assert.equal(sentenceFocusTarget(9, 'next', 10), 9)
   assert.equal(sentenceFocusTarget(0, 'prev', 10), 0)

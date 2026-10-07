@@ -104,3 +104,30 @@ test('F003: an edge line that recurs only far apart is body text, not a running 
   assert.ok(stripNoise(pages[6], running[6]).some((l) => l.text === '* * *'))
   assert.ok(running.every((set) => !set.has('* * *')))
 })
+
+test('G014: numbered headings that open nearby pages are kept', () => {
+  // A worksheet: pages 2-6 each open with "Step N", set apart at the top margin
+  // in the same place and size, so the digits-folded key "step #" recurs on
+  // consecutive pages. It is a heading, not a running head.
+  const pages: Line[][] = Array.from({ length: 20 }, (_, idx) => {
+    const lines = body(idx + 1, 700)
+    if (idx >= 1 && idx <= 5) lines.unshift({ text: `Step ${idx}`, y: 730, height: 14 })
+    return lines
+  })
+  const running = runningHeadersByPage(pages)
+  for (let idx = 1; idx <= 5; idx++) {
+    assert.equal(stripNoise(pages[idx], running[idx])[0].text, `Step ${idx}`, `page ${idx + 1}`)
+  }
+})
+
+test('G014: a running head that keeps its leading number but carries a folio still goes', () => {
+  const pages: Line[][] = Array.from({ length: 20 }, (_, idx) => {
+    const lines = body(idx + 1, 700)
+    if (idx >= 8 && idx <= 12) lines.unshift({ text: `Part 2 \u00b7 ${idx + 1}`, y: 760, height: 9 })
+    return lines
+  })
+  const running = runningHeadersByPage(pages)
+  for (let idx = 8; idx <= 12; idx++) {
+    assert.equal(stripNoise(pages[idx], running[idx])[0].text, body(idx + 1, 700)[0].text)
+  }
+})
