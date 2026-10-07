@@ -187,6 +187,27 @@ final class SpokenYearsTests: XCTestCase {
                        "In nineteen fourteen to eighteen men died.")
     }
 
+    /// I005/I010: an em-dash year range is still read "to", while H039's
+    /// clause break before a count is not. I006: neither is a British
+    /// spaced en dash before a count; a spaced en-dash range still is.
+    func testEmDashYearRangeIsStillARange() {
+        func spoken(_ text: String) -> String {
+            KokoroSherpaEngine.spokenText(TextNormalizer.normalize(text), lang: "en-US")
+        }
+        XCTAssertEqual(spoken("The war of 1914\u{2014}1918 changed everything."),
+                       "The war of nineteen fourteen to nineteen eighteen changed everything.")
+        XCTAssertEqual(spoken("Charles Darwin (1809\u{2014}1882)"),
+                       "Charles Darwin (eighteen oh nine to eighteen eighty two)")
+        XCTAssertEqual(spoken("The 1914\u{2014}18 war"), "The nineteen fourteen to eighteen war")
+        XCTAssertEqual(spoken("In 1915\u{2014}20 years later he came home."),
+                       "In nineteen fifteen -- 20 years later he came home.")
+        XCTAssertEqual(spoken("In 1915 \u{2013} 20 years later he came home."),
+                       "In nineteen fifteen -- 20 years later he came home.")
+        XCTAssertEqual(spoken("Charles Darwin (1809 \u{2013} 1882)"),
+                       "Charles Darwin (eighteen oh nine to eighteen eighty two)")
+        XCTAssertEqual(spoken("In 1914\u{2013}18 men died."), "In nineteen fourteen to eighteen men died.")
+    }
+
     /// The display text keeps its digits: years are spoken-only.
     func testTextNormalizerLeavesYearsAsDigits() {
         XCTAssertEqual(TextNormalizer.normalize("in 1915, 1914\u{2013}1918"), "in 1915, 1914 - 1918")

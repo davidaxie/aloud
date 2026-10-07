@@ -1059,6 +1059,57 @@ final class ExtractionFrontMatterTests: XCTestCase {
             "In my younger and more vulnerable years my father gave me some advice."))
     }
 
+    // MARK: - Localized Contents (I008)
+
+    /// The pages of `contents` and each page's first paragraph.
+    private func pages(_ contents: String) throws -> [String] {
+        let blocks = try TextExtractor().extract(url: makeTextFile(contents)).blocks
+        return blocks.indices.filter { $0 == 0 || blocks[$0].page != blocks[$0 - 1].page }.map { blocks[$0].text }
+    }
+
+    /// 目录, 目次 and Содержание lists are skipped like an English Contents:
+    /// one entry per line or per paragraph, with or without "……12" leaders,
+    /// each chapter opens one page and reading starts at the first.
+    func testLocalizedContentsListIsSkipped() throws {
+        let zh = "　　清晨，薄雾笼罩着整个小山村，少年背起行囊走出家门。"
+        let zhBody = Array(repeating: zh, count: 12).joined(separator: "\n")
+        let zhTitles = ["第一章 山村少年", "第二章 进城", "第三章 风波"]
+        XCTAssertEqual(try pages("山村少年\n目录\n" + zhTitles.joined(separator: "\n") + "\n"
+                                 + zhTitles.map { $0 + "\n" + zhBody }.joined(separator: "\n") + "\n"),
+                       zhTitles)
+
+        let zhParagraphs = Array(repeating: zh, count: 6).joined(separator: "\n\n")
+        let leaders = ["第一章　山村少年……12", "第二章　进城……34", "第三章　风波……56"]
+        let spaced = ["第一章　山村少年", "第二章　进城", "第三章　风波"]
+        XCTAssertEqual(try pages("山村少年\n\n目　录\n\n" + leaders.joined(separator: "\n\n") + "\n\n"
+                                 + spaced.map { $0 + "\n\n" + zhParagraphs }.joined(separator: "\n\n") + "\n"),
+                       spaced)
+
+        let ja = Array(repeating: "　　朝の霧が村を包んでいた。少年は荷物を背負って家を出た。", count: 6)
+            .joined(separator: "\n\n")
+        let jaTitles = ["第一章　山村の少年", "第二章　町へ", "第三章　騒動"]
+        XCTAssertEqual(try pages("山村の少年\n\n目次\n\n" + jaTitles.joined(separator: "\n\n") + "\n\n"
+                                 + jaTitles.map { $0 + "\n\n" + ja }.joined(separator: "\n\n") + "\n"),
+                       jaTitles)
+
+        let ru = Array(repeating: "Утром туман окутал деревню, и мальчик вышел из дома с котомкой за плечами.",
+                       count: 6).joined(separator: "\n\n")
+        let ruTitles = ["Глава 1. Деревня", "Глава 2. Город", "Глава 3. Буря"]
+        XCTAssertEqual(try pages("Деревенский мальчик\n\nСодержание\n\n" + ruTitles.joined(separator: "\n\n")
+                                 + "\n\n" + ruTitles.map { $0 + "\n\n" + ru }.joined(separator: "\n\n") + "\n"),
+                       ruTitles)
+    }
+
+    func testLocalizedContentsHeadings() {
+        for heading in ["目录", "目錄", "目　次", "Содержание", "ОГЛАВЛЕНИЕ", "Inhalt", "Inhaltsverzeichnis",
+                        "Table des matières", "SOMMAIRE", "Índice", "Indice", "목차", "차례"] {
+            XCTAssertTrue(TextExtractor.isContentsHeading(heading), heading)
+        }
+        for line in ["目录学", "Inhalt des Briefes", "Содержание письма было простым.", "Indice di gradimento"] {
+            XCTAssertFalse(TextExtractor.isContentsHeading(line), line)
+        }
+    }
+
     // MARK: - Helpers
 
     private func romanNumeral(_ value: Int) -> String {

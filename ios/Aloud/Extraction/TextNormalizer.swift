@@ -169,7 +169,9 @@ enum TextNormalizer {
         out.reserveCapacity(s.count)
         // A ZWNJ or ZWJ waits for the scalar after it (see `keepsJoiner`).
         var joiner: (scalar: Unicode.Scalar, before: Unicode.Scalar?)?
-        for scalar in s.unicodeScalars {
+        let scalars = s.unicodeScalars
+        for index in scalars.indices {
+            let scalar = scalars[index]
             if let pending = joiner {
                 if keepsJoiner(before: pending.before, after: scalar) { out.unicodeScalars.append(pending.scalar) }
                 joiner = nil
@@ -192,14 +194,12 @@ enum TextNormalizer {
             case 0x201C, 0x201D, 0x201E, 0x201F:
                 out.append("\"")
             // Figure/en/em dash, horizontal bar → spaced hyphen (spoken pause).
-            // After a number an em dash or bar is a spaced double hyphen, the
-            // ASCII em dash: "In 1915—20 years later" is a clause break, not
-            // the range "1915–20", and SpokenYears reads only a single
-            // hyphen as "to". Both display as an em dash.
-            case 0x2014, 0x2015:
-                let previous = out.unicodeScalars.reversed().first { $0 != " " }
-                out.append(previous.map { (0x30...0x39).contains($0.value) } == true ? " -- " : " - ")
-            case 0x2012, 0x2013:
+            // After a number a clause break is a spaced double hyphen, the
+            // ASCII em dash (see `isClauseDash`). Both display as an em dash.
+            case 0x2013, 0x2014, 0x2015:
+                let clause = isClauseDash(scalar, after: out, before: scalars[scalars.index(after: index)...])
+                out.append(clause ? " -- " : " - ")
+            case 0x2012:
                 out.append(" - ")
             // Ellipsis.
             case 0x2026:
@@ -219,6 +219,42 @@ enum TextNormalizer {
             out.unicodeScalars.append(pending.scalar)
         }
         return out
+    }
+
+    /// After a number a dash is a range ("1914–18", "1914—1918", "(1809 –
+    /// 1882)"), which SpokenYears reads as "to", or a clause break ("In
+    /// 1915—20 years later", and British "In 1915 – 20 years later"), which
+    /// becomes " -- ": SpokenYears reads only a single hyphen as "to". An
+    /// unspaced en dash is always a range. An em dash, a bar or a spaced en
+    /// dash is a range only before a range end: four digits, or one or two
+    /// not followed by a count ("years", "men"), so "1914—18" stays a range.
+    private static func isClauseDash(_ dash: Unicode.Scalar, after out: String,
+                                     before rest: Substring.UnicodeScalarView) -> Bool {
+        func isDigit(_ scalar: Unicode.Scalar) -> Bool { (0x30...0x39).contains(scalar.value) }
+        func isSpace(_ scalar: Unicode.Scalar?) -> Bool { scalar?.properties.isWhitespace == true }
+        guard let previous = out.unicodeScalars.last(where: { !isSpace($0) }), isDigit(previous),
+              dash.value != 0x2013 || isSpace(out.unicodeScalars.last) || isSpace(rest.first)
+        else { return false }
+        let next = rest.drop(while: isSpace)
+        let digits = next.prefix(while: isDigit).count
+        let after = next.dropFirst(digits)
+        // "1915—1,000 men", "1915—20.5": the number runs on.
+        if let mark = after.first, ".,:/".unicodeScalars.contains(mark),
+           after.dropFirst().first.map(isDigit) == true {
+            return true
+        }
+        switch digits {
+        case 4:
+            return false
+        case 1, 2:
+            let word = after.drop(while: isSpace)
+            guard word.startIndex != after.startIndex else { return false }
+            var noun = ""
+            noun.unicodeScalars.append(contentsOf: word.prefix { $0.properties.isAlphabetic })
+            return SpokenYears.countNouns.contains(noun.lowercased())
+        default:
+            return true
+        }
     }
 
     /// ZWJ and ZWNJ beside an emoji or a letter of a non-Latin script are

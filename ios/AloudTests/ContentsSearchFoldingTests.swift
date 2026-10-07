@@ -67,6 +67,26 @@ final class ContentsSearchFoldingTests: XCTestCase {
         XCTAssertEqual(matches.first?.matchedText, "x - y")
     }
 
+    /// I011: a clause break after a number is stored " -- ", which a query
+    /// typed with any dash spacing finds.
+    func testDashQueryMatchesTheStoredClauseBreakAfterANumber() {
+        let stored = DocContent(
+            title: "Fixture",
+            pageCount: 1,
+            sentences: [
+                Sentence(id: 0, text: "Charles Dickens (1812 -- 1870) wrote it.", para: 0, page: 1),
+                Sentence(id: 1, text: TextNormalizer.normalize("In 1915\u{2014}20 years later he came home."),
+                         para: 1, page: 1),
+            ],
+            paragraphs: [],
+            contentHash: "clause")
+        XCTAssertEqual(stored.matches(of: "1812\u{2014}1870").map(\.sentenceID), [0])
+        XCTAssertEqual(stored.matches(of: "Dickens (1812\u{2014}").map(\.sentenceID), [0])
+        XCTAssertEqual(stored.matches(of: "1812 \u{2014} 1870").map(\.sentenceID), [0])
+        XCTAssertEqual(stored.matches(of: "1915\u{2014}20").map(\.sentenceID), [1])
+        XCTAssertEqual(stored.matches(of: "1915 \u{2013} 20 years").map(\.sentenceID), [1])
+    }
+
     /// Two spellings still poll cancellation once per sentence.
     func testDashQueryPollsCancellationOncePerSentence() {
         var polls = 0

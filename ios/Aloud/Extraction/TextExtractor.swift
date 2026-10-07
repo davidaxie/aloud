@@ -831,8 +831,14 @@ struct TextExtractor {
 
     // MARK: Classifiers
 
+    /// "Contents", "TABLE OF CONTENTS", "Contents of Volume II", and the
+    /// heading alone in the languages whose chapter markers
+    /// `localizedHeadingRegex` knows: Chinese 目录/目錄, Japanese 目次, Russian
+    /// Содержание/Оглавление, German Inhalt(sverzeichnis), French Table des
+    /// matières/Sommaire, Spanish and Italian Índice/Indice, Korean 목차/차례.
+    /// CJK headings are often letterspaced ("目　录").
     private static let contentsHeadingRegex =
-        #/^(?:table\s+of\s+)?contents[.:]?(?:\s+(?:of\s+)?(?:volume|vol\.|book|part)\s+[ivxlc\d]+\.?)?$/#
+        #/^(?:(?:table\s+of\s+)?contents[.:]?(?:\s+(?:of\s+)?(?:volume|vol\.|book|part)\s+[ivxlc\d]+\.?)?|(?:目\s*[录錄次]|목\s*차|차\s*례|содержание|оглавление|inhalt|inhaltsverzeichnis|table\s+des\s+mati[èe]res|sommaire|[íi]ndice)[.:：]?)$/#
         .ignoresCase()
 
     static func isContentsHeading(_ paragraph: String) -> Bool {
@@ -918,9 +924,11 @@ struct TextExtractor {
     /// longer than any list is always text.
     static func isProse(_ paragraph: String) -> Bool {
         let lines = trimmedLines(paragraph)
-        guard !lines.isEmpty, isMostlyLowercase(paragraph), !isContentsEntry(paragraph) else {
-            return false
+        guard !lines.isEmpty else { return false }
+        guard isMostlyLowercase(paragraph) else {
+            return isUncasedProse(paragraph, lines) && !isContentsEntry(paragraph)
         }
+        guard !isContentsEntry(paragraph) else { return false }
         if lines.count > maxListLines { return true }
         if lines.count >= 2 {
             if lines.filter(startsLikeEntry).count * 2 >= lines.count { return false }
@@ -984,6 +992,24 @@ struct TextExtractor {
         return initials.filter(\.isUppercase).count * 2 < initials.count
     }
 
+    /// Running text in a script without case (Chinese, Japanese, Korean),
+    /// which `isMostlyLowercase` can't judge: mostly uncased letters, and a
+    /// line that ends a sentence ("…走出家门。", "…집을 나섰다."). A
+    /// localized Contents heading (目录, 목차) needs it to find where its
+    /// list ends.
+    private static func isUncasedProse(_ paragraph: String, _ lines: [String]) -> Bool {
+        var letters = 0
+        var uncased = 0
+        for character in paragraph.prefix(20_000) where character.isLetter {
+            letters += 1
+            if !character.isCased { uncased += 1 }
+        }
+        guard uncased >= 8, uncased * 2 >= letters else { return false }
+        return lines.contains {
+            $0.reversed().drop { "」』”’\"')）".contains($0) }.first.map { "。！？.!?…".contains($0) } == true
+        }
+    }
+
     /// Judged on the first 20,000 characters, which is plenty for a verdict.
     private static func isMostlyLowercase(_ text: String) -> Bool {
         var letters = 0
@@ -999,14 +1025,17 @@ struct TextExtractor {
     private static let contentsColumnRegex =
         #/(?:chapter|chap|page|pages|part|book)s?\.?(?:\s+(?:page|pages)\.?)?/#.ignoresCase()
 
-    /// A trailing page number after a leader: "Loomings ....... 12".
-    private static let pageNumberRegex = #/(?:\s{2,}|\.{2,}\s*|\s\.\s)\d+$/#
+    /// A trailing page number after a leader: "Loomings ....... 12",
+    /// "第一章　山村少年……12".
+    private static let pageNumberRegex = #/(?:\s{2,}|\.{2,}\s*|\s\.\s|[…·・]+\s*)\d+$/#
 
-    /// Comparable form of an entry or heading: lowercase ASCII words, page
-    /// number dropped.
+    /// Comparable form of an entry or heading: lowercase ASCII words and
+    /// uncased letters ("第一章 山村少年"), page number dropped.
     static func contentsKey(_ text: String) -> String {
         let stripped = text.trimmingCharacters(in: .whitespaces).replacing(pageNumberRegex, with: "")
-        return String(stripped.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : " " })
+        return String(stripped.lowercased().map {
+            $0.isASCII && ($0.isLetter || $0.isNumber) || $0.isLetter && !$0.isCased ? $0 : " "
+        })
             .split(separator: " ")
             .joined(separator: " ")
     }

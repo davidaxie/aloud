@@ -174,8 +174,9 @@ enum SpokenYears {
     /// A non-round number before one of these is a count ("1350 years
     /// before", "1269 metres"), left to the engine's own reading, unless
     /// `yearCues` says otherwise ("In 1915 men…"). Round hundreds read the
-    /// same either way ("fifteen hundred soldiers").
-    private static let countNouns: Set<String> = [
+    /// same either way ("fifteen hundred soldiers"). TextNormalizer reads a
+    /// dash after a year before one as a clause break ("1915—20 years").
+    static let countNouns: Set<String> = [
         "men", "women", "people", "persons", "soldiers", "troops", "horses", "ships", "guns",
         "prisoners", "inhabitants", "souls", "copies", "pages", "lines", "verses", "words",
         "miles", "mile", "yards", "yard", "feet", "foot", "ft", "metres", "meters", "metre",

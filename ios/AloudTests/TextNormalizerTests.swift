@@ -75,6 +75,25 @@ final class TextNormalizerTests: XCTestCase {
         XCTAssertEqual(TextNormalizer.normalize("wait\u{2014}20 of them"), "wait - 20 of them")
     }
 
+    /// I005/I010: an em dash before a range end is still a range: a year,
+    /// or a short number with no count after it. I006: a spaced en dash
+    /// (British parenthetical dash) is a clause break before a count, like
+    /// the em dash; an unspaced en dash is always a range.
+    func testDashAfterANumberIsARangeBeforeARangeEnd() {
+        XCTAssertEqual(TextNormalizer.normalize("The war of 1914\u{2014}1918 changed everything"),
+                       "The war of 1914 - 1918 changed everything")
+        XCTAssertEqual(TextNormalizer.normalize("Charles Darwin (1809\u{2014}1882)"), "Charles Darwin (1809 - 1882)")
+        XCTAssertEqual(TextNormalizer.normalize("Dickens (1812 \u{2014} 1870)"), "Dickens (1812 - 1870)")
+        XCTAssertEqual(TextNormalizer.normalize("The 1914\u{2014}18 war"), "The 1914 - 18 war")
+        XCTAssertEqual(TextNormalizer.normalize("In 1915 \u{2013} 20 years later"), "In 1915 -- 20 years later")
+        XCTAssertEqual(TextNormalizer.normalize("In 1915 \u{2013} 30 men came."), "In 1915 -- 30 men came.")
+        XCTAssertEqual(TextNormalizer.normalize("In 1915\u{2014}1,000 men came."), "In 1915 -- 1,000 men came.")
+        XCTAssertEqual(TextNormalizer.normalize("(1809 \u{2013} 1882)"), "(1809 - 1882)")
+        XCTAssertEqual(TextNormalizer.normalize("the war of 1914 \u{2013} 18"), "the war of 1914 - 18")
+        XCTAssertEqual(TextNormalizer.normalize("In 1914\u{2013}18 men died."), "In 1914 - 18 men died.")
+        XCTAssertEqual(TextNormalizer.normalize("in 1915 \u{2014} the year"), "in 1915 -- the year")
+    }
+
     func testEllipsisExpanded() {
         XCTAssertEqual(TextNormalizer.normalize("Wait\u{2026} what"), "Wait... what")
     }

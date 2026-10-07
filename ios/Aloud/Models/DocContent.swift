@@ -310,9 +310,10 @@ extension DocContent {
     /// search results show them typeset, so a pasted, dictated or Smart
     /// Punctuation query arrives curly ("Daisy’s") and would match nothing.
     ///
-    /// A dash has two stored spellings, both shown as an em dash: " - " (a
-    /// real dash in the source) and "--" (Gutenberg's ASCII dash). A query
-    /// with a dash yields a needle for each.
+    /// A dash has three stored spellings, all shown as an em dash: " - " (a
+    /// real dash in the source), "--" (Gutenberg's ASCII dash) and " -- " (a
+    /// clause break after a number, "1915 -- 20 years later"). A query with
+    /// a dash yields a needle for each.
     ///
     /// Spaces are stored plain and single, with none before , . ; : ! ? so
     /// a query's no-break, narrow and typographic spaces, and its runs of
@@ -364,7 +365,11 @@ extension DocContent {
             // "said—and" and "said — and" → "said - and", the normalizer's form.
             let spaced = needle.replacingOccurrences(of: "\\s*\(dash)\\s*", with: " - ",
                                                      options: .regularExpression)
+            // "1915—20" → "1915 -- 20", its form for a clause break after a number.
+            let clause = needle.replacingOccurrences(of: "\\s*\(dash)\\s*", with: " -- ",
+                                                     options: .regularExpression)
             needles = [ascii, spaced]
+            if !needles.contains(clause) { needles.append(clause) }
         }
         if keptJoiner {
             needles += needles.map {
