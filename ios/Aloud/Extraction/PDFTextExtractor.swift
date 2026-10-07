@@ -120,7 +120,7 @@ struct PDFTextExtractor {
 
     struct Line {
         let text: String
-        let y: CGFloat      // top edge in page space — a LARGER y is HIGHER
+        let y: CGFloat      // top edge in the page's `readingFrame` — a LARGER y is HIGHER
         let height: CGFloat // line box height (≈ font size + leading)
         var minX: CGFloat = 0 // left edge of the first glyph, for first-line indents
         var maxX: CGFloat = 0 // right edge of the last glyph, for short last lines
@@ -133,61 +133,179 @@ struct PDFTextExtractor {
     /// (Per-character `characterBounds(at:)` sampling was tried first, but its
     /// index basis drifts from `page.string` offsets at line breaks.)
     static func lines(of page: PDFPage) -> [Line] {
-        guard let selection = page.selection(for: page.bounds(for: .mediaBox)) else { return [] }
+        let box = page.bounds(for: .mediaBox)
+        guard let selection = page.selection(for: box) else { return [] }
 
-        var lines: [Line] = []
+        var placed: [(text: String, bounds: CGRect)] = []
         for lineSelection in selection.selectionsByLine() {
             guard let raw = lineSelection.string else { continue }
-            let text = sanitize(raw)
-                .replacing(#/[ \t]{2,}/#, with: " ")
-                .trimmingCharacters(in: .whitespaces)
+            let text = lineText(raw)
             guard !text.isEmpty else { continue }
-            let bounds = lineSelection.bounds(for: page)
-            lines.append(Line(text: text,
-                              y: bounds.maxY,
-                              height: bounds.height > 0 ? bounds.height : 8,
-                              minX: bounds.minX,
-                              maxX: bounds.maxX))
+            placed.append((text, lineSelection.bounds(for: page)))
         }
+        let frame = readingFrame(placed, box: box, rotation: page.rotation)
         // Top to bottom, so the edge passes see the page's top and foot; a
         // page set in two columns is read column by column after them
         // (`columnRuns`).
-        return lines.sorted { $0.y > $1.y }
+        let lines = placed.map { line($0.text, $0.bounds, in: frame) }.sorted { $0.y > $1.y }
+        return splitAtGutter(lines, on: page, frame: frame)
+    }
+
+    private static func lineText(_ raw: String) -> String {
+        sanitize(raw)
+            .replacing(#/[ \t]{2,}/#, with: " ")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A line from its selection's bounds, measured in `frame`.
+    private static func line(_ text: String, _ bounds: CGRect, in frame: CGAffineTransform) -> Line {
+        let bounds = frame.isIdentity ? bounds : bounds.applying(frame)
+        return Line(text: text,
+                    y: bounds.maxY,
+                    height: bounds.height > 0 ? bounds.height : 8,
+                    minX: bounds.minX,
+                    maxX: bounds.maxX)
+    }
+
+    /// The frame a page's lines read level in. A page turned a quarter
+    /// (`/Rotate 90` or `270`) to show text set sideways on it level, as a
+    /// landscape page or table is, has lines taller than wide on the page:
+    /// they are measured as the reader sees them, the page turned. A page
+    /// not turned, or turned with its text level on it, keeps its own frame.
+    static func readingFrame(_ lines: [(text: String, bounds: CGRect)], box: CGRect,
+                             rotation: Int) -> CGAffineTransform {
+        let sideways = lines.filter { $0.bounds.height > $0.bounds.width }.map(\.text.count).reduce(0, +)
+        let level = lines.filter { $0.bounds.height <= $0.bounds.width }.map(\.text.count).reduce(0, +)
+        guard sideways > level else { return .identity }
+        switch (rotation % 360 + 360) % 360 {
+        case 90: return CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: -box.minY, ty: box.maxX)
+        case 270: return CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: box.maxY, ty: -box.minX)
+        default: return .identity
+        }
+    }
+
+    /// The page's lines, each that crosses the gutter inside the columns
+    /// (`straddlers`) read again as its two halves: PDFKit joins a left
+    /// line run into the gutter (a long address, a wide equation) with
+    /// the right column's line beside it. Kept whole when a column's line
+    /// stands beside it already, or unless both halves hold text.
+    private static func splitAtGutter(_ lines: [Line], on page: PDFPage, frame: CGAffineTransform) -> [Line] {
+        guard let gutter = gutter(lines) else { return lines }
+        let straddling = Set(straddlers(lines, gutter: gutter))
+        guard !straddling.isEmpty else { return lines }
+        let toPage = frame.inverted()
+        return lines.indices.flatMap { index -> [Line] in
+            let whole = lines[index]
+            guard straddling.contains(index), !lines.contains(where: {
+                ($0.maxX <= gutter || $0.minX >= gutter) && abs($0.y - whole.y) <= whole.height / 2
+            }) else { return [whole] }
+            let inset = whole.height * 0.25
+            let halves = [(whole.minX, gutter), (gutter, whole.maxX)].compactMap { start, end -> Line? in
+                let rect = CGRect(x: start, y: whole.y - whole.height + inset,
+                                  width: end - start, height: whole.height - inset * 2)
+                guard let half = page.selection(for: frame.isIdentity ? rect : rect.applying(toPage)),
+                      let raw = half.string else { return nil }
+                let text = lineText(raw)
+                return text.isEmpty ? nil : line(text, half.bounds(for: page), in: frame)
+            }
+            return halves.count == 2 ? halves : [whole]
+        }.sorted { $0.y > $1.y }
     }
 
     // MARK: - Columns
 
     /// A page's body lines as runs to fold in reading order: the page
     /// itself, or on a page set in two columns each band's left column,
-    /// then its right, between the lines that span the gutter (a title, an
-    /// abstract, a wide figure's caption). Sorted top to bottom alone, the
-    /// two columns read a line of each in turn.
+    /// then its right (its right, then its left, in Arabic or Hebrew),
+    /// between the lines that span the gutter (a title, an abstract, a
+    /// wide figure's caption). A line that crosses the gutter inside the
+    /// columns (`straddlers`) stays in its band, on the side lines open
+    /// from, and a spanning paragraph's short last line, with nothing
+    /// beside it across the gutter, stays with the paragraph. Sorted top
+    /// to bottom alone, the two columns read a line of each in turn.
     static func columnRuns(_ lines: [Line]) -> [[Line]] {
         guard let gutter = gutter(lines) else { return [lines] }
+        let rightToLeft = readsRightToLeft(lines)
+        let height = median(lines.map(\.height))
+        let straddling = Set(straddlers(lines, gutter: gutter))
+        func crosses(_ line: Line) -> Bool { line.minX < gutter && line.maxX > gutter }
+        func onLeft(_ line: Line) -> Bool { line.maxX <= gutter }
+        func endsSpan(_ line: Line, under last: Line) -> Bool {
+            let short = rightToLeft ? line.minX > gutter + height : line.maxX < gutter - height
+            return short && onLeft(line) != rightToLeft && last.y - line.y <= height * 2
+                && !lines.contains { !crosses($0) && onLeft($0) != onLeft(line) && abs($0.y - line.y) <= height }
+        }
         var runs: [[Line]] = []
         var across: [Line] = [], left: [Line] = [], right: [Line] = []
-        for line in lines {
-            if line.minX < gutter && line.maxX > gutter {
-                runs += [left, right]
-                left = []
-                right = []
+        func closeBand() {
+            runs += rightToLeft ? [right, left] : [left, right]
+            left = []
+            right = []
+        }
+        for (index, line) in lines.enumerated() {
+            if crosses(line) && !straddling.contains(index) {
+                closeBand()
+                across.append(line)
+            } else if let last = across.last, !crosses(line), endsSpan(line, under: last) {
                 across.append(line)
             } else {
                 if !across.isEmpty { runs.append(across) }
                 across = []
-                if line.maxX <= gutter { left.append(line) } else { right.append(line) }
+                let leftSide = straddling.contains(index) ? !rightToLeft : onLeft(line)
+                if leftSide { left.append(line) } else { right.append(line) }
             }
         }
-        runs += [across, left, right]
+        runs.append(across)
+        closeBand()
         return runs.filter { !$0.isEmpty }
+    }
+
+    /// The lines that cross the gutter inside the columns, not between
+    /// them: column lines sit above and below it on both sides, within a
+    /// couple of lines. A title, an abstract or a caption spanning the
+    /// page stands apart from the columns' lines.
+    static func straddlers(_ lines: [Line], gutter: CGFloat) -> [Int] {
+        let reach = median(lines.map(\.height)) * 2.5
+        func crosses(_ line: Line) -> Bool { line.minX < gutter && line.maxX > gutter }
+        return lines.indices.filter { index in
+            let line = lines[index]
+            guard crosses(line) else { return false }
+            func columnLine(above: Bool, left: Bool) -> Bool {
+                lines.contains { other in
+                    let rise = other.y - line.y
+                    return !crosses(other) && (other.maxX <= gutter) == left
+                        && (above ? rise > 0 : rise < 0) && abs(rise) <= reach
+                }
+            }
+            return columnLine(above: true, left: true) && columnLine(above: true, left: false)
+                && columnLine(above: false, left: true) && columnLine(above: false, left: false)
+        }
+    }
+
+    /// Mostly Hebrew, Arabic or another right-to-left script's letters:
+    /// a page whose lines, and columns, open on the right.
+    static func readsRightToLeft(_ lines: [Line]) -> Bool {
+        var rightToLeft = 0, other = 0
+        for line in lines {
+            for scalar in line.text.unicodeScalars where scalar.properties.isAlphabetic {
+                switch scalar.value {
+                case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF:
+                    rightToLeft += 1
+                default:
+                    other += 1
+                }
+            }
+        }
+        return rightToLeft > other
     }
 
     /// Where a page set in two columns divides: just left of the right
     /// column's margin, in the middle of the text, with `minimumColumnLines`
     /// or more lines wholly on each side. Each column's lines mostly start
-    /// at one margin and run a third of the text's width or more (not a
-    /// contents page's page numbers or a centred heading), and the columns
-    /// stand side by side, line beside line. Nil on a page of one column.
+    /// at one margin (the right one in Arabic or Hebrew) and run a third of
+    /// the text's width or more (not a contents page's page numbers or a
+    /// centred heading), and the columns stand side by side, line beside
+    /// line. Nil on a page of one column.
     static func gutter(_ lines: [Line]) -> CGFloat? {
         guard lines.count >= minimumColumnLines * 2,
               let textLeft = lines.map(\.minX).min(), let textRight = lines.map(\.maxX).max() else { return nil }
@@ -207,9 +325,11 @@ struct PDFTextExtractor {
         }
         guard let best else { return nil }
 
+        let rightToLeft = readsRightToLeft(lines)
         func isColumn(_ column: [Line]) -> Bool {
-            guard let margin = mostCommon(column.map(\.minX)) else { return false }
-            let atMargin = column.filter { abs($0.minX - margin) <= tolerance }.count
+            let starts = column.map { rightToLeft ? $0.maxX : $0.minX }
+            guard let margin = mostCommon(starts) else { return false }
+            let atMargin = starts.filter { abs($0 - margin) <= tolerance }.count
             return atMargin * 2 >= column.count && median(column.map { $0.maxX - $0.minX }) >= width / 3
         }
         let beside = best.right.filter { line in best.left.contains { abs($0.y - line.y) <= height } }.count

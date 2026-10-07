@@ -727,6 +727,181 @@ final class PDFTextExtractorTests: XCTestCase {
         XCTAssertTrue(joined.hasSuffix("where the members were waiting for the news."), joined)
     }
 
+    /// K008: a page turned a quarter (/Rotate 90) to show text set sideways
+    /// on it level, as a landscape page is, reads its lines in order, not
+    /// by where each one ends on the unturned page. A page turned with its
+    /// text level on it keeps its order too.
+    func testQuarterTurnedPagesReadTheirLinesInOrder() throws {
+        let rows = ["Chapter Two", "",
+                    "The first paragraph of the landscape page starts here and",
+                    "runs on for a second line that is about as long as the", "first one, and then it ends.", "",
+                    "A second paragraph opens below it and keeps going", "until the end of the page, where a short line",
+                    "closes it."]
+        func turnedPage(sideways: Bool) throws -> PDFPage {
+            let data = NSMutableData()
+            var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+            let consumer = try XCTUnwrap(CGDataConsumer(data: data as CFMutableData))
+            let context = try XCTUnwrap(CGContext(consumer: consumer, mediaBox: &mediaBox, nil))
+            let font = CTFontCreateWithName("Helvetica" as CFString, 11, nil)
+            context.beginPDFPage(nil)
+            if sideways {
+                context.translateBy(x: 612, y: 0)
+                context.rotate(by: .pi / 2)
+            }
+            for (row, text) in rows.enumerated() where !text.isEmpty {
+                context.textPosition = CGPoint(x: 72, y: 540 - CGFloat(row) * 14)
+                CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+                    NSAttributedString.Key(kCTFontAttributeName as String): font,
+                ])), context)
+            }
+            context.endPDFPage()
+            context.closePDF()
+            let page = try XCTUnwrap(PDFDocument(data: data as Data)?.page(at: 0))
+            page.rotation = 90
+            return page
+        }
+        for sideways in [true, false] {
+            let page = try turnedPage(sideways: sideways)
+            XCTAssertEqual(PDFTextExtractor.paragraphs(from: PDFTextExtractor.lines(of: page)), [
+                "Chapter Two",
+                "The first paragraph of the landscape page starts here and runs on for a second line that is about as long as the first one, and then it ends.",
+                "A second paragraph opens below it and keeps going until the end of the page, where a short line closes it.",
+            ], "text set sideways: \(sideways)")
+        }
+    }
+
+    /// K012: a page set in two columns in Hebrew or Arabic reads its right
+    /// column, then its left, and a column set flush right, its lines
+    /// stopping short on the left, is still a column.
+    func testRightToLeftColumnsReadRightColumnFirst() {
+        typealias Line = PDFTextExtractor.Line
+        func line(_ text: String, _ y: CGFloat, x: CGFloat, width: CGFloat) -> Line {
+            Line(text: text, y: y, height: 10, minX: x, maxX: x + width)
+        }
+        let widths: [CGFloat] = [225, 200, 215, 190, 225]
+        for flushRight in [false, true] {
+            let first = (0..<5).map { row -> Line in
+                let width = flushRight ? widths[row] : 225
+                return line("טור ראשון שורה \(row)", 700 - CGFloat(row) * 12, x: 541 - width, width: width)
+            }
+            let second = (0..<5).map { row -> Line in
+                let width = flushRight ? widths[4 - row] : 225
+                return line("טור שני שורה \(row)", 700 - CGFloat(row) * 12, x: 266 - width, width: width)
+            }
+            let page = zip(second, first).flatMap { [$0, $1] }
+            XCTAssertNotNil(PDFTextExtractor.gutter(page), "flush right: \(flushRight)")
+            XCTAssertEqual(PDFTextExtractor.columnRuns(page).map { $0.map(\.text) },
+                           [first.map(\.text), second.map(\.text)], "flush right: \(flushRight)")
+        }
+        XCTAssertTrue(PDFTextExtractor.readsRightToLeft([line("العمود الأول، السطر 1", 700, x: 316, width: 225)]))
+        XCTAssertFalse(PDFTextExtractor.readsRightToLeft([line("The first column, line 1", 700, x: 36, width: 225)]))
+    }
+
+    /// K016: a line run into the gutter inside the columns (a long address,
+    /// a wide equation), which PDFKit joins with the right column's line
+    /// beside it, leaves both columns whole; a title spanning the page
+    /// still stands apart.
+    func testALineCrossingTheGutterInsideTheColumnsKeepsThemWhole() throws {
+        typealias Line = PDFTextExtractor.Line
+        func line(_ text: String, _ y: CGFloat, x: CGFloat, width: CGFloat) -> Line {
+            Line(text: text, y: y, height: 10, minX: x, maxX: x + width)
+        }
+        let title = line("Title", 740, x: 150, width: 230)
+        let rows = (0..<8).flatMap { row -> [Line] in
+            let y = 700 - CGFloat(row) * 12
+            return row == 4 ? [line("L4 R4", y, x: 36, width: 505)]
+                : [line("L\(row)", y, x: 36, width: 230), line("R\(row)", y, x: 316, width: 225)]
+        }
+        let page = [title] + rows
+        XCTAssertEqual(PDFTextExtractor.straddlers(page, gutter: try XCTUnwrap(PDFTextExtractor.gutter(page))), [9])
+        XCTAssertEqual(PDFTextExtractor.columnRuns(page).map { $0.map(\.text) },
+                       [["Title"], ["L0", "L1", "L2", "L3", "L4 R4", "L5", "L6", "L7"],
+                        ["R0", "R1", "R2", "R3", "R5", "R6", "R7"]])
+    }
+
+    /// K016 end to end: a left line's unbroken address runs into the
+    /// gutter; the page still reads its left column through, then its
+    /// right, the right line beside the address in its place.
+    func testAnAddressRunIntoTheGutterReadsInItsColumn() throws {
+        let words = "the method we propose here uses a simple model of reading order that holds for most papers and books"
+            .split(separator: " ").map(String.init)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("aloud-test-\(UUID().uuidString).pdf")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &mediaBox, nil))
+        let font = CTFontCreateWithName("Times-Roman" as CFString, 10, nil)
+        func typeset(_ text: String) -> CTLine {
+            CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+            ]))
+        }
+        func width(_ text: String) -> CGFloat { CTLineGetTypographicBounds(typeset(text), nil, nil, nil) }
+        let columnWidth: CGFloat = 229.5, rightX: CGFloat = 72 + 229.5 + 10
+        func filled(_ tag: String, from start: Int) -> String {
+            var text = tag, index = start
+            while width(text + " " + words[index % words.count]) < columnWidth {
+                text += " " + words[index % words.count]
+                index += 1
+            }
+            return text
+        }
+        context.beginPDFPage(nil)
+        for row in 0..<12 {
+            var left = filled("L\(row)", from: row)
+            if row == 5 {
+                left = "See https://example.org/"
+                while width(left) < columnWidth + 5 { left += "x" }
+            }
+            context.textPosition = CGPoint(x: 72, y: 700 - CGFloat(row) * 12)
+            CTLineDraw(typeset(left), context)
+            context.textPosition = CGPoint(x: rightX, y: 700 - CGFloat(row) * 12)
+            CTLineDraw(typeset(filled("R\(row)", from: row + 3)), context)
+        }
+        context.endPDFPage()
+        context.closePDF()
+
+        let joined = try PDFTextExtractor().extract(url: url).blocks.map(\.text).joined(separator: " ")
+        func position(_ tag: String) throws -> Int {
+            try XCTUnwrap(joined.range(of: tag).map { joined.distance(from: joined.startIndex, to: $0.lowerBound) },
+                          "\(tag) in \(joined)")
+        }
+        let order = try ["L4 ", "See https", "L6 ", "L11 ", "R0 ", "R4 ", "R5 ", "R6 ", "R11 "].map(position)
+        XCTAssertEqual(order, order.sorted(), joined)
+    }
+
+    /// K019: on a page of one column over a block set in two (footnotes, a
+    /// list), a body paragraph's short last line stays with its paragraph,
+    /// whatever it starts with.
+    func testShortLastLinesOverTwoColumnNotesStayWithTheirParagraphs() {
+        typealias Line = PDFTextExtractor.Line
+        let endings = ["London, and never returned.", "\u{201C}Yes,\u{201D} he said.", "Holmes."]
+        var page: [Line] = []
+        var y: CGFloat = 700
+        for (index, ending) in endings.enumerated() {
+            for row in 0..<3 {
+                page.append(Line(text: "Body \(index) line \(row) runs the full width of the page and on", y: y,
+                                 height: 12, minX: 36, maxX: 541))
+                y -= 14
+            }
+            page.append(Line(text: ending, y: y, height: 12, minX: 36, maxX: 260))
+            y -= 28
+        }
+        let notes = (0..<5).flatMap { row -> [Line] in
+            let y = 420 - CGFloat(row) * 11
+            return [Line(text: "Note \(row) on the left", y: y, height: 9, minX: 36, maxX: 266),
+                    Line(text: "Note \(row) on the right", y: y, height: 9, minX: 316, maxX: 541)]
+        }
+        page += notes
+        XCTAssertNotNil(PDFTextExtractor.gutter(page))
+        let runs = PDFTextExtractor.columnRuns(page)
+        XCTAssertEqual(runs.map(\.count), [12, 5, 5])
+        let paragraphs = PDFTextExtractor.paragraphs(from: runs[0])
+        XCTAssertEqual(paragraphs.count, endings.count, "\(paragraphs)")
+        for (paragraph, ending) in zip(paragraphs, endings) {
+            XCTAssertTrue(paragraph.hasSuffix("and on " + TextNormalizer.normalize(ending)), paragraph)
+        }
+    }
+
     // MARK: - Helpers
 
     /// Four body lines from `top` down, worded for page `page` alone.
