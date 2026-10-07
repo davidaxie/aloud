@@ -166,7 +166,8 @@ struct MacReaderScreen: View {
                 focusRequest: pageFocusRequests,
                 voiceOffscreen: $voiceOffscreen,
                 onPlaySentence: { ReaderColumnView.playFromSentence($0, on: playback) },
-                onTextUnderTopBar: { textUnderTopBar = $0 })
+                onTextUnderTopBar: { textUnderTopBar = $0 },
+                transportStamp: { ReaderColumnView.transportStamp(of: playback) })
             #if DEBUG
             .overlay(alignment: .topLeading) { MacReaderFollowProbeOverlay() }
             #endif

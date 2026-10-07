@@ -331,10 +331,9 @@ final class MacReaderAccessibilityTests: XCTestCase {
         XCTAssertNotNil(page.textView.accessibilityValue())
     }
 
-    /// Light/dark or Increase Contrast rebuilds the column in its new
-    /// colors over the same text: VoiceOver's cursor, and a reader's
-    /// selection for Copy, stay where they were, as through a text-size
-    /// step.
+    /// Light/dark or Increase Contrast recolors the column as it draws,
+    /// with no edit to the text: VoiceOver's cursor, and a reader's
+    /// selection for Copy, stay where they were.
     func testAnAppearanceChangeKeepsTheCursorAndTheSelection() throws {
         final class Edits: @unchecked Sendable { var count = 0 }
         let book = Self.book(chapters: 1, paragraphs: 4, perParagraph: 3, hash: "a11y-appearance")
@@ -350,7 +349,7 @@ final class MacReaderAccessibilityTests: XCTestCase {
 
         page.textView.appearance = NSAppearance(named: Self.otherLook(than: page.textView.effectiveAppearance))
         page.coordinator.rebuildForAppearanceChange()
-        XCTAssertGreaterThan(edits.count, 0, "rebuilt in the new colors")
+        XCTAssertEqual(edits.count, 0, "recolored as it draws, with no edit")
         XCTAssertEqual(page.textView.selectedRange(), cursor, "VoiceOver's cursor stays")
         XCTAssertEqual(page.textView.accessibilityLabel(), book.sentences[9].text)
         let action = try XCTUnwrap(page.textView.accessibilityCustomActions()?.first)
@@ -361,7 +360,7 @@ final class MacReaderAccessibilityTests: XCTestCase {
         let before = edits.count
         page.textView.appearance = NSAppearance(named: Self.otherLook(than: page.textView.effectiveAppearance))
         page.coordinator.rebuildForAppearanceChange()
-        XCTAssertGreaterThan(edits.count, before, "rebuilt again")
+        XCTAssertEqual(edits.count, before, "and again")
         XCTAssertEqual(page.textView.selectedRange(), page.ranges[10], "the selection stays for Copy")
     }
 

@@ -183,9 +183,10 @@ final class ReaderRelayoutTests: XCTestCase {
         XCTAssertFalse(coordinator.isFollowing)
     }
 
-    /// Light/dark while reading elsewhere rebuilds the column in its new
-    /// colors and puts the reader's line back where it was, on laid-out
-    /// text, not by the raw offset over estimated heights (F030).
+    /// Light/dark while reading elsewhere recolors the column as it draws,
+    /// with no edit: TextKit keeps its layout, so the reader's line stays
+    /// where it was (F030) and nothing is laid out again from the top of
+    /// the book, a long stall deep in one (G012).
     func testAnAppearanceChangeKeepsTheReadersPlaceWhileNotFollowing() throws {
         final class Edits: @unchecked Sendable { var count = 0 }
         let page = try makePage(sentences: 300, active: 150, size: NSSize(width: 1000, height: 600))
@@ -199,9 +200,17 @@ final class ReaderRelayoutTests: XCTestCase {
         defer { NotificationCenter.default.removeObserver(observer) }
 
         let look = page.textView.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        let ink = try XCTUnwrap(page.textView.textStorage?.attribute(.foregroundColor, at: place.location,
+                                                                     effectiveRange: nil) as? NSColor)
+        let before = Self.drawn(ink, in: page.textView.effectiveAppearance)
         page.textView.appearance = NSAppearance(named: look == .darkAqua ? .aqua : .darkAqua)
         coordinator.rebuildForAppearanceChange()
-        XCTAssertGreaterThan(edits.count, 0, "rebuilt in the new colors")
+        XCTAssertEqual(edits.count, 0, "recolored as it draws: no edit drops the layout")
+        XCTAssertNil(coordinator.relayoutAnchor, "nothing to lay out again through the anchor")
+        let after = page.textView.effectiveAppearance
+        let text = try XCTUnwrap(NSColor(cgColor: after.resolvedCGColor(Theme.text)))
+        XCTAssertEqual(Self.drawn(ink, in: after), Self.drawn(text, in: after), "the text draws in the new look")
+        XCTAssertNotEqual(Self.drawn(ink, in: after), before)
         XCTAssertFalse(coordinator.isFollowing, "a change of look never re-engages following")
         XCTAssertEqual(try page.lineTop(of: place.location), place.top, accuracy: 1.5, "the reader's line stays")
         page.settleLayout()
@@ -427,6 +436,16 @@ final class ReaderRelayoutTests: XCTestCase {
         scrollView.tile()
         XCTAssertEqual(coordinator.placedViewSize, scrollView.contentView.bounds.size)
         return Page(window: window, scrollView: scrollView, coordinator: coordinator, view: view)
+    }
+
+    /// `color` as it draws under `appearance`, in sRGB to 1/1000.
+    private static func drawn(_ color: NSColor, in appearance: NSAppearance) -> [CGFloat] {
+        var cgColor = color.cgColor
+        appearance.performAsCurrentDrawingAppearance { cgColor = color.cgColor }
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB).flatMap {
+            cgColor.converted(to: $0, intent: .defaultIntent, options: nil)
+        } ?? cgColor
+        return (sRGB.components ?? []).map { ($0 * 1000).rounded() / 1000 }
     }
 
     /// `count` sentences of eight words, four to a paragraph, on one page.

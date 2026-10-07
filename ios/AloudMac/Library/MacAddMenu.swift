@@ -80,12 +80,19 @@ final class MacFileIntake: ObservableObject {
     private(set) var holdsOpens = false
     /// Files still being copied, so a batch's hold outlasts a quick first add.
     private var staging = 0
+    /// Of those, the files of batches Cancel dropped whose read is still
+    /// under way: they hold neither the overlay nor an open.
+    private var abandoned = 0
     /// The file being copied in before the importer has it (a cloud file
     /// downloading, a large one copying): the import overlay shows it, with
-    /// Cancel, as it shows an add. nil once nothing is copying.
+    /// Cancel, as it shows an add. The newest batch's, while two copy; nil
+    /// once nothing is copying.
     @Published private(set) var copyingName: String?
-    /// The batches still copying, which Cancel drops.
-    private var copyingBatches: [UUID: Task<Void, Never>] = [:]
+    /// The batches still copying, which Cancel drops, and their sizes.
+    private var copyingBatches: [UUID: (task: Task<Void, Never>, files: Int)] = [:]
+    /// The file each batch still copying is on, oldest first: a batch's
+    /// handover or Cancel takes only its own away.
+    private var copyingFiles: [(batch: UUID, name: String)] = []
     /// Files opened from outside the app this turn, admitted together on
     /// the next (`admitOpened(_:)`).
     private var gathered: [URL] = []
@@ -134,12 +141,12 @@ final class MacFileIntake: ObservableObject {
         // moves on while a cloud file downloads stays where they went.
         let startedAt = importer.navigation?.navigationGeneration
         let batch = UUID()
-        copyingBatches[batch] = Task {
+        let task = Task {
             var staged: [URL] = []
             var firstFailure: ImportFailure?
             for file in files {
                 guard !Task.isCancelled else { break }
-                copyingName = file.lastPathComponent
+                noteCopying(file.lastPathComponent, for: batch)
                 do {
                     staged.append(try await stage(file))
                 } catch {
@@ -151,9 +158,10 @@ final class MacFileIntake: ObservableObject {
                 // Cancelled while copying: what landed goes, nothing of the
                 // batch is added, and no failure is shown for it. A read
                 // already under way can't be stopped; its copy goes here.
+                // Cancel already took its name and counted it abandoned.
                 staged.forEach(Self.discardStaged)
                 staging -= files.count
-                if staging == 0 { copyingName = nil }
+                abandoned -= files.count
                 releaseHoldIfSettled()
                 return
             }
@@ -166,10 +174,27 @@ final class MacFileIntake: ObservableObject {
             if files.count > 1 || movedOn, !staged.isEmpty { holdsOpens = true }
             importer.importFiles(at: staged)
             staging -= files.count
-            if staging == 0 { copyingName = nil }
+            noteCopying(nil, for: batch)
             if failure == nil { failure = firstFailure }
             releaseHoldIfSettled()
         }
+        copyingBatches[batch] = (task, files.count)
+    }
+
+    /// `batch` is copying `name`, or nothing more (nil). The overlay shows
+    /// the newest batch's file: never one already handed over, nor one
+    /// Cancel dropped.
+    private func noteCopying(_ name: String?, for batch: UUID) {
+        if let name {
+            if let index = copyingFiles.firstIndex(where: { $0.batch == batch }) {
+                copyingFiles[index].name = name
+            } else {
+                copyingFiles.append((batch, name))
+            }
+        } else {
+            copyingFiles.removeAll { $0.batch == batch }
+        }
+        copyingName = copyingFiles.last?.name
     }
 
     /// Cancel on the import overlay, or Esc: drops the batches still being
@@ -177,7 +202,13 @@ final class MacFileIntake: ObservableObject {
     func cancel() {
         let batches = copyingBatches.values
         copyingBatches = [:]
-        batches.forEach { $0.cancel() }
+        // A read under way runs on to its end (`coordinatedCopy`): its
+        // files no longer count for the overlay or the hold.
+        for batch in batches {
+            batch.task.cancel()
+            abandoned += batch.files
+        }
+        copyingFiles = []
         copyingName = nil
         importer.cancel()
     }
@@ -338,7 +369,7 @@ final class MacFileIntake: ObservableObject {
     /// The batch is over once nothing is copying and the importer is idle
     /// (a failure on screen holds the queue, and so the hold).
     private func releaseHoldIfSettled() {
-        guard holdsOpens, staging == 0, importer.phase == .idle,
+        guard holdsOpens, staging - abandoned == 0, importer.phase == .idle,
               importer.addingClassicID == nil else { return }
         holdsOpens = false
     }

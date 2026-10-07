@@ -322,6 +322,55 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertFalse(page.coordinator.isClickPlayPending, "the click's play ran")
     }
 
+    /// A click's held play gives way to what the listener does before it
+    /// plays: a pause (Space, the bar's Pause) or a jump (⌘→, Undo Jump)
+    /// stands, and a key or a click elsewhere drops it. With nothing in
+    /// between it plays (G008).
+    func testAHeldClickGivesWayToAPauseOrAJump() throws {
+        let rig = makeRig(sentences: 30)
+        let page = try makePage(content: rig.content, active: 0) { id in
+            ReaderColumnView.playFromSentence(id, on: rig.controller)
+        }
+        page.coordinator.parent.transportStamp = { ReaderColumnView.transportStamp(of: rig.controller) }
+        let id = try page.singleLineSentence(near: 12)
+        let point = try page.point(inSentence: id)
+
+        ReaderColumnView.playFromSentence(0, on: rig.controller)
+        XCTAssertTrue(rig.controller.isListenerPlaying)
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertTrue(page.coordinator.isClickPlayPending)
+        rig.controller.pause()
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [], "the pause stands")
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertNotEqual(rig.controller.currentSentence, id)
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        rig.controller.jump(to: 25, origin: .chapter)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [], "the jump stands")
+        XCTAssertEqual(rig.controller.currentSentence, 25)
+        XCTAssertFalse(rig.controller.isListenerPlaying)
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertTrue(page.coordinator.isWatchingForOtherInput, "keys and clicks elsewhere are watched")
+        page.coordinator.otherInputArrived()
+        XCTAssertFalse(page.coordinator.isClickPlayPending, "a key or a click elsewhere drops it")
+        XCTAssertFalse(page.coordinator.isWatchingForOtherInput)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [])
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [id], "with nothing in between, the click plays")
+        XCTAssertEqual(rig.controller.currentSentence, id)
+        XCTAssertFalse(page.coordinator.isWatchingForOtherInput, "the watch ends with the click")
+    }
+
     // MARK: - The right-click menu (M14)
 
     /// Exactly Play from Here, Copy and Look Up: no Speech, no submenus.

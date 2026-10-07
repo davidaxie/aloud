@@ -635,20 +635,24 @@ enum ReaderMenuCopy {
 // MARK: - Colors
 
 extension ReaderInk {
-    /// The theme's colors resolved for `appearance`, and rule images in
-    /// them. The page rebuilds when its appearance changes, so a resolved
-    /// color is safe, as on the iPhone.
-    init(appearance: NSAppearance) {
-        func resolved(_ color: Color) -> NSColor {
-            NSColor(cgColor: appearance.resolvedCGColor(color)) ?? NSColor(color)
+    /// The theme's colors as they draw: each resolves for the appearance
+    /// it is drawn under (light or dark, Increase Contrast or not), and so
+    /// do the rule images, whose drawing handler fills in them. A change of
+    /// look only redraws the page: no edit drops TextKit's layout, so
+    /// nothing is laid out again from the top of the book.
+    static func live() -> ReaderInk {
+        func live(_ color: Color) -> NSColor {
+            NSColor(name: nil) { appearance in
+                NSColor(cgColor: appearance.resolvedCGColor(color)) ?? NSColor(color)
+            }
         }
-        self.init(text: resolved(Theme.text),
-                  textMuted: resolved(Theme.textMuted),
-                  accent: resolved(Theme.accent),
-                  lineStrong: resolved(Theme.lineStrong),
-                  ruleImage: { size, color in
-                      PlatformRuleImage.make(size: size, color: color, scale: 2)
-                  })
+        return ReaderInk(text: live(Theme.text),
+                         textMuted: live(Theme.textMuted),
+                         accent: live(Theme.accent),
+                         lineStrong: live(Theme.lineStrong),
+                         ruleImage: { size, color in
+                             PlatformRuleImage.make(size: size, color: color, scale: 2)
+                         })
     }
 }
 

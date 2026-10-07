@@ -84,6 +84,11 @@ struct ReaderColumnView: NSViewRepresentable {
     /// top inset), false back at the top; reported on a change, a turn
     /// later, so the screen's state never changes inside an update.
     var onTextUnderTopBar: ((Bool) -> Void)? = nil
+    /// What a click's play, held for the double-click interval, checks
+    /// before it plays: a change since (a Play or pause, a jump or Undo, a
+    /// move while paused) was the listener's later word, and drops it.
+    /// nil checks nothing.
+    var transportStamp: (() -> Int)? = nil
 
     func makeNSView(context: Context) -> ReaderScrollView {
         context.coordinator.makeScrollView()
@@ -113,6 +118,21 @@ struct ReaderColumnView: NSViewRepresentable {
     @MainActor
     static func followRequest(for playback: PlaybackController, followVoiceCount: Int) -> Int {
         playback.userPlayAction &+ playback.jumpSerial &+ followVoiceCount
+    }
+
+    /// The stamp the screen passes (`transportStamp`): every user Play,
+    /// jump and Undo, playing starting or stopping, and, while paused, a
+    /// move of the cue. Playing moves on by itself, so its place is left
+    /// out.
+    @MainActor
+    static func transportStamp(of playback: PlaybackController) -> Int {
+        var stamp = Hasher()
+        stamp.combine(playback.userPlayAction)
+        stamp.combine(playback.jumpSerial)
+        let playing = playback.isListenerPlaying
+        stamp.combine(playing)
+        if !playing { stamp.combine(playback.currentSentence) }
+        return stamp.finalize()
     }
 
     // MARK: - Coordinator
@@ -185,8 +205,13 @@ struct ReaderColumnView: NSViewRepresentable {
         private var clickBeganWhileScrolling = false
         /// A single click's play, held for the double-click interval: the
         /// next click landing in time (a double- or triple-click selecting
-        /// a word or a paragraph) cancels it.
+        /// a word or a paragraph) cancels it, as does any other key or click
+        /// in the app (`clickPlayMonitor`) or a change of playback
+        /// (`transportStamp`).
         private var pendingClickPlay: DispatchWorkItem?
+        /// While a click's play is held: a key (Space, ⌘Z, an arrow) or a
+        /// click anywhere else (the bar's Pause) drops it.
+        private var clickPlayMonitor: Any?
         /// Moves of our own in progress (offsets, rebuilds): the clip view's
         /// bounds moving then is not the reader scrolling.
         private var programmaticMoves = 0
@@ -229,6 +254,9 @@ struct ReaderColumnView: NSViewRepresentable {
         var clickPlayDelay: () -> TimeInterval = { NSEvent.doubleClickInterval }
         /// A single click is waiting out the double-click interval (tests).
         var isClickPlayPending: Bool { pendingClickPlay != nil }
+        /// Keys and clicks elsewhere are watched for, while a click waits
+        /// (tests).
+        var isWatchingForOtherInput: Bool { clickPlayMonitor != nil }
 
         #if DEBUG
         private let publishesProbe = UITestHooks.isUITestLaunch
@@ -458,7 +486,7 @@ struct ReaderColumnView: NSViewRepresentable {
                                                               isChapterBook: parent.isChapterBook,
                                                               colophon: parent.colophon,
                                                               bold: PlatformLegibility.isBold(appearance),
-                                                              ink: ReaderInk(appearance: appearance))
+                                                              ink: .live())
             // No layout pass is handled until the ranges and state below
             // match the new text.
             isEditingText = true
@@ -489,28 +517,29 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         /// Light/dark and Increase Contrast only recolor (the Mac has no
-        /// Bold Text): the same ranges hold the reader's selection and
-        /// VoiceOver's cursor, and the passage on screen is put back where
-        /// it was. Not by the raw offset: the rebuild drops the layout, and
-        /// TextKit 2 would frame it on estimated heights, far off deep in a
-        /// book. The first visible line is anchored instead, laid out for
-        /// real through it, as a text-size step does.
+        /// Bold Text), and the text's colors resolve as they draw
+        /// (`ReaderInk.live`): the page redraws, with no edit. TextKit keeps
+        /// its layout, so the passage on screen, the reader's selection and
+        /// VoiceOver's cursor stay put, and nothing is laid out again from
+        /// the top of the book, a long stall deep in one. The layers
+        /// colored once (the highlight, the underline, a colophon's veil)
+        /// take the new look.
         func rebuildForAppearanceChange() {
-            guard let textView, !builtHash.isEmpty, builtHash == parent.content.contentHash,
-                  Self.look(of: textView.effectiveAppearance) != builtLook else { return }
-            let active = activeSentence
-            let offset = contentOffsetY
-            let anchor = relayoutAnchor ?? viewport().flatMap { readingAnchor(in: $0) }
-            let rebuildPage = { self.rebuild(content: self.parent.content, fontSize: self.parent.fontSize) }
-            if let access = textView.readerAccessibility {
-                access.keepingCursor(through: rebuildPage)
-            } else {
-                rebuildPage()
-            }
-            follow.pendingPlacement = false
-            setActiveSentence(active, scroll: false)
-            setActiveWord(parent.activeWord)
-            if let anchor { arm(anchor, confirming: true) } else { setOffset(offset) }
+            guard let textView, !builtHash.isEmpty, builtHash == parent.content.contentHash else { return }
+            let look = Self.look(of: textView.effectiveAppearance)
+            guard look != builtLook else { return }
+            builtLook = look
+            Self.redraw(textView)
+            renderSentenceHighlight(animated: false)
+            renderWordUnderline(animated: false)
+            colophonVeil?.layer?.backgroundColor = textView.effectiveAppearance.resolvedCGColor(Theme.bg)
+        }
+
+        /// `view` and every view in it: TextKit 2 draws its fragments in
+        /// views of its own.
+        private static func redraw(_ view: NSView) {
+            view.needsDisplay = true
+            view.subviews.forEach(redraw)
         }
 
         /// Which of the four looks a theme token tells apart `appearance` is.
@@ -783,7 +812,7 @@ struct ReaderColumnView: NSViewRepresentable {
             let appearance = textView.effectiveAppearance
             let mark = ReaderColumnText.makeEndMark(colophon: colophon, fontSize: builtFontSize,
                                                     bold: PlatformLegibility.isBold(appearance),
-                                                    ink: ReaderInk(appearance: appearance))
+                                                    ink: .live())
             isEditingText = true
             movingProgrammatically {
                 storage.replaceCharacters(in: endMarkRange, with: mark)
@@ -1500,22 +1529,40 @@ struct ReaderColumnView: NSViewRepresentable {
             guard let id = sentence(at: point) else { return }
             cancelClickPlay()
             let hash = builtHash
+            let stamp = parent.transportStamp?()
             let play = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.pendingClickPlay = nil
+                    self.cancelClickPlay()
                     // The same text the click landed on.
                     guard self.builtHash == hash else { return }
+                    // A pause, a jump or an Undo since then stands: the
+                    // held click never overrides it.
+                    guard self.parent.transportStamp?() == stamp else { return }
                     self.parent.onPlaySentence(id)
                 }
             }
             pendingClickPlay = play
+            clickPlayMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                MainActor.assumeIsolated { self?.otherInputArrived() }
+                return event
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + clickPlayDelay(), execute: play)
+        }
+
+        /// A key or a click while a click's play is held: whatever it does
+        /// (Space, Undo Jump, a skip, the bar's Pause, a second click on the
+        /// page) comes after the click, so the click no longer plays.
+        func otherInputArrived() {
+            cancelClickPlay()
         }
 
         private func cancelClickPlay() {
             pendingClickPlay?.cancel()
             pendingClickPlay = nil
+            if let clickPlayMonitor { NSEvent.removeMonitor(clickPlayMonitor) }
+            clickPlayMonitor = nil
         }
 
         /// The sentence under `point` (page coordinates); nil between

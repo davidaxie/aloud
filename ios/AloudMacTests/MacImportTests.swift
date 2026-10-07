@@ -196,6 +196,72 @@ final class MacImportTests: XCTestCase {
         XCTAssertEqual(router.path, [])
     }
 
+    /// A cancelled copy whose read runs on (a slow cloud download) never
+    /// leaves the overlay up over the next file's book, nor holds the next
+    /// batch's opens; and while two drops copy, the card names the one
+    /// still copying, never one already added (G010).
+    func testACancelledCopyStillReadingNeitherShowsNorHolds() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        let importer = DocumentImporter(library: library) { _ in }
+        importer.navigation = router
+        importer.onAdded = { router.open($0) }
+        let download = Download()
+        let intake = MacFileIntake(importer: importer) { url in
+            if url.lastPathComponent == "big.txt" { await download.finished() }
+            return url
+        }
+
+        intake.admit([try writeText("big.txt", in: folder)])
+        let copying = await waitUntil { intake.copyingName == "big.txt" }
+        XCTAssertTrue(copying)
+        intake.cancel()
+        intake.admit([try writeText("notes.txt", in: folder)])
+        let added = await waitUntil { library.documents.count == 1 && importer.phase == .idle }
+        XCTAssertTrue(added, "the next file is added while the cancelled read runs on")
+        XCTAssertNil(intake.copyingName, "no card for a file already added")
+        XCTAssertNil(MacImportOverlay.shown(phase: importer.phase, copyingName: intake.copyingName))
+
+        intake.admit([try writeText("one.txt", in: folder), try writeText("two.txt", in: folder)])
+        let both = await waitUntil { library.documents.count == 3 && importer.phase == .idle }
+        XCTAssertTrue(both)
+        let released = await waitUntil(2) { !intake.holdsOpens }
+        XCTAssertTrue(released, "a batch's hold ends with the batch, not with the cancelled read")
+        XCTAssertNil(intake.copyingName)
+
+        await download.finish()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(library.documents.count, 3, "the cancelled copy is never added")
+        XCTAssertNil(intake.copyingName)
+    }
+
+    /// Two drops copying at once: when the quick one is added, the card
+    /// names the slow one, still copying, until it too is handed over.
+    func testOverlappingCopiesNameTheOneStillCopying() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let importer = DocumentImporter(library: library) { _ in }
+        let download = Download()
+        let intake = MacFileIntake(importer: importer) { url in
+            if url.lastPathComponent == "big.txt" { await download.finished() }
+            return url
+        }
+
+        intake.admit([try writeText("big.txt", in: folder)])
+        let copying = await waitUntil { intake.copyingName == "big.txt" }
+        XCTAssertTrue(copying)
+        intake.admit([try writeText("notes.txt", in: folder)])
+        let added = await waitUntil { library.documents.count == 1 && importer.phase == .idle }
+        XCTAssertTrue(added)
+        XCTAssertEqual(intake.copyingName, "big.txt", "the file still copying, not the one added")
+
+        await download.finish()
+        let both = await waitUntil { library.documents.count == 2 && importer.phase == .idle }
+        XCTAssertTrue(both)
+        XCTAssertNil(intake.copyingName)
+    }
+
     /// A download that ends when the test says so.
     private actor Download {
         private var isFinished = false
