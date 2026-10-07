@@ -319,3 +319,46 @@ test('G019: once the extension is reloaded, cached audio does not play on', asyn
   assert.equal(plays, 0)
   assert.equal(current.player.status, 'error')
 })
+
+/** Another reader (the web app, another tab) keeps the backend's prefetch lane full. */
+const busyPrefetch = (msg) => (msg.priority === 'prefetch' ? fail(429, true)(msg) : OK(msg))
+const askedNow = (text) =>
+  current.w.calls.some((c) => c.kind === 'synth' && c.priority === 'now' && c.text === text)
+
+test('G032: look-ahead turned away as busy is asked again at now, not marked unreadable', async () => {
+  current = rig(busyPrefetch)
+  current.player.play()
+  await until(() => current.player.status === 'playing', 3000, 'playing')
+  // Sentence 0 ends while sentence 1's look-ahead is still being retried.
+  FakeAudio.last.dispatchEvent(new Event('ended'))
+  await until(
+    () =>
+      current.seen.skips.length > 0 ||
+      (current.player.currentIndex === 1 && current.player.status === 'playing'),
+    5000,
+    'sentence 1 playing or skipped',
+  )
+  assert.deepEqual(current.seen.skips, [], 'a busy backend says nothing about the sentence')
+  assert.equal(current.player.currentIndex, 1)
+  assert.ok(askedNow(SENTENCES[1]), 'sentence 1 is asked for again in the now lane')
+})
+
+test('G032: busy look-ahead for a sentence paused while buffering is cued at now, not skipped', async () => {
+  current = rig(busyPrefetch)
+  current.player.play()
+  await until(() => current.player.status === 'playing', 3000, 'playing')
+  FakeAudio.last.dispatchEvent(new Event('ended'))
+  current.player.pause()
+  await until(
+    () => current.seen.skips.length > 0 || askedNow(SENTENCES[1]),
+    5000,
+    'sentence 1 cued or skipped',
+  )
+  assert.deepEqual(current.seen.skips, [])
+  assert.equal(current.player.status, 'paused')
+  assert.equal(current.player.wasSkipped(1), false)
+
+  current.player.play()
+  await until(() => current.player.status === 'playing', 3000, 'playing again')
+  assert.equal(current.player.currentIndex, 1)
+})

@@ -99,6 +99,11 @@ const SEED_CHARS_PER_SECOND = 15
  * whole page skipping every sentence helps nobody.
  */
 const MAX_CONSECUTIVE_SKIPS = 3
+/**
+ * A busy backend (prefetch queue full) or a warming one: says nothing about
+ * the sentence, so look-ahead turned away with these is asked for again.
+ */
+const BUSY_STATUSES = new Set([429, 503])
 
 /**
  * Stands in for an object URL when a sentence has nothing to say — skipping
@@ -396,7 +401,8 @@ export class AloudPlayer {
    *
    * An entry already in flight keeps the priority it was created with: the
    * backend has queued it and there is no way to promote it from here. In
-   * practice that is the good case — it means prefetch got there first.
+   * practice that is the good case — it means prefetch got there first. If the
+   * backend turns it away as busy instead, playIndex asks again at `now` (G032).
    */
   private ensure(sentenceId: number, priority: SynthPriority): CacheEntry {
     const { voiceId, skipSkippable } = this.hooks.prefs()
@@ -675,6 +681,20 @@ export class AloudPlayer {
     } catch (err) {
       // Superseded or intentionally aborted → silently stand down.
       if (token !== this.playToken || isAbortError(err)) return
+      // Look-ahead the backend turned away as busy (429, prefetch lane full —
+      // another tab or the web app can fill it) or warming (503) says nothing
+      // about this sentence: ask again in the `now` lane, which is never turned
+      // away for being full. synth() already dropped the failed entry, so
+      // ensure() makes a fresh one. A `now` failure still skips (G032).
+      if (
+        entry.priority === PREFETCH &&
+        err instanceof SynthesisError &&
+        BUSY_STATUSES.has(err.status)
+      ) {
+        if (this.wantPlaying) void this.playIndex(i)
+        else this.ensure(i, NOW).promise.catch(() => {})
+        return
+      }
       this.skipSentence(i, err)
       return
     }
