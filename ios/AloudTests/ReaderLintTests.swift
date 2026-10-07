@@ -150,4 +150,20 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertLessThan(landed.lowerBound, announced.lowerBound)
         XCTAssertTrue(code.contains("previousCount: previousCount, muted: playback.isOutputMuted)"))
     }
+
+    /// The Mac Contents panel says the row a remap left unheard, and focus
+    /// coming back to the list says one it missed while away (I013). Focus
+    /// can't be driven from a test, so this pins the source; the rule is in
+    /// MacContentsPlacesTests. Here because Mac-hosted tests can't read the
+    /// checkout.
+    func testTheMacContentsPanelSaysTheRowARemapLeftUnheard() throws {
+        let path = "Reader/MacContentsPanel.swift"
+        let sources = try SourceTree.sources(in: SourceTree.macRoot, only: [path])
+        let panel = try XCTUnwrap(sources[path])
+        let onChange = try XCTUnwrap(panel.range(of: ".onChange(of: listLayout)"))
+        let body = panel[onChange.upperBound...].prefix(600)
+        XCTAssertTrue(body.contains("MacContents.remapIsUnheard("))
+        XCTAssertTrue(body.contains("announceCursor(currentMode)"))
+        XCTAssertTrue(panel.contains("} else if cursorUnheard {"))
+    }
 }

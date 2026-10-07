@@ -80,7 +80,7 @@ final class MacImportTests: XCTestCase {
         let folder = try makeFolder()
         let store = DocumentStore(indexURL: folder.appendingPathComponent("library.json"),
                                   saveInterval: 0.05, notifications: NotificationCenter())
-        addTeardownBlock { @MainActor in store.documents.forEach(store.delete) }
+        addTeardownBlock { @MainActor in store.documents.forEach { try? store.delete($0) } }
         let importer = DocumentImporter(library: store) { _ in }
         var opened: [LibraryDocument] = []
         importer.onAdded = { opened.append($0) }

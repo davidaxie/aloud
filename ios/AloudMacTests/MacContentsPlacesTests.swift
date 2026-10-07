@@ -125,19 +125,6 @@ final class MacContentsPlacesTests: XCTestCase {
         XCTAssertFalse(unheard(2, three, four, in: .results))
     }
 
-    /// The panel says the row a remap left unheard, and focus coming back
-    /// to the list says one it missed while away (I013). Focus can't be
-    /// driven from a test, so this pins the source; the rule is above.
-    func testThePanelSaysTheRowARemapLeftUnheard() throws {
-        let path = "Reader/MacContentsPanel.swift"
-        let panel = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [path])[path])
-        let onChange = try XCTUnwrap(panel.range(of: ".onChange(of: listLayout)"))
-        let body = panel[onChange.upperBound...].prefix(600)
-        XCTAssertTrue(body.contains("MacContents.remapIsUnheard("))
-        XCTAssertTrue(body.contains("announceCursor(currentMode)"))
-        XCTAssertTrue(panel.contains("} else if cursorUnheard {"))
-    }
-
     /// A stop recorded while the keyboard walks search results: the
     /// cursor is a result's index, which the places never move, so the ring
     /// stays on its result and Return opens it (never the next result, or
