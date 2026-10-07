@@ -111,7 +111,7 @@ struct BookCover: View {
         if progress > 0 {
             GeometryReader { bar in
                 ZStack(alignment: .leading) {
-                    Theme.line
+                    Theme.track
                     Theme.accent
                         .frame(width: bar.size.width * min(max(progress, 0), 1))
                 }

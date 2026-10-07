@@ -3,8 +3,9 @@ import Foundation
 
 /// M3 word karaoke state, owned by `PlaybackController` (see the small hooks
 /// in PlaybackController.swift). Holds per-sentence word windows laid out in
-/// the player node's media timeline and drives a 30 fps `FrameTicker` that
-/// maps the playhead to a word index while audio is playing.
+/// the player node's media timeline and drives a `FrameTicker` (30 fps with
+/// the word tint, `followFramesPerSecond` without) that maps the playhead to
+/// a word index while audio is playing.
 ///
 /// Timeline model: clips are scheduled gaplessly on one `AVAudioPlayerNode`,
 /// so each clip's start is the running sum of previously scheduled clip
@@ -99,17 +100,29 @@ final class WordKaraokeState {
 
     // MARK: Frame ticker
 
-    func startLink() {
-        guard ticker == nil else { return }
-        // 30 fps is plenty for word-boundary resolution and halves the wakeups.
-        let ticker = FrameTicker(framesPerSecond: 30) { [weak self] in self?.tick() }
+    /// 30 fps is plenty for word-boundary resolution and halves the wakeups.
+    nonisolated static let tintFramesPerSecond = 30
+    /// With the word tint off, only following reads the word: a few ticks a
+    /// second place the voice on its line at a fraction of the wakeups.
+    nonisolated static let followFramesPerSecond = 6
+    /// The running ticker's rate; 0 while stopped. Test seam.
+    private(set) var tickerRate = 0
+
+    /// Starts ticking at `framesPerSecond`; running at another rate, the
+    /// ticker restarts at this one.
+    func startLink(framesPerSecond: Int = tintFramesPerSecond) {
+        guard ticker == nil || tickerRate != framesPerSecond else { return }
+        stopLink()
+        let ticker = FrameTicker(framesPerSecond: framesPerSecond) { [weak self] in self?.tick() }
         ticker.start()
         self.ticker = ticker
+        tickerRate = framesPerSecond
     }
 
     func stopLink() {
         ticker?.invalidate()
         ticker = nil
+        tickerRate = 0
     }
 
     private func tick() {
@@ -131,14 +144,17 @@ extension PlaybackController {
     }
 
     /// Hook from `status.didSet` and `wordHighlightEnabled.didSet`: the ticker
-    /// runs only while audio actually plays AND the word tint is on — its sole
-    /// consumer. (Lock-screen elapsed time rides the once-per-sentence
+    /// runs only while audio actually plays: at 30 fps for the word tint, and
+    /// with the tint off at `followFramesPerSecond`, enough for the reader's
+    /// follow to know which line of a sentence taller than the band is being
+    /// read. (Lock-screen elapsed time rides the once-per-sentence
     /// `currentSentence` heartbeat, not this link.) Pausing freezes the
     /// highlight on the last word (web behavior); seeks and stops clear it via
     /// the `currentSentence`/`reset` paths.
     func wordTimingStatusChanged(_ status: PlayerStatus) {
-        if status == .playing, wordHighlightEnabled {
-            wordTiming.startLink()
+        if status == .playing {
+            wordTiming.startLink(framesPerSecond: wordHighlightEnabled
+                                 ? WordKaraokeState.tintFramesPerSecond : WordKaraokeState.followFramesPerSecond)
         } else {
             wordTiming.stopLink()
         }

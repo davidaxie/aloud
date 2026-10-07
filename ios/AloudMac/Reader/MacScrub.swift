@@ -44,7 +44,7 @@ struct MacScrub: View {
             let span = press?.span ?? model.span
             let shown = press?.target ?? model.playhead
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.line)
+                Capsule().fill(Theme.track)
                 Capsule()
                     .fill(Theme.accent)
                     // A finished book fills the track (its last sentence

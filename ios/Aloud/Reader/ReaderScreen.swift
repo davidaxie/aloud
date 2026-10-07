@@ -60,6 +60,9 @@ struct ReaderScreen: View {
                     activeSentence: playback.currentSentence,
                     // The word-highlight pref is gated once, here at the source.
                     activeWord: model.wordHighlight ? playback.currentWord : -1,
+                    // Following tracks the spoken word whatever the pref, so
+                    // a sentence taller than the band never ends under the bar.
+                    followWord: playback.currentWord,
                     // Following resumes on a user Play, every jump and Undo,
                     // and the Follow chip: never by itself.
                     followRequest: playback.userPlayAction &+ playback.jumpSerial &+ followChipTaps,

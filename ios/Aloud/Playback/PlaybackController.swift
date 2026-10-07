@@ -292,10 +292,11 @@ final class PlaybackController: ObservableObject {
     /// "play unless playing" guard) asks this, not `isActive`.
     var isListenerPlaying: Bool { audition == nil && isActive }
 
-    /// Mirrored from the word-highlight pref (AppModel). The 30 fps karaoke
-    /// frame ticker exists only to feed the reader's word tint, so it runs
-    /// only while this is on — the default-off configuration pays zero
-    /// per-frame cost. Word windows are still recorded at schedule time, so
+    /// Mirrored from the word-highlight pref (AppModel). The karaoke frame
+    /// ticker runs at 30 fps only while this is on, to feed the reader's
+    /// word tint; off, it ticks a few times a second, so `currentWord` still
+    /// tells the reader's follow where the voice is in a sentence taller
+    /// than the band. Word windows are still recorded at schedule time, so
     /// flipping the pref on mid-sentence lights up immediately.
     var wordHighlightEnabled = false {
         didSet {

@@ -41,6 +41,12 @@ struct ReaderTextView: UIViewRepresentable {
     /// word-highlight pref is folded in at the source (`ReaderScreen` passes
     /// -1 while the pref is off), so this view has a single gate to honor.
     let activeWord: Int
+    /// Token index of the word being spoken whatever the Word highlight pref
+    /// (`playback.currentWord`); -1 = none. Never drawn: it tells following
+    /// where the voice is inside a sentence taller than the band
+    /// (`FollowBand.followed`), so the end of a long sentence at a large
+    /// text size isn't read under the player bar with the underline off.
+    var followWord = -1
     /// Any change resumes following and brings the active sentence into the
     /// band: Play, a jump or Undo, or the Follow chip.
     var followRequest = 0
@@ -84,6 +90,8 @@ struct ReaderTextView: UIViewRepresentable {
             // Re-apply the word tint from CURRENT state — while paused no
             // word tick arrives to restore it (mirrors rebuildForTraitChange).
             coordinator.setActiveWord(activeWord)
+            // The placement aims at the spoken word in a tall sentence.
+            coordinator.setSpokenWord(followWord, follows: false)
             Task { @MainActor in coordinator.placeActiveSentence() }
             return
         }
@@ -103,7 +111,10 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         if coordinator.activeWordToken != activeWord {
-            coordinator.setActiveWord(activeWord, follows: true)
+            coordinator.setActiveWord(activeWord)
+        }
+        if coordinator.spokenWordToken != followWord {
+            coordinator.setSpokenWord(followWord, follows: true)
         }
 
         if obscuredBottomChanged {
@@ -204,6 +215,13 @@ struct ReaderTextView: UIViewRepresentable {
         // Word underline (drawn by ReaderHighlightLayer, never in textStorage)
         private(set) var activeWordToken = -1
         private var activeWordRange: NSRange?
+        // The spoken word following tracks (`followWord`), underlined or not
+        private(set) var spokenWordToken = -1
+        private var spokenWordRange: NSRange?
+        /// Where the last spoken word of a tall sentence sat, so a tick
+        /// follows only when the voice moves on to a new line
+        /// (`FollowBand.wordTickFollows`). Cleared with the sentence.
+        private var lastSpokenWordRect: CGRect?
         /// Absolute token NSRanges per sentence (nil for whitespace tokens),
         /// derived lazily from the same tokenizer the playback side uses so
         /// token indices always agree. Small; cleared when it grows.
@@ -289,6 +307,9 @@ struct ReaderTextView: UIViewRepresentable {
             wordRangeCache = [:]
             activeWordRange = nil
             activeWordToken = -1
+            spokenWordRange = nil
+            spokenWordToken = -1
+            lastSpokenWordRect = nil
             follow.cachedActiveRect = nil
             follow.startPlacementCheck()
             follow.pendingReveal = nil
@@ -329,6 +350,7 @@ struct ReaderTextView: UIViewRepresentable {
             }
             setActiveSentence(active, scroll: false)
             setActiveWord(parent.activeWord)
+            setSpokenWord(parent.followWord, follows: false)
             if reflowed {
                 // Back on the voice, placed once the new string has settled
                 // (mirrors the size-change rebuild).
@@ -442,6 +464,8 @@ struct ReaderTextView: UIViewRepresentable {
             let changed = id != activeSentence
             if changed {
                 setActiveWord(-1)   // never carry a word underline across sentences
+                setSpokenWord(-1, follows: false)
+                lastSpokenWordRect = nil
                 follow.cachedActiveRect = nil
             }
             activeSentence = id
@@ -470,23 +494,63 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// Word layer: an accent underline under the spoken word, drawn in
-        /// the highlight layer. Glyph metrics never change. A word tick
-        /// `follows`: through a sentence taller than the band, following
-        /// keeps the spoken word on screen (`FollowBand.followed`).
+        /// the highlight layer. Glyph metrics never change. With `follows`,
+        /// the underlined word is also the spoken word following tracks
+        /// (`setSpokenWord`), as when Word highlight is on.
         func setActiveWord(_ token: Int, follows: Bool = false) {
             guard textView != nil else { return }
-            var newRange: NSRange?
-            if token >= 0,
-               let ranges = wordRanges(for: activeSentence),
-               ranges.indices.contains(token) {
-                newRange = ranges[token]   // nil for whitespace tokens
-            }
+            if follows { setSpokenWord(token, follows: true) }
+            let newRange = wordRange(token)
             activeWordToken = token
             guard newRange != activeWordRange else { return }
             let slide = activeWordRange != nil
             activeWordRange = newRange
             renderWordUnderline(animated: slide)
-            if follows, newRange != nil, isFollowing { followIfNeeded(animated: true) }
+        }
+
+        /// The spoken word (`followWord`), drawn or not. Through a sentence
+        /// taller than the band, following keeps it on screen
+        /// (`FollowBand.followed`), and a tick that `follows` re-checks the
+        /// band only when the voice has moved on to a new line
+        /// (`FollowBand.wordTickFollows`): never on a sentence that fits,
+        /// and never within the line a user scroll left in view.
+        func setSpokenWord(_ token: Int, follows: Bool) {
+            guard textView != nil else { return }
+            let newRange = wordRange(token)
+            spokenWordToken = token
+            guard newRange != spokenWordRange else { return }
+            spokenWordRange = newRange
+            follow.cachedWordRect = nil
+            // Measured only in a tall sentence; whitespace keeps the last line.
+            guard newRange != nil, shownColophon == nil,
+                  let sentence = activeSentenceRect(), let viewport = viewport(),
+                  FollowBand.isTall(sentence, in: viewport), let word = spokenWordRect() else { return }
+            let previous = lastSpokenWordRect
+            lastSpokenWordRect = word
+            if follows, isFollowing,
+               FollowBand.wordTickFollows(sentence: sentence, word: word, previousWord: previous, in: viewport) {
+                followIfNeeded(animated: true)
+            }
+        }
+
+        /// Token `token` of the active sentence; nil for none and for
+        /// whitespace tokens.
+        private func wordRange(_ token: Int) -> NSRange? {
+            guard token >= 0, let ranges = wordRanges(for: activeSentence),
+                  ranges.indices.contains(token) else { return nil }
+            return ranges[token]
+        }
+
+        /// The spoken word's laid-out rect in content coordinates, cached
+        /// with the sentence's (`cachedWordRect`) so the per-frame chip
+        /// check never measures; nil without one.
+        func spokenWordRect() -> CGRect? {
+            if let cached = follow.cachedWordRect { return cached }
+            guard let range = spokenWordRange else { return nil }
+            let union = segments(for: range).reduce(CGRect.null) { $0.union($1.frame) }
+            guard !union.isNull else { return nil }
+            follow.cachedWordRect = union
+            return union
         }
 
         /// The underlined word's laid-out rect in content coordinates, like
@@ -562,15 +626,17 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// `FollowBand.followed` for the active sentence: the spoken word is
-        /// measured only for a sentence taller than the band.
+        /// measured only for a sentence taller than the band. What every
+        /// follow decision judges: the band, a resume, a placement, a
+        /// scroll's end and the Follow chip.
         private func followedRect(sentence: CGRect, in viewport: CGRect) -> CGRect {
             guard shownColophon == nil, FollowBand.isTall(sentence, in: viewport) else { return sentence }
-            return FollowBand.followed(sentence: sentence, word: activeWordRect(), in: viewport)
+            return FollowBand.followed(sentence: sentence, word: spokenWordRect(), in: viewport)
         }
 
         /// Play, a jump, Undo or the Follow chip: follow again and bring the
-        /// active sentence into the band. A sentence already in the band
-        /// stays put.
+        /// active sentence into the band (in a tall one, the spoken word:
+        /// `followedRect`). A sentence already in the band stays put.
         func resumeFollowing() {
             follow.resume()   // the voice owns the scroll again
             defer { updateFollowChip() }
@@ -590,8 +656,9 @@ struct ReaderTextView: UIViewRepresentable {
                 guard let confirmed = activeSentenceRect() else { return }
                 rect = confirmed
             }
-            guard !FollowBand.contains(rect, in: viewport),
-                  let target = landingOffset(for: rect) else { return }
+            let voice = followedRect(sentence: rect, in: viewport)
+            guard !FollowBand.contains(voice, in: viewport),
+                  let target = landingOffset(for: voice) else { return }
             switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
                                            animated: true, reaim: true) {
             case .none:
@@ -620,12 +687,15 @@ struct ReaderTextView: UIViewRepresentable {
 
         /// The contentOffset.y that puts the active sentence (or the shown
         /// colophon, `followRange`) on the landing line under CURRENT
-        /// geometry; nil while its layout can't resolve. Refreshes the
-        /// cached sentence rect.
+        /// geometry, or in a tall sentence the spoken word once following
+        /// tracks it (`followedRect`), so a resume or a reflow mid-sentence
+        /// never parks that word under the player bar; nil while its layout
+        /// can't resolve. Refreshes the cached sentence and word rects.
         private func landingTarget() -> CGFloat? {
             guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
             follow.cachedActiveRect = rect
-            return landingOffset(for: rect)
+            guard let viewport = viewport() else { return nil }
+            return landingOffset(for: followedRect(sentence: rect, in: viewport))
         }
 
         private func landingOffset(for rect: CGRect) -> CGFloat? {
@@ -760,22 +830,24 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// A user scroll came to rest: following resumes only when the voice
-        /// is in view.
+        /// is in view (in a tall sentence, the spoken word once following
+        /// tracks it, not merely some line of the sentence).
         func userScrollEnded() {
             if let rect = activeSentenceRect(), let viewport = viewport() {
-                follow.scrollEnded(voice: rect, in: viewport)
+                follow.scrollEnded(voice: followedRect(sentence: rect, in: viewport), in: viewport)
             }
             updateFollowChip()
         }
 
         /// Runs on every scroll frame, so it must never force TextKit layout:
-        /// the sentence rect comes from the cache (measured at most once per
-        /// sentence/relayout) and the rest is bounds arithmetic.
+        /// the sentence and word rects come from the cache (measured at most
+        /// once per sentence, word or relayout) and the rest is bounds
+        /// arithmetic.
         func updateFollowChip() {
             guard let textView else { return }
             var direction: ReaderFollowDirection?
             if let rect = activeSentenceRect(), let viewport = viewport() {
-                direction = follow.chipDirection(voice: rect, in: viewport)
+                direction = follow.chipDirection(voice: followedRect(sentence: rect, in: viewport), in: viewport)
                 #if DEBUG
                 if publishesProbe {
                     let onScreen = rect.offsetBy(dx: -textView.contentOffset.x, dy: -textView.contentOffset.y)

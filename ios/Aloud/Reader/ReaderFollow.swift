@@ -53,6 +53,20 @@ enum FollowBand {
         return parkedWordMaxY <= bottom * viewport.height + 0.5 ? sentence : word
     }
 
+    /// Whether a tick of the spoken word re-checks the band: only once
+    /// following tracks the word through a sentence taller than the band
+    /// (`followed` picks the word), and only when the word has moved on to
+    /// a new line since `previousWord`. A sentence that fits follows on
+    /// sentence changes alone, so a user scroll that ends with the voice in
+    /// view stays where it is until the voice moves on: to its next
+    /// sentence, or in a tall one to its next line.
+    static func wordTickFollows(sentence: CGRect, word: CGRect, previousWord: CGRect?,
+                                in viewport: CGRect) -> Bool {
+        guard followed(sentence: sentence, word: word, in: viewport) == word else { return false }
+        guard let previousWord else { return true }
+        return abs(word.minY - previousWord.minY) > 0.5
+    }
+
     /// The contentOffset.y that puts `sentenceMinY` on the landing line,
     /// clamped to the scrollable `range`.
     static func landingContentOffsetY(sentenceMinY: CGFloat, viewport: CGRect,

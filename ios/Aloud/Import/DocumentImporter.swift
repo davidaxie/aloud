@@ -538,7 +538,7 @@ struct ImportProgressOverlay: View {
             HStack(spacing: Theme.Space.sm) {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Theme.line)
+                        Capsule().fill(Theme.track)
                         Capsule().fill(Theme.accent)
                             .frame(width: geo.size.width * clampedProgress)
                     }

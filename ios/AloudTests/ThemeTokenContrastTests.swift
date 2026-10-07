@@ -162,6 +162,31 @@ final class ThemeTokenContrastTests: XCTestCase {
         }
     }
 
+    /// A progress fill (`accent`) stays the 3:1 non-text minimum on its
+    /// track in every appearance: the scrubs, cover progress, the download
+    /// and import bars. On the Increase Contrast `line` it was 1.00:1.
+    func testProgressFillStaysThreeToOneOnItsTrack() {
+        for appearance in Appearance.all {
+            let ratio = contrast(Theme.accent, on: Theme.track, appearance)
+            XCTAssertGreaterThanOrEqual(ratio, 3, "accent on track, \(appearance): "
+                                        + String(format: "%.2f:1", ratio))
+        }
+    }
+
+    /// The disabled Download capsule's faint label on the track: Increase
+    /// Contrast only raises it (on the Increase Contrast `line` it fell from
+    /// 4.12:1 to 1.62:1), and it never drops under 4:1.
+    func testTheDisabledDownloadLabelStaysLegibleOnTheTrack() {
+        for dark in [false, true] {
+            let normal = Appearance(dark: dark, highContrast: false)
+            let high = Appearance(dark: dark, highContrast: true)
+            let (before, after) = (contrast(Theme.textFaint, on: Theme.track, normal),
+                                   contrast(Theme.textFaint, on: Theme.track, high))
+            XCTAssertGreaterThanOrEqual(before, 4, "textFaint on track, \(normal): " + String(format: "%.2f:1", before))
+            XCTAssertGreaterThan(after, before, "textFaint on track, \(high): " + String(format: "%.2f:1", after))
+        }
+    }
+
     /// Increase Contrast never lowers a ratio it is meant to raise: the
     /// word underline on the (darker) sentence fill, and the faint tier.
     func testIncreaseContrastNeverLowersTheUnderlineOrTheFaintTier() {

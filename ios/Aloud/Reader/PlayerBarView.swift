@@ -104,7 +104,7 @@ struct PlayerBarView: View {
             let width = proxy.size.width
             let span = drag?.span ?? navigation.scrubSpan(at: playhead)
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.line)
+                Capsule().fill(Theme.track)
                 Capsule()
                     .fill(Theme.accent)
                     .frame(width: max(4, width * navigation.scrubFill(of: drag?.target ?? playhead, in: span,

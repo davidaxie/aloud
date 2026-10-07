@@ -53,11 +53,18 @@ enum Theme {
 
     // Quiet edges by default. Increase Contrast takes every control edge
     // (chips, the stepper card, capsules) to ≥ 3:1 on bg, bgTint, surface
-    // and surface2, with lineStrong still the heavier of the two.
+    // and surface2, with lineStrong still the heavier of the two. Edges and
+    // strokes only: under Increase Contrast `line` is as dark as `accent`,
+    // so a progress fill drawn on it would vanish (use `track`).
     static let line = dynamic(light: 0xE9E1D0, dark: 0x2B2417,
                               highContrast: (0x8E7C5C, 0x7A6A4E))
     static let lineStrong = dynamic(light: 0xD7CBB1, dark: 0x3E3423,
                                     highContrast: (0x7D6B4C, 0x8C7B5D))
+    /// The unfilled part of a progress bar (the scrub, cover progress, the
+    /// download and import bars) and the disabled Download capsule: the
+    /// pale line in every contrast, so the `accent` fill stays ≥ 3:1 on it
+    /// (3.10:1 light, 6.04:1 dark) and Increase Contrast never erases it.
+    static let track = dynamic(light: 0xE9E1D0, dark: 0x2B2417)
 
     // MARK: Accent family (one hue only)
 

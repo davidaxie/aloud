@@ -104,7 +104,8 @@ struct ModelDownloadView: View {
                 // The capsule carries a text label, so it is `accentStrong`.
                 // The label wraps inside it rather than truncating; the
                 // capsule grows from its 44pt minimum. Disabled, it reads
-                // faint on the hairline's gray, never as a live accent.
+                // faint on the pale track, never as a live accent (the
+                // Increase Contrast `line` is too dark under faint text).
                 Text(NaturalVoiceCopy.download)
                     .font(Theme.font(.callout).weight(.semibold))
                     .foregroundStyle(offline ? Theme.textFaint : Theme.bg)
@@ -112,7 +113,7 @@ struct ModelDownloadView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, Theme.Space.md)
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(offline ? Theme.line : Theme.accentStrong, in: Capsule())
+                    .background(offline ? Theme.track : Theme.accentStrong, in: Capsule())
             }
             .buttonStyle(.borderless)
             .disabled(offline)
@@ -362,7 +363,7 @@ struct ModelDownloadView: View {
     private func progressBar(_ progress: Double, waiting: Bool) -> some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.line)
+                Capsule().fill(Theme.track)
                 Capsule()
                     .fill(Theme.accent)
                     .frame(width: max(5, proxy.size.width * min(max(progress, 0), 1)))

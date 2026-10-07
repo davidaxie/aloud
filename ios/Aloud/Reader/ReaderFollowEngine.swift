@@ -47,7 +47,13 @@ struct ReaderFollowEngine {
     /// Cached bounding rect of the follow target, so the per-frame chip
     /// update never forces TextKit layout. The host clears it on sentence
     /// change, rebuild, and content-size change.
-    var cachedActiveRect: CGRect?
+    var cachedActiveRect: CGRect? {
+        didSet { cachedWordRect = nil }
+    }
+    /// Cached rect of the spoken word, measured only inside a sentence
+    /// taller than the band (`FollowBand.followed`). Re-measured whenever
+    /// the sentence rect is, and dropped by the host when the word moves.
+    var cachedWordRect: CGRect?
     /// After a placement without motion, keep re-placing on every layout
     /// pass until the geometry resolves: insets and bounds settle a few
     /// passes after the text is set, and a deep target's estimated line
