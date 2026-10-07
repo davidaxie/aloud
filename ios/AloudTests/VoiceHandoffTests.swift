@@ -88,6 +88,28 @@ final class VoiceHandoffTests: XCTestCase {
         }
     }
 
+    /// A natural voice that reads only the first sentence asked of it (the
+    /// splice, `cuePrefetch(from: splice)`) and fails every later one: a
+    /// sentence past the splice it can't read.
+    private final class SpliceOnlyNeuralEngine: TtsEngine, @unchecked Sendable {
+        let voices: [TtsVoice] = [KokoroVoiceCatalog.defaultVoice]
+        private let lock = NSLock()
+        private var first: Int?
+
+        func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            // "Line<i> word…" (`PlaybackTestRig.makeContent`).
+            let index = text.hasPrefix("Line") ? Int(text.dropFirst(4).prefix { $0.isNumber }) : nil
+            let reads: Bool = lock.withLock {
+                if first == nil { first = index }
+                return index == first
+            }
+            guard reads else { throw TtsError.voiceUnavailable }
+            return .silence(duration: 0.25, sampleRate: 24_000)
+        }
+
+        var splice: Int? { lock.withLock { first } }
+    }
+
     // MARK: - The splice
 
     func testInstallSwitchNeverBuffersAndLandsOnASentenceStart() async throws {
@@ -466,6 +488,42 @@ final class VoiceHandoffTests: XCTestCase {
         XCTAssertNil(rig.controller.notice, "no skipped-sentence notice")
         XCTAssertFalse(rig.events[mark...].contains(.stopped))
         XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
+        rig.controller.pause(rampsOut: false)
+    }
+
+    /// The incoming voice reads the splice, which is queued, then fails on
+    /// the sentence after it (J001): the switch drops, as a cancel does, so
+    /// the current sentence reloads in System and the splice's clip in
+    /// Michael never plays under the System chip.
+    func testAFailurePastAQueuedSpliceRestartsInTheSpeakingVoice() async throws {
+        let incoming = SpliceOnlyNeuralEngine()
+        let rig = PlaybackTestRig(sentences: 40, kokoro: FakeNeuralEngine(warm: true),
+                                  extraRoutes: [Self.michael.id: incoming])
+        rig.controller.voiceSelections
+            .sink { [weak self] in self?.selections.append($0.id) }
+            .store(in: &subscriptions)
+        try await startPlaying(rig)
+        await elapse(0.1)   // the look-ahead fills: the splice lies past the cue's System warm-ups
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        let queuedInMichael = await rig.waitUntil(5) {
+            Self.scheduled(rig.events).contains { $0.voiceID == Self.michael.id }
+        }
+        XCTAssertTrue(queuedInMichael, "the splice is queued in Michael")
+        let splice = try XCTUnwrap(incoming.splice)
+        let queuedAt = try XCTUnwrap(rig.events.firstIndex(of: .scheduled(sentence: splice, voiceID: Self.michael.id)))
+
+        let readOn = await rig.waitUntil(8) { rig.controller.currentSentence > splice + 1 }
+        XCTAssertTrue(readOn, "reading went on past the failed sentence")
+        let after = rig.events[(queuedAt + 1)...]
+        let stop = try XCTUnwrap(after.firstIndex(of: .stopped), "the current sentence reloads")
+        let requeued = Self.scheduled(rig.events[(stop + 1)...])
+        XCTAssertTrue(requeued.contains { $0.sentence == splice && $0.voiceID == Self.systemID },
+                      "the splice is read again in System: \(requeued)")
+        XCTAssertTrue(requeued.allSatisfy { $0.voiceID == Self.systemID }, "no Michael after the drop: \(requeued)")
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
+        XCTAssertFalse(rig.announcements.contains("Now reading in Michael"))
+        XCTAssertEqual(selections, [])
         rig.controller.pause(rampsOut: false)
     }
 

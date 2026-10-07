@@ -165,6 +165,82 @@ final class VoiceAuditionTests: XCTestCase {
         XCTAssertEqual(selections, ["test:b"])
     }
 
+    /// Voice B's sample line, held until `release()`: a sample still being
+    /// made.
+    private final class HeldSampleEngine: TtsEngine, @unchecked Sendable {
+        let voices: [TtsVoice] = []   // routed by id (`PlaybackTestRig.RoutingEngine`)
+        private let lock = NSLock()
+        private var held: CheckedContinuation<Void, Never>?
+        private var released = false
+        private var asked = 0
+
+        func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let goesOn: Bool = lock.withLock {
+                    asked += 1
+                    if released { return true }
+                    held = continuation
+                    return false
+                }
+                if goesOn { continuation.resume() }
+            }
+            return .silence(duration: 3, sampleRate: 22_050)
+        }
+
+        var requests: Int { lock.withLock { asked } }
+
+        func release() {
+            let parked: CheckedContinuation<Void, Never>? = lock.withLock {
+                released = true
+                defer { held = nil }
+                return held
+            }
+            parked?.resume()
+        }
+    }
+
+    /// Headphones out during the sample with no book (J003): the line is
+    /// cut at once, so it never carries on from the speaker. Nothing is
+    /// recorded or announced: no book was stopped.
+    func testALostRouteCutsTheSampleWithNoBook() async throws {
+        let long = PlaybackTestRig.RecordingEngine(voices: [PlaybackTestRig.voiceB], clipDuration: 3)
+        let rig = PlaybackTestRig(extraRoutes: [PlaybackTestRig.voiceB.id: long])
+        rig.controller.selectVoice(PlaybackTestRig.voiceB)
+        let sample = PlaybackController.AudioScheduleEvent.scheduled(sentence: -1, voiceID: "test:b")
+        let spoke = await rig.waitUntil { rig.events.contains(sample) }
+        if !spoke, long.requestedTexts == [PlaybackController.sampleLine] {
+            throw XCTSkip("The audio engine can't start in this test host")
+        }
+        XCTAssertTrue(spoke)
+        let mark = rig.events.count
+        let spoken = rig.announcements.count
+
+        rig.audioSession.onRouteRequiresPause?()
+
+        XCTAssertTrue(rig.events[mark...].contains(.stopped), "the sample is dropped at once")
+        XCTAssertEqual(rig.controller.status, .idle)
+        XCTAssertNil(rig.controller.stopped)
+        XCTAssertEqual(rig.announcements.count, spoken)
+    }
+
+    /// Headphones out while the sample is still being made: it never starts.
+    func testALostRouteBeforeTheSampleIsMadeNeverStartsIt() async throws {
+        let held = HeldSampleEngine()
+        defer { held.release() }   // a failed assertion never leaves the line parked
+        let rig = PlaybackTestRig(extraRoutes: [PlaybackTestRig.voiceB.id: held])
+        rig.controller.selectVoice(PlaybackTestRig.voiceB)
+        let asked = await rig.waitUntil { held.requests > 0 }
+        XCTAssertTrue(asked, "the sample line is being made")
+
+        rig.audioSession.onRouteRequiresPause?()
+        held.release()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertFalse(rig.events.contains { Self.sentence(of: $0) == -1 }, "the sample never starts: \(rig.events)")
+        XCTAssertEqual(rig.controller.status, .idle)
+        XCTAssertFalse(rig.controller.isPreparingVoice)
+    }
+
     // MARK: - Re-picking the selected voice
 
     func testReselectingCurrentVoiceWritesNothing() async throws {

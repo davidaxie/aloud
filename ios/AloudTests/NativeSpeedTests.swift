@@ -331,6 +331,34 @@ final class NativeSpeedTests: XCTestCase {
                        "a boundary already crossed changes nothing")
     }
 
+    /// A speed picked while the book sits cued (J002), here by the slider
+    /// (live ticks set the rate, the drag's end picks it): the cue is warmed
+    /// again at the new pace, so Play is served from the cache instead of
+    /// waiting on a fresh synthesis. Nothing plays.
+    @MainActor
+    func testASpeedPickWhileCuedWarmsTheCueAtTheNewPace() async throws {
+        let michael = KokoroVoiceCatalog.defaultVoice
+        let paced = PacedEngine(voices: [michael])
+        let rig = PlaybackTestRig(extraRoutes: [michael.id: paced])
+        rig.controller.voice = michael
+        rig.loadDefault(at: 3)
+        let warmed = await rig.waitUntil(3) { paced.speeds.count >= 2 }
+        XCTAssertTrue(warmed, "the cue and the sentence after it are warmed")
+        XCTAssertEqual(paced.speeds, [1.0, 1.0])
+
+        let newPace = NativeSpeed.tier(for: 1.5, engine: michael.engine)
+        XCTAssertNotEqual(newPace, 1.0, "1.5x is another tier")
+        rig.controller.rate = 1.5          // a live slider tick
+        rig.controller.selectRate(1.5)     // the drag ends
+        let rewarmed = await rig.waitUntil(3) { paced.speeds.filter { $0 == newPace }.count >= 2 }
+        XCTAssertTrue(rewarmed, "the cue is warmed at the new pace: \(paced.speeds)")
+        let key = AudioClipCache.key(voice: michael, skipBrackets: rig.controller.skipBrackets,
+                                     contentHash: rig.content.contentHash, nativeSpeed: newPace,
+                                     sentenceID: 3)
+        XCTAssertNotNil(rig.cache.clip(forKey: key), "Play finds the cue's clip at this speed")
+        XCTAssertEqual(rig.controller.status, .paused, "nothing plays")
+    }
+
     /// A speed pick that changes Kokoro's pace mid-book: later sentences
     /// come at the new pace, and the unit switches to their share once they
     /// play; the queued clips keep theirs.

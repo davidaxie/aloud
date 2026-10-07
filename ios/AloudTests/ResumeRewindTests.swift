@@ -360,6 +360,31 @@ final class ResumeRewindTests: XCTestCase {
         XCTAssertEqual(controller.notice, .backedUp(sentences: 4))
     }
 
+    /// A notice is its book's (J021): A's "Backed up" never reads on B's
+    /// chapter line, though A's clock still runs; reopening A itself keeps it.
+    func testABooksNoticeNeverCarriesToAnotherBook() {
+        let rig = restingRig(at: 5, elapsed: 6 * 60)
+        rig.controller.play()
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 2))
+        rig.controller.load(document: rig.document, content: makeContent(count: 8))
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 2), "re-entering the same book changes nothing")
+
+        let bookB = makeDocument(progressSentence: 5, contentHash: "hash-b")
+        rig.controller.load(document: bookB, content: makeContent(count: 8, contentHash: "hash-b"))
+        XCTAssertNil(rig.controller.notice, "A's notice is not B's")
+        rig.controller.play()   // B's autoplay: no rest of its own
+        XCTAssertNil(rig.controller.notice, "B never moved")
+    }
+
+    /// Unloaded, no book keeps a notice for the next one to inherit.
+    func testUnloadTakesTheNoticeDown() {
+        let rig = restingRig(at: 5, elapsed: 6 * 60)
+        rig.controller.play()
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 2))
+        rig.controller.unload()
+        XCTAssertNil(rig.controller.notice)
+    }
+
     // MARK: - Across app launches
 
     func testCrossLaunchAnchorRewindsOnceThenClears() {

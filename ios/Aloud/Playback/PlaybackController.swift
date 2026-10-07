@@ -677,6 +677,10 @@ final class PlaybackController: ObservableObject {
         if isActive { stampResumeAnchor() }
         endPlaceSession()   // the outgoing book's place, while `document` names it
         audition = nil
+        // The outgoing book's notice ("Backed up 2 sentences") is never the
+        // incoming book's line. Before the flush: a splice it commits names
+        // the voice this book reads in.
+        clearNotice()
         // An interruption's end never starts a book the listener switched to.
         resumeAfterInterruption = false
         isSwitchingDocument = true
@@ -761,6 +765,7 @@ final class PlaybackController: ObservableObject {
         sleepStopAfter = nil
         pendingFadeIn = nil
         clearUndoableJump()
+        clearNotice()   // the book's own: no other book inherits it
         currentSentence = -1
         status = .idle
         resumeAnchor = nil
@@ -1052,6 +1057,10 @@ final class PlaybackController: ObservableObject {
         // Any later stop (headphones gone mid-call, heat) outranks an earlier
         // interruption's resume, even while already paused.
         resumeAfterInterruption = false
+        // No book: the only audio is a voice sample (status stays `.idle`).
+        // It is cut too, heard or still being made, so it never carries on
+        // from the speaker once the headphones are gone.
+        if content == nil { invalidateSchedule(); return }
         guard isActive else { return }
         let auditioning = audition != nil
         pause(rampsOut: false)
@@ -1574,10 +1583,15 @@ final class PlaybackController: ObservableObject {
                     // reads this sentence now, so it asks that voice.
                     guard clipVoice == voiceForSentence(next) else { continue }
                     // The incoming voice can't read: drop the handoff, and the
-                    // current voice reads this sentence and keeps going.
+                    // current voice reads this sentence and keeps going. As
+                    // any cancel: with the splice's clip in the incoming voice
+                    // already on the node (this sentence lies past it), the
+                    // current sentence reloads in this voice, so that clip
+                    // never plays under its chip.
                     if let pending = handoff, clipVoice == pending.voice {
-                        handoff = nil
                         postNotice(.fellBackToSystem)
+                        cancelVoiceHandoff()
+                        guard token == playToken else { return }   // reloaded
                         continue
                     }
                     consecutiveFailures += 1
@@ -1897,6 +1911,19 @@ final class PlaybackController: ObservableObject {
     func selectRate(_ newRate: Double) {
         rate = newRate
         rateSelections.send(rate)   // post-clamp value
+        // The pace tier keys Kokoro's clips (`NativeSpeed`): a cue warmed at
+        // the old tier never stands in, so Play would wait on a fresh
+        // synthesis. Cued with nothing on the node, warm it at this speed
+        // (at the same tier its clips are cached, and nothing is made).
+        // Here, not in `rate`'s didSet: a slider sets the rate every tick
+        // and picks only at the drag's end. From the end, Play starts at
+        // the top (as `load` warms it).
+        guard !isActive, !hasActiveSchedule else { return }
+        if status == .ended {
+            cuePrefetch(from: 0, through: 1, voice: voice, replacingWarmUps: true)
+        } else {
+            cuePrefetch(moved: true)
+        }
     }
 
     /// A deliberate voice pick, app-wide (R7), heard where it is made (R8):
@@ -2694,6 +2721,14 @@ final class PlaybackController: ObservableObject {
             guard !Task.isCancelled, let self, self.notice == newNotice else { return }
             self.notice = nil
         }
+    }
+
+    /// A notice belongs to the book it was posted for: loading another one,
+    /// or none, takes it down with its clock.
+    private func clearNotice() {
+        noticeTask?.cancel()
+        noticeTask = nil
+        notice = nil
     }
 }
 
