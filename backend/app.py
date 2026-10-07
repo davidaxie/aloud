@@ -12,7 +12,9 @@ drops the job if the client hangs up first. Waiting requests are ordered
 
 Only this machine may use the server. Requests must name ``localhost`` or
 ``127.0.0.1`` as their Host (so a DNS-rebinding page is refused), and browsers
-only let pages served from those hosts read the responses.
+only let pages served from those hosts, and Chrome extensions, read the
+responses. /synthesize also refuses a body that is not sent as JSON, since a
+page on any site can POST one without asking first.
 
 Endpoints
     GET  /health      -> engine status, warm flag, queue depth, voice count
@@ -27,8 +29,8 @@ Environment variables:
                      default "localhost,127.0.0.1". Needed only when the server
                      is opened to the LAN on purpose (ALOUD_HOST in run.py).
     ALOUD_CORS_ORIGINS  Comma-separated extra browser origins allowed to call
-                     the API. Pages on localhost or 127.0.0.1, any port, are
-                     always allowed.
+                     the API. Pages on localhost or 127.0.0.1, any port, and
+                     Chrome extensions are always allowed.
 """
 
 from __future__ import annotations
@@ -102,8 +104,11 @@ _DISCONNECT_POLL_SECS = 0.25
 
 # Any page served from this machine, on any port: the Vite dev server (which
 # moves off 5173 when that port is taken) and the built UI on whichever port the
-# backend landed on. A page from anywhere else cannot have one of these origins.
-_LOCAL_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+# backend landed on. Also any Chrome extension: Aloud's own has host permission
+# only for localhost, so against a LAN backend (ALOUD_HOST) its calls are plain
+# CORS requests, and its ID differs per install. A web page cannot have any of
+# these origins.
+_LOCAL_ORIGIN_REGEX = r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|chrome-extension://[a-p]{32})$"
 
 
 def _env_list(name: str, default: list[str]) -> list[str]:
@@ -181,6 +186,8 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
+    # The dev reader is cross-origin and backs off by this header on 429/503.
+    expose_headers=["Retry-After"],
 )
 app.add_middleware(
     TrustedHostMiddleware,
@@ -209,6 +216,14 @@ def _priority_of(req: SynthesizeRequest) -> str:
     speculative work.
     """
     return PRIORITY_PREFETCH if req.priority == PRIORITY_PREFETCH else PRIORITY_NOW
+
+
+def _is_json(content_type: str | None) -> bool:
+    """True for ``application/json`` or ``application/*+json``, parameters ignored."""
+    media = (content_type or "").split(";", 1)[0].strip().lower()
+    if media == "application/json":
+        return True
+    return media.startswith("application/") and media.endswith("+json")
 
 
 def _error(
@@ -304,6 +319,9 @@ async def synthesize(req: SynthesizeRequest, request: Request) -> Response:
       the client skips it.
     - 413 when the text is over ``MAX_TEXT_CHARS`` or the body is over
       ``MAX_BODY_BYTES`` — **not** retryable.
+    - 415 when the body is not sent as JSON — **not** retryable. Both clients
+      send ``Content-Type: application/json``; a cross-site page can only skip
+      the CORS preflight by leaving it out.
     - 429 + ``Retry-After: 1`` when the prefetch backlog is full.
     - 500 on synthesis failure.
     - 503 + ``Retry-After: 2`` when the model is not loaded.
@@ -314,6 +332,13 @@ async def synthesize(req: SynthesizeRequest, request: Request) -> Response:
     The call runs on the single synthesis worker. If the client hangs up while
     the job is still waiting, the job is dropped and never synthesized.
     """
+    # FastAPI 0.132+ already refuses an untyped body, but requirements.txt allows
+    # older releases that parse it as JSON, so do not rely on the default.
+    if not _is_json(request.headers.get("content-type")):
+        return _error(
+            415, "request body must be sent as application/json", retryable=False, req=req
+        )
+
     # Validate text up front so we return a clean 400 rather than a 500.
     if not req.text or not req.text.strip():
         return _error(400, "text must be a non-empty string", retryable=False, req=req)

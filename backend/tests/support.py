@@ -112,17 +112,21 @@ def call(
     host: str = "localhost:8000",
     chunks: list[bytes] | None = None,
     hang_up_after_body: bool = False,
+    content_type: str | None = "application/json",
 ) -> Reply:
     """Send one request through ``app`` and collect the response.
 
     ``chunks`` streams the body in pieces with no Content-Length, like a chunked
     upload. ``hang_up_after_body`` makes the client disconnect as soon as the
     body is sent; otherwise it stays connected until the response arrives.
+    ``content_type`` is the Content-Type a POST carries; None sends none, the
+    way a cross-site page's simple request can.
     """
     pieces = chunks if chunks is not None else [body]
     header_list = [(b"host", host.encode())]
     if method in ("POST", "PUT", "PATCH"):
-        headers = {"content-type": "application/json", **(headers or {})}
+        if content_type is not None:
+            headers = {"content-type": content_type, **(headers or {})}
         if chunks is None:
             header_list.append((b"content-length", str(len(body)).encode()))
     for key, value in (headers or {}).items():

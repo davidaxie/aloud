@@ -24,6 +24,9 @@ Environment variables:
                      second backend alongside the first without a port clash.
                      Anything that is not a port number is ignored with a warning.
     ALOUD_QUEUE_MAX  Prefetch queue bound, read by ``app`` (default 8).
+
+``run.py --print-port`` prints the port it would serve on and exits, so run.sh
+waits on the same port and points the reader at it.
 """
 
 from __future__ import annotations
@@ -59,7 +62,11 @@ def preflight(port: int) -> int | None:
     return None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args == ["--print-port"]:
+        print(PORT)
+        return 0
     code = preflight(PORT)
     if code is not None:
         return code

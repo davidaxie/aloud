@@ -11,7 +11,9 @@ import time
 import unittest
 from unittest import mock
 
+from fastapi import FastAPI
 from support import WARMUP_TEXT, call, load_app, make_queue, silent_synth, synth_body
+from synth_queue import QueueFullError
 
 
 class RecordingSynth:
@@ -153,6 +155,105 @@ class LocalOnlyTests(unittest.TestCase):
             reply = call(self.app_module.app, "GET", "/health", host=host)
             self.assertEqual(reply.status, 200, host)
             self.assertEqual(reply.json()["engine"], "kokoro")
+
+    def test_extension_origin_is_allowed(self) -> None:
+        # G011: the extension has host permission only for localhost, so against
+        # a LAN backend its service worker's calls are ordinary CORS requests.
+        origin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+        reply = self.preflight(origin)
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.headers.get("access-control-allow-origin"), origin)
+        for path in ("/health", "/voices"):
+            reply = call(self.app_module.app, "GET", path, headers={"origin": origin})
+            self.assertEqual(reply.headers.get("access-control-allow-origin"), origin, path)
+
+    def test_extension_lookalike_origins_are_refused(self) -> None:
+        for origin in (
+            "chrome-extension://short",
+            "chrome-extension://qrstuvwxyzqrstuvwxyzqrstuvwxyzqr",
+            "chrome-extension://abcdefghijklmnopabcdefghijklmnop.attacker.example",
+            "https://chrome-extension.example",
+        ):
+            reply = self.preflight(origin)
+            self.assertNotIn("access-control-allow-origin", reply.headers, origin)
+
+    def test_cross_origin_page_can_read_retry_after(self) -> None:
+        # G031: the dev reader on :5173 is cross-origin, and Retry-After is not a
+        # header a page may read unless the server exposes it.
+        full = mock.patch.object(self.queue, "enqueue", side_effect=QueueFullError(8, 8))
+        with full:
+            reply = call(
+                self.app_module.app,
+                "POST",
+                "/synthesize",
+                body=synth_body("Later.", priority="prefetch"),
+                headers={"origin": "http://localhost:5173"},
+            )
+        self.assertEqual(reply.status, 429)
+        self.assertEqual(reply.headers.get("retry-after"), "1")
+        exposed = reply.headers.get("access-control-expose-headers", "")
+        self.assertIn("retry-after", [h.strip().lower() for h in exposed.split(",")])
+
+
+class ContentTypeTests(unittest.TestCase):
+    """G030: a body not declared as JSON never reaches the worker.
+
+    A cross-site page can POST with no Content-Type (or text/plain) and no
+    preflight. FastAPI 0.132 and later refuse that body by default, but the
+    floor in requirements.txt is older, so the handler checks for itself.
+    """
+
+    def setUp(self) -> None:
+        self.app_module = load_app()
+        self.synth = RecordingSynth()
+        self.queue = make_queue(self.synth)
+        patcher = mock.patch.object(self.app_module, "synth_queue", self.queue)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.queue.stop)
+
+    def lenient_app(self):
+        """The real handler on an app that parses an untyped body as JSON, like FastAPI < 0.132."""
+        lenient = FastAPI(strict_content_type=False)
+        lenient.post("/synthesize")(self.app_module.synthesize)
+        return lenient
+
+    def test_untyped_body_is_refused_even_when_the_framework_parses_it(self) -> None:
+        reply = call(
+            self.lenient_app(),
+            "POST",
+            "/synthesize",
+            body=synth_body("x" * 2000),
+            headers={"origin": "https://any-site.example"},
+            content_type=None,
+        )
+        self.assertEqual(reply.status, 415)
+        self.assertIs(reply.json()["retryable"], False)
+        self.assertEqual(self.synth.calls, [])
+
+    def test_untyped_body_never_reaches_the_worker(self) -> None:
+        for content_type in (None, "text/plain"):
+            reply = call(
+                self.app_module.app,
+                "POST",
+                "/synthesize",
+                body=synth_body("Hello."),
+                content_type=content_type,
+            )
+            self.assertIn(reply.status, (415, 422), content_type)
+        self.assertEqual(self.synth.calls, [])
+
+    def test_json_with_a_charset_is_served(self) -> None:
+        for app in (self.app_module.app, self.lenient_app()):
+            reply = call(
+                app,
+                "POST",
+                "/synthesize",
+                body=synth_body("Hello."),
+                content_type="application/json; charset=utf-8",
+            )
+            self.assertEqual(reply.status, 200)
+        self.assertEqual(self.synth.calls, ["Hello.", "Hello."])
 
 
 class AbandonedRequestTests(unittest.TestCase):
