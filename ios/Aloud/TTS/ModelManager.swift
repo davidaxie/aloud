@@ -1062,9 +1062,14 @@ final class ModelManager: ObservableObject {
     }
 
     private func setInFlight(progress: Double) {
-        let next = Self.inFlightState(progress: progress, allowsCellular: allowsCellularThisRun,
+        var next = Self.inFlightState(progress: progress, allowsCellular: allowsCellularThisRun,
                                       wifiAvailable: pathSource.allowsWiFiOnlyTransfer,
                                       networkAvailable: Self.networkAvailable(on: pathSource))
+        // With every file staged the run only hashes them, which needs no
+        // network: it never waits, nor says it does (K026).
+        if case .waitingForWiFi = next, stagedBytes >= Self.totalExpectedBytes {
+            next = .downloading(progress)
+        }
         let wasWaiting: Bool
         if case .waitingForWiFi = state { wasWaiting = true } else { wasWaiting = false }
         state = next

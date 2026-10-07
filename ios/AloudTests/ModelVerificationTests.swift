@@ -354,7 +354,8 @@ final class ModelVerificationTests: XCTestCase {
     /// F021: a run allowed onto cellular with no network at all waits, and
     /// says it waits for a connection rather than for Wi-Fi.
     func testACellularRunWithNoNetworkWaits() async throws {
-        try writePinnedSizes(in: staging)
+        // voices.bin is left to fetch: a run that only hashes never waits.
+        try writeSparse(staging.appendingPathComponent(model.name), size: model.expectedBytes)
         let manager = makeManager(CountingHasher(), path: FixedNetworkPath.unsatisfied)
 
         manager.startDownload(allowingCellular: true)
@@ -364,13 +365,18 @@ final class ModelVerificationTests: XCTestCase {
         XCTAssertFalse(manager.canContinueOnCellular, "Already allowed: nothing to offer")
 
         await drain(manager)
-        XCTAssertEqual(manager.state, .installed, "Staged files hash offline")
+        // voices.bin would need the network, which this manager never uses.
+        XCTAssertEqual(manager.state, .failed(.interrupted))
+        XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForConnection),
+                                       NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.interrupted))],
+                       "Waiting said once, not again as the staged file hashed")
     }
 
     /// F023: a Wi-Fi-only run waiting on a costly network offers the
     /// cellular prompt again, and confirming moves the run there.
     func testAWaitingWiFiOnlyRunCanContinueOnCellular() async throws {
-        try writePinnedSizes(in: staging)
+        // voices.bin is left to fetch: a run that only hashes never waits.
+        try writeSparse(staging.appendingPathComponent(model.name), size: model.expectedBytes)
         let manager = makeManager(CountingHasher(), path: FixedNetworkPath(isExpensiveOrConstrained: true))
 
         manager.startDownload()
@@ -388,8 +394,10 @@ final class ModelVerificationTests: XCTestCase {
                        "A relaunch reattaches to the cellular session")
 
         await drain(manager)
-        XCTAssertEqual(manager.state, .installed)
-        XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi)])
+        // voices.bin would need the network, which this manager never uses.
+        XCTAssertEqual(manager.state, .failed(.interrupted))
+        XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingForWiFi),
+                                       NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(.interrupted))])
     }
 
     // MARK: - Launch
@@ -468,7 +476,8 @@ final class ModelVerificationTests: XCTestCase {
     /// Hotspot) holds a Wi-Fi-only run back, but Wi-Fi isn't missing: the
     /// line names what holds it, and the prompt never says cellular.
     func testACostlyWiFiIsNamedNeverCalledCellular() async throws {
-        try writePinnedSizes(in: staging)
+        // voices.bin is left to fetch: a run that only hashes never waits.
+        try writeSparse(staging.appendingPathComponent(model.name), size: model.expectedBytes)
         let manager = makeManager(CountingHasher(),
                                   path: FixedNetworkPath(isExpensiveOrConstrained: true, usesCellular: false))
 
@@ -497,6 +506,33 @@ final class ModelVerificationTests: XCTestCase {
         await drain(manager)
         XCTAssertEqual(manager.state, .installed)
         XCTAssertEqual(Set(hasher.reads), Set(ModelManager.remoteFiles.map(\.name)))
+    }
+
+    /// K026: a run that only hashes staged files needs no network, so on a
+    /// cellular path, a costly Wi-Fi (the Mac's only costly path) or none
+    /// at all it never shows or says it waits, nor offers cellular.
+    func testARunThatOnlyHashesNeverWaits() async throws {
+        let runs: [(path: FixedNetworkPath, allowingCellular: Bool)] = [
+            (FixedNetworkPath(isExpensiveOrConstrained: true), false),
+            (FixedNetworkPath(isExpensiveOrConstrained: true, usesCellular: false), false),
+            (FixedNetworkPath.unsatisfied, false),
+            (FixedNetworkPath.unsatisfied, true),
+        ]
+        for (index, run) in runs.enumerated() {
+            try writePinnedSizes(in: staging)
+            let manager = makeManager(CountingHasher(), path: run.path)
+            if run.allowingCellular {
+                manager.startDownload(allowingCellular: true)
+            } else {
+                XCTAssertEqual(manager.requestDownload(), .started, "run \(index)")
+            }
+            XCTAssertEqual(manager.state, .downloading(0), "run \(index): hashing, never waiting")
+            XCTAssertFalse(manager.canContinueOnCellular, "run \(index)")
+            await drain(manager)
+            XCTAssertEqual(manager.state, .installed, "run \(index)")
+            XCTAssertEqual(announcements, [], "run \(index): nothing said")
+            manager.deleteModel()
+        }
     }
 
     /// J007: with model.onnx staged, the prompt names the voices.bin still

@@ -37,8 +37,9 @@ final class ReaderNSTextView: NSTextView {
     /// The mouse button came up after a mouse-down on the page: a follow
     /// the held button kept back can run.
     var onMouseReleased: (@MainActor () -> Void)?
-    /// A Force Click or Look Up's own gesture on the page: it reads the
-    /// word, so the click it rides on never plays (J022).
+    /// Look Up's own gesture on the page (a Force Click or a three-finger
+    /// tap, as set): it reads the word, so the click it rides on never
+    /// plays (J022).
     var onLookUpGesture: (@MainActor () -> Void)?
     /// The sentence under a point (Play from Here), nil off the text.
     var sentenceAtPoint: (@MainActor (CGPoint) -> Int?)?
@@ -136,15 +137,10 @@ final class ReaderNSTextView: NSTextView {
         if armedClickCount > 0 { finishClick(at: event) }
     }
 
-    /// A Force Click (pressure past its first stage) looks up the word
-    /// under it. Every click on a Force Touch trackpad sends stage 1, so
-    /// only stage 2 counts.
-    override func pressureChange(with event: NSEvent) {
-        super.pressureChange(with: event)
-        if event.stage >= 2 { onLookUpGesture?() }
-    }
-
-    /// Look Up's gesture (a Force Click, or a three-finger tap).
+    /// Look Up's gesture, whichever the trackpad settings make it (a Force
+    /// Click, or a three-finger tap). Never a Force Click's pressure alone:
+    /// with Look Up on another gesture, that deep click shows no definition,
+    /// so it plays as any click does (K025).
     override func quickLook(with event: NSEvent) {
         onLookUpGesture?()
         super.quickLook(with: event)

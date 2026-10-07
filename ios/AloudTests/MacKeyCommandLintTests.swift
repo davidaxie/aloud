@@ -120,6 +120,22 @@ final class MacKeyCommandLintTests: XCTestCase {
         }
     }
 
+    /// File ▸ Close follows the key window (K027): the menus refresh when a
+    /// window becomes or stops being key, so Close greys out once the main
+    /// window is closed or minimized, and comes back with a window. Posting
+    /// those notifications in the Mac host would reach AppKit's own
+    /// observers, so this pins them; the rule is in MacCommandActionsTests.
+    func testTheMenusFollowTheKeyWindow() throws {
+        let actions = SwiftLiterals.code(in: try Self.mac("Commands/MacCommandActions.swift"))
+        let observe = try XCTUnwrap(actions.range(of: "private func observe() {"))
+        let merge = try XCTUnwrap(actions.range(of: "Publishers.MergeMany(changes)",
+                                                range: observe.upperBound..<actions.endIndex))
+        let sources = actions[observe.upperBound..<merge.lowerBound]
+        XCTAssertTrue(sources.contains("publisher(for: NSWindow.didBecomeKeyNotification)"), "a window became key")
+        XCTAssertTrue(sources.contains("publisher(for: NSWindow.didResignKeyNotification)"), "closed or minimized")
+        XCTAssertTrue(actions.contains("case .closeWindow: return closableWindow != nil"), "Close needs a window to close")
+    }
+
     // MARK: - The tests press the table's keys
 
     func testTheUITestKeysAreTheTablesKeys() throws {

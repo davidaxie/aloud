@@ -327,6 +327,33 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertNil(MacCommandActions.windowToClose(key: main, modal: buttonless), "behind a modal panel")
     }
 
+    /// File ▸ Close is off with no window ⌘W could close: the main window
+    /// closed or minimized while a book plays, Aloud still in front. It was
+    /// always on, and then did nothing (K027). Nothing here is shown.
+    func testCloseIsOffWithNoWindowToClose() {
+        let frame = NSRect(x: 0, y: 0, width: 40, height: 30)
+        let main = NSWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        let buttonless = NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: true)
+        for window in [main, buttonless] { window.isReleasedWhenClosed = false }
+        let (rig, base) = makeActions()
+        rig.loadDefault()
+        var actions = base
+
+        actions.windows = { (nil, nil) }
+        XCTAssertFalse(actions.isEnabled(.closeWindow), "no key window, nothing to close")
+        XCTAssertFalse(actions.perform(.closeWindow))
+        XCTAssertFalse(MacCommandState(actions: actions).snapshot.isEnabled(.closeWindow), "the menu item greys out")
+        XCTAssertTrue(actions.isEnabled(.forward15), "playback's commands play on")
+        actions.windows = { (buttonless, nil) }
+        XCTAssertFalse(actions.isEnabled(.closeWindow), "no close button")
+        actions.windows = { (main, buttonless) }
+        XCTAssertFalse(actions.isEnabled(.closeWindow), "behind a modal panel")
+
+        actions.windows = { (main, nil) }
+        XCTAssertTrue(actions.isEnabled(.closeWindow))
+        XCTAssertTrue(MacCommandState(actions: actions).snapshot.isEnabled(.closeWindow))
+    }
+
     /// The menu snapshot follows an alert opening and closing.
     func testTheMenuSnapshotFollowsARootAlert() async throws {
         let (_, actions) = makeActions()

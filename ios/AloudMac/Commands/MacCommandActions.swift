@@ -51,6 +51,8 @@ struct MacCommandActions {
     var followVoice: (() -> Void)?
     /// The focused Library card's Delete…, while one has focus.
     var deleteBook: (() -> Void)?
+    /// The key window and any modal panel, where ⌘W looks. Tests replace it.
+    var windows: @MainActor () -> (key: NSWindow?, modal: NSWindow?) = { (NSApp.keyWindow, NSApp.modalWindow) }
     /// A speed step is spoken (M10); muted processes only record it.
     var announce: (String) -> Void = { PlaybackController.postAnnouncement($0, muted: UITestHooks.muteAudio) }
 
@@ -95,7 +97,10 @@ struct MacCommandActions {
         case .biggerText: return Self.steppedTextSize(from: textSizeStep, bigger: true) != nil
         case .smallerText: return Self.steppedTextSize(from: textSizeStep, bigger: false) != nil
         case .back: return !router.path.isEmpty
-        case .voiceAndSpeed, .appearance, .addFromFiles, .addClassic, .closeWindow: return true
+        case .voiceAndSpeed, .appearance, .addFromFiles, .addClassic: return true
+        // Off with no window ⌘W could close (the main window closed or
+        // minimized while a book plays), as AppKit's own Close is (K027).
+        case .closeWindow: return closableWindow != nil
         case .settings, .fullScreen, .minimize, .hide, .quit: return false   // AppKit's own items
         }
     }
@@ -146,7 +151,7 @@ struct MacCommandActions {
             ui.searchFocus = .classics
             focusClassicsSearchOn14()
         case .closeWindow:
-            guard let window = Self.windowToClose(key: NSApp.keyWindow, modal: NSApp.modalWindow) else { return false }
+            guard let window = closableWindow else { return false }
             window.performClose(nil)
         case .settings, .fullScreen, .minimize, .hide, .quit: return false
         }
@@ -219,6 +224,12 @@ struct MacCommandActions {
         let close = #selector(NSWindow.performClose(_:))
         let closesItself = type(of: key).instanceMethod(for: close) != NSWindow.instanceMethod(for: close)
         return key.styleMask.contains(.closable) || closesItself ? key : nil
+    }
+
+    /// The window ⌘W closes now, if any.
+    private var closableWindow: NSWindow? {
+        let open = windows()
+        return Self.windowToClose(key: open.key, modal: open.modal)
     }
 
     /// Rename, the Delete confirmation or its failure is up over the Library.
@@ -507,6 +518,11 @@ final class MacCommandState: ObservableObject {
             actions.continuePlayback.$pendingDocumentID.map { _ in () }.eraseToAnyPublisher(),
             // The text size, written by the Aa popover, Settings or ⌘+.
             NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+                .map { _ in () }.eraseToAnyPublisher(),
+            // Close follows the key window: closed, minimized or another.
+            NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)
+                .map { _ in () }.eraseToAnyPublisher(),
+            NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)
                 .map { _ in () }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(changes)

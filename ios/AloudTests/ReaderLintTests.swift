@@ -198,21 +198,25 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertTrue(panel.contains("} else if cursorUnheard {"))
     }
 
-    /// The page's own Force Click and Look Up events reach the coordinator,
-    /// which drops the click's play (J022). Neither event can be built in a
-    /// test, so this pins the overrides; the rule is in ReaderColumnViewTests.
-    /// Here because Mac-hosted tests can't read the checkout.
-    func testTheMacPageHearsAForceClickAndLookUp() throws {
+    /// The page's own Look Up event reaches the coordinator, which drops
+    /// the click's play (J022). Only AppKit's Look Up counts, never a Force
+    /// Click's pressure alone: with Look Up set to a three-finger tap (or
+    /// off), a deep click shows no definition, so it must still play
+    /// (K025). The event can't be built in a test, so this pins the
+    /// override; the rule is in ReaderColumnViewTests. Here because
+    /// Mac-hosted tests can't read the checkout.
+    func testTheMacPageHearsLookUpNeverPressureAlone() throws {
         let path = "Reader/ReaderNSTextView.swift"
-        let page = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [path])[path])
+        let pages = try SourceTree.sources(in: SourceTree.macRoot, only: [path])
+        let page = try XCTUnwrap(pages[path])
         let code = codeLines(page).joined(separator: "\n")
-        let pressure = try XCTUnwrap(code.range(of: "override func pressureChange(with event: NSEvent) {"))
-        XCTAssertTrue(code[pressure.upperBound...].prefix(200).contains("if event.stage >= 2 { onLookUpGesture?() }"),
-                      "a Force Click's second stage, never every click's first")
+        XCTAssertNil(code.range(of: "func pressureChange("), "a deep click is not a Look Up")
+        XCTAssertNil(code.range(of: "event.stage"), "no pressure stage stands in for Look Up")
         let quickLook = try XCTUnwrap(code.range(of: "override func quickLook(with event: NSEvent) {"))
         XCTAssertTrue(code[quickLook.upperBound...].prefix(120).contains("onLookUpGesture?()"))
         let column = "Reader/ReaderColumnView.swift"
-        let coordinator = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [column])[column])
+        let columns = try SourceTree.sources(in: SourceTree.macRoot, only: [column])
+        let coordinator = try XCTUnwrap(columns[column])
         XCTAssertTrue(coordinator.contains("textView.onLookUpGesture = { [weak self] in self?.lookUpGestureArrived() }"))
     }
 
