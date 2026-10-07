@@ -188,6 +188,25 @@ test('J040: a word spelled with roman letters is not a numeral', () => {
   kept(pages).forEach((lines, idx) => assert.equal(lines[0], words[idx]))
 })
 
+// K002: the J040 size test measured a numeral against its own page's text, so
+// a page set in small type kept the body-size folio it shares with its
+// neighbours, and read it aloud.
+test('K002: a folio on a page set in small type still goes', () => {
+  const pages = [16, 17, 18].map((page) => {
+    const size = page === 17 ? 8 : 10 // a code listing on page 17
+    const lines = Array.from({ length: 40 }, (_, k) => ({
+      text: `the ${LETTERS[k % 26]} story goes on, page ${page} line ${k}`,
+      y: 740 - k * (size + 2),
+      height: size,
+    }))
+    return [...lines, { text: String(page), y: 40, height: 10 }]
+  })
+  kept(pages).forEach((lines, idx) => assert.ok(!lines.includes(String(idx + 16)), `page ${idx + 16}`))
+  // A chapter's number set larger than the book's text still stays.
+  pages[1].unshift({ text: '7', y: 760, height: 24 })
+  assert.equal(kept(pages)[1][0], '7')
+})
+
 test('J040: digit folios still go at the head of one page and the foot of the next, or alone', () => {
   // The chapter's opening page drops its folio to the foot; the others carry it at the head.
   const pages = Array.from({ length: 6 }, (_, idx) => {

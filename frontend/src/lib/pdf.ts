@@ -15,17 +15,8 @@ import { chunkParagraph } from './chunker'
 import { dropStrayJoiners } from './joiners'
 import { bundledCMapReaderFactory } from './pdfCMaps'
 import { withPdfDocument } from './pdfTask'
-import {
-  type Block,
-  type Line,
-  appendLine,
-  appendPageParagraphs,
-  folioLines,
-  runningHeadersByPage,
-  stripNoise,
-  typicalGap,
-} from './pdfHeaders'
-import { type Piece, pieceOf, readingOrderLines } from './pdfStitch'
+import { type Block, type Line, appendLine, appendPageParagraphs, typicalGap } from './pdfHeaders'
+import { type Piece, pieceOf, readingOrderPages } from './pdfStitch'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -226,8 +217,8 @@ async function parseDocument(
   const rawTitle = resolveTitle(infoTitle, file)
   const title = normalizeText(rawTitle) || rawTitle
 
-  // ── Pass 1: extract lines per page (needed before header detection). ──
-  const pageLines: Line[][] = []
+  // ── Pass 1: extract each page's text runs (needed before header detection). ──
+  const pagePieces: Piece[][] = []
   for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
     if (signal?.aborted) throw new DOMException('The PDF parse was abandoned.', 'AbortError')
     const page = await pdf.getPage(pageNum)
@@ -245,22 +236,21 @@ async function parseDocument(
       pieces.push(pieceOf({ ...item, str, transform: item.transform as number[] }, vertical))
     }
 
-    pageLines.push(readingOrderLines(pieces))
+    pagePieces.push(pieces)
     page.cleanup() // free page resources as we go
     onProgress?.(pageNum / pageCount)
   }
 
-  // ── Detect repeating headers/footers: across the whole document, and per
-  //    page for the ones that run through a chapter or alternate. ──
-  const running = runningHeadersByPage(pageLines)
-  // ...and the bare numerals that are page numbers, not chapter headings.
-  const folios = folioLines(pageLines)
+  // ── Strip repeating headers/footers (across the whole document, and per
+  //    page for the ones that run through a chapter or alternate) and the
+  //    bare numerals that are page numbers, then read each page's lines in
+  //    order, column by column. ──
+  const pageLines = readingOrderPages(pagePieces)
 
-  // ── Pass 2: strip noise, fold into paragraphs, stitch across pages. ──
+  // ── Pass 2: fold into paragraphs, stitch across pages. ──
   const blocks: Block[] = []
   pageLines.forEach((lines, idx) => {
-    const cleaned = stripNoise(lines, running[idx], folios[idx])
-    const paras = linesToParagraphs(cleaned)
+    const paras = linesToParagraphs(lines)
     appendPageParagraphs(blocks, paras, idx + 1)
   })
 

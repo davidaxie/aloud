@@ -14,7 +14,7 @@ import {
 } from '../src/lib/pdfHeaders.ts'
 import type { Piece } from '../src/lib/pdfStitch.ts'
 
-const { buildLines, pieceOf, readingOrderLines } = await import('../src/lib/pdfStitch.ts')
+const { buildLines, pieceOf, readingOrderLines, readingOrderPages } = await import('../src/lib/pdfStitch.ts')
 
 /** The previous page's last paragraph, then the next page's first one. */
 function stitched(previous: string, next: string): Block[] {
@@ -63,6 +63,21 @@ test('a line wrap inside Chinese or Japanese joins with no space; other scripts 
   assert.equal(appendLine('우리는 오늘', '공원에 갔다.'), '우리는 오늘 공원에 갔다.')
   assert.equal(appendLine('the cat', 'sat'), 'the cat sat')
   assert.equal(appendLine('inter-', 'national'), 'international')
+})
+
+// K006 (web twin of J032): a suspended hyphen that wrapped at a line end lost
+// its hyphen and its space, so two words were read as one.
+test('K006: a hyphen wrapped before and, or, nor is a suspended one and stays', () => {
+  assert.equal(appendLine('the short-', 'and long-term effects'), 'the short- and long-term effects')
+  assert.equal(appendLine('a two-', 'or three-day trip'), 'a two- or three-day trip')
+  assert.equal(appendLine('neither pre-', 'nor post-war'), 'neither pre- nor post-war')
+  assert.deepEqual(texts(stitched('Effects were seen in both the short-', 'and long-term groups.')), [
+    'Effects were seen in both the short- and long-term groups.',
+  ])
+  // A word broken at the wrap still rejoins, a soft hyphen always.
+  assert.equal(appendLine('the re-', 'order queue'), 'the reorder queue')
+  assert.equal(appendLine('a bright or-', 'ange'), 'a bright orange')
+  assert.equal(appendLine('Ferdin­', 'and rode on'), 'Ferdinand rode on')
 })
 
 test('Han outside the Basic Multilingual Plane counts as Chinese', () => {
@@ -146,6 +161,40 @@ test('J035: a title, a header and a centred folio stay where they are around the
   ])
 })
 
+// K000: a header row two lines above a two-column body was split with the
+// columns, so its right-hand part (here the folio) opened the right column,
+// mid-page, where the noise pass never looks.
+test('K000: a running head and folio by a two-column body go before the columns are read', () => {
+  // Each page's text differs, as a book's does.
+  const trees = ['oak', 'elm', 'ash', 'yew']
+  const left = (page: number) => LEFT.map((text) => `${trees[page]} ${text}`)
+  const right = (page: number) => RIGHT.map((text) => `${trees[page]} ${text}`)
+  const headed = trees.map((_, page) => [
+    run('Journal of Things', 72, 724, 85),
+    run(String(page + 16), 528, 724, 10),
+    ...columns(left(page), right(page), 700),
+  ])
+  readingOrderPages(headed).forEach((lines, page) => {
+    assert.deepEqual(lines.map((l) => l.text), [...left(page), ...right(page)])
+  })
+  // A folio at the foot, under the left column.
+  const footed = trees.map((_, page) => [
+    ...columns(left(page), right(page), 700),
+    run(String(page + 16), 72, 616, 10),
+  ])
+  readingOrderPages(footed).forEach((lines, page) => {
+    assert.deepEqual(lines.map((l) => l.text), [...left(page), ...right(page)])
+  })
+})
+
+// K012 (web twin): Arabic and Hebrew columns run from the right, but the left
+// one was always read first.
+test('K012: a right-to-left two-column page reads its right column first', () => {
+  const first = Array.from({ length: 6 }, (_, i) => `הטור הראשון של המאמר, שורה ${i + 1}`)
+  const second = Array.from({ length: 6 }, (_, i) => `הטור השני של המאמר, שורה ${i + 1}`)
+  assert.deepEqual(lineTexts(columns(second, first, 700)), [...first, ...second])
+})
+
 test('J035: a caption set across both columns splits the page into bands, each read column by column', () => {
   const caption = 'Figure 1: The fox and the method, side by side.'
   const lower = (text: string) => text.replace(/the/g, 'a')
@@ -211,11 +260,11 @@ test('J037: vertical Japanese reads column by column from the right', () => {
     pieceOf(item(str, [10, 0, 0, 10, x, y], 10, [...str].length * 10), true)
   const page = [col('どこで生れたか', 460), col('名前はまだ無い。', 480), col('吾輩は', 500), col('猫である。', 500, 670)]
   assert.deepEqual(lineTexts(page), ['吾輩は猫である。', '名前はまだ無い。', 'どこで生れたか'])
-  // A level folio at the foot of the page follows the columns, a paragraph
-  // gap (1.6 lines, in ./pdf) apart.
+  // A level folio at the foot of the page comes before the columns (K015), a
+  // paragraph gap (1.6 lines, in ./pdf) apart.
   const lines = readingOrderLines([...page, pieceOf(item('12', [9, 0, 0, 9, 300, 40], 10, 9), false)])
-  assert.deepEqual(lines.map((l) => l.text), ['吾輩は猫である。', '名前はまだ無い。', 'どこで生れたか', '12'])
-  assert.ok(lines[2].y - lines[3].y > 1.6 * (lines[1].y - lines[2].y))
+  assert.deepEqual(lines.map((l) => l.text), ['12', '吾輩は猫である。', '名前はまだ無い。', 'どこで生れたか'])
+  assert.ok(lines[0].y - lines[1].y > 1.6 * (lines[1].y - lines[2].y))
 })
 
 test('J037: a landscape page reads its sideways lines in order', () => {
@@ -235,12 +284,25 @@ test('J037: a landscape page reads its sideways lines in order', () => {
   assert.deepEqual(lineTexts(page), text)
 })
 
-test('J037: a sideways stamp in the margin no longer splices into a body line', () => {
-  const body = PROSE.slice(0, 6).flatMap((text, i) => words(text, 700 - i * 13))
+// K015: the stamp followed the page as its last paragraph, so the next page's
+// first words were stitched onto the stamp, not onto the sentence they finish.
+test('J037/K015: a sideways stamp in the margin reads before the page, as its own paragraph', () => {
+  const tail = 'and in the end the model achieves'
+  const body = [...PROSE.slice(0, 6), tail].flatMap((text, i) => words(text, 700 - i * 13, 72, i === 6 ? null : 540))
   const stamp = 'arXiv:2601.00001v1 [cs.CL] 1 Jan 2026'
   // It starts level with the fourth line, so it used to open that line.
   const page = [...body, pieceOf(item(stamp, [0, 10, -10, 0, 30, 661], stamp.length * 5, 10), false)]
-  assert.deepEqual(lineTexts(page), [...PROSE.slice(0, 6), stamp])
+  const lines = readingOrderLines(page)
+  assert.deepEqual(lines.map((l) => l.text), [stamp, ...PROSE.slice(0, 6), tail])
+  assert.ok(lines[0].y - lines[1].y > 1.6 * (lines[1].y - lines[2].y))
+  // So the page's last paragraph is its text, and the next page goes on from it.
+  const blocks: Block[] = [
+    { text: stamp, page: 1 },
+    { text: lines.slice(1).map((l) => l.text).join(' '), page: 1 },
+  ]
+  appendPageParagraphs(blocks, ['state of the art results.'], 2)
+  assert.ok(blocks[1].text.endsWith(`${tail} state of the art results.`))
+  assert.equal(blocks.length, 2)
 })
 
 test('J037: pieceOf keeps a level run as it was', () => {

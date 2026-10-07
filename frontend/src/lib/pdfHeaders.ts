@@ -61,12 +61,14 @@ export const FOLIO_REACH = 2
  * chapter stays (H047). Digits may sit at the head of one page and the foot of
  * the next; where no page nearby shows a number (a lone page, plates between)
  * the page's outermost line still is one. And a numeral set larger than the
- * page's text is a heading ("7", "1984"), never a folio (J040).
+ * document's text is a heading ("7", "1984"), never a folio (J040). The
+ * document's, not the page's: a page set in small type (a code listing, a
+ * table) still loses the folio it shares with its neighbours (K002).
  */
 export function folioLines(pageLines: Line[][]): Set<number>[] {
+  const size = median(pageLines.flatMap((lines) => lines.map((l) => l.height)))
   const numerals = pageLines.map((lines) => {
     const n = lines.length
-    const size = median(lines.map((l) => l.height))
     return [...new Set([0, 1, n - 2, n - 1])]
       .filter((index) => index >= 0 && index < n)
       .flatMap((index) => {
@@ -261,6 +263,9 @@ export function continuesUnspacedCJK(previous: string, next: string): boolean {
   return ENDS_UNSPACED_CJK.test(previous.replace(/\s+$/, '')) && STARTS_UNSPACED_CJK.test(next)
 }
 
+/** The words a suspended hyphen goes on to: "short- and", "two- or", "pre- nor". */
+const SUSPENDED_HYPHEN_FOLLOWER = /^(?:and|or|nor)(?![\p{L}\p{N}])/u
+
 /**
  * Append a wrapped line to the running paragraph buffer, de-hyphenating words
  * broken across the line break: "inter-" + "national" → "international".
@@ -270,11 +275,14 @@ export function continuesUnspacedCJK(previous: string, next: string): boolean {
  * The trailing hyphen may be a normal hyphen-minus (U+002D) OR a soft hyphen
  * (U+00AD) that some PDFs emit at the wrap point; both are handled here so the
  * word rejoins WITHOUT a stray space. (Any soft hyphens that survive elsewhere
- * are stripped later by normalizeText.)
+ * are stripped later by normalizeText.) A hyphen-minus before "and", "or" or
+ * "nor" is a suspended one ("short- and long-term"), so it stays, with its
+ * space, as in the backend and TextNormalizer (K006).
  */
 export function appendLine(buf: string, next: string): string {
   const nextTrim = next.replace(/^\s+/, '')
-  if (/[A-Za-z][-­]$/.test(buf) && /^[a-z]/.test(nextTrim)) {
+  const suspended = buf.endsWith('-') && SUSPENDED_HYPHEN_FOLLOWER.test(nextTrim)
+  if (/[A-Za-z][-­]$/.test(buf) && /^[a-z]/.test(nextTrim) && !suspended) {
     return buf.replace(/[-­]$/, '') + nextTrim
   }
   const head = buf.replace(/\s+$/, '')

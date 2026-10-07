@@ -4,9 +4,17 @@
 // plain pieces. Lines follow the text's own direction, so a rotated
 // (landscape) page and vertical Japanese or Chinese read in order (J037), and a
 // page set in columns reads each column in turn (J035). A page with neither is
-// grouped into lines exactly as before.
+// grouped into lines exactly as before. Running heads and folios are found on
+// the rows as they lie down the page, before any columns are taken apart (K000).
 // ─────────────────────────────────────────────────────────────────────────────
-import { type Line, median, typicalGap } from './pdfHeaders'
+import {
+  type Line,
+  folioLines,
+  median,
+  runningHeadersByPage,
+  stripNoise,
+  typicalGap,
+} from './pdfHeaders'
 
 // pdfjs' TextItem carries a transform matrix [a,b,c,d,e,f]; e,f are the x,y of
 // the text run in the page's default (bottom-left origin) space — so a LARGER y
@@ -51,13 +59,64 @@ export function pieceOf(run: TextRun, vertical: boolean): Piece {
 }
 
 /**
+ * Each page's lines in reading order, its running heads and folios gone. They
+ * are found on the page's rows top to bottom, as a page was read before
+ * columns, so a header row beside a two-column body never splits into a part
+ * that lands between the columns (K000); the rows that are left are then read
+ * column by column.
+ */
+export function readingOrderPages(pages: Piece[][]): Line[][] {
+  const rows = pages.map(pageRows)
+  const rowLines = rows.map((page) => page.map((row) => row.line))
+  const running = runningHeadersByPage(rowLines)
+  const folios = folioLines(rowLines)
+  return rows.map((page, idx) => {
+    const kept = new Set(stripNoise(rowLines[idx], running[idx], folios[idx]))
+    return readingOrderLines(page.filter((row) => kept.has(row.line)).flatMap((row) => row.pieces))
+  })
+}
+
+/** One row of a page as a line, with the pieces it was made from. */
+interface Row {
+  line: Line
+  pieces: Piece[]
+}
+
+/** A page's rows top to bottom, each direction's in its own frame, stacked as its lines are. */
+function pageRows(pieces: Piece[]): Row[] {
+  const groups = directionGroups(pieces)
+  if (groups === null) return clusterRows(pieces).map((row) => ({ line: lineOf(row), pieces: row }))
+  return stack(
+    groups.map(([turn, group]) => {
+      const turned = new Map(group.map((p) => [upright(p, turn), p]))
+      return clusterRows([...turned.keys()]).map((row) => ({
+        line: lineOf(row),
+        pieces: row.map((p) => turned.get(p) as Piece),
+      }))
+    }),
+    (row) => row.line,
+  )
+}
+
+/**
  * A page's lines in reading order, top to bottom. Text that runs another way
  * (a landscape page, vertical writing) is read along its own lines: vertical
  * Japanese column by column from the right. When a page mixes directions, the
- * one carrying most of the text comes first, and each other follows as its own
- * paragraph (a sideways margin stamp no longer splices into a body line).
+ * one carrying most of the text is read last and each other comes before it as
+ * its own paragraph, so a sideways margin stamp neither splices into a body
+ * line nor stands between a sentence and the page it runs on to (K015).
  */
 export function readingOrderLines(pieces: Piece[]): Line[] {
+  const groups = directionGroups(pieces)
+  if (groups === null) return columnLines(pieces, 0)
+  return stack(
+    groups.map(([turn, group]) => columnLines(turn === 0 ? group : group.map((p) => upright(p, turn)), 0)),
+    (line) => line,
+  )
+}
+
+/** A page's pieces by direction, the one carrying most text first; null when all run left to right. */
+function directionGroups(pieces: Piece[]): Array<[number, Piece[]]> | null {
   const groups = new Map<number, Piece[]>()
   for (const p of pieces) {
     const turn = directionOf(p)
@@ -65,26 +124,32 @@ export function readingOrderLines(pieces: Piece[]): Line[] {
     if (group) group.push(p)
     else groups.set(turn, [p])
   }
-  if (groups.size === 0 || (groups.size === 1 && groups.has(0))) return columnLines(pieces, 0)
-
-  const ordered = [...groups]
+  if (groups.size === 0 || (groups.size === 1 && groups.has(0))) return null
+  return [...groups]
     .filter(([, group]) => textLength(group) > 0)
     .sort(([, a], [, b]) => textLength(b) - textLength(a))
-  const lines: Line[] = []
-  for (const [turn, group] of ordered) {
-    const own = columnLines(turn === 0 ? group : group.map((p) => upright(p, turn)), 0)
-    if (own.length === 0) continue
-    if (lines.length > 0) {
-      // Each direction's y is in its own frame: set this one a clear
-      // paragraph gap below what came before, so the two never run together.
-      const last = lines[lines.length - 1]
-      const gap = 2 * Math.max(typicalGap(lines), typicalGap(own), last.height, own[0].height)
-      const shift = last.y - gap - own[0].y
+}
+
+/**
+ * Each direction's lines (or rows), the main one first, as one page. Each y is
+ * in its own frame, so the main one keeps its place and each other is set a
+ * clear paragraph gap above the one after it: the two never run together.
+ */
+function stack<T>(groups: T[][], asLine: (item: T) => Line): T[] {
+  let page: T[] = []
+  for (const group of groups) {
+    if (group.length === 0) continue
+    if (page.length > 0) {
+      const lines = page.map(asLine)
+      const own = group.map(asLine)
+      const last = own[own.length - 1]
+      const gap = 2 * Math.max(typicalGap(lines), typicalGap(own), lines[0].height, last.height)
+      const shift = lines[0].y + gap - last.y
       for (const line of own) line.y += shift
     }
-    lines.push(...own)
+    page = [...group, ...page]
   }
-  return lines
+  return page
 }
 
 /**
@@ -112,6 +177,21 @@ function cosSin(turn: number): [number, number] {
 function upright(p: Piece, turn: number): Piece {
   const [c, s] = cosSin(turn)
   return { ...p, x: p.x * c + p.y * s, y: p.y * c - p.x * s }
+}
+
+const LETTER = /\p{L}/gu
+const RIGHT_TO_LEFT_LETTER =
+  /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Adlam}]/gu
+
+/** Most of the pieces' letters are in a script written right to left. */
+function rightToLeft(pieces: Piece[]): boolean {
+  let letters = 0
+  let backward = 0
+  for (const p of pieces) {
+    letters += p.str.match(LETTER)?.length ?? 0
+    backward += p.str.match(RIGHT_TO_LEFT_LETTER)?.length ?? 0
+  }
+  return backward * 2 > letters
 }
 
 function visible(p: Piece): boolean {
@@ -164,8 +244,12 @@ function columnLines(pieces: Piece[], depth: number): Line[] {
     else if (band.length > 1) {
       const all = band.flat()
       const isLeft = (p: Piece) => (p.x + endOf(p)) / 2 < gutter
-      lines.push(...columnLines(all.filter(isLeft), depth + 1))
-      lines.push(...columnLines(all.filter((p) => !isLeft(p)), depth + 1))
+      const left = all.filter(isLeft)
+      const right = all.filter((p) => !isLeft(p))
+      // Arabic or Hebrew columns are read from the right (K012).
+      for (const column of rightToLeft(all) ? [right, left] : [left, right]) {
+        lines.push(...columnLines(column, depth + 1))
+      }
     }
     band = []
   }
