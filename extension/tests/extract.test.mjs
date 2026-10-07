@@ -245,3 +245,28 @@ test('H032: an empty selection is still nothing to read', () => {
   installDocument(new FakeDocument({ body: h('body') }), { isCollapsed: true, rangeCount: 0, toString: () => '  ' })
   assert.equal(extract.extractSelection(null), null)
 })
+
+test('J042: sections that content-visibility:auto skips off screen are still read', () => {
+  // Chrome's checkVisibility, CSSOM View step 5: with contentVisibilityAuto,
+  // anything inside a content-visibility:auto container that is off screen
+  // (skipping its contents) counts as not visible.
+  const skipping = (el) => {
+    for (let n = el.parentNode; n; n = n.parentNode) if (n.attrs?.['data-skipping'] === 'true') return true
+    return false
+  }
+  const para = (text) => {
+    const p = h('p', {}, text)
+    p.checkVisibility = (o) => !(o?.contentVisibilityAuto && skipping(p))
+    return p
+  }
+  const section = (n, offScreen) =>
+    h('section', offScreen ? { 'data-skipping': 'true' } : {}, para(`Section ${n} opens here.`), para(`Section ${n} closes here.`))
+  const body = h('body', {}, h('article', {}, section(1, false), section(2, true), section(3, true)))
+  installDocument(new FakeDocument({ body }))
+  const got = extract.extractPage(null)
+  assert.ok(got, 'extractPage returned null')
+  assert.deepEqual(
+    got.sentences.map((s) => s.text),
+    [1, 2, 3].flatMap((n) => [`Section ${n} opens here.`, `Section ${n} closes here.`]),
+  )
+})

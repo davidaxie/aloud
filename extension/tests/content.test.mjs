@@ -551,3 +551,70 @@ test('H033: a voice id past the backend limit is never kept, so it cannot stop e
   assert.equal((await loadPrefs()).voiceId, 'af_heart')
   assert.equal((await savePrefs({ voiceId: 'bf_emma' })).voiceId, 'bf_emma')
 })
+
+test('J045: an Escape the page uses to close its dialog or modal leaves the reading alone', async () => {
+  const doc = anyDocument([])
+  const p = page(doc)
+  const reader = await p.boot()
+  /** A key press, bubbling from the document up to the window as Chrome's does. */
+  const press = (prevented = false) => {
+    const e = Object.assign(new Event('keydown', { cancelable: true }), { key: 'Escape' })
+    if (prevented) e.preventDefault()
+    doc.dispatchEvent(e)
+    p.win.dispatchEvent(e)
+  }
+  const active = async () => (await reader({ kind: 'state' })).state.active
+  const inside = (selector) => ({ tagName: 'BUTTON', closest: (s) => (s.split(',').includes(selector) ? {} : null) })
+  try {
+    await reader({ kind: 'command', action: 'start-selection', text: 'One sentence here. Another one there.' })
+    assert.equal(await active(), true)
+
+    for (const owner of ['dialog[open]', '[aria-modal="true"]', '[role="dialog"]']) {
+      doc.activeElement = inside(owner)
+      press()
+      assert.equal(await active(), true, `Escape closing a ${owner} ended the reading`)
+    }
+    doc.activeElement = null
+    press(true)
+    assert.equal(await active(), true, 'an Escape the page handled ended the reading')
+
+    // A lightbox open with focus left on the page behind it…
+    let modals = [{ checkVisibility: () => true }]
+    doc.querySelectorAll = () => modals
+    press()
+    assert.equal(await active(), true, 'Escape closing an open modal ended the reading')
+    // …but one closed and left hidden in the DOM no longer owns the key.
+    modals = [{ checkVisibility: () => false }]
+    press()
+    assert.equal(await active(), false, 'Escape no longer stops the reading')
+  } finally {
+    await reader({ kind: 'command', action: 'stop' })
+  }
+})
+
+test('J046: once /health answers again, the bar stops blaming an unreachable engine', async () => {
+  const p = page(anyDocument([]))
+  const reader = await p.boot()
+  globalThis.chrome.runtime.sendMessage = (msg) => {
+    if (msg.kind === 'health') {
+      return Promise.resolve({ kind: 'health', state: 'ok', voiceCount: 54, warm: true, queueDepth: 0 })
+    }
+    if (msg.kind !== 'synth') return Promise.resolve(undefined)
+    // After the reader's first health check: the engine was down when it asked.
+    const down = { kind: 'synth', ok: false, error: 'Speech engine unreachable.', aborted: false, retryable: false, status: 0, retryAfterMs: null }
+    return new Promise((resolve) => setTimeout(() => resolve(down), 30))
+  }
+  await withShortTimers(async () => {
+    try {
+      await reader({ kind: 'command', action: 'start-selection', text: 'One sentence here. Another one there.' })
+      const state = await untilState(reader, (s) => s.status !== 'buffering' && s.status !== 'ready', 'the stop')
+      assert.notEqual(state.status, 'playing')
+      const after = await untilState(reader, (s) => s.status !== 'error', 'the unreachable error to clear')
+      assert.equal(after.status, 'paused')
+      assert.equal(after.error, null)
+      assert.equal(after.index, 0, 'Play resumes on the sentence that stopped')
+    } finally {
+      await reader({ kind: 'command', action: 'stop' })
+    }
+  })
+})

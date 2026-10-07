@@ -11,7 +11,8 @@
 // (a) ensure N's audio at priority `now` and (b) keep filling a buffer of
 // speculative `prefetch` work ahead of it. Kokoro synthesizes ~5x faster than
 // realtime, so by the time N finishes, N+1's URL is already resolved and we can
-// `audio.src = url; play()` with no audible gap.
+// `audio.src = url; play()` with no audible gap. On a page whose CSP bars the
+// element from blob: media, `audio` is a WebAudioClip instead (J039).
 //
 // ── Buffering is measured in seconds, not sentences (§1.5, F2.1–F2.4) ────────
 // The old `LOOKAHEAD = 2` was a lie dressed as a constant: two sentences is 1–2
@@ -63,6 +64,7 @@ import type { SynthPriority } from '../shared/protocol'
 import type { PlayerStatus, Prefs, ReadDoc, WordToken } from '../shared/types'
 import { wavDuration, WAV_HEADER_BYTES } from '../shared/wav'
 import { extensionAlive, isAbortError, RELOADED_MESSAGE, SynthesisError, synthesize } from './api'
+import { type Clip, WebAudioClip, webAudioAvailable } from './webaudio'
 
 /**
  * Entry cap. Sized so it can never be what stops the buffer reaching its target:
@@ -120,6 +122,8 @@ const HAS_SPEAKABLE = /[\p{L}\p{N}]/u
  * click — and only a click on the page (the bar is on the page) unlocks its audio.
  */
 const AUTOPLAY_BLOCKED_MESSAGE = 'Chrome blocked the audio — click play on the Aloud bar to start.'
+/** A stop because no request reached an engine; /health answering ok makes it false (J046). */
+const UNREACHABLE_MESSAGE = 'Speech engine unreachable — is the Aloud backend running?'
 
 const NOW: SynthPriority = 'now'
 const PREFETCH: SynthPriority = 'prefetch'
@@ -163,7 +167,14 @@ interface CacheEntry {
 
 export class AloudPlayer {
   private doc: ReadDoc | null = null
-  private audio: HTMLAudioElement | null = null
+  private audio: Clip | null = null
+  /**
+   * Set once the <audio> element refused a clip: the page's CSP may bar the
+   * blob: URLs it loads (J039). Every clip from then on plays through Web Audio.
+   */
+  private webAudio = false
+  /** The WAV behind each live object URL, for Web Audio, which loads no URL. */
+  private blobs = new Map<string, Blob>()
 
   /** Sentence index we intend to be on. */
   private index = -1
@@ -273,24 +284,36 @@ export class AloudPlayer {
 
   // ── audio element (created lazily) ────────────────────────────────────────
 
-  private ensureAudio(): HTMLAudioElement {
+  private ensureAudio(): Clip {
     if (!this.audio) {
-      const a = new Audio()
-      a.preload = 'auto'
+      const a = this.webAudio ? new WebAudioClip((url) => this.blobs.get(url)) : audioElement()
       // Rate is applied client-side (pitch preserved) so we can reach a true 3x
       // and change speed instantly without re-synthesizing.
       a.preservesPitch = true
       a.playbackRate = this.hooks.prefs().rate
-      a.addEventListener('ended', () => this.onEnded())
+      // Each listener stands down once its clip player is replaced (J039).
+      a.addEventListener('ended', () => this.audio === a && this.onEnded())
       // A clip that can't load or decode never fires 'ended'; without this the
       // reader would sit on it forever, showing pause over silence.
-      a.addEventListener('error', () => this.onAudioError())
+      a.addEventListener('error', () => this.audio === a && this.onAudioError())
       // The natural (1.0x) WAV duration lands here; per-word windows are laid
       // out in media-time, so raising playbackRate speeds the highlight in step.
-      a.addEventListener('loadedmetadata', () => this.onLoadedMetadata())
+      a.addEventListener('loadedmetadata', () => this.audio === a && this.onLoadedMetadata())
       this.audio = a
     }
     return this.audio
+  }
+
+  /** Play through Web Audio from now on, letting the <audio> element go. */
+  private switchToWebAudio() {
+    const old = this.audio
+    this.audio = null
+    this.webAudio = true
+    if (old) {
+      old.pause()
+      old.removeAttribute('src')
+      old.load()
+    }
   }
 
   // ── word-level highlight ──────────────────────────────────────────────────
@@ -454,6 +477,7 @@ export class AloudPlayer {
       const blob = await synthesize({ text, voice, speed: 1, priority }, entry.controller.signal)
       const url = URL.createObjectURL(blob)
       entry.url = url
+      this.blobs.set(url, blob)
       const duration = await this.measure(blob, text)
 
       // Evicted or invalidated while we were resolving: nobody is waiting on this
@@ -463,6 +487,7 @@ export class AloudPlayer {
       // negative total would quietly switch the byte bound off.
       if (this.cache.get(entry.key) !== entry) {
         URL.revokeObjectURL(url)
+        this.blobs.delete(url)
         return url
       }
       entry.bytes = blob.size
@@ -543,8 +568,10 @@ export class AloudPlayer {
   /** Free an entry: abort if in-flight, revoke its URL if resolved. */
   private dropResources(entry: CacheEntry) {
     if (entry.url === SILENT) return
-    if (entry.url) URL.revokeObjectURL(entry.url)
-    else entry.controller.abort()
+    if (entry.url) {
+      URL.revokeObjectURL(entry.url)
+      this.blobs.delete(entry.url)
+    } else entry.controller.abort()
   }
 
   /** Drop every cached entry whose key doesn't match the current voice + skip. */
@@ -761,6 +788,16 @@ export class AloudPlayer {
     // whichever arrives first acts, and the token turns the other stale.
     this.playToken++
     this.loadedIndex = -1
+    // The element refuses a clip the page's CSP bars it from loading (a
+    // media-src without blob:, J039) just as it refuses one it cannot decode.
+    // Web Audio loads nothing, so the clip gets one more try there before it
+    // counts as unplayable, and every clip after it plays there too.
+    if (!this.webAudio && webAudioAvailable()) {
+      this.switchToWebAudio()
+      if (this.wantPlaying) void this.playIndex(i)
+      else this.setStatus('paused')
+      return
+    }
     this.skipSentence(i, err)
   }
 
@@ -915,6 +952,15 @@ export class AloudPlayer {
     this.stopWordLoop()
     this.stopFilling()
     this.setStatus('paused')
+  }
+
+  /**
+   * /health answers ok again after a stop for an unreachable engine. The
+   * message would now blame an engine that is back: stay on the sentence,
+   * paused, ready for Play, as the web reader's engineRecovered() does (J046).
+   */
+  engineRecovered() {
+    if (this.currentStatus === 'error' && this.currentError === UNREACHABLE_MESSAGE) this.setStatus('paused')
   }
 
   toggle() {
@@ -1092,6 +1138,13 @@ export class AloudPlayer {
   }
 }
 
+/** The <audio> element every clip plays on unless the page refuses it (J039). */
+function audioElement(): HTMLAudioElement {
+  const a = new Audio()
+  a.preload = 'auto'
+  return a
+}
+
 /**
  * User-facing copy for a spent synthesis.
  *
@@ -1104,7 +1157,7 @@ function describeFailure(err: unknown): string {
     // The backend is fine; the page lost the extension and must be refreshed.
     if (err.reloaded) return err.message
     if (err.status === 400) return 'Skipped a sentence the voice engine couldn’t read.'
-    if (err.status === 0) return 'Speech engine unreachable — is the Aloud backend running?'
+    if (err.status === 0) return UNREACHABLE_MESSAGE
     if (err.timedOut) return 'The voice engine took too long — skipped a sentence.'
     return 'Skipped a sentence the voice engine couldn’t read.'
   }

@@ -316,11 +316,14 @@ interface WalkState {
 function isHidden(el: Element): boolean {
   if (el.hasAttribute('hidden')) return true
   if (el.getAttribute('aria-hidden') === 'true') return true
-  // checkVisibility covers display:none, visibility:hidden, content-visibility
-  // and detached subtrees in one cheap call (Chrome 105+).
+  // checkVisibility covers display:none, visibility:hidden, content-visibility:
+  // hidden and detached subtrees in one cheap call (Chrome 105+). Not
+  // contentVisibilityAuto: that counts every section of a long page that is
+  // merely off screen, where content-visibility:auto skips rendering it, as
+  // hidden, and that is still the page's text (J042).
   const check = (el as Element & { checkVisibility?: (o?: object) => boolean }).checkVisibility
   if (typeof check === 'function') {
-    return !check.call(el, { checkVisibilityCSS: true, contentVisibilityAuto: true })
+    return !check.call(el, { checkVisibilityCSS: true })
   }
   const style = el.ownerDocument.defaultView?.getComputedStyle(el)
   return !!style && (style.display === 'none' || style.visibility === 'hidden')

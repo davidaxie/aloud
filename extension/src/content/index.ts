@@ -43,6 +43,9 @@ const HEALTH_POLL_IDLE_MS = 30_000
  * an extension reload hears it and tears down, so two voices never overlap.
  */
 const TAKEOVER_EVENT = 'aloud:takeover'
+/** Where Escape belongs to the page: its dialogs, modals and open menus (J045). */
+const PAGE_ESCAPE_OWNERS =
+  'dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]'
 
 // A second injection would create a second player over the same page. Bail out
 // early; the already-running instance keeps serving messages.
@@ -316,6 +319,9 @@ async function main(onReady: (respond: Responder) => void) {
     healthInFlight = true
     try {
       const report = await getHealth()
+      // The engine answers: a stop that blamed it being unreachable is now
+      // false, so it stands down to paused, ready for Play (J046).
+      if (report.state === 'ok') player.engineRecovered()
       if (report.state !== engine) {
         engine = report.state
         paintBar()
@@ -478,12 +484,35 @@ async function main(onReady: (respond: Responder) => void) {
   // commands (they work even when the page steals focus), so the only key we
   // claim here is Escape, and only while reading and not while typing.
 
-  document.addEventListener('keydown', (e) => {
+  // On window, not document: a modal's own document listener, often added when
+  // it opens and so after ours, has run by the time the key gets here.
+  window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !isActive()) return
     const el = document.activeElement as HTMLElement | null
     if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
+    if (escapeIsThePages(e)) return
     teardown()
   })
+
+  /**
+   * An Escape the page has a use for: closing its dialog, lightbox or menu.
+   * Taking it too would end the reading and lose the place (J045).
+   */
+  function escapeIsThePages(e: KeyboardEvent): boolean {
+    if (e.defaultPrevented) return true
+    for (const node of [e.target, document.activeElement]) {
+      const el = node as Element | null
+      if (typeof el?.closest === 'function' && el.closest(PAGE_ESCAPE_OWNERS)) return true
+    }
+    // Focus can stay on the page behind a lightbox; an open modal still owns
+    // the key. One that is closed but left in the DOM is hidden, so not this.
+    const modals = document.querySelectorAll?.('dialog:modal, [aria-modal="true"]') ?? []
+    for (const modal of modals) {
+      const check = (modal as Element & { checkVisibility?: () => boolean }).checkVisibility
+      if (typeof check !== 'function' || check.call(modal)) return true
+    }
+    return false
+  }
 
   // ── page lifecycle ────────────────────────────────────────────────────────
 

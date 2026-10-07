@@ -231,6 +231,72 @@ export function installPlaybackGlobals(chrome) {
   globalThis.chrome = chrome
 }
 
+/**
+ * A silent AudioContext: it decodes the harness's 16-bit mono WAVs, and its
+ * buffer sources only record how they were started. A test moves `currentTime`
+ * and calls a source's `onended` itself. Nothing reaches a speaker.
+ */
+export class FakeAudioContext {
+  static last = null
+  constructor() {
+    this.state = 'running'
+    this.currentTime = 0
+    this.destination = {}
+    this.sources = []
+    FakeAudioContext.last = this
+  }
+  resume() {
+    this.state = 'running'
+    return Promise.resolve()
+  }
+  suspend() {
+    this.state = 'suspended'
+    return Promise.resolve()
+  }
+  decodeAudioData(bytes) {
+    const view = new DataView(bytes)
+    if (bytes.byteLength < 44 || view.getUint32(0) !== 0x52494646) {
+      return Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'))
+    }
+    const data = new Float32Array((bytes.byteLength - 44) / 2)
+    for (let i = 0; i < data.length; i++) data[i] = view.getInt16(44 + i * 2, true) / 32768
+    return Promise.resolve(fakeBuffer(view.getUint32(24, true), [data]))
+  }
+  createBuffer(channels, length, sampleRate) {
+    return fakeBuffer(sampleRate, Array.from({ length: channels }, () => new Float32Array(length)))
+  }
+  createBufferSource() {
+    const node = {
+      buffer: null,
+      playbackRate: { value: 1 },
+      onended: null,
+      started: null,
+      stopped: false,
+      connect() {},
+      disconnect() {},
+      start(when, offset) {
+        node.started = { when, offset }
+      },
+      stop() {
+        node.stopped = true
+      },
+    }
+    this.sources.push(node)
+    return node
+  }
+}
+
+function fakeBuffer(sampleRate, channels) {
+  return {
+    sampleRate,
+    length: channels[0].length,
+    numberOfChannels: channels.length,
+    duration: channels[0].length / sampleRate,
+    getChannelData: (c) => channels[c],
+    copyToChannel: (source, c) => channels[c].set(source),
+  }
+}
+
 /** A tiny but valid 16-bit mono WAV, base64 — what the worker hands back. */
 export function wavBase64(samples = 2400, rate = 24000) {
   const data = samples * 2

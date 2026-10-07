@@ -20,7 +20,7 @@
 // the worker alive.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { loadPrefs } from '../shared/prefs'
+import { BACKEND_FALLBACK_PORTS, DEFAULT_PREFS, loadPrefs } from '../shared/prefs'
 import {
   bytesToBase64,
   type BgRequest,
@@ -194,8 +194,24 @@ function requestKey(sender: chrome.runtime.MessageSender, id: number): string {
   return `${sender.tab?.id ?? 'popup'}:${sender.frameId ?? 0}:${id}`
 }
 
+/**
+ * An Aloud backend found on one of native_app.py's fallback ports, because
+ * something else holds the default one (J044). Null while the default answers,
+ * or nothing does; undefined until this worker has looked.
+ */
+let located: string | null | undefined
+/** The probe under way, so callers arriving together share one. */
+let locating: Promise<HealthReport> | null = null
+
 async function backendBase(): Promise<string> {
-  return (await loadPrefs()).backendUrl
+  const configured = (await loadPrefs()).backendUrl
+  // A backend URL the user set is where the backend is. Only the default
+  // follows the backend to a fallback port.
+  if (configured !== DEFAULT_PREFS.backendUrl) return configured
+  // A worker woken by work has not looked yet: find the backend before
+  // sending it anything.
+  if (located === undefined) await health()
+  return located ?? configured
 }
 
 /**
@@ -228,31 +244,78 @@ const OFFLINE: HealthReport = { state: 'offline', voiceCount: 0, warm: false, qu
  * fault.
  */
 async function health(): Promise<HealthReport> {
+  locating ??= locate().finally(() => {
+    locating = null
+  })
+  return locating
+}
+
+interface HealthBody {
+  status?: string
+  engine?: string
+  model_loaded?: boolean
+  voice_count?: number
+  warm?: boolean
+  queue_depth?: number
+}
+
+/** Probe the backend URL and, while it is the default, the fallback ports. */
+async function locate(): Promise<HealthReport> {
+  const configured = (await loadPrefs()).backendUrl
+  let d = await readHealth(configured)
+  if (configured === DEFAULT_PREFS.backendUrl) {
+    located = null
+    // Nothing on the default port, or something there that isn't Aloud:
+    // native_app.py moves to a fallback port when the default is taken.
+    if (!d) {
+      const found = await findOnFallbackPorts(configured)
+      if (found) {
+        located = found.base
+        d = found.body
+      }
+    }
+  }
+  return d ? normalizeHealth(d) : OFFLINE
+}
+
+/** The first fallback port, in port order, where an Aloud backend answers. */
+async function findOnFallbackPorts(base: string): Promise<{ base: string; body: HealthBody } | null> {
+  const bases = BACKEND_FALLBACK_PORTS.map((port) => {
+    const url = new URL(base)
+    url.port = String(port)
+    return url.origin
+  })
+  const bodies = await Promise.all(bases.map(readHealth))
+  // Only a backend naming the kokoro engine, as native_app.py's own probe
+  // requires: another server that owns one of these ports is not ours.
+  const i = bodies.findIndex((d) => d?.engine === 'kokoro')
+  return i < 0 ? null : { base: bases[i], body: bodies[i]! }
+}
+
+/** One `/health` answer; null when nothing answers, or not with JSON. */
+async function readHealth(base: string): Promise<HealthBody | null> {
   try {
-    const res = await probe(`${await backendBase()}/health`)
-    if (!res.ok) return OFFLINE
-    const d = (await res.json()) as {
-      status?: string
-      model_loaded?: boolean
-      voice_count?: number
-      warm?: boolean
-      queue_depth?: number
-    }
-
-    const loaded = d.model_loaded !== false // absent = assume loaded (old shape)
-    const state: EngineState =
-      d.status === 'warming' ? 'warming' : d.status === 'ok' && loaded ? 'ok' : 'offline'
-
-    return {
-      state,
-      voiceCount: typeof d.voice_count === 'number' ? d.voice_count : 0,
-      warm: typeof d.warm === 'boolean' ? d.warm : state === 'ok',
-      queueDepth: typeof d.queue_depth === 'number' ? d.queue_depth : 0,
-    }
+    const res = await probe(`${base}/health`)
+    if (!res.ok) return null
+    const d = (await res.json()) as unknown
+    return d && typeof d === 'object' ? (d as HealthBody) : null
   } catch {
     // Backend down / wrong port / offline — report it rather than throwing, so
     // callers can poll this on a timer without try/catch.
-    return OFFLINE
+    return null
+  }
+}
+
+function normalizeHealth(d: HealthBody): HealthReport {
+  const loaded = d.model_loaded !== false // absent = assume loaded (old shape)
+  const state: EngineState =
+    d.status === 'warming' ? 'warming' : d.status === 'ok' && loaded ? 'ok' : 'offline'
+
+  return {
+    state,
+    voiceCount: typeof d.voice_count === 'number' ? d.voice_count : 0,
+    warm: typeof d.warm === 'boolean' ? d.warm : state === 'ok',
+    queueDepth: typeof d.queue_depth === 'number' ? d.queue_depth : 0,
   }
 }
 
@@ -422,6 +485,13 @@ chrome.runtime.onMessage.addListener(
         return true
 
       case 'activate':
+        // Only the popup activates a tab by id. A content script, which runs
+        // in a page's renderer, never needs to, so it may not start or stop a
+        // reader in some other tab (J047).
+        if (!fromPopup(sender)) {
+          sendResponse({ kind: 'activate', ok: false, error: 'Only the Aloud popup can do that.' })
+          return false
+        }
         void dispatch(msg.tabId, msg.action).then(
           () => sendResponse({ kind: 'activate', ok: true }),
           (err: unknown) =>
@@ -434,6 +504,12 @@ chrome.runtime.onMessage.addListener(
     }
   },
 )
+
+/** The sender is the extension's own popup page, not a tab's content script. */
+function fromPopup(sender: chrome.runtime.MessageSender): boolean {
+  if (sender.tab || sender.id !== chrome.runtime.id || !sender.url) return false
+  return sender.url.split(/[?#]/)[0] === chrome.runtime.getURL('popup.html')
+}
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message

@@ -10,6 +10,7 @@ import { afterEach, test } from 'node:test'
 import {
   DEFAULT_TEST_PREFS,
   FakeAudio,
+  FakeAudioContext,
   installPlaybackGlobals,
   load,
   until,
@@ -433,4 +434,126 @@ test('H031: a step while paused drops the requests for the sentence it leaves', 
   await new Promise((r) => setTimeout(r, 20))
   // The landing sentence and its look-ahead stay in flight.
   assert.deepEqual(abortedSentences(current.w), [1, 2, 3, 4])
+})
+
+test('J046: /health answering again clears an unreachable-engine stop to paused, on the same sentence', async () => {
+  current = rig(fail(0, false))
+  current.player.play()
+  await until(() => current.player.status === 'error', 3000, "status 'error'")
+  assert.match(current.last().error, /unreachable/)
+  current.player.engineRecovered()
+  assert.equal(current.player.status, 'paused')
+  assert.equal(current.last().error, null)
+  assert.equal(current.player.currentIndex, 0)
+
+  // Any other error stays: it was never about the engine being down.
+  current.player.stop()
+  current = rig(fail(400, false))
+  current.player.play()
+  await until(() => current.player.status === 'error', 3000, "status 'error'")
+  current.player.engineRecovered()
+  assert.equal(current.player.status, 'error')
+})
+
+/** Chrome on a page whose CSP media-src leaves out blob: the element can load no clip. */
+function refuseBlobMedia() {
+  FakeAudio.play = (el) => {
+    setTimeout(() => el.dispatchEvent(new Event('error')))
+    return Promise.reject(new DOMException('Failed to load because no supported source was found.', 'NotSupportedError'))
+  }
+  globalThis.AudioContext = FakeAudioContext
+  FakeAudioContext.last = null
+}
+
+/** The buffer source the Web Audio clip started most recently. */
+async function startedSource(after = null) {
+  await until(() => {
+    const s = FakeAudioContext.last?.sources.at(-1)
+    return s && s !== after && s.started && !s.stopped
+  }, 3000, 'a Web Audio source to start')
+  return FakeAudioContext.last.sources.at(-1)
+}
+
+test('J039: on a page whose CSP refuses blob: media, every sentence plays through Web Audio', async () => {
+  refuseBlobMedia()
+  try {
+    current = rig(OK)
+    current.player.play()
+    const first = await startedSource()
+    assert.equal(current.player.status, 'playing')
+    assert.equal(current.player.currentIndex, 0)
+    assert.deepEqual(current.seen.skips, [], 'a sentence was skipped as unplayable')
+
+    first.onended() // the clip plays out
+    const second = await startedSource(first)
+    assert.equal(current.player.currentIndex, 1)
+    assert.equal(second.buffer.length, 2400)
+    assert.deepEqual(current.seen.skips, [])
+    assert.equal(current.last().error, null)
+  } finally {
+    delete globalThis.AudioContext
+  }
+})
+
+test('J039: a clip Web Audio cannot decode either is skipped once, and reading goes on', async () => {
+  refuseBlobMedia()
+  let first = true
+  const synth = (msg) => {
+    if (!first) return OK(msg)
+    first = false
+    return Promise.resolve({ kind: 'synth', ok: true, audio: Buffer.from('not a wav at all').toString('base64') })
+  }
+  try {
+    current = rig(synth)
+    current.player.play()
+    await startedSource()
+    assert.equal(current.player.currentIndex, 1)
+    assert.deepEqual(current.seen.skips.map((s) => s.index), [0])
+    assert.match(current.seen.skips[0].message, /browser couldn’t play/)
+  } finally {
+    delete globalThis.AudioContext
+  }
+})
+
+test('J039: through Web Audio, speed keeps its pitch and pause resumes where it stopped', async () => {
+  refuseBlobMedia()
+  try {
+    current = rig(OK, { prefs: { ...DEFAULT_TEST_PREFS, rate: 2 } })
+    current.player.play()
+    const node = await startedSource()
+    // 2x is the clip stretched to half its length, not played an octave up.
+    assert.equal(node.playbackRate.value, 1)
+    assert.ok(Math.abs(node.buffer.length - 1200) <= 1, `${node.buffer.length} samples at 2x`)
+
+    // A quarter of a 0.1 s clip heard at 2x: 0.05 s of it.
+    FakeAudioContext.last.currentTime += 0.025
+    current.player.pause()
+    assert.equal(node.stopped, true)
+    current.player.play()
+    const resumed = await startedSource(node)
+    assert.equal(current.player.currentIndex, 0)
+    assert.ok(Math.abs(resumed.buffer.length - 600) <= 2, `resumed with ${resumed.buffer.length} samples left`)
+  } finally {
+    delete globalThis.AudioContext
+  }
+})
+
+test('J039: the time stretch keeps the pitch and the loudness', async () => {
+  const { timeStretch } = await load('content/stretch.ts')
+  const rate = 24000
+  const hz = 220
+  const input = new Float32Array(rate)
+  for (let i = 0; i < input.length; i++) input[i] = 0.5 * Math.sin((2 * Math.PI * hz * i) / rate)
+  const rms = (a) => Math.sqrt(a.reduce((s, x) => s + x * x, 0) / a.length)
+  for (const speed of [0.5, 1.5, 2, 3]) {
+    const [out] = timeStretch([input], speed, rate)
+    assert.ok(Math.abs(out.length - rate / speed) <= 1, `${speed}x: ${out.length} samples`)
+    const mid = out.subarray(Math.floor(out.length * 0.1), Math.floor(out.length * 0.9))
+    let crossings = 0
+    for (let i = 1; i < mid.length; i++) if (mid[i - 1] < 0 !== mid[i] < 0) crossings++
+    const heard = crossings / 2 / (mid.length / rate)
+    assert.ok(Math.abs(heard - hz) / hz < 0.03, `${speed}x sounds at ${heard.toFixed(1)} Hz`)
+    assert.ok(Math.abs(rms(mid) / rms(input) - 1) < 0.15, `${speed}x changed the loudness`)
+  }
+  assert.equal(timeStretch([input], 1, rate)[0], input)
 })

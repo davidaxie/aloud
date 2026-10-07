@@ -25,14 +25,23 @@ export const DEFAULT_PREFS: Prefs = {
   // The backend's default port: DEFAULT_PORT in backend/native_app.py, which
   // run.py and native_app.py both serve on unless ALOUD_PORT says otherwise
   // (native_app.py moves to 8001–8010, or any free port, only when 8000 is
-  // taken). A backend on another port is set in the popup's Backend field; the
-  // manifest's loopback host permissions cover any port. The popup's
-  // placeholder shows this value, and a test checks all three agree.
+  // taken; while this default is set, the worker looks there too, see
+  // BACKEND_FALLBACK_PORTS). A backend on another port is set in the popup's
+  // Backend field; the manifest's loopback host permissions cover any port.
+  // The popup's placeholder shows this value, and a test checks all three agree.
   // 127.0.0.1, where the backend serves, rather than localhost: macOS tries
   // ::1 first, and a server started there later on the same port would take
   // every request.
   backendUrl: 'http://127.0.0.1:8000',
 }
+
+/**
+ * Where native_app.py moves when something else holds the default port:
+ * FALLBACK_PORTS in backend/native_app.py, which a test checks. While
+ * backendUrl is still the default, the worker looks for Aloud on these before
+ * calling the engine offline (J044).
+ */
+export const BACKEND_FALLBACK_PORTS: readonly number[] = Array.from({ length: 10 }, (_, k) => 8001 + k)
 
 /** The default before it named 127.0.0.1; saving any setting stored it. */
 const OLD_DEFAULT_BACKEND = 'http://localhost:8000'

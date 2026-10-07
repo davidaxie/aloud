@@ -187,3 +187,76 @@ test('I018: the old localhost default saved with other settings moves to 127.0.0
     sync.get = realGet
   }
 })
+
+/** Message the worker as `sender` and wait for its answer. */
+const ask = (msg, sender = {}) => new Promise((resolve) => mock.on.message(msg, sender, resolve))
+
+test('J044: the fallback ports the worker looks on are the ones the backend moves to', async () => {
+  const { BACKEND_FALLBACK_PORTS, DEFAULT_PREFS } = await load('shared/prefs.ts')
+  const nativeApp = await readFile(join(ROOT, '..', 'backend', 'native_app.py'), 'utf8')
+  const range = nativeApp.match(/^FALLBACK_PORTS = range\(DEFAULT_PORT \+ (\d+), DEFAULT_PORT \+ (\d+)\)$/m)
+  assert.ok(range, 'FALLBACK_PORTS not found in backend/native_app.py')
+  const port = Number(new URL(DEFAULT_PREFS.backendUrl).port)
+  const expected = []
+  for (let p = port + Number(range[1]); p < port + Number(range[2]); p++) expected.push(p)
+  assert.deepEqual([...BACKEND_FALLBACK_PORTS], expected)
+})
+
+test('J044: with the default backend URL, a backend that moved to a fallback port is found and used', async () => {
+  const realFetch = globalThis.fetch
+  const sync = mock.chrome.storage.sync
+  const realGet = sync.get
+  const asked = []
+  globalThis.fetch = async (url) => {
+    asked.push(String(url))
+    const { port, pathname } = new URL(url)
+    // Django's runserver holds 8000; some other service answers on 8001.
+    if (port === '8000') return new Response('<h1>Not Found</h1>', { status: 404 })
+    if (port === '8001') return Response.json({ status: 'ok' })
+    if (port === '8003' && pathname === '/health') {
+      return Response.json({ status: 'ok', engine: 'kokoro', model_loaded: true, voice_count: 54, warm: true, queue_depth: 0 })
+    }
+    if (port === '8003' && pathname === '/synthesize') return new Response(new Uint8Array([82, 73, 70, 70]))
+    throw new TypeError('fetch failed') // nothing listening
+  }
+  try {
+    const report = await ask({ kind: 'health' })
+    assert.equal(report.state, 'ok', 'a running backend reported offline')
+    assert.equal(report.voiceCount, 54)
+
+    const synth = await ask(
+      { kind: 'synth', id: 1, text: 'Hello there.', voice: 'af_heart', speed: 1, priority: 'now' },
+      { tab: { id: 1 }, frameId: 0 },
+    )
+    assert.equal(synth.ok, true)
+    assert.ok(asked.includes('http://127.0.0.1:8003/synthesize'), `synthesis went to ${asked.at(-1)}`)
+
+    // A backend URL the user set is never second-guessed.
+    sync.get = () => Promise.resolve({ 'aloud.prefs.v1': { backendUrl: 'http://127.0.0.1:9000' } })
+    asked.length = 0
+    assert.equal((await ask({ kind: 'health' })).state, 'offline')
+    assert.deepEqual(asked, ['http://127.0.0.1:9000/health'])
+  } finally {
+    globalThis.fetch = realFetch
+    sync.get = realGet
+  }
+})
+
+test('J047: only the popup may activate a tab, not a content script in a page', async () => {
+  mock.chrome.runtime.id = 'test'
+  mock.chrome.runtime.getURL = (path) => `chrome-extension://test/${path}`
+  const injected = frames([])
+  mock.sent.length = 0
+  const page = 'https://evil.example/article'
+  const fromPage = await ask(
+    { kind: 'activate', tabId: 7, action: 'start' },
+    { id: 'test', tab: { id: 5, url: page }, frameId: 0, url: page },
+  )
+  assert.equal(fromPage.ok, false)
+  assert.equal(injected.length, 0, 'the reader was injected into another tab')
+  assert.equal(mock.sent.length, 0, 'another tab was sent a command')
+
+  const fromPopup = await ask({ kind: 'activate', tabId: 7, action: 'start' }, { id: 'test', url: 'chrome-extension://test/popup.html' })
+  assert.equal(fromPopup.ok, true)
+  assert.ok(mock.sent.some((s) => s.tabId === 7 && s.msg.kind === 'command' && s.msg.action === 'start'))
+})
