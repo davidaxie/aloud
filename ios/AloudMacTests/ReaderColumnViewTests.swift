@@ -704,6 +704,17 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertGreaterThan(coordinator.programmaticScrollCount, scrolls, "the next line follows")
         XCTAssertTrue(try spokenWordIsInTheBand(page))
 
+        // On to the sentence's last words, far enough below its top that the
+        // page can leave the word below it with the sentence still in view
+        // (nearer the top, a drag back would stop at the top of the book).
+        for _ in 0..<400 {
+            let before = try XCTUnwrap(coordinator.spokenWordRect())
+            page.update(activeSentence: 6, activeWord: 2 * (next + 1))
+            guard let after = coordinator.spokenWordRect(), after != before else { break }
+            next += 1
+        }
+        page.update(activeSentence: 6, activeWord: 2 * next)   // its last word, not past it
+
         // Back toward the sentence's start, which leaves the sentence in
         // view and puts the spoken word below the page.
         viewport = try XCTUnwrap(coordinator.viewport())
