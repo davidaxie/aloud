@@ -436,6 +436,15 @@ final class PDFChapterTiersTests: XCTestCase {
                        ["Kapitel 1", "Zweites Kapitel", "Kapitel 3: Die Heimkehr"])
         XCTAssertEqual(try titles([["Chapitre premier"], ["Capítulo II"], ["Capitolo 3"]]),
                        ["Chapitre premier", "Capítulo II", "Capitolo 3"])
+        // I007: a bare CJK marker's next paragraph is its title only when
+        // it reads as one: not the chapter's opening sentence, a line of
+        // dialogue, or unspaced text longer than a heading's title.
+        XCTAssertEqual(try titles([["第一章", "清晨，薄雾笼罩着整个小山村，远处传来几声鸡鸣。"], ["第二章", "镇上"],
+                                   ["第三章", "清晨薄雾笼罩着整个小山村远处传来几声鸡鸣母亲早早起来生火做饭父亲扛着锄头下地去了"],
+                                   ["第四章", "他说：「走吧。」她没有回答"]]),
+                       ["第一章", "第二章: 镇上", "第三章", "第四章"])
+        XCTAssertEqual(try titles([["第一話", "「先生」"], ["第二話", "出会い"], ["第三話", "彼はそう言って笑った。"]]),
+                       ["第一話", "第二話: 出会い", "第三話"])
 
         for prose in ["第四章就讲完了。", "第五章 我们走了。", "Глава семьи сказал", "Глава 5 описывает дом",
                       "Глава 4. Начало 9", "Kapitel 6 beschreibt das", "Chapitre 7 montre comment."] {

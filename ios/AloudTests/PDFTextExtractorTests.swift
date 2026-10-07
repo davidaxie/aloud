@@ -349,6 +349,36 @@ final class PDFTextExtractorTests: XCTestCase {
                        ["Then the twenty-five men and her mother-in-law came to the sitting-room."])
     }
 
+    /// I009: the compound rule's word list is English, so in French, German
+    /// or Italian a syllable split whose halves happen to be English words
+    /// ("main-⏎tenant") is re-joined, within a page and across a break: by
+    /// the book's language, or without one the text around the break.
+    func testNonEnglishSyllableSplitsRejoin() {
+        typealias Line = PDFTextExtractor.Line
+        func lines(_ texts: [String]) -> [Line] {
+            texts.enumerated().map { Line(text: $1, y: 500 - CGFloat($0) * 18, height: 14) }
+        }
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: lines(["Il est main-", "tenant parti avec ses amis."])),
+                       ["Il est maintenant parti avec ses amis."])
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: lines(["Der Not-", "fall war schlimmer als wir alle erwartet hatten."])),
+                       ["Der Notfall war schlimmer als wir alle erwartet hatten."])
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: lines(["Era tan-", "to tempo che non lo vedevo, e mi mancava."])),
+                       ["Era tanto tempo che non lo vedevo, e mi mancava."])
+        var blocks: [TextBlock] = []
+        PDFTextExtractor.appendPageParagraphs(&blocks, PDFTextExtractor.paragraphs(from: lines(["Elle est par-"])), page: 1)
+        PDFTextExtractor.appendPageParagraphs(&blocks, PDFTextExtractor.paragraphs(from: lines(["tie hier soir avec ses amis."])),
+                                              page: 2)
+        XCTAssertEqual(blocks.map { TextNormalizer.normalize($0.text) }, ["Elle est partie hier soir avec ses amis."])
+
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: lines(["Il est main-", "tenant parti."]), english: false),
+                       ["Il est maintenant parti."])
+        let french = lines(["Il faisait encore nuit quand nous sommes partis de la maison,",
+                            "et personne ne savait vraiment où la route allait nous mener."])
+        XCTAssertFalse(PDFTextExtractor.readsAsEnglish(PDFTextExtractor.languageSample(Array(repeating: french, count: 30))))
+        XCTAssertTrue(PDFTextExtractor.readsAsEnglish(PDFTextExtractor.languageSample(
+            [lines(["It was still dark when we left the house, and nobody", "knew where the road would take us."])])))
+    }
+
     /// H007: a typeset book marks its paragraphs with a first-line indent
     /// and even leading. Each indent after a finished sentence, or after a
     /// line that stops short of the justified edge, opens a paragraph; a
@@ -389,6 +419,55 @@ final class PDFTextExtractorTests: XCTestCase {
                      line("to a second line and ends here.", 54, 200),
                      line("A sentence that starts at the margin.", 54, 220)]
         XCTAssertEqual(PDFTextExtractor.paragraphs(from: flush).count, 1)
+    }
+
+    /// I012: on a page of one-line exchanges the indent, not the margin, is
+    /// the commonest start. The margin is then the column the few wrapped
+    /// lines run on at, so each exchange is still its own paragraph, curly
+    /// quotes and all. A hanging indent (entries set out, their run-on
+    /// lines in) is not read that way.
+    func testDialoguePagesKeepTheirParagraphs() {
+        typealias Line = PDFTextExtractor.Line
+        var y: CGFloat = 600
+        func line(_ text: String, _ minX: CGFloat, _ maxX: CGFloat) -> Line {
+            defer { y -= 14 }
+            return Line(text: text, y: y, height: 12, minX: minX, maxX: maxX)
+        }
+        let page = [
+            line("\u{201C}Where are you going?\u{201D}", 90, 200),
+            line("\u{201C}Out.\u{201D}", 90, 120),
+            line("\u{201C}Out where?\u{201D}", 90, 160),
+            line("\"Just out.\"", 90, 150),
+            line("He looked at her for a long moment over the rim of his", 90, 378),
+            line("cup and said nothing at all.", 72, 230),
+            line("\u{201C}When will you be back?\u{201D}", 90, 220),
+            line("\u{201C}Late.\u{201D}", 90, 125),
+            line("\u{201C}How late?\u{201D}", 90, 150),
+            line("She shrugged and pulled on her coat, and the door shut", 90, 378),
+            line("behind her before he could answer.", 72, 260),
+            line("\u{201C}Fine.\u{201D}", 90, 125),
+        ]
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: page), [
+            "\"Where are you going?\"", "\"Out.\"", "\"Out where?\"", "\"Just out.\"",
+            "He looked at her for a long moment over the rim of his cup and said nothing at all.",
+            "\"When will you be back?\"", "\"Late.\"", "\"How late?\"",
+            "She shrugged and pulled on her coat, and the door shut behind her before he could answer.",
+            "\"Fine.\"",
+        ])
+
+        y = 600
+        let hanging = [
+            line("Abbott, Edwin. Flatland: A Romance of Many", 72, 378),
+            line("Dimensions. London: Seeley, 1884.", 90, 300),
+            line("Baum, L. Frank. The Wonderful Wizard of Oz.", 72, 378),
+            line("Chicago: George M. Hill, 1900.", 90, 290),
+            line("Carroll, Lewis. Alice's Adventures in Wonderland.", 72, 378),
+            line("London: Macmillan, 1865.", 90, 260),
+            line("Eliot, George. Middlemarch. Edinburgh: William", 72, 378),
+            line("Blackwood and Sons, 1871. Reprinted in a cheaper", 90, 378),
+            line("edition, with the author's corrections.", 90, 300),
+        ]
+        XCTAssertEqual(PDFTextExtractor.indentBreaks(hanging), [])
     }
 
     /// H007 end to end: a CoreText-typeset trade page (first-line indents,

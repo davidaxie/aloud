@@ -409,14 +409,20 @@ enum HeadingChapters {
     }
 
     /// A bare "CHAPTER ONE"'s title: the next paragraph, on the same page,
-    /// when it is short and unpunctuated ("Traction Channels").
+    /// when it is short and unpunctuated ("Traction Channels"). Chinese and
+    /// Japanese space no words, so there short is thirty characters, as a
+    /// heading's own title, with no sentence mark or closing quote: "镇上",
+    /// not the chapter's opening paragraph or a line of dialogue.
     private static func titleLine(after index: Int, in content: DocContent) -> String? {
         let paragraphs = content.paragraphs
         guard index + 1 < paragraphs.count, paragraphs[index + 1].page == paragraphs[index].page else { return nil }
         let text = ChapterText.paragraphText(paragraphs[index + 1], in: content)
         let words = text.split(whereSeparator: \.isWhitespace)
         guard !words.isEmpty, words.count <= 8, let last = text.last,
-              !".!?\"\u{201D}".contains(last) else { return nil }
+              !".!?\"\u{201D}」』…".contains(last) else { return nil }
+        if text.unicodeScalars.contains(where: PDFTextExtractor.isUnspacedCJK) {
+            guard text.count <= 30, !text.contains(where: { "。！？!?".contains($0) }) else { return nil }
+        }
         return text
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import PDFKit
 
 /// Extraction failure taxonomy, shared by the PDF and plain-text extractors.
@@ -64,6 +65,7 @@ struct PDFTextExtractor {
         // per page for the ones that run through a chapter or alternate.
         let running = Self.runningHeadersByPage(pageLines)
         let romanFolios = Self.romanFolioLines(pageLines)
+        let english = Self.readsAsEnglish(Self.languageSample(pageLines))
 
         // Pass 2: strip noise, fold into paragraphs, stitch across pages.
         var blocks: [TextBlock] = []
@@ -74,9 +76,9 @@ struct PDFTextExtractor {
                 pageHeaders[index + 1] = header
             }
             let cleaned = Self.stripNoise(lines, running: running[index], romanFolios: romanFolios[index])
-            let paragraphs = Self.paragraphs(from: cleaned)
+            let paragraphs = Self.paragraphs(from: cleaned, english: english)
             if !paragraphs.isEmpty { pagesWithText += 1 }
-            Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1)
+            Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1, english: english)
         }
         // A scan whose only text layer is a cover sheet or a usage notice
         // reads as having no text, not as a book of a few sentences.
@@ -153,8 +155,9 @@ struct PDFTextExtractor {
     /// noticeably (> 1.6x) larger than the page's typical leading, or a
     /// first-line indent (`indentBreaks`). Wrapped lines are joined with
     /// conservative de-hyphenation, and every folded paragraph is
-    /// normalized so the stitching heuristics see plain ASCII.
-    static func paragraphs(from lines: [Line]) -> [String] {
+    /// normalized so the stitching heuristics see plain ASCII. `english`
+    /// is the book's language for a line-end hyphen (see `appendLine`).
+    static func paragraphs(from lines: [Line], english: Bool? = nil) -> [String] {
         guard !lines.isEmpty else { return [] }
 
         let typical = typicalGap(lines)
@@ -169,7 +172,7 @@ struct PDFTextExtractor {
                 paragraphs.append(buffer)
                 buffer = ""
             }
-            buffer = buffer.isEmpty ? line.text : appendLine(buffer, line.text)
+            buffer = buffer.isEmpty ? line.text : appendLine(buffer, line.text, english: english)
         }
         if !buffer.isEmpty { paragraphs.append(buffer) }
 
@@ -201,13 +204,16 @@ struct PDFTextExtractor {
     /// set in by the page's usual indent (half a line to four lines high)
     /// after one that ended a sentence or, in justified text, stopped short
     /// of the right edge. Lines that share the inset and run on (a block
-    /// quote) stay together; a centred heading sits further in.
+    /// quote) stay together; a centred heading sits further in. On a page
+    /// of one-line exchanges the indent is the commonest start, and the
+    /// margin is where the few wrapped lines run on (`setOutMargin`).
     static func indentBreaks(_ lines: [Line]) -> Set<Int> {
         guard lines.count >= 3 else { return [] }
         let height = median(lines.map(\.height))
         let tolerance = max(1.5, height * 0.15)
-        guard let margin = mostCommon(lines.map(\.minX)) else { return [] }
-        let atMargin = lines.filter { abs($0.minX - margin) <= tolerance }.count
+        guard let common = mostCommon(lines.map(\.minX)) else { return [] }
+        let margin = setOutMargin(lines, from: common, height: height, tolerance: tolerance) ?? common
+        let atMargin = lines.filter { abs($0.minX - margin) <= tolerance || abs($0.minX - common) <= tolerance }.count
         let insets = lines.map(\.minX).filter { $0 - margin > height * 0.5 && $0 - margin < height * 4 }
         guard atMargin * 2 >= lines.count, let indent = mostCommon(insets),
               let right = mostCommon(lines.map(\.maxX)) else { return [] }
@@ -223,17 +229,43 @@ struct PDFTextExtractor {
         return breaks
     }
 
+    /// The margin to the left of the commonest start, when that start is
+    /// the indent: a column half a line to four lines further out, of two
+    /// or more lines that mostly run on from an unfinished one, as a
+    /// wrapped paragraph's do, while the commonest start's lines mostly
+    /// follow a finished one, as one-line paragraphs do. A hanging
+    /// indent's set-out lines open entries after finished ones: nil.
+    private static func setOutMargin(_ lines: [Line], from common: CGFloat,
+                                     height: CGFloat, tolerance: CGFloat) -> CGFloat? {
+        let outside = lines.map(\.minX).filter { common - $0 > height * 0.5 && common - $0 < height * 4 }
+        guard let column = mostCommon(outside) else { return nil }
+        func starts(at x: CGFloat) -> (count: Int, afterFinished: Int) {
+            let starts = lines.indices.dropFirst().filter { abs(lines[$0].minX - x) <= tolerance }
+            return (starts.count, starts.filter { looksFinished(lines[$0 - 1].text) }.count)
+        }
+        let out = starts(at: column), inner = starts(at: common)
+        guard out.count >= 2, out.afterFinished * 2 < out.count,
+              inner.afterFinished * 2 > inner.count else { return nil }
+        return column
+    }
+
     /// Append a wrapped line, de-hyphenating words broken across the break.
     /// A soft hyphen only ever marks a break inside a word, so any script's
     /// "Schwarzwäl\u{AD}" + "der" is joined here. A normal hyphen after an
     /// ASCII letter, before a lowercase one, is kept with a line break
-    /// ("inter-⏎national"): `TextNormalizer.normalize`, which runs on every
-    /// folded paragraph and stitched block, re-joins a syllable split and
-    /// keeps a compound wrapped at its own hyphen ("well-⏎known").
-    static func appendLine(_ buffer: String, _ next: String) -> String {
+    /// ("inter-⏎national") in English: `TextNormalizer.normalize`, which
+    /// runs on every folded paragraph and stitched block, re-joins a
+    /// syllable split and keeps a compound wrapped at its own hyphen
+    /// ("well-⏎known"). Its word list is English, so in other languages
+    /// the split is re-joined here ("main-⏎tenant"). `english` is the
+    /// book's; nil reads the text either side of the break.
+    static func appendLine(_ buffer: String, _ next: String, english: Bool? = nil) -> String {
         let nextTrim = next.replacing(#/^\s+/#, with: "")
         if buffer.firstMatch(of: #/[A-Za-z]-$/#) != nil && nextTrim.firstMatch(of: #/^[a-z]/#) != nil {
-            return buffer + "\n" + nextTrim
+            if english ?? readsAsEnglish(String(buffer.suffix(300)) + " " + nextTrim.prefix(100)) {
+                return buffer + "\n" + nextTrim
+            }
+            return String(buffer.dropLast()) + nextTrim
         }
         if endsInSoftHyphen(buffer) && nextTrim.firstMatch(of: #/^\p{Ll}/#) != nil {
             return buffer.replacing(#/\u{00AD}$/#, with: "") + nextTrim
@@ -246,6 +278,22 @@ struct PDFTextExtractor {
             return head + nextTrim
         }
         return head + " " + nextTrim
+    }
+
+    /// Whether the on-device recognizer reads `text` as English, the one
+    /// language `TextNormalizer`'s hyphen rule has a word list for.
+    static func readsAsEnglish(_ text: String) -> Bool {
+        NLLanguageRecognizer.dominantLanguage(for: text) == .english
+    }
+
+    /// A few lines from the middle of pages spread across the book, past
+    /// their running heads: its language in one look, not one per page.
+    static func languageSample(_ pageLines: [[Line]]) -> String {
+        let step = max(1, pageLines.count / 20)
+        return stride(from: 0, to: pageLines.count, by: step).flatMap { index in
+            let lines = pageLines[index]
+            return lines.dropFirst(lines.count / 3).prefix(5).map(\.text)
+        }.joined(separator: " ")
     }
 
     /// Han, kana, and the CJK and fullwidth punctuation set between them.
@@ -466,9 +514,10 @@ struct PDFTextExtractor {
     /// True if text ends a sentence (terminal punctuation, ignoring closers),
     /// Chinese and Japanese "。" and "」" included (NFKC has already made
     /// "！" and "？" plain), and the Devanagari danda "।" and "॥", the
-    /// Arabic "؟" and the Urdu "۔".
+    /// Arabic "؟" and the Urdu "۔". A page's raw lines still have curly
+    /// closing quotes ("Out.”"), so those count too.
     static func looksFinished(_ text: String) -> Bool {
-        text.firstMatch(of: #/[.!?…。।॥؟۔]["')\]」』]?\s*$/#) != nil
+        text.firstMatch(of: #/[.!?…。।॥؟۔]["'\u{201D}\u{2019})\]」』]?\s*$/#) != nil
     }
 
     /// Korean, Arabic, Hebrew, Devanagari, Thai: a letter of a script with
@@ -496,7 +545,8 @@ struct PDFTextExtractor {
     /// the same kind, or the previous ended mid-hyphenation, normal or soft).
     static func appendPageParagraphs(_ blocks: inout [TextBlock],
                                      _ paragraphs: [String],
-                                     page: Int) {
+                                     page: Int,
+                                     english: Bool? = nil) {
         for (index, paragraph) in paragraphs.enumerated() {
             if index == 0,
                let previous = blocks.last,
@@ -506,7 +556,7 @@ struct PDFTextExtractor {
                    || continuesCaseless(previous.text, paragraph)
                    || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil
                    || endsInSoftHyphen(previous.text) {
-                blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph),
+                blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph, english: english),
                                                      page: previous.page)
             } else {
                 blocks.append(TextBlock(text: paragraph, page: page))
