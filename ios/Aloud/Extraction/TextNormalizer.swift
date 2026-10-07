@@ -192,7 +192,14 @@ enum TextNormalizer {
             case 0x201C, 0x201D, 0x201E, 0x201F:
                 out.append("\"")
             // Figure/en/em dash, horizontal bar → spaced hyphen (spoken pause).
-            case 0x2012...0x2015:
+            // After a number an em dash or bar is a spaced double hyphen, the
+            // ASCII em dash: "In 1915—20 years later" is a clause break, not
+            // the range "1915–20", and SpokenYears reads only a single
+            // hyphen as "to". Both display as an em dash.
+            case 0x2014, 0x2015:
+                let previous = out.unicodeScalars.reversed().first { $0 != " " }
+                out.append(previous.map { (0x30...0x39).contains($0.value) } == true ? " -- " : " - ")
+            case 0x2012, 0x2013:
                 out.append(" - ")
             // Ellipsis.
             case 0x2026:

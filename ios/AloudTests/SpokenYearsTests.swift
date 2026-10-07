@@ -170,6 +170,23 @@ final class SpokenYearsTests: XCTestCase {
         XCTAssertEqual(KokoroSherpaEngine.spokenText("in 2005.", lang: "en-US"), "in two thousand five.")
     }
 
+    /// H039: an em dash is a clause break, so Kokoro says the year and
+    /// pauses; an en dash is still a range, and so is an imported book's
+    /// stored spaced hyphen.
+    func testEmDashAfterAYearIsNotARange() {
+        XCTAssertEqual(KokoroSherpaEngine.spokenText(
+            TextNormalizer.normalize("In 1915\u{2014}20 years later he came home."), lang: "en-US"),
+            "In nineteen fifteen -- 20 years later he came home.")
+        XCTAssertEqual(KokoroSherpaEngine.spokenText(
+            TextNormalizer.normalize("Born in 1850\u{2014}3 years before the war"), lang: "en-US"),
+            "Born in eighteen fifty -- 3 years before the war")
+        XCTAssertEqual(KokoroSherpaEngine.spokenText(
+            TextNormalizer.normalize("In 1914\u{2013}18 men died."), lang: "en-US"),
+            "In nineteen fourteen to eighteen men died.")
+        XCTAssertEqual(KokoroSherpaEngine.spokenText("In 1914 - 18 men died.", lang: "en-US"),
+                       "In nineteen fourteen to eighteen men died.")
+    }
+
     /// The display text keeps its digits: years are spoken-only.
     func testTextNormalizerLeavesYearsAsDigits() {
         XCTAssertEqual(TextNormalizer.normalize("in 1915, 1914\u{2013}1918"), "in 1915, 1914 - 1918")

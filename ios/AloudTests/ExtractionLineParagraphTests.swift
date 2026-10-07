@@ -103,6 +103,51 @@ final class ExtractionLineParagraphTests: XCTestCase {
             wrapped("plain", sentences: 20, width: 70).map { Substring($0) }), "no indents: one paragraph as before")
     }
 
+    /// H000: a Chinese novel written one paragraph per line, indented with
+    /// ideographic spaces and with no blank lines, keeps its paragraphs and
+    /// its 第N章 chapters instead of importing as one book-sized paragraph.
+    func testChineseOneParagraphPerLineKeepsParagraphsAndChapters() async throws {
+        var lines = ["第一章 山村少年"]
+        for index in 1...20 {
+            lines.append("\u{3000}\u{3000}清晨，薄雾笼罩着整个小山村，第\(index)只鸡叫了起来。")
+            if index % 3 == 0 { lines.append("\u{3000}\u{3000}“你要去哪里？”母亲问道。") }
+        }
+        lines.append("第二章 镇上")
+        for index in 1...12 { lines.append("\u{3000}\u{3000}镇上的集市很热闹，人们来来往往，第\(index)个摊位卖着包子……") }
+
+        let content = try await extract(lines.joined(separator: "\n"))
+
+        XCTAssertEqual(content.paragraphs.count, lines.count)
+        XCTAssertEqual(content.pageCount, 2)
+        XCTAssertEqual(content.derivedChapters.count, 2)
+        XCTAssertEqual(content.sentences.first?.text, "第一章 山村少年")
+        XCTAssertTrue(TextExtractor.isOneParagraphPerLine(
+            lines.map { Substring($0.replacingOccurrences(of: "\u{3000}\u{3000}", with: "    ")) }),
+            "every line indented and ending in 。 or ……: still one paragraph per line")
+    }
+
+    /// Aozora Bunko layout: narration indented with one ideographic space,
+    /// dialogue at the margin, lines ending in 。 or 」. Hard-wrapped CJK
+    /// text that indents only each paragraph's first line splits at those
+    /// indents instead.
+    func testJapaneseAndWrappedCJKLayouts() {
+        let aozora = ["第一章", "\u{3000}私はその人を常に先生と呼んでいた。", "「どこへ行くの」",
+                      "\u{3000}だからここでもただ先生と書くだけで本名は打ち明けない。", "「海へ」",
+                      "\u{3000}私が先生と知り合いになったのは鎌倉である。", "「そうですか」",
+                      "\u{3000}その時私はまだ若々しい書生であった。"]
+        XCTAssertTrue(TextExtractor.isOneParagraphPerLine(aozora.map { Substring($0) }))
+
+        let paragraph = "清晨薄雾笼罩着整个小山村远处传来几声鸡鸣母亲早早起来生火做饭父亲扛着锄头下地去了孩子们还在睡梦中"
+        var wrapped: [Substring] = []
+        for _ in 1...8 {
+            var rest = Substring("\u{3000}\u{3000}" + paragraph)
+            while !rest.isEmpty { wrapped.append(rest.prefix(20)); rest = rest.dropFirst(20) }
+        }
+        XCTAssertFalse(TextExtractor.isOneParagraphPerLine(wrapped))
+        XCTAssertTrue(TextExtractor.isIndentedParagraphLayout(wrapped))
+        XCTAssertEqual(TextExtractor.paragraphs(in: wrapped.joined(separator: "\n")).count, 8)
+    }
+
     func testIndentedWrappedParagraphsAreNotSplitPerLine() {
         let lines = (1...12).flatMap { wrapped("topic \($0)", sentences: 3, width: 110, indent: "    ") }
         XCTAssertFalse(TextExtractor.isOneParagraphPerLine(lines.map { Substring($0) }))

@@ -66,6 +66,15 @@ final class TextNormalizerTests: XCTestCase {
         XCTAssertEqual(TextNormalizer.normalize("wait\u{2014}no"), "wait - no")
     }
 
+    /// H039: after a number an em dash (a clause break) keeps apart from an
+    /// en dash (a range): it becomes the ASCII em dash, "--".
+    func testEmDashAfterANumberBecomesDoubleHyphen() {
+        XCTAssertEqual(TextNormalizer.normalize("In 1915\u{2014}20 years later"), "In 1915 -- 20 years later")
+        XCTAssertEqual(TextNormalizer.normalize("in 1850 \u{2015} 3 years"), "in 1850 -- 3 years")
+        XCTAssertEqual(TextNormalizer.normalize("1914\u{2013}18"), "1914 - 18")
+        XCTAssertEqual(TextNormalizer.normalize("wait\u{2014}20 of them"), "wait - 20 of them")
+    }
+
     func testEllipsisExpanded() {
         XCTAssertEqual(TextNormalizer.normalize("Wait\u{2026} what"), "Wait... what")
     }

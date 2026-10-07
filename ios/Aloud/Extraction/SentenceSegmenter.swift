@@ -351,16 +351,20 @@ enum SentenceSegmenter {
         if s.count <= maxLen { return s.isEmpty ? [] : [s] }
 
         let chars = Array(s)
-        let clause: Set<Character> = [",", ";", ":", ")", "—", "–"]
+        let clause: Set<Character> = [",", ";", ":", ")", "—", "–", "、", "，", "；", "："]
 
         // Candidate cut points: the index just past clause punctuation + whitespace.
+        // Chinese and Japanese put no space after a clause mark ("，" is ","
+        // once normalized), so there a mark beside a CJK character is enough.
         var breaks: [Int] = []
         var i = 0
         while i < chars.count {
             if clause.contains(chars[i]) {
                 var j = i + 1
                 while j < chars.count && chars[j].isWhitespace { j += 1 }
-                if j > i + 1 { breaks.append(j) }
+                if j > i + 1 || (j < chars.count && (isUnspacedCJK(chars[i]) || isUnspacedCJK(chars[j]))) {
+                    breaks.append(j)
+                }
                 i = j
             } else {
                 i += 1
@@ -393,6 +397,10 @@ enum SentenceSegmenter {
         let tail = String(chars[start...]).trimmingCharacters(in: .whitespaces)
         if !tail.isEmpty { chunks.append(tail) }
         return chunks
+    }
+
+    private static func isUnspacedCJK(_ character: Character) -> Bool {
+        character.unicodeScalars.first.map(PDFTextExtractor.isUnspacedCJK) ?? false
     }
 
     /// Full paragraph → chunk pipeline: sentence-split, then soft-split any
@@ -443,8 +451,44 @@ enum SentenceSegmenter {
         return extra
     }
 
+    /// Rough syllables a voice says for the numbers in a token, which
+    /// `estimatedSyllables` (letters only) counts as none: a year in
+    /// 1100...2099 is four ("nineteen fifteen", as `SpokenYears` has Kokoro
+    /// say it), any other number grows with its digits ("1,500", "one
+    /// thousand five hundred"), and a dash between two numbers adds the "to".
+    static func spokenNumberSyllables(_ token: String) -> Int {
+        guard token.utf8.contains(where: { $0 >= 0x30 && $0 <= 0x39 }) else { return 0 }
+        let chars = Array(token)
+        func isDigit(_ k: Int) -> Bool { k >= 0 && k < chars.count && chars[k].isASCII && chars[k].isNumber }
+        var total = 0
+        var k = 0
+        while k < chars.count {
+            guard isDigit(k) else { k += 1; continue }
+            // "1914-1918", "1862–3": the dash is read "to".
+            if k >= 2, "-–".contains(chars[k - 1]), isDigit(k - 2) { total += 1 }
+            var digits = 0, value = 0, grouped = false
+            while k < chars.count {
+                if isDigit(k) {
+                    digits += 1
+                    if digits <= 9 { value = value * 10 + Int(chars[k].asciiValue! - 48) }
+                } else if ",.".contains(chars[k]), isDigit(k + 1) {
+                    grouped = true   // "1,500", "3.14"
+                } else {
+                    break
+                }
+                k += 1
+            }
+            if digits == 4, !grouped, (1100...2099).contains(value) {
+                total += 4
+            } else {
+                total += digits <= 3 ? [0, 1, 2, 4][digits] : 2 * digits - 2
+            }
+        }
+        return total
+    }
+
     private static func tokenWeight(_ token: String) -> Double {
-        Double(max(1, estimatedSyllables(token))) + trailingPauseWeight(token)
+        Double(max(1, estimatedSyllables(token) + spokenNumberSyllables(token))) + trailingPauseWeight(token)
     }
 
     /// Per-character mask marking which characters fall inside a bracketed span

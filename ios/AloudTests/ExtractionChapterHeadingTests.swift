@@ -280,6 +280,38 @@ final class ExtractionChapterHeadingTests: XCTestCase {
         ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"][value - 1]
     }
 
+    /// H012: chapter markers in the languages the importer decodes on
+    /// purpose (GB18030, Shift-JIS, EUC-KR, CP1251, KOI8-R, Latin-1).
+    func testLocalizedChapterMarkersAreHeadings() {
+        for heading in ["第一章 山村少年", "第二章", "第十二回\u{3000}宴桃园豪杰三结义\u{3000}斩黄巾英雄首立功", "第3話",
+                        "제1장", "Глава 1", "ГЛАВА ПЕРВАЯ", "Глава первая\nДетство", "Глава 1. Детство",
+                        "Часть вторая", "Kapitel 1", "Erstes Kapitel", "ERSTES KAPITEL.", "Chapitre premier",
+                        "CHAPITRE I", "Capítulo I", "CAPÍTULO PRIMERO", "Capitolo 3"] {
+            XCTAssertTrue(TextExtractor.isChapterHeading(heading), heading)
+        }
+    }
+
+    /// Conservative: the marker must carry a numeral or an ordinal and no
+    /// sentence may follow it on the line.
+    func testLocalizedMarkerProseIsNotAHeading() {
+        for prose in ["第一章就讲完了。", "第二天早上，他出门了。",
+                      "第一章 我们回家了。天气很好，我们去公园散步。他说明天早上会来。",
+                      "제1장 우리는 오늘 공원에 갔다. 그는 내일 아침에 온다고 말했다.",
+                      "Глава первая. Мы пошли домой, и было тихо. Он сказал, что придёт завтра утром.",
+                      "Глава семьи сказал, что придёт.", "Глава 5 закона гласит", "Kapitel 1 regelt das.",
+                      "Kapitelweise lesen wir es."] {
+            XCTAssertFalse(TextExtractor.isChapterHeading(prose), prose)
+        }
+    }
+
+    func testRussianChaptersStartPages() async throws {
+        let paragraph = "Мы пошли домой, и было тихо. Он сказал, что придёт завтра утром."
+        let content = try await extract(["Глава первая", paragraph, paragraph, "Глава вторая", paragraph]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(content.pageCount, 2)
+        XCTAssertEqual(content.derivedChapters.count, 2)
+    }
+
     func testSingleLineHeadingsUnchanged() {
         XCTAssertTrue(TextExtractor.isChapterHeading("CHAPTER XII"))
         XCTAssertTrue(TextExtractor.isChapterHeading("Chapter 1. Down the Rabbit-Hole"))

@@ -74,6 +74,28 @@ final class SentenceSegmenterTests: XCTestCase {
         }
     }
 
+    /// H046: Chinese and Japanese write no space after a clause mark, and
+    /// "，" is "," once normalized: a long sentence still breaks after a
+    /// clause mark, not mid-word at exactly the length limit.
+    func testLongCJKSentenceSplitsAfterClauseMarks() {
+        let chinese = String(repeating: "他走到池边,看那水中游鱼来来去去", count: 25) + "。"
+        let japanese = String(repeating: "私は古い喫茶店に入り、珈琲を一杯頼んだ", count: 22) + "。"
+        for (sentence, mark) in [(chinese, ","), (japanese, "、")] {
+            let chunks = SentenceSegmenter.softSplitLongSentence(sentence)
+            XCTAssertGreaterThanOrEqual(chunks.count, 2)
+            XCTAssertEqual(chunks.joined(), sentence, "nothing lost")
+            for chunk in chunks.dropLast() {
+                XCTAssertLessThanOrEqual(chunk.count, SentenceSegmenter.maxSentenceLength)
+                XCTAssertTrue(chunk.hasSuffix(mark), String(chunk.suffix(8)))
+            }
+        }
+        // A thousands comma between digits is still no clause break.
+        let digits = String(repeating: "1,500,000 ", count: 50).trimmingCharacters(in: .whitespaces)
+        for chunk in SentenceSegmenter.softSplitLongSentence(digits) {
+            XCTAssertTrue(chunk.hasPrefix("1,500,000"), String(chunk.prefix(12)))
+        }
+    }
+
     func testChunkParagraphCombinesBothPasses() {
         let text = "First sentence here. " + String(repeating: "clause after clause, ", count: 25) + "done."
         let chunks = SentenceSegmenter.chunkParagraph(text)
@@ -122,6 +144,25 @@ final class SentenceSegmenterTests: XCTestCase {
         XCTAssertEqual(SentenceSegmenter.estimatedSyllables("understanding"), 4)
         XCTAssertEqual(SentenceSegmenter.estimatedSyllables("123"), 0)
         XCTAssertEqual(SentenceSegmenter.estimatedSyllables(""), 0)
+    }
+
+    /// H040: a number weighs what the voice says for it, so the word
+    /// highlight doesn't run ahead of a sentence full of years.
+    func testNumberTokensWeighTheirSpokenLength() throws {
+        XCTAssertEqual(SentenceSegmenter.spokenNumberSyllables("1915"), 4)
+        XCTAssertEqual(SentenceSegmenter.spokenNumberSyllables("1914-1918"), 9)
+        XCTAssertEqual(SentenceSegmenter.spokenNumberSyllables("1,500"), 6)
+        XCTAssertEqual(SentenceSegmenter.spokenNumberSyllables("7"), 1)
+        XCTAssertEqual(SentenceSegmenter.spokenNumberSyllables("words"), 0)
+
+        let tokens = SentenceSegmenter.tokenizeSentence(
+            "Between 1914-1918 and 1939-1945 over 1,500 towns were destroyed.")
+        let towns = try XCTUnwrap(tokens.firstIndex { $0.text == "towns" })
+        let total = tokens.reduce(0) { $0 + $1.weight }
+        let before = tokens[..<towns].reduce(0) { $0 + $1.weight }
+        // Spoken, "towns" comes at about 85% of the clip; weighing the
+        // numbers as one syllable each put it at 59%.
+        XCTAssertGreaterThan(before / total, 0.75)
     }
 
     // MARK: - Bracket skipping

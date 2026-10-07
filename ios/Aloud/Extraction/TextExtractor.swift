@@ -95,11 +95,17 @@ struct TextExtractor {
         return indented * 20 >= count && indented * 2 <= count
     }
 
-    /// Leading spaces, a tab counting as four.
+    /// Leading spaces, a tab counting as four and an ideographic space
+    /// (U+3000, the Chinese and Japanese paragraph indent) as two.
     private static func indent(of line: Substring) -> Int {
         var width = 0
-        for byte in line.utf8 {
-            if byte == 0x20 { width += 1 } else if byte == 0x09 { width += 4 } else { break }
+        for scalar in line.unicodeScalars {
+            switch scalar.value {
+            case 0x20: width += 1
+            case 0x09: width += 4
+            case 0x3000: width += 2
+            default: return width
+            }
         }
         return width
     }
@@ -109,7 +115,8 @@ struct TextExtractor {
     /// starts "Part one of the…" stays in its paragraph.
     private static func isHeadingLine(at index: Int, in lines: [Substring]) -> Bool {
         let line = lines[index].trimmingCharacters(in: .whitespaces)
-        guard line.count <= 40, line.firstMatch(of: headingFirstLineRegex) != nil,
+        guard line.count <= 40,
+              line.firstMatch(of: headingFirstLineRegex) != nil || isLocalizedHeadingLine(line),
               line.firstMatch(of: midSentenceRegex) == nil, !isRunOnProse(line) else { return false }
         guard let next = lines[(index + 1)...].first(where: { !isBlank($0) }) else { return true }
         return indent(of: next) >= 2
@@ -134,16 +141,23 @@ struct TextExtractor {
     /// and the text isn't hard-wrapped. Text hard-wrapped at any width,
     /// indented or not, fails that last test: its lines that stop mid-sentence
     /// nearly all reach the wrap column, where a paragraph per line ends
-    /// wherever the paragraph does.
+    /// wherever the paragraph does. Chinese and Japanese novels use this
+    /// layout too, their lines ending in "。", "」" or "！" and indented
+    /// with ideographic spaces, which a wrapped line never repeats.
     static func isOneParagraphPerLine(_ lines: [Substring]) -> Bool {
         // Cheap exit for the usual layout, blank lines between paragraphs.
         let blankCount = lines.reduce(0) { isBlank($1) ? $0 + 1 : $0 }
         let count = lines.count - blankCount
         guard count >= 2, blankCount * 10 < count else { return false }
 
+        let ideographicIndents = lines.reduce(0) {
+            !isBlank($1) && $1.unicodeScalars.first?.value == 0x3000 ? $0 + 1 : $0
+        }
+        if ideographicIndents * 10 >= count * 9 { return true }
+
         let text = lines.filter { !isBlank($0) }.map { $0.trimmingCharacters(in: .whitespaces) }
         let lengths = text.map(\.count)
-        let endsSentence = text.map { $0.last.map { ".!?:\"”’".contains($0) } ?? false }
+        let endsSentence = text.map { $0.last.map { ".!?:\"”’。！？：」』…".contains($0) } ?? false }
         let ended = endsSentence.filter { $0 }.count
         // Nearly every line a whole sentence or more: no wrapping to speak of.
         if ended * 20 >= count * 17 { return true }
@@ -1067,6 +1081,36 @@ struct TextExtractor {
     private static let headingFirstLineRegex =
         #/^(?:(?:CHAPTER|Chapter|BOOK|Book|PART|Part|ACT|Act)(?:\s*$|[\s.:—–-]+(?!\w*,)(?:(?:[IVXLCDM]+|[ivxlc]+|\d+)\b|(?i:(?:the\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|fiftieth|last|final))\b))|PROLOGUE|Prologue|EPILOGUE|Epilogue|[IVXLC]+\.?$)/#
 
+    /// Chapter markers in the languages whose legacy encodings `read` decodes
+    /// on purpose: Chinese and Japanese "第一章 山村少年", "第十二回", "第3話";
+    /// Korean "제1장"; Russian "Глава 1", "ГЛАВА ПЕРВАЯ"; German "Kapitel 1",
+    /// "Erstes Kapitel"; French "Chapitre premier"; Spanish and Italian
+    /// "Capítulo I", "Capitolo 3". Only the marker with a numeral or an
+    /// ordinal, then the line's end or a title with no sentence break in it,
+    /// so "第一章就讲完了。", "Глава семьи сказал…" (the head of the family) and
+    /// "Глава первая. Мы пошли домой. Он…" stay prose.
+    private static let localizedHeadingRegex =
+        #/^(?:第[0-9０-９〇零一二三四五六七八九十百千两兩]+[章回節节卷部篇話话幕](?:[\s:：.．、·—–-][^。！？!?]*)?|제\s?[0-9]+\s?[장편부화](?:\s[^.!?]*)?|(?:(?:ГЛАВА|Глава|ЧАСТЬ|Часть)\s+(?:[IVXLCDM]+|[0-9]+|(?i:первая|вторая|третья|четвертая|четвёртая|пятая|шестая|седьмая|восьмая|девятая|десятая|последняя))|(?:KAPITEL|Kapitel)\s+(?:[IVXLCDM]+|[0-9]+)|(?i:erstes|zweites|drittes|viertes|fünftes|sechstes|siebentes|siebtes|achtes|neuntes|zehntes|elftes|zwölftes|letztes)\s+(?:KAPITEL|Kapitel)|(?:CHAPITRE|Chapitre)\s+(?:[IVXLCDM]+|[0-9]+|(?i:premier|première|dernier))|(?:CAPÍTULO|Capítulo|CAPITULO|Capitulo|CAPITOLO|Capitolo)\s+(?:[IVXLCDM]+|[0-9]+|(?i:primero|primo|único|unico)))(?!\w)(?:[.:]?|[\s.:—–-]+(?=[\p{Lu}\p{Lt}\p{Lo}0-9"«„“(])[^.!?…]*[.!?…]?))$/#
+
+    /// The first words of the markers above, so their regex runs only on
+    /// paragraphs that open with one.
+    private static let localizedMarkerWords: Set<String> = [
+        "глава", "часть", "kapitel", "chapitre", "capítulo", "capitulo", "capitolo",
+        "erstes", "zweites", "drittes", "viertes", "fünftes", "sechstes", "siebentes", "siebtes",
+        "achtes", "neuntes", "zehntes", "elftes", "zwölftes", "letztes",
+    ]
+
+    private static func opensLocalizedMarker(_ line: Substring) -> Bool {
+        guard let initial = line.first else { return false }
+        if initial == "第" || initial == "제" { return true }
+        let word = line.prefix(while: \.isLetter)
+        return (5...9).contains(word.count) && localizedMarkerWords.contains(word.lowercased())
+    }
+
+    private static func isLocalizedHeadingLine(_ line: String) -> Bool {
+        opensLocalizedMarker(line[...]) && line.firstMatch(of: localizedHeadingRegex) != nil
+    }
+
     /// Prose after the marker: a full stop followed by a lowercase word
     /// ("BOOK II "Both to frequent" (4). Gr. τὸ μή…", an endnote).
     private static let midSentenceRegex = #/[.!?]["”’)]?\s+\p{Ll}/#
@@ -1112,10 +1156,12 @@ struct TextExtractor {
                 }
             }
         }
-        // Cheap exit for body text: every marker starts with one of these.
+        // Cheap exit for body text: every marker starts with one of these,
+        // or is one of the localized ones.
         guard paragraph.utf8.count <= 600,
-              let initial = paragraph.first(where: { !$0.isWhitespace }),
-              "CBPAEIVXL".contains(initial) else { return false }
+              let initial = paragraph.first(where: { !$0.isWhitespace }) else { return false }
+        let localized = opensLocalizedMarker(paragraph.drop(while: \.isWhitespace))
+        guard localized || "CBPAEIVXL".contains(initial) else { return false }
         let newlines = paragraph.utf8.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
         guard newlines <= 2 else { return false }
         if newlines == 0 {
@@ -1123,14 +1169,16 @@ struct TextExtractor {
                 ? paragraph.trimmingCharacters(in: .whitespaces) : paragraph
             // "CHAPTER IV.–Treaty of 1804      34" is a Contents line, not a heading.
             return line.count <= 80 && line.firstMatch(of: pageNumberRegex) == nil
-                && line.firstMatch(of: headingRegex) != nil
+                && (line.firstMatch(of: headingRegex) != nil
+                    || localized && line.firstMatch(of: localizedHeadingRegex) != nil)
         }
         let lines = trimmedLines(paragraph)
         guard let first = lines.first, lines.count <= 3, lines.allSatisfy({ $0.count <= 80 }),
               paragraph.firstMatch(of: pageNumberRegex) == nil else {
             return false
         }
-        return first.firstMatch(of: headingFirstLineRegex) != nil
+        return (first.firstMatch(of: headingFirstLineRegex) != nil
+                || localized && first.firstMatch(of: localizedHeadingRegex) != nil)
             && first.firstMatch(of: midSentenceRegex) == nil && !isRunOnProse(first)
             && !lines.dropFirst().contains(where: startsLikeEntry)
             && !lines.dropFirst().contains(where: { $0.wholeMatch(of: pageColumnRegex) != nil })
