@@ -131,6 +131,20 @@ final class AppLintTests: XCTestCase {
         }
     }
 
+    /// L029: UI tests that need the Kokoro model read the shared seed that
+    /// ios/tools/fetch_kokoro_model.sh fills, never a session's scratch
+    /// directory, which is gone by the next run and turns them into skips.
+    func testUITestsReadTheSharedModelSeed() throws {
+        for root in [SourceTree.uiTestsRoot, SourceTree.macUITestsRoot] where SourceTree.exists(root) {
+            let sources = try SourceTree.sources(in: root)
+            XCTAssertEqual(SourceTree.files(containing: "/private/tmp/claude-", in: sources), [],
+                           "\(root.lastPathComponent) names no session scratch directory")
+        }
+        let sources = try SourceTree.sources(in: SourceTree.uiTestsRoot, only: ["KokoroPlaybackUITest.swift"])
+        let kokoro = try XCTUnwrap(sources["KokoroPlaybackUITest.swift"])
+        XCTAssertTrue(kokoro.contains("static let modelDirectory = \"/Users/Shared/AloudKokoroModel\""))
+    }
+
     /// The files whose text `pattern` matches, sorted.
     private static func files(matching pattern: NSRegularExpression, in sources: [String: String]) -> [String] {
         sources.filter { _, text in

@@ -12,12 +12,13 @@ import XCTest
 /// run starts on the default.
 final class KokoroPlaybackUITest: XCTestCase {
 
-    /// Host-Mac directory holding model.onnx + voices.bin. The simulator
-    /// runtime can read host paths, so the app uses it directly via the
-    /// -uitest-kokoro-model-path debug hook (survives test-runner reinstalls).
-    /// ListeningUITests uses the same model.
-    static let modelDirectory =
-        "/private/tmp/claude-501/-Users-davidxie-Library-CloudStorage-OneDrive-Personal-CS-Aloud--claude-worktrees-aloud-extension-review-3acd07/4577d8ff-d6c0-41ab-b12e-aec62982e34e/scratchpad/kokoro/kokoro-multi-lang-v1_0"
+    /// Host-Mac directory holding model.onnx + voices.bin: the shared seed
+    /// that ios/tools/fetch_kokoro_model.sh fills, the same one the Mac UI
+    /// tests read. The simulator runtime can read host paths, so the app
+    /// uses it directly via the -uitest-kokoro-model-path debug hook
+    /// (survives test-runner reinstalls). ListeningUITests and
+    /// HonestStopsUITest use the same model.
+    static let modelDirectory = "/Users/Shared/AloudKokoroModel"
 
     override func setUp() {
         continueAfterFailure = false
