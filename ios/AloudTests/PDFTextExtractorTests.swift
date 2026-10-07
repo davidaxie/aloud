@@ -186,6 +186,67 @@ final class PDFTextExtractorTests: XCTestCase {
         XCTAssertNil(content.pageHeaders?[5], "an opening title is no header")
     }
 
+    /// G005: short chapters' "CHAPTER n" openings sit at one height, set
+    /// apart, a few pages apart, and a devotional's "Day n" tops every page.
+    /// Each is numbered afresh, so none is a running header. A header that
+    /// repeats its chapter's number still is one.
+    func testNumberedChapterOpeningsAreNeverRunningHeaders() {
+        typealias Line = PDFTextExtractor.Line
+        let names = ["amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "heath", "inlet", "juniper"]
+        func body(_ page: Int, top: CGFloat) -> [Line] {
+            let word = names[page % 10] + " " + names[page / 10 % 10]
+            return (0..<4).map { Line(text: "The \(word) path wound along wall \(["one", "two", "three", "four"][$0]).",
+                                      y: top - CGFloat($0) * 20, height: 16) }
+        }
+        func kept(_ pages: [[Line]]) -> [String] {
+            let running = PDFTextExtractor.runningHeadersByPage(pages)
+            return pages.indices.flatMap { PDFTextExtractor.stripNoise(pages[$0], running: running[$0]).map(\.text) }
+        }
+
+        var short: [[Line]] = []
+        for chapter in 1...12 {
+            short.append([Line(text: "CHAPTER \(chapter)", y: 600, height: 16)] + body(short.count, top: 500))
+            short.append(body(short.count, top: 740))
+            short.append(body(short.count, top: 740))
+        }
+        XCTAssertEqual(kept(short).filter { $0.hasPrefix("CHAPTER") }.count, 12, "every opening stays")
+
+        let days = (1...30).map { [Line(text: "Day \($0)", y: 760, height: 16)] + body($0, top: 700) }
+        XCTAssertEqual(kept(days).filter { $0.hasPrefix("Day") }.count, 30, "every day's heading stays")
+
+        var headed: [[Line]] = []
+        for chapter in 1...3 {
+            headed.append([Line(text: "CHAPTER \(chapter)", y: 600, height: 16)] + body(headed.count, top: 500))
+            for _ in 1...4 {
+                headed.append([Line(text: "Chapter \(chapter) The Return", y: 760, height: 16)]
+                              + body(headed.count, top: 700))
+            }
+        }
+        let text = kept(headed)
+        XCTAssertFalse(text.contains { $0.hasSuffix("The Return") }, "a chapter's own running header goes")
+        XCTAssertEqual(text.filter { $0.hasPrefix("CHAPTER") }.count, 3)
+    }
+
+    /// G005 end to end: three-page chapters headed "Chapter n." keep their
+    /// headings in the text and list as chapters.
+    func testShortChaptersKeepTheirHeadingsAndRows() async throws {
+        let names = ["amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "heath", "inlet", "juniper"]
+        let url = try makePDF(pages: (0..<36).map { page -> [(String, CGFloat)] in
+            let word = names[page % 10] + " " + names[page / 10 % 10]
+            let top: CGFloat = page % 3 == 0 ? 300 : 80
+            var lines = (0..<4).map { ("The \(word) path wound past the \(names[$0]) wall.", top + CGFloat($0) * 20) }
+            if page % 3 == 0 { lines.insert(("Chapter \(page / 3 + 1).", 200), at: 0) }
+            return lines
+        })
+
+        let content = try await ExtractionPipeline().extract(pdfURL: url, progress: nil)
+        let joined = content.sentences.map(\.text).joined(separator: " ")
+        for chapter in 1...12 { XCTAssertTrue(joined.contains("Chapter \(chapter)."), "Chapter \(chapter) read aloud") }
+        let map = try XCTUnwrap(content.chapterMap)
+        XCTAssertEqual(map.source, .headings)
+        XCTAssertEqual(map.entries.count, 12, "\(map.entries.map(\.title))")
+    }
+
     /// F024: page images with one text page (a scan's usage notice or
     /// cover sheet) are a scanned PDF, not a book of a few sentences.
     func testMostlyScannedPDFThrowsNoReadableText() async throws {
@@ -219,6 +280,23 @@ final class PDFTextExtractorTests: XCTestCase {
         XCTAssertEqual(PDFTextExtractor.appendLine("今日は公園へ", "散歩に行きました。"), "今日は公園へ散歩に行きました。")
         XCTAssertEqual(PDFTextExtractor.appendLine("우리는 오늘", "공원에 갔다."), "우리는 오늘 공원에 갔다.")
         XCTAssertEqual(PDFTextExtractor.appendLine("plain words", "go on"), "plain words go on")
+    }
+
+    /// G022: a Chinese or Japanese sentence that a page break cuts is whole
+    /// again, with no space; one that ends in "。" or "」" stays its own
+    /// paragraph even when the next page opens with a year.
+    func testCJKSentencesRejoinAcrossPagesAndFullStopsFinishThem() {
+        func stitched(_ previous: String, _ next: String) -> [String] {
+            var blocks = [TextBlock(text: previous, page: 1)]
+            PDFTextExtractor.appendPageParagraphs(&blocks, [next], page: 2)
+            return blocks.map(\.text)
+        }
+        XCTAssertEqual(stitched("我们今天去", "公园散步。"), ["我们今天去公园散步。"])
+        XCTAssertEqual(stitched("今日は公園へ", "散歩に行きました。"), ["今日は公園へ散歩に行きました。"])
+        XCTAssertEqual(stitched("我们在公园散步。", "1949年10月1日，中华人民共和国成立。").count, 2)
+        XCTAssertEqual(stitched("「行きましょう。」", "2時に出発した。").count, 2)
+        XCTAssertEqual(stitched("我们在公园散步。", "第二天下雨了。").count, 2)
+        XCTAssertEqual(stitched("那是在", "1949年的秋天。"), ["那是在 1949年的秋天。"])
     }
 
     // MARK: - Helpers

@@ -345,6 +345,75 @@ final class PDFChapterTiersTests: XCTestCase {
         XCTAssertEqual(HeadingChapters.chapterNumber("CHAPTER XIV: Home"), 14)
     }
 
+    /// G000: numbering that starts again keeps every chapter, whatever
+    /// heads the new run: Emma's VOLUME II, A Tale of Two Cities' "Book
+    /// the Second", an omnibus's next novel, a Part heading mid-page. A
+    /// running header straight after its chapter's opening still counts once.
+    func testNumberingThatStartsAgainKeepsEveryChapter() throws {
+        let roman = ["I", "II", "III", "IV", "V"]
+        var page = 1
+        func next() -> Int { page += 1; return page }
+
+        // Emma: VOLUME I–III, CHAPTER I–IV in each, a running head inside each chapter.
+        var emma: [(page: Int, paragraphs: [[String]])] = [(1, [["EMMA"], ["By Jane Austen"]])]
+        for volume in roman.prefix(3) {
+            emma.append((next(), [["VOLUME \(volume)"]]))
+            for number in roman.prefix(4) {
+                emma.append((next(), [["CHAPTER \(number)"], ChapterFixtures.body(page)]))
+                emma.append((next(), [["Chapter \(number) Emma"], ChapterFixtures.body(page)]))
+            }
+        }
+        let volumes = try XCTUnwrap(HeadingChapters.entries(in: ChapterFixtures.book(emma)))
+        XCTAssertEqual(volumes.count, 12, "\(volumes.map(\.title))")
+        let sections: [String?] = ["VOLUME I", "VOLUME II", "VOLUME III"].flatMap { Array(repeating: $0, count: 4) }
+        XCTAssertEqual(volumes.map(\.section), sections)
+
+        // A Tale of Two Cities: Book the First (3), the Second (5), the Third (3).
+        page = 1
+        var cities: [(page: Int, paragraphs: [[String]])] = [(1, [[ChapterFixtures.copyright]])]
+        for (book, count) in [("First\u{2014}Recalled to Life", 3), ("Second\u{2014}the Golden Thread", 5),
+                              ("Third\u{2014}the Track of a Storm", 3)] {
+            cities.append((next(), [["Book the \(book)"]]))
+            for number in roman.prefix(count) {
+                cities.append((next(), [["CHAPTER \(number)."], ["The Period"], ChapterFixtures.body(page)]))
+            }
+        }
+        let books = try XCTUnwrap(HeadingChapters.entries(in: ChapterFixtures.book(cities)))
+        XCTAssertEqual(books.count, 11, "\(books.map(\.title))")
+        XCTAssertEqual(books.last?.title, "CHAPTER III: The Period")
+        XCTAssertEqual(books.last?.section, "Book the Third\u{2014}the Track of a Storm")
+
+        // An omnibus's second novel, and a Part heading below the page's first line.
+        page = 1
+        var omnibus: [(page: Int, paragraphs: [[String]])] = [(1, [[ChapterFixtures.copyright]])]
+        for novel in ["THE FIRST NOVEL", "THE SECOND NOVEL"] {
+            omnibus.append((next(), [[novel]]))
+            for number in ["ONE", "TWO", "THREE"] {
+                omnibus.append((next(), [["CHAPTER \(number)"], ChapterFixtures.body(page)]))
+            }
+        }
+        omnibus.append((next(), [ChapterFixtures.body(page), ["PART THREE"], ["CHAPTER ONE"], ["Late Start"]]))
+        let novels = try XCTUnwrap(HeadingChapters.entries(in: ChapterFixtures.book(omnibus)))
+        XCTAssertEqual(novels.map(\.title), ["CHAPTER ONE", "CHAPTER TWO", "CHAPTER THREE",
+                                            "CHAPTER ONE", "CHAPTER TWO", "CHAPTER THREE",
+                                            "CHAPTER ONE: Late Start"])
+
+        // A preface that walks through the chapters doesn't take their numbers.
+        let preface = [("Getting Started", "ONE"), ("Find Users", "TWO"), ("Ship", "THREE")]
+        var guide: [(page: Int, paragraphs: [[String]])] = [(1, [["PREFACE"], ["How this book is organized."]])]
+        for (index, (name, _)) in preface.enumerated() {
+            guide.append((1, [["Chapter \(index + 1): \(name)"],
+                              ["It covers one step.", "It has examples.", "It ends with a list."]]))
+        }
+        page = 1
+        for (name, word) in preface {
+            guide.append((next(), [["CHAPTER \(word)"], [name], ChapterFixtures.body(page)]))
+        }
+        let titles = try XCTUnwrap(HeadingChapters.entries(in: ChapterFixtures.book(guide))).map(\.title)
+        XCTAssertEqual(Array(titles.suffix(3)), ["CHAPTER ONE: Getting Started", "CHAPTER TWO: Find Users",
+                                                 "CHAPTER THREE: Ship"])
+    }
+
     func testSparsePageTopsWithoutABookHeaderFailTheGate() {
         var pages: [(page: Int, paragraphs: [[String]])] = []
         let tops = [5: "TARGETS", 9: "TARGETS", 14: "CONCLUSION", 18: "CONCLUSION", 24: "SUMMARY", 27: "SUMMARY"]

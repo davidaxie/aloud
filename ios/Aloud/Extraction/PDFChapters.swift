@@ -306,8 +306,8 @@ enum OutlineChapters {
 /// Rows from chapter headings in the text, for a PDF with no usable outline:
 /// "CHAPTER ONE" (with its title line) and the named front and back matter
 /// around the numbered run. Needs at least three numbered headings. A
-/// chapter's number counts once per Part: a running header that repeats
-/// "Chapter 3 The Return" on every other page is that chapter, not more.
+/// running header that repeats "Chapter 3 The Return" on every other page
+/// is that chapter, not more; numbering that starts again is new chapters.
 enum HeadingChapters {
 
     static let minimumNumbered = 3
@@ -370,13 +370,15 @@ enum HeadingChapters {
         })
         candidates.removeAll { $0.kind == .numbered && listed.contains($0.sentence) }
 
-        // Each number once per Part: the first is the chapter's opening, a
-        // later one its running header.
-        var numbersSeen = Set<[Int]>()
+        // A number straight after itself is the chapter's running header:
+        // the first is its opening. Numbering that starts again ("VOLUME
+        // II", "Book the Second", an omnibus's next novel) keeps every
+        // chapter, Part heading or not.
+        var lastNumber: Int?
         candidates.removeAll { candidate in
             guard candidate.kind == .numbered, let number = candidate.number else { return false }
-            let part = parts.filter { $0.sentence < candidate.sentence }.count
-            return !numbersSeen.insert([part, number]).inserted
+            defer { lastNumber = number }
+            return number == lastNumber
         }
 
         let chapters = candidates.filter { $0.kind == .numbered }
@@ -456,7 +458,7 @@ enum HeadingChapters {
         #/(?i)(preface|foreword|introduction|prologue|conclusion|epilogue|afterword|acknowledge?ments?|appendix(?:\s+[a-z0-9]+)?|notes|endnotes|index|bibliography|references|glossary|about the authors?)\b[.:]?\s*(.*)/#
 
     private static let partHeading =
-        #/(?:PART|Part|BOOK|Book)\s+(?i:[ivxlc]{1,7}|\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b.*/#
+        #/(?:PART|Part|BOOK|Book|VOLUME|Volume)\s+(?i:[ivxlc]{1,7}|\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|the\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth))\b.*/#
 }
 
 // MARK: - Book matter

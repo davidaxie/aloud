@@ -1245,30 +1245,34 @@ struct TextExtractor {
         throw ExtractionError.unreadableTextFile
     }
 
-    /// A PDF's "%PDF-" signature, or control bytes no text has: a zero byte
-    /// (with no UTF-16 or UTF-32 byte-order mark), or more than one byte in
-    /// a hundred among C0 controls other than tab, line breaks, form feed,
-    /// escape and the DOS end-of-file mark.
+    /// A PDF's "%PDF-" signature, or control bytes no text has: with no
+    /// UTF-16 or UTF-32 byte-order mark, more than one byte in a hundred
+    /// among zero bytes and the C0 controls other than tab, line breaks,
+    /// form feed, escape and the DOS end-of-file mark. Zeros padding the
+    /// end don't count: a stray or trailing zero leaves text text.
     static func isBinary(_ data: Data) -> Bool {
         if hasPDFSignature(data) { return true }
         let bom = [UInt8](data.prefix(4))
         if bom.starts(with: [0xFF, 0xFE]) || bom.starts(with: [0xFE, 0xFF]) || bom == [0, 0, 0xFE, 0xFF] {
             return false
         }
+        let body = data[..<(data.lastIndex { $0 != 0 }.map { $0 + 1 } ?? data.startIndex)]
         var controls = 0
-        for byte in data {
+        for byte in body {
             switch byte {
-            case 0x00: return true
-            case 0x01...0x08, 0x0E...0x19, 0x1C...0x1F: controls += 1
+            case 0x00...0x08, 0x0E...0x19, 0x1C...0x1F: controls += 1
             default: break
             }
         }
-        return controls * 100 > data.count
+        return controls * 100 > body.count
     }
 
-    /// "%PDF-" in the first kilobyte, where readers look for it.
+    /// "%PDF-" at the start of the file, after at most a byte-order mark
+    /// and white space: a text that mentions the signature stays text.
     static func hasPDFSignature(_ data: Data) -> Bool {
-        data.prefix(1024).range(of: Data("%PDF-".utf8)) != nil
+        var head = data.prefix(1024)
+        if head.starts(with: [0xEF, 0xBB, 0xBF]) { head = head.dropFirst(3) }
+        return head.drop { [0x09, 0x0A, 0x0C, 0x0D, 0x20].contains($0) }.starts(with: Data("%PDF-".utf8))
     }
 
     /// UTF-16 saved without a byte-order mark: mostly ASCII, so nearly
@@ -1326,14 +1330,44 @@ struct TextExtractor {
         guard found != 0, !lossy.boolValue, let converted else { return nil }
         // Both Cyrillic encodings read any bytes, and the detector favours
         // Windows-1251; KOI8-R read as 1251 comes out in inverted case
-        // ("зМБЧБ"), so the reading with more lowercase wins.
+        // ("зМБЧБ"), so the reading with more lowercase wins. Greek,
+        // Hebrew, Arabic or Thai bytes read as Cyrillic too: that is
+        // gibberish, not text.
         let cyrillic = [String.Encoding.windowsCP1251.rawValue, cf(.KOI8_R)]
         if cyrillic.contains(found) {
             let readings = cyrillic.compactMap { String(data: data, encoding: String.Encoding(rawValue: $0)) }
-            return readings.max { lowercaseShare($0) < lowercaseShare($1) } ?? converted as String
+            let reading = readings.max { lowercaseShare($0) < lowercaseShare($1) } ?? converted as String
+            return readsAsCyrillic(reading) ? reading : nil
         }
         return converted as String
     }
+
+    /// A Cyrillic language, not another script's bytes read as Cyrillic:
+    /// nearly all letters, at least half of them lowercase, about two in
+    /// five vowels, and no words that turn to capitals partway ("ЕллЬдб",
+    /// "хАо").
+    static func readsAsCyrillic(_ text: String) -> Bool {
+        var visible = 0, letters = 0, lower = 0, cyrillic = 0, vowels = 0, flips = 0
+        var afterLower = false
+        for scalar in text.unicodeScalars {
+            let properties = scalar.properties
+            guard !properties.isWhitespace else { afterLower = false; continue }
+            visible += 1
+            guard properties.isAlphabetic else { afterLower = false; continue }
+            letters += 1
+            if afterLower && properties.isUppercase { flips += 1 }
+            afterLower = properties.isLowercase
+            if afterLower { lower += 1 }
+            if (0x0400...0x04FF).contains(scalar.value) {
+                cyrillic += 1
+                if cyrillicVowels.contains(scalar) { vowels += 1 }
+            }
+        }
+        return letters * 10 >= visible * 8 && lower * 2 >= letters && cyrillic * 2 > letters
+            && vowels * 20 >= cyrillic * 7 && vowels * 5 <= cyrillic * 3 && flips * 50 < letters
+    }
+
+    private static let cyrillicVowels = Set("аеёиіїєоуыэюяъАЕЁИІЇЄОУЫЭЮЯЪ".unicodeScalars)
 
     private static func lowercaseShare(_ text: String) -> Double {
         var letters = 0

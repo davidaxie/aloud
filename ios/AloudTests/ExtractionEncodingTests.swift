@@ -108,6 +108,56 @@ final class ExtractionEncodingTests: XCTestCase {
         XCTAssertEqual(try text(french), "Il était une fois un café où l'on dînait.")
     }
 
+    /// G021: Greek, Hebrew, Arabic and Thai in their single-byte encodings
+    /// read as Cyrillic gibberish under Windows-1251 or KOI8-R: they are
+    /// refused with the save-as-UTF-8 advice instead. Cyrillic in capitals
+    /// still reads.
+    func testOtherSingleByteScriptsAreRefusedNotReadAsCyrillic() throws {
+        func cf(_ encoding: CFStringEncodings) -> String.Encoding {
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(encoding.rawValue)))
+        }
+        let greek = "Η Ελλάδα είναι μια όμορφη χώρα με πολλά νησιά. Το καλοκαίρι οι άνθρωποι πηγαίνουν στη "
+            + "θάλασσα και κολυμπούν. Ο παππούς μου ζούσε σε ένα μικρό χωριό κοντά στα βουνά."
+        let hebrew = "ישראל היא מדינה קטנה במזרח התיכון. בקיץ חם מאוד ואנשים הולכים לים. "
+            + "סבא שלי גר בכפר קטן ליד ההרים, שם הבתים היו לבנים והרחובות צרים."
+        let arabic = "مصر بلد جميل على ضفاف النيل. في الصيف يذهب الناس إلى البحر للسباحة. "
+            + "كان جدي يعيش في قرية صغيرة بالقرب من الجبال، حيث كانت البيوت بيضاء والشوارع ضيقة."
+        let thai = "ประเทศไทยเป็นประเทศที่สวยงามมีทะเลและภูเขามากมาย ในฤดูร้อนผู้คนไปเที่ยวทะเลและว่ายน้ำ "
+            + "คุณปู่ของฉันอาศัยอยู่ในหมู่บ้านเล็กๆใกล้ภูเขา"
+        for (sample, encoding) in [(greek, String.Encoding.windowsCP1253), (greek, cf(.isoLatinGreek)),
+                                   (hebrew, cf(.windowsHebrew)), (arabic, cf(.windowsArabic)),
+                                   (thai, cf(.dosThai))] {
+            let data = try XCTUnwrap(sample.data(using: encoding), "\(encoding)")
+            XCTAssertThrowsError(try text(data), "\(encoding)") { error in
+                XCTAssertEqual(error as? ExtractionError, .unreadableTextFile)
+            }
+        }
+        let shouting = "ГЛАВА ПЕРВАЯ. Война и мир. Мы пошли домой, и было тихо."
+        XCTAssertEqual(try text(try XCTUnwrap(shouting.data(using: .windowsCP1251))), shouting)
+    }
+
+    /// G024: a stray or trailing zero byte leaves UTF-8 text readable, and
+    /// a text that mentions "%PDF-" is not taken for a PDF. A real PDF's
+    /// signature still is one.
+    func testStrayZerosAndAMentionedSignatureStayText() throws {
+        let book = String(repeating: "The boats drifted past the pier as the light grew softer. ", count: 40)
+        // The zeros themselves go with the other controls when the text is normalized.
+        let read = { (data: Data) in
+            try self.text(data).replacingOccurrences(of: "\0", with: "").trimmingCharacters(in: .whitespaces)
+        }
+        XCTAssertEqual(try read(Data(book.utf8) + [0x00]), book.trimmingCharacters(in: .whitespaces))
+        XCTAssertEqual(try read(Data(book.utf8) + Data(count: 4096)), book.trimmingCharacters(in: .whitespaces))
+        var stray = Data(book.utf8)
+        stray.insert(0x00, at: 300)
+        XCTAssertFalse(TextExtractor.isBinary(stray))
+
+        let notes = Data("Notes on file formats.\n\nEvery PDF begins with a header such as %PDF-1.7 on its first line.".utf8)
+        XCTAssertFalse(TextExtractor.hasPDFSignature(notes))
+        XCTAssertFalse(TextExtractor.isBinary(notes))
+        XCTAssertTrue(TextExtractor.hasPDFSignature(Data("%PDF-1.4\n%".utf8)))
+        XCTAssertTrue(TextExtractor.hasPDFSignature(Data([0xEF, 0xBB, 0xBF, 0x0A]) + Data("%PDF-1.7".utf8)))
+    }
+
     func testUTF8IsUnchanged() throws {
         let blocks = try extractBlocks(utf8("It\u{2019}s \u{201C}fine\u{201D} \u{2014} caf\u{E9}."))
         XCTAssertEqual(blocks.map(\.text), ["It\u{2019}s \u{201C}fine\u{201D} \u{2014} caf\u{E9}."])

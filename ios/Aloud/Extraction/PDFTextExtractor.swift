@@ -223,6 +223,14 @@ struct PDFTextExtractor {
         }
     }
 
+    /// Chinese or Japanese on both sides of a page break: Han and kana
+    /// have no case, so the lowercase test can't see a sentence go on.
+    static func continuesUnspacedCJK(_ previous: String, _ next: String) -> Bool {
+        guard let last = previous.replacing(#/\s+$/#, with: "").unicodeScalars.last,
+              let first = next.unicodeScalars.first else { return false }
+        return isUnspacedCJK(last) && isUnspacedCJK(first)
+    }
+
     /// A letter of any script, then a soft hyphen, at the very end.
     static func endsInSoftHyphen(_ text: String) -> Bool {
         text.firstMatch(of: #/\p{L}\u{00AD}$/#) != nil
@@ -261,19 +269,33 @@ struct PDFTextExtractor {
         guard pages >= 3 else { return [] }
 
         var counts: [String: Int] = [:]
+        var texts: [String: [String]] = [:]
         for lines in pageLines {
             let n = lines.count
             // Outer two lines at each edge — headers can be 1-2 lines.
             let indices = Set([0, 1, n - 1, n - 2]).filter { $0 >= 0 && $0 < n }
             for index in indices {
                 let key = normalizeRunning(lines[index].text)
-                if key.count >= 2 { counts[key, default: 0] += 1 }
+                if key.count >= 2 {
+                    counts[key, default: 0] += 1
+                    texts[key, default: []].append(lines[index].text)
+                }
             }
         }
 
         let threshold = max(2, Int((Double(pages) * 0.5).rounded(.up)))
-        return Set(counts.filter { $0.value >= threshold }.keys)
+        return Set(counts.filter { $0.value >= threshold && !areChapterOpenings(texts[$0.key] ?? []) }.keys)
     }
+
+    /// "CHAPTER 12", "Day 3": a label numbered afresh at every hit is a run
+    /// of chapter openings, not a running header, which repeats its
+    /// chapter's number ("Chapter 3 The Return" through chapter 3).
+    static func areChapterOpenings(_ texts: [String]) -> Bool {
+        let numbers = texts.compactMap { $0.firstMatch(of: openingLabel).flatMap { Int($0.1) } }
+        return !numbers.isEmpty && numbers.count == texts.count && Set(numbers).count == numbers.count
+    }
+
+    private static let openingLabel = #/(?i)^(?:chapter|day|letter|lesson|week|part|book|volume|section)\s+(\d{1,4})\b/#
 
     /// Each page's running headers and footers: the document-wide ones,
     /// plus a line that runs through part of the book. A printed book puts
@@ -282,13 +304,14 @@ struct PDFTextExtractor {
     /// body by a paragraph gap, sits at the same height in the same size,
     /// and recurs at least `minimumRun` times no more than `maximumRunGap`
     /// pages apart (a chapter opening or a blank page between). A chapter's
-    /// title on its opening page sits lower or larger, so it stays.
+    /// title on its opening page sits lower or larger, so it stays, and so
+    /// do short chapters' "CHAPTER 12" openings, numbered afresh each time.
     static func runningHeadersByPage(_ pageLines: [[Line]]) -> [Set<String>] {
         let global = detectRunningHeaders(pageLines)
         var byPage = Array(repeating: global, count: pageLines.count)
         guard pageLines.count >= minimumRun else { return byPage }
 
-        var seen: [String: [(page: Int, y: CGFloat, height: CGFloat)]] = [:]
+        var seen: [String: [(page: Int, y: CGFloat, height: CGFloat, text: String)]] = [:]
         for (page, lines) in pageLines.enumerated() {
             let n = lines.count
             guard n >= 3 else { continue }
@@ -302,7 +325,7 @@ struct PDFTextExtractor {
                 let key = normalizeRunning(line.text)
                 guard apart, key.count >= 2, !isPageNumberLine(line.text),
                       keys.insert(key).inserted else { continue }
-                seen[key, default: []].append((page, line.y, line.height))
+                seen[key, default: []].append((page, line.y, line.height, line.text))
             }
         }
 
@@ -312,14 +335,16 @@ struct PDFTextExtractor {
             let placed = hits.filter {
                 abs($0.y - y) <= max(2, height * 0.25) && abs($0.height - height) <= max(1, height * 0.2)
             }
-            var run: [Int] = []
+            var run: [(page: Int, y: CGFloat, height: CGFloat, text: String)] = []
             func close() {
-                if run.count >= minimumRun { for page in run { byPage[page].insert(key) } }
+                if run.count >= minimumRun, !areChapterOpenings(run.map(\.text)) {
+                    for hit in run { byPage[hit.page].insert(key) }
+                }
                 run = []
             }
             for hit in placed {
-                if let last = run.last, hit.page - last > maximumRunGap { close() }
-                run.append(hit.page)
+                if let last = run.last, hit.page - last.page > maximumRunGap { close() }
+                run.append(hit)
             }
             close()
         }
@@ -355,15 +380,18 @@ struct PDFTextExtractor {
 
     // MARK: - Cross-page stitching
 
-    /// True if text ends a sentence (terminal punctuation, ignoring closers).
+    /// True if text ends a sentence (terminal punctuation, ignoring closers),
+    /// Chinese and Japanese "。" and "」" included (NFKC has already made
+    /// "！" and "？" plain).
     static func looksFinished(_ text: String) -> Bool {
-        text.firstMatch(of: #/[.!?…]["')\]]?\s*$/#) != nil
+        text.firstMatch(of: #/[.!?…。]["')\]」』]?\s*$/#) != nil
     }
 
     /// Stitch a page's paragraphs onto the growing block list, merging the
     /// page's first paragraph onto the previous block when that block clearly
     /// runs on (no terminal punctuation) and this one continues it (starts
-    /// lowercase or with a digit, in any script, or the previous ended
+    /// lowercase or with a digit, in any script, goes on in Chinese or
+    /// Japanese from Chinese or Japanese, or the previous ended
     /// mid-hyphenation, normal or soft).
     static func appendPageParagraphs(_ blocks: inout [TextBlock],
                                      _ paragraphs: [String],
@@ -373,6 +401,7 @@ struct PDFTextExtractor {
                let previous = blocks.last,
                !looksFinished(previous.text),
                paragraph.firstMatch(of: #/^[\p{Ll}\p{N}]/#) != nil
+                   || continuesUnspacedCJK(previous.text, paragraph)
                    || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil
                    || endsInSoftHyphen(previous.text) {
                 blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph),
