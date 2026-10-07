@@ -170,9 +170,11 @@ final class AppModel: ObservableObject {
         neuralPrewarm = NeuralPrewarm(
             playback: playback,
             kokoro: kokoroEngine,
+            // The card's hero by the same rule as Continue: the controller's
+            // unattended stop keeps a book stopped in its last minute on offer.
             cardVisible: router.$path.map(\.isEmpty)
-                .combineLatest(store.$documents, playback.$document.map { $0?.id })
-                .map { NeuralPrewarm.continueCardVisible(pathIsEmpty: $0, documents: $1, loadedID: $2) }
+                .combineLatest(store.$documents, playback.$document.map { $0?.id }, playback.$stopped)
+                .map { NeuralPrewarm.continueCardVisible(pathIsEmpty: $0, documents: $1, loadedID: $2, stop: $3) }
                 .removeDuplicates()
                 .eraseToAnyPublisher(),
             // A Mac also warms for the book loaded in the natural voice

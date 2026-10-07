@@ -77,6 +77,7 @@ struct MacPlayerBar: View {
                               notice: playback.notice,
                               offerVisible: naturalVoiceOffer.isVisible,
                               modelState: modelManager.state,
+                              waitingLine: modelManager.waitingLine,
                               isPreparingVoice: playback.isPreparingVoice)
     }
 
