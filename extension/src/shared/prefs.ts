@@ -26,10 +26,16 @@ export const DEFAULT_PREFS: Prefs = {
   // run.py and native_app.py both serve on unless ALOUD_PORT says otherwise
   // (native_app.py moves to 8001–8010, or any free port, only when 8000 is
   // taken). A backend on another port is set in the popup's Backend field; the
-  // manifest's localhost host permissions cover any port. The popup's
+  // manifest's loopback host permissions cover any port. The popup's
   // placeholder shows this value, and a test checks all three agree.
-  backendUrl: 'http://localhost:8000',
+  // 127.0.0.1, where the backend serves, rather than localhost: macOS tries
+  // ::1 first, and a server started there later on the same port would take
+  // every request.
+  backendUrl: 'http://127.0.0.1:8000',
 }
+
+/** The default before it named 127.0.0.1; saving any setting stored it. */
+const OLD_DEFAULT_BACKEND = 'http://localhost:8000'
 
 /**
  * The backend's own limit on a voice id (MAX_VOICE_CHARS): it answers a longer
@@ -52,7 +58,9 @@ function sanitize(raw: unknown): Prefs {
     clickToJump: !!p.clickToJump,
     highlightWords: !!p.highlightWords,
     backendUrl:
-      typeof p.backendUrl === 'string' && /^https?:\/\//.test(p.backendUrl)
+      typeof p.backendUrl === 'string' &&
+      /^https?:\/\//.test(p.backendUrl) &&
+      p.backendUrl.replace(/\/+$/, '') !== OLD_DEFAULT_BACKEND
         ? p.backendUrl.replace(/\/+$/, '')
         : DEFAULT_PREFS.backendUrl,
   }

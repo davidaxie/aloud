@@ -6,7 +6,11 @@ Run from the repo root:
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import shutil
+import sys
+import tempfile
 import threading
 import time
 import types
@@ -15,6 +19,7 @@ from unittest import mock
 
 from fastapi import FastAPI
 from support import (
+    BACKEND,
     WARMUP_TEXT,
     FakeEngine,
     call,
@@ -350,3 +355,51 @@ class AbandonedRequestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpaShellCacheTests(unittest.TestCase):
+    """I016: the window keeps its HTTP cache between launches now, so after a
+    rebuild it must not reuse the old index.html, whose bundles are gone."""
+
+    def setUp(self) -> None:
+        engine = load_app().engine  # also quiets the app's import-time logging
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = tmp.name
+        os.mkdir(os.path.join(root, "backend"))
+        shutil.copy(BACKEND / "app.py", os.path.join(root, "backend", "app.py"))
+        dist = os.path.join(root, "frontend", "dist")
+        os.makedirs(os.path.join(dist, "assets"))
+        files = {
+            "index.html": "<!doctype html><script src=/assets/index-abc.js></script>",
+            "assets/index-abc.js": "console.log(1)",
+            "favicon.svg": "<svg/>",
+        }
+        for name, text in files.items():
+            with open(os.path.join(dist, name), "w") as f:
+                f.write(text)
+        fake = types.ModuleType("kokoro_engine")
+        fake.engine = engine
+        spec = importlib.util.spec_from_file_location(
+            "aloud_app_with_dist", os.path.join(root, "backend", "app.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"kokoro_engine": fake}):
+            spec.loader.exec_module(module)
+        self.addCleanup(module.synth_queue.stop)
+        self.app = module.app
+
+    def get(self, path: str):
+        reply = call(self.app, "GET", path)
+        self.assertEqual(reply.status, 200, path)
+        return reply
+
+    def test_the_shell_is_checked_before_each_use(self) -> None:
+        for path in ("/", "/library/some-book", "/index.html"):
+            reply = self.get(path)
+            self.assertIn(b"index-abc.js", reply.body, path)
+            self.assertEqual(reply.headers.get("cache-control"), "no-cache", path)
+
+    def test_hashed_bundles_and_other_files_stay_cacheable(self) -> None:
+        for path in ("/assets/index-abc.js", "/favicon.svg"):
+            self.assertNotIn("no-cache", self.get(path).headers.get("cache-control", ""), path)

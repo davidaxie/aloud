@@ -60,9 +60,9 @@ FALLBACK_PORTS = range(DEFAULT_PORT + 1, DEFAULT_PORT + 11)
 PROBE_TIMEOUT_SECS = 1.0
 # How often a window attached to another backend checks that it is still there.
 ATTACH_WATCH_SECS = 2.0
-# Both addresses "localhost" can mean. The reader and the extension dial
-# http://localhost:<port>, which macOS resolves to ::1 first, and a dev server
-# that Node or Vite binds to localhost listens on ::1 alone.
+# Both addresses "localhost" can mean. A reader or extension pointed at
+# http://localhost:<port> reaches ::1 first on macOS, and a dev server that
+# Node or Vite binds to localhost listens on ::1 alone.
 LOOPBACK_HOSTS = (HOST, "::1")
 
 
@@ -158,9 +158,13 @@ def find_running_backend() -> int | None:
 
     Attaching to it beats starting a rival (F4.6): a second process means a
     second model load and a coin flip over which one answers a given request.
+    Without ALOUD_PORT, that means 8000 or any of FALLBACK_PORTS, in the order
+    ``choose_port`` takes them, so a run.sh backend that moved to 8001 because
+    something else holds 8000 is still found.
     """
-    candidate = env_port() or DEFAULT_PORT
-    return candidate if probe_backend(candidate) is not None else None
+    forced = env_port()
+    candidates = [forced] if forced is not None else [DEFAULT_PORT, *FALLBACK_PORTS]
+    return next((port for port in candidates if probe_backend(port) is not None), None)
 
 
 def choose_port() -> int:
@@ -206,17 +210,38 @@ def _take_over_when_gone(
     The page polls /health on its own origin, so a backend back on the same port
     brings its speech back without a relaunch. A port that something else holds
     is left alone, and so is one the old backend is already serving again.
+
+    It checks with a bare connect, never a request: the backend logs every
+    request, and a GET /health every few seconds buried run.sh's terminal.
+    Another backend can still take the port while ours loads, and then ours
+    cannot bind it and stops, so this keeps watching until ours is serving.
     """
     while not stop.wait(interval):
-        if probe_backend(port) is not None or port_in_use(port):
+        if port_in_use(port):
             continue
         if stop.is_set():
             return
         logger.info("The Aloud backend on port %d stopped; starting our own there.", port)
         started = _start_own_server(port)
-        if started is not None:
-            own.append(started)
-        return
+        if started is None:
+            return
+        own.append(started)
+        if _serving(*started, stop) or stop.is_set():
+            return
+        own.remove(started)
+        logger.info("Another backend took port %d first; still watching it.", port)
+
+
+def _serving(server: uvicorn.Server, thread: threading.Thread, stop: threading.Event) -> bool:
+    """Wait until ``server`` is serving; False if its thread ends first or ``stop`` is set.
+
+    uvicorn ends the thread when it cannot bind the port, without raising.
+    """
+    while not server.started:
+        if not thread.is_alive() or stop.is_set():
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def _wait_for_health(

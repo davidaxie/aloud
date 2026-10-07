@@ -62,15 +62,18 @@ backend_ready() {
   [[ "$body" == *'"engine":"kokoro"'* ]]
 }
 
-echo "→ Starting TTS backend on http://localhost:$PORT …"
+echo "→ Starting TTS backend on http://127.0.0.1:$PORT …"
 ( cd "$BACKEND" && exec .venv/bin/python run.py ) &
 backend_pid=$!
 pids+=("$backend_pid")
 
 echo "→ Starting reader UI on http://localhost:$UI_PORT …"
-# Point the reader at that port; .env.development says 8000. A VITE_API_BASE
-# set by hand still wins.
-( cd "$FRONTEND" && export VITE_API_BASE="${VITE_API_BASE:-http://localhost:$PORT}" && exec npm run dev -- --port "$UI_PORT" --strictPort ) &
+# Point the reader at that port; .env.development says 8000. It dials
+# 127.0.0.1, the address the backend serves and backend_ready checks: localhost
+# is ::1 first on macOS, where another server can start on the same port later
+# and take every request without this script noticing. A VITE_API_BASE set by
+# hand still wins.
+( cd "$FRONTEND" && export VITE_API_BASE="${VITE_API_BASE:-http://127.0.0.1:$PORT}" && exec npm run dev -- --port "$UI_PORT" --strictPort ) &
 frontend_pid=$!
 pids+=("$frontend_pid")
 

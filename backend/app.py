@@ -447,10 +447,20 @@ if os.path.isfile(_INDEX_HTML):
     if os.path.isdir(_assets_dir):
         app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
 
+    def _spa_shell() -> FileResponse:
+        """index.html, which the browser must check with us before each use.
+
+        Its hashed bundles change name on every build, but the shell keeps its
+        name. With only Last-Modified to go on, WebKit keeps a copy fresh for
+        a tenth of its age, so a window reopened after a rebuild would load the
+        old shell and its old bundles, which the build has deleted.
+        """
+        return FileResponse(_INDEX_HTML, headers={"Cache-Control": "no-cache"})
+
     @app.get("/", include_in_schema=False)
     def serve_index() -> FileResponse:
         """Serve the built single-page app shell at the root."""
-        return FileResponse(_INDEX_HTML)
+        return _spa_shell()
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str) -> FileResponse:
@@ -461,10 +471,14 @@ if os.path.isfile(_INDEX_HTML):
         """
         requested = os.path.normpath(os.path.join(_DIST_DIR, full_path))
         # Guard against path traversal: only serve files inside dist.
-        if requested.startswith(_DIST_DIR + os.sep) and os.path.isfile(requested):
+        if (
+            requested.startswith(_DIST_DIR + os.sep)
+            and os.path.isfile(requested)
+            and requested != _INDEX_HTML
+        ):
             return FileResponse(requested)
         # Unknown non-API path -> hand back the SPA shell (client-side routing).
-        return FileResponse(_INDEX_HTML)
+        return _spa_shell()
 
     logger.info("Serving built frontend from %s", _DIST_DIR)
 else:

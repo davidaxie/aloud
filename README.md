@@ -232,7 +232,7 @@ cd ../frontend && npm install
 ### Run
 
 ```bash
-./run.sh   # the server on http://localhost:8000 and the reader on http://localhost:5173
+./run.sh   # the server on http://127.0.0.1:8000 and the reader on http://localhost:5173
 ```
 
 Open http://localhost:5173 and drop in a PDF. `./run.sh` stops both on

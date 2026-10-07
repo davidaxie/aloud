@@ -158,9 +158,32 @@ test('the default backend URL dials the port the backend serves on by default', 
   assert.ok(backendPort, 'DEFAULT_PORT not found in backend/native_app.py')
   const url = new URL(DEFAULT_PREFS.backendUrl)
   assert.equal(url.port, backendPort)
-  assert.ok(['localhost', '127.0.0.1'].includes(url.hostname), url.hostname)
+  // I018: 127.0.0.1, not localhost, which macOS tries on ::1 first, where
+  // another server on the same port can take every request.
+  assert.equal(url.hostname, '127.0.0.1')
   const popup = await readFile(join(SRC, 'popup', 'popup.html'), 'utf8')
   assert.match(popup, new RegExp(`placeholder="${DEFAULT_PREFS.backendUrl}"`))
   const manifest = JSON.parse(await readFile(join(SRC, 'manifest.json'), 'utf8'))
   assert.ok(manifest.host_permissions.includes(`http://${url.hostname}/*`), 'no host permission for the default backend')
+})
+
+test('I018: the old localhost default saved with other settings moves to 127.0.0.1', async () => {
+  const { loadPrefs } = await load('shared/prefs.ts')
+  const sync = mock.chrome.storage.sync
+  const realGet = sync.get
+  try {
+    for (const [stored, expected] of [
+      ['http://localhost:8000', 'http://127.0.0.1:8000'],
+      ['http://localhost:8000/', 'http://127.0.0.1:8000'],
+      ['http://localhost:8001', 'http://localhost:8001'],
+      ['http://my-mac.local:8000', 'http://my-mac.local:8000'],
+    ]) {
+      sync.get = () => Promise.resolve({ 'aloud.prefs.v1': { rate: 1.5, backendUrl: stored } })
+      const prefs = await loadPrefs()
+      assert.equal(prefs.backendUrl, expected, stored)
+      assert.equal(prefs.rate, 1.5)
+    }
+  } finally {
+    sync.get = realGet
+  }
 })

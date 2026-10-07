@@ -153,7 +153,8 @@ class RunShTests(unittest.TestCase):
             out, err = "", ""
             self.fail("run.sh was still waiting after 10 s")
         finally:
-            with contextlib.suppress(ProcessLookupError):
+            # macOS answers EPERM, not ESRCH, when only zombies are left in the group.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
         return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
@@ -173,7 +174,9 @@ class RunShTests(unittest.TestCase):
     def test_reader_is_pointed_at_the_backend_port(self) -> None:
         result = self.run_sh(8001, ALOUD_PORT="8001")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.log / "npm").read_text().strip(), "http://localhost:8001")
+        # I018: 127.0.0.1, where backend_ready looks. localhost is ::1 first,
+        # where another server can start later and take every request.
+        self.assertEqual((self.log / "npm").read_text().strip(), "http://127.0.0.1:8001")
 
     def test_reader_keeps_an_api_base_set_by_hand(self) -> None:
         result = self.run_sh(8000, VITE_API_BASE="http://my-mac.local:8000")
@@ -379,6 +382,29 @@ class NativePortTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ALOUD_PORT": "8123"}):
             self.assertEqual(native_app.choose_port(), 8123)
 
+    def test_aloud_on_a_fallback_port_is_attached_to(self) -> None:
+        # I019: another program on 8000 and `ALOUD_PORT=8001 ./run.sh`, as
+        # the README says; the window used to load a second model on 8002.
+        def probe(*aloud: int):
+            return mock.patch.object(
+                native_app,
+                "probe_backend",
+                side_effect=lambda port: {"engine": "kokoro"} if port in aloud else None,
+            )
+
+        with mock.patch.dict(os.environ, {"ALOUD_PORT": ""}):
+            with probe(8001):
+                self.assertEqual(native_app.find_running_backend(), 8001)
+            with probe(8000, 8003):
+                self.assertEqual(native_app.find_running_backend(), 8000)
+            with probe(8004, 8002):
+                self.assertEqual(native_app.find_running_backend(), 8002)
+            with probe(8011):
+                self.assertIsNone(native_app.find_running_backend())
+        with mock.patch.dict(os.environ, {"ALOUD_PORT": "8005"}), probe(8001) as probed:
+            self.assertIsNone(native_app.find_running_backend())
+        self.assertEqual([c.args for c in probed.call_args_list], [(8005,)])
+
 
 class NativeHealthTests(unittest.TestCase):
     def test_foreign_ok_is_not_mistaken_for_aloud(self) -> None:
@@ -463,30 +489,63 @@ class NativeWindowTests(unittest.TestCase):
 class AttachWatchTests(unittest.TestCase):
     """H064: the attached backend stopping no longer leaves the window mute."""
 
-    def watch(self, *, probes: list, in_use: list, rounds: int):
+    def setUp(self) -> None:
+        ended = threading.Thread(target=lambda: None)
+        ended.start()
+        ended.join()
+        # uvicorn sets `started` once it has bound the port; a thread that ends
+        # without it could not bind.
+        self.serving = (types.SimpleNamespace(started=True), ended)
+        self.lost_bind = (types.SimpleNamespace(started=False), ended)
+
+    def watch(self, *, in_use: list, rounds: int, servers: list | None = None):
         stop = mock.Mock()
         stop.wait.side_effect = [False] * rounds + [True]
         stop.is_set.return_value = False
         own: list = []
-        with mock.patch.object(native_app, "probe_backend", side_effect=probes), mock.patch.object(
+        with mock.patch.object(native_app, "probe_backend", return_value=None), mock.patch.object(
             native_app, "port_in_use", side_effect=in_use
         ), mock.patch.object(
-            native_app, "_start_own_server", return_value=("server", "thread")
+            native_app, "_start_own_server", side_effect=servers or [self.serving]
         ) as start_own:
             native_app._take_over_when_gone(8000, own, stop, interval=0)
         return own, start_own
 
     def test_backend_gone_and_port_free_starts_our_own_there(self) -> None:
-        own, start_own = self.watch(probes=[None], in_use=[False], rounds=5)
+        own, start_own = self.watch(in_use=[False], rounds=5)
         start_own.assert_called_once_with(8000)
-        self.assertEqual(own, [("server", "thread")])
+        self.assertEqual(own, [self.serving])
 
     def test_live_backend_or_taken_port_is_left_alone(self) -> None:
-        own, start_own = self.watch(
-            probes=[{"engine": "kokoro"}, None], in_use=[True], rounds=2
-        )
+        own, start_own = self.watch(in_use=[True, True], rounds=2)
         start_own.assert_not_called()
         self.assertEqual(own, [])
+
+    def test_losing_the_port_to_another_backend_keeps_watching(self) -> None:
+        # I017: run.sh restarted while ours loaded and bound the port first.
+        # Ours stopped; when that one stops too, ours takes over after all.
+        own, start_own = self.watch(
+            in_use=[False, True, False],
+            rounds=5,
+            servers=[self.lost_bind, self.serving],
+        )
+        self.assertEqual(start_own.call_count, 2)
+        self.assertEqual(own, [self.serving])
+
+    def test_watching_sends_the_backend_no_requests(self) -> None:
+        # I020: run.py logs every request, so a GET /health every two seconds
+        # filled run.sh's terminal while a window was attached.
+        stop = mock.Mock()
+        stop.wait.side_effect = [False] * 5 + [True]
+        stop.is_set.return_value = False
+        with mock.patch.object(
+            native_app.socket, "create_connection", accepting("127.0.0.1")
+        ), mock.patch.object(native_app.urllib.request, "urlopen") as urlopen, mock.patch.object(
+            native_app, "_start_own_server"
+        ) as start_own:
+            native_app._take_over_when_gone(8000, [], stop, interval=0)
+        urlopen.assert_not_called()
+        start_own.assert_not_called()
 
 
 def sha256(data: bytes) -> str:
