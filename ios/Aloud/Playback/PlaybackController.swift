@@ -677,7 +677,7 @@ final class PlaybackController: ObservableObject {
         if isActive { stampResumeAnchor() }
         endPlaceSession()   // the outgoing book's place, while `document` names it
         audition = nil
-        // The outgoing book's notice ("Backed up 2 sentences") is never the
+        // The outgoing book's notice (a rewind or a skip line) is never the
         // incoming book's line. Before the flush: a splice it commits names
         // the voice this book reads in.
         clearNotice()

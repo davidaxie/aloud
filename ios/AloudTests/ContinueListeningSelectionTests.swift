@@ -91,21 +91,26 @@ final class ContinueListeningSelectionTests: XCTestCase {
     /// happen (J012), as Delete does. A source lint, since neither site
     /// runs without the app.
     func testTheAppStampsAPlayAndTheShelfSaysWhyAnEditFailed() throws {
-        let app = try XCTUnwrap(try SourceTree.sources(only: ["App/AppModel.swift"])["App/AppModel.swift"])
+        let appSources = try SourceTree.sources(only: ["App/AppModel.swift"])
+        let app = try XCTUnwrap(appSources["App/AppModel.swift"])
         let stamp = try XCTUnwrap(app.range(of: "func notePlayedBooks()"), "no play stamp")
         let wiring = app[stamp.lowerBound...].prefix(400)
         XCTAssertNotNil(wiring.range(of: "playback.$status"))
         XCTAssertNotNil(wiring.range(of: "documentStore.notePlayed(id:"))
         XCTAssertNotNil(app.range(of: "notePlayedBooks()\n"), "wired at launch")
 
-        let phone = try XCTUnwrap(try SourceTree.sources(only: ["Library/LibraryView.swift"])["Library/LibraryView.swift"])
-        let mac = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: ["Library/MacLibraryView.swift"])[
-            "Library/MacLibraryView.swift"])
+        let phoneSources = try SourceTree.sources(only: ["Library/LibraryView.swift"])
+        let phone = try XCTUnwrap(phoneSources["Library/LibraryView.swift"])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: ["Library/MacLibraryView.swift"])
+        let mac = try XCTUnwrap(macSources["Library/MacLibraryView.swift"])
         for (name, view) in [("iPhone", phone), ("Mac", mac)] {
             XCTAssertNotNil(view.range(of: "showFailure(EditFailure(.rename, error))"), "\(name): Rename says why")
             XCTAssertNotNil(view.range(of: "showFailure(EditFailure(.markFinished, error))"),
                             "\(name): Mark as finished says why")
-            XCTAssertNil(view.range(of: "store.markFinished(id: document.id)\n"), "\(name): no unchecked mark")
+            let marks = view.components(separatedBy: "\n").filter { $0.contains("store.markFinished(id:") }
+            XCTAssertFalse(marks.isEmpty, "\(name): marks the book")
+            XCTAssertTrue(marks.allSatisfy { $0.contains("try store.markFinished(id:") && !$0.contains("try?") },
+                          "\(name): no unchecked mark")
         }
     }
 
