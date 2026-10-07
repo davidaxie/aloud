@@ -430,6 +430,27 @@ function isSpeakable(normalized: string): boolean {
 }
 
 /**
+ * A letter, a hyphen, whitespace, then a lowercase word: the backend's
+ * line-wrap hyphen pattern (text_normalize.py). Groups: the letter, the
+ * whitespace and the word after it.
+ */
+const WRAPPED_HYPHEN = /([A-Za-z])-(\s+)(?=([a-z][A-Za-z]*))/g
+/** After a hyphen these mark a suspended compound ("two- or three-day"), even across a line. */
+const SUSPENDED_HYPHEN_FOLLOWERS = new Set(['and', 'or', 'nor'])
+
+/**
+ * Rejoin a word that hard-wrapped plain text split at a line break
+ * ("inter-\nnational"). The backend only rejoins across a line break, and the
+ * spoken text reaches it with its line breaks folded to spaces, so the plain
+ * reader does it here, by the backend's rule (K010).
+ */
+function rejoinWrapped(raw: string): string {
+  return raw.replace(WRAPPED_HYPHEN, (whole: string, letter: string, gap: string, word: string) =>
+    /[\n\r\v\f]/.test(gap) && !SUSPENDED_HYPHEN_FOLLOWERS.has(word) ? letter : whole,
+  )
+}
+
+/**
  * Sentence-split every block. `plain` unwraps hard line breaks first: the
  * sentence segmenter treats a newline as a hard stop, which would cut wrapped
  * plain text into line fragments. Newline → space keeps every offset intact.
@@ -444,7 +465,7 @@ function buildSentences(state: WalkState, plain = false): ReadSentence[] {
       const start = block.start + span.start
       const end = block.start + span.end
       const raw = state.text.slice(start, end)
-      const text = raw.replace(/\s+/g, ' ').trim()
+      const text = (plain ? rejoinWrapped(raw) : raw).replace(/\s+/g, ' ').trim()
       if (!isSpeakable(text)) continue
       if (out.length >= MAX_SENTENCES) {
         state.truncated = true

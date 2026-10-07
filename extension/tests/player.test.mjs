@@ -3,7 +3,8 @@
 // G019); sentences with nothing to say or that the engine refuses (G017), and
 // failures on either side of a move the user made (G018); Play at the end
 // listening again (H036), and a far seek or a quick run of steps not stuck
-// behind old look-ahead (H038, H031).
+// behind old look-ahead (H038, H031); pauses and media keys from outside the
+// reader (K005, K007), and the word lit being the one heard on Web Audio (K011).
 // Silent throughout: Audio is a fake and the worker is a scripted mock.
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
@@ -65,12 +66,12 @@ const fail = (status, retryable) => () =>
 function rig(synth, { prefs = DEFAULT_TEST_PREFS, sentences = SENTENCES } = {}) {
   const w = worker(synth)
   installPlaybackGlobals(w.chrome)
-  const seen = { statuses: [], skips: [] }
+  const seen = { statuses: [], skips: [], words: [] }
   const player = new AloudPlayer({
     prefs: () => prefs,
     onStatus: (status, error) => seen.statuses.push({ status, error }),
     onSentence: () => {},
-    onWord: () => {},
+    onWord: (index) => seen.words.push(index),
     onSkip: (index, message) => seen.skips.push({ index, message }),
     onBuffer: () => {},
   })
@@ -556,4 +557,143 @@ test('J039: the time stretch keeps the pitch and the loudness', async () => {
     assert.ok(Math.abs(rms(mid) / rms(input) - 1) < 0.15, `${speed}x changed the loudness`)
   }
   assert.equal(timeStretch([input], 1, rate)[0], input)
+})
+
+// ── outside pauses and the page's media session (K005, K007) ──────────────────
+
+const MEDIA_ACTIONS = ['play', 'pause', 'nexttrack', 'previoustrack']
+
+/**
+ * The page's media session, which the ⏯ key, Chrome's media controls and
+ * headphone buttons reach. Node's own navigator has none.
+ */
+function mediaSession() {
+  const handlers = new Map()
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { mediaSession: { setActionHandler: (action, handler) => handlers.set(action, handler) } },
+  })
+  return handlers
+}
+
+/** Chrome or the OS pauses or resumes the element, not the player. */
+function pauseFromOutside() {
+  FakeAudio.last.paused = true
+  FakeAudio.last.dispatchEvent(new Event('pause'))
+}
+function resumeFromOutside() {
+  FakeAudio.last.paused = false
+  FakeAudio.last.dispatchEvent(new Event('play'))
+}
+
+const playingAt = (i) => () => current.player.status === 'playing' && current.player.currentIndex === i
+
+test('K005: the media keys go through the reader only while it reads, then back to the page', async () => {
+  const keys = mediaSession()
+  current = rig(OK)
+  assert.equal(keys.size, 0, 'the page’s media keys were taken before reading began')
+  current.player.play()
+  await until(playingAt(0), 3000, 'playing')
+  for (const action of MEDIA_ACTIONS) assert.equal(typeof keys.get(action), 'function', `no ${action} handler`)
+
+  keys.get('nexttrack')()
+  await until(playingAt(1), 3000, 'the next sentence')
+  keys.get('previoustrack')()
+  await until(playingAt(0), 3000, 'the previous sentence')
+  keys.get('pause')()
+  assert.equal(current.player.status, 'paused')
+  assert.equal(FakeAudio.last.paused, true)
+  for (const action of MEDIA_ACTIONS) assert.equal(keys.get(action), null, `paused, the reader kept ${action}`)
+
+  current.player.play()
+  await until(playingAt(0), 3000, 'playing again')
+  assert.equal(typeof keys.get('pause'), 'function')
+  current.player.stop()
+  for (const action of MEDIA_ACTIONS) assert.equal(keys.get(action), null, `stopped, the reader kept ${action}`)
+})
+
+test('K007: a pause from outside the reader shows as paused, and one press plays again', async () => {
+  mediaSession()
+  current = rig(OK)
+  current.player.play()
+  await until(playingAt(0), 3000, 'playing')
+  pauseFromOutside()
+  assert.equal(current.player.status, 'paused', 'the bar still says playing over silence')
+  current.player.toggle() // the bar's play button
+  assert.equal(current.player.status, 'playing')
+  assert.equal(FakeAudio.last.paused, false, 'the first press did nothing audible')
+})
+
+test('K007: a resume from outside the reader plays on into the next sentence', async () => {
+  mediaSession()
+  current = rig(OK)
+  current.player.play()
+  await until(playingAt(0), 3000, 'playing')
+  current.player.pause()
+  resumeFromOutside()
+  assert.equal(current.player.status, 'playing', 'the bar says paused over audio')
+  FakeAudio.last.dispatchEvent(new Event('ended'))
+  await until(playingAt(1), 3000, 'reading on past the first sentence')
+})
+
+test('K007: the reader’s own pauses and a clip running out are not taken for outside ones', async () => {
+  mediaSession()
+  current = rig(OK)
+  current.player.play()
+  await until(playingAt(0), 3000, 'playing')
+  // Moving on pauses the element; its pause event can land before the next clip.
+  current.player.seekTo(2)
+  pauseFromOutside()
+  await until(playingAt(2), 3000, 'playing the sentence sought')
+  current.player.next()
+  pauseFromOutside()
+  await until(playingAt(3), 3000, 'playing the next sentence')
+
+  // A clip that ran out says pause, then ended.
+  FakeAudio.last.ended = true
+  pauseFromOutside()
+  assert.equal(current.player.status, 'playing')
+  FakeAudio.last.dispatchEvent(new Event('ended'))
+  FakeAudio.last.ended = false
+  await until(playingAt(4), 3000, 'reading on')
+})
+
+// ── the word heard on Web Audio (K011) ────────────────────────────────────────
+
+test('K011: through Web Audio, the word lit is the one heard, not the one rendered', async () => {
+  refuseBlobMedia()
+  // Bluetooth headphones: the speaker trails the context's clock by 0.25 s.
+  globalThis.AudioContext = class extends FakeAudioContext {
+    outputLatency = 0.2
+    baseLatency = 0.05
+  }
+  const second = () => Promise.resolve({ kind: 'synth', ok: true, audio: wavBase64(24000) })
+  try {
+    current = rig(second)
+    const tokens = [
+      { text: 'Hello', isWord: true, weight: 1 },
+      { text: ' ', isWord: false, weight: 0 },
+      { text: 'there.', isWord: true, weight: 1 },
+    ]
+    current.player.load({ title: 'Test', sentences: [{ id: 0, raw: 'Hello there.', text: 'Hello there.', start: 0, end: 12, tokens }] })
+    current.player.play()
+    const node = await startedSource()
+    const lit = () => current.seen.words.at(-1)
+    const ctx = FakeAudioContext.last
+
+    // 0.6 s rendered of a 1 s clip is 0.35 s heard: still the first word.
+    ctx.currentTime += 0.6
+    await new Promise((r) => setTimeout(r, 60))
+    assert.equal(lit(), 0, 'the highlight ran ahead of the voice')
+    ctx.currentTime += 0.3
+    await until(() => lit() === 2, 3000, 'the second word')
+
+    // Pause resumes from what was rendered, which still plays out.
+    current.player.pause()
+    current.player.play()
+    const resumed = await startedSource(node)
+    assert.ok(Math.abs(resumed.started.offset - 0.9) < 1e-9, `resumed at ${resumed.started.offset}`)
+  } finally {
+    delete globalThis.AudioContext
+  }
 })

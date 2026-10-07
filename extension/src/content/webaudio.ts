@@ -23,6 +23,11 @@ export interface Clip extends EventTarget {
   playbackRate: number
   preservesPitch: boolean
   readonly currentTime: number
+  /**
+   * Clip seconds the listener is hearing, where that trails currentTime (K011).
+   * The element's own currentTime already allows for the output delay.
+   */
+  readonly heardTime?: number
   readonly duration: number
   readonly ended: boolean
   play(): Promise<void>
@@ -112,9 +117,28 @@ export class WebAudioClip extends EventTarget implements Clip {
     if (playing) this.begin()
   }
 
+  /**
+   * Where the clip has been rendered to. Pause and a rate change resume from
+   * here: what was rendered before them still plays out.
+   */
   get currentTime(): number {
+    return this.at(0)
+  }
+
+  /**
+   * Where the listener is in the clip. The context's clock runs ahead of the
+   * speaker by its output latency, a fifth of a second or more on Bluetooth,
+   * so the word highlight reads this rather than currentTime (K011).
+   */
+  get heardTime(): number {
+    const ctx = this.ctx
+    return this.at(ctx ? (ctx.outputLatency || 0) + (ctx.baseLatency || 0) : 0)
+  }
+
+  /** Clip seconds `lag` context seconds behind the render clock. */
+  private at(lag: number): number {
     if (!this.node || !this.ctx) return this.offset
-    const t = this.offset + (this.ctx.currentTime - this.startedAt) * this.rate
+    const t = this.offset + Math.max(0, this.ctx.currentTime - this.startedAt - lag) * this.rate
     return Number.isFinite(this.duration) ? Math.min(this.duration, t) : t
   }
 

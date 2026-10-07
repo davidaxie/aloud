@@ -187,6 +187,8 @@ export class AloudPlayer {
 
   private currentStatus: PlayerStatus = 'idle'
   private currentError: string | null = null
+  /** Whether the page's media session hands its keys to the reader (K005). */
+  private mediaKeysHeld = false
 
   // ── word-level highlight (karaoke) ────────────────────────────────────────
   /** Word tokens of the sentence whose audio is currently loaded. */
@@ -269,6 +271,7 @@ export class AloudPlayer {
     if (this.currentStatus === status && this.currentError === error) return
     this.currentStatus = status
     this.currentError = error
+    this.holdMediaKeys(status === 'playing' || status === 'buffering')
     this.hooks.onStatus(status, error)
   }
 
@@ -299,9 +302,73 @@ export class AloudPlayer {
       // The natural (1.0x) WAV duration lands here; per-word windows are laid
       // out in media-time, so raising playbackRate speeds the highlight in step.
       a.addEventListener('loadedmetadata', () => this.audio === a && this.onLoadedMetadata())
+      if (!(a instanceof WebAudioClip)) {
+        // Chrome or the OS can pause or resume the element itself (its media
+        // controls, the ⏯ key, a headphone button): keep the bar, the
+        // highlight and auto-advance in step with what is playing, as the web
+        // reader does (K005, J036). Web Audio joins no media session.
+        a.addEventListener('pause', () => this.audio === a && this.onElementPaused(a))
+        a.addEventListener('play', () => this.audio === a && this.onElementPlayed(a))
+      }
       this.audio = a
     }
     return this.audio
+  }
+
+  /**
+   * The element paused without the player asking. The player's own pauses clear
+   * wantPlaying first or move on to another clip, and a clip that ran out says
+   * 'ended' straight after, so only a pause from outside gets here.
+   */
+  private onElementPaused(a: HTMLAudioElement) {
+    if (!a.paused || a.ended || !this.wantPlaying || this.loadedIndex !== this.index) return
+    this.pause()
+  }
+
+  /** The element started without the player asking: Chrome or the OS resumed it. */
+  private onElementPlayed(a: HTMLAudioElement) {
+    if (a.paused || this.wantPlaying) return
+    if (!this.doc) {
+      a.pause()
+      return
+    }
+    if (this.loadedIndex !== this.index) {
+      // The element still holds a sentence the reader has moved away from:
+      // play the one the reader shows instead.
+      a.pause()
+      this.play()
+      return
+    }
+    this.wantPlaying = true
+    this.setStatus('playing')
+    this.startFilling()
+    this.startWordLoop()
+  }
+
+  /**
+   * Route the ⏯ key, Chrome's media controls and headphone buttons through the
+   * player, as its own controls are (K005, J036). The page shares this media
+   * session, so the handlers are the reader's only while it is reading, and go
+   * back to the browser's defaults once it stops. Never touched otherwise, so a
+   * page's own handlers stand until the reader first plays there.
+   */
+  private holdMediaKeys(hold: boolean) {
+    if (hold === this.mediaKeysHeld) return
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+    this.mediaKeysHeld = hold
+    const actions: Array<[MediaSessionAction, () => void]> = [
+      ['play', () => this.play()],
+      ['pause', () => this.pause()],
+      ['nexttrack', () => this.next()],
+      ['previoustrack', () => this.prev()],
+    ]
+    for (const [action, run] of actions) {
+      try {
+        navigator.mediaSession.setActionHandler(action, hold ? () => this.doc && run() : null)
+      } catch {
+        /* This Chrome doesn't support the action; the bar's controls still work. */
+      }
+    }
   }
 
   /** Play through Web Audio from now on, letting the <audio> element go. */
@@ -379,14 +446,14 @@ export class AloudPlayer {
     return last.token
   }
 
-  /** rAF body: map audio.currentTime → active word, reporting only on change. */
+  /** rAF body: map the time being heard → active word, reporting only on change. */
   private wordLoop = () => {
     const audio = this.audio
     if (!audio || !this.wantPlaying) {
       this.rafId = 0
       return
     }
-    const idx = this.wordIndexAt(audio.currentTime)
+    const idx = this.wordIndexAt(audio.heardTime ?? audio.currentTime)
     if (idx !== this.lastWordIndex) {
       this.lastWordIndex = idx
       this.hooks.onWord(idx)

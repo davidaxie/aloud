@@ -1,6 +1,7 @@
 // Extraction: plain-text pages (F010), the length limit that must not pass for
 // the end of the page (F069), reading text with no DOM behind it (F070), and a
-// selection read as selected (H030), even from a text field (H032).
+// selection read as selected (H030), even from a text field (H032), and words
+// hard-wrapped plain text split at a line end read whole (K010).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { FakeDocument, FakeText, h, installDocument, load } from './harness.mjs'
@@ -45,6 +46,30 @@ test('F010: a text/plain page is read, not skipped as a code block', () => {
   const second = got.sentences[1]
   assert.equal(got.text.slice(second.start, second.end), second.raw)
   assert.match(second.raw, /possession\nof a good/)
+})
+
+test('K010: a word hard-wrapped plain text split at a line end is read whole', () => {
+  const wrapped = [
+    'Trade became inter-',
+    'national in scope, and two- or three-day fairs gave way to pre- and',
+    'post-war markets that were well',
+    'known. The guild of mer-\r\nchants had rules, though neither-',
+    'nor could say.',
+    '',
+  ].join('\n')
+  installDocument(plainTextDocument(wrapped))
+  const got = extract.extractPage(null)
+  assert.ok(got)
+  assert.deepEqual(got.sentences.map((s) => s.text), [
+    'Trade became international in scope, and two- or three-day fairs gave way to pre- and post-war markets that were well known.',
+    'The guild of merchants had rules, though neither- nor could say.',
+  ])
+  // The highlight still works on the text as the page shows it.
+  assert.match(got.sentences[0].raw, /inter-\nnational/)
+
+  // A frame's selection is plain text too.
+  const frame = extract.extractText('Read the inter-\nnational news.')
+  assert.equal(frame.sentences[0].text, 'Read the international news.')
 })
 
 test('F010: select-all on a plain-text page reads the PRE too', () => {

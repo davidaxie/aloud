@@ -242,6 +242,91 @@ test('J044: with the default backend URL, a backend that moved to a fallback por
   }
 })
 
+const KOKORO = { status: 'ok', engine: 'kokoro', model_loaded: true, voice_count: 54, warm: true, queue_depth: 0 }
+const SYNTH = { kind: 'synth', id: 1, text: 'Hello there.', voice: 'af_heart', speed: 1, priority: 'now' }
+const RIFF = () => new Response(new Uint8Array([82, 73, 70, 70]))
+
+test('K001: another server answering /health on the default port is not taken for the backend', async () => {
+  const realFetch = globalThis.fetch
+  const asked = []
+  let aloud = true
+  globalThis.fetch = async (url) => {
+    asked.push(String(url))
+    const { port, pathname } = new URL(url)
+    // Another uvicorn app holds 8000 with a /health of its own; Aloud moved on.
+    if (port === '8000') return pathname === '/health' ? Response.json({ status: 'ok' }) : new Response('', { status: 404 })
+    if (aloud && port === '8001' && pathname === '/health') return Response.json(KOKORO)
+    if (aloud && port === '8001' && pathname === '/synthesize') return RIFF()
+    throw new TypeError('fetch failed') // nothing listening
+  }
+  try {
+    const report = await ask({ kind: 'health' })
+    assert.equal(report.voiceCount, 54, 'the other server was taken for the backend')
+    const synth = await ask(SYNTH, { tab: { id: 1 }, frameId: 0 })
+    assert.equal(synth.ok, true)
+    assert.ok(asked.includes('http://127.0.0.1:8001/synthesize'), `synthesis went to ${asked.at(-1)}`)
+
+    // With Aloud nowhere, the other server's answer is no backend either.
+    aloud = false
+    assert.equal((await ask({ kind: 'health' })).state, 'offline')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('K004: a rescan neither sends synthesis to the default port nor waits on a slow port above the backend', async () => {
+  const realFetch = globalThis.fetch
+  const asked = []
+  let aloudPort = '8003'
+  /** Ports whose /health hangs, as a suspended dev server's does, until released. */
+  const stalled = new Map()
+  globalThis.fetch = (url, init = {}) => {
+    asked.push(String(url))
+    const { port, pathname } = new URL(url)
+    if (stalled.has(port) && pathname === '/health') {
+      return new Promise((_, reject) => {
+        const fail = () => reject(new TypeError('fetch failed'))
+        stalled.get(port).push(fail)
+        init.signal?.addEventListener('abort', fail)
+      })
+    }
+    if (port === '8000') return Promise.resolve(new Response('<h1>Not Found</h1>', { status: 404 }))
+    if (port === aloudPort && pathname === '/health') return Promise.resolve(Response.json(KOKORO))
+    if (port === aloudPort && pathname === '/synthesize') return Promise.resolve(RIFF())
+    return Promise.reject(new TypeError('fetch failed'))
+  }
+  const release = () => {
+    for (const fails of stalled.values()) for (const fail of fails.splice(0)) fail()
+    stalled.clear()
+  }
+  try {
+    assert.equal((await ask({ kind: 'health' })).voiceCount, 54)
+
+    // A poll's rescan waits on 8002, below the backend: synthesis meanwhile
+    // goes where the backend was found.
+    stalled.set('8002', [])
+    const polled = ask({ kind: 'health' })
+    await settle()
+    asked.length = 0
+    const synth = await ask(SYNTH, { tab: { id: 1 }, frameId: 0 })
+    assert.equal(synth.ok, true, `synthesis went to ${asked.find((u) => u.endsWith('/synthesize'))}`)
+    assert.deepEqual(asked, ['http://127.0.0.1:8003/synthesize'])
+    release()
+    assert.equal((await polled).voiceCount, 54)
+
+    // A slow port above the backend does not hold up the answer.
+    aloudPort = '8001'
+    stalled.set('8005', [])
+    const late = new Promise((resolve) => setTimeout(() => resolve('still waiting'), 1000))
+    const report = await Promise.race([ask({ kind: 'health' }), late])
+    assert.notEqual(report, 'still waiting', 'the scan waited on a port above the backend')
+    assert.equal(report.voiceCount, 54)
+  } finally {
+    release()
+    globalThis.fetch = realFetch
+  }
+})
+
 test('J047: only the popup may activate a tab, not a content script in a page', async () => {
   mock.chrome.runtime.id = 'test'
   mock.chrome.runtime.getURL = (path) => `chrome-extension://test/${path}`

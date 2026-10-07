@@ -196,8 +196,9 @@ function requestKey(sender: chrome.runtime.MessageSender, id: number): string {
 
 /**
  * An Aloud backend found on one of native_app.py's fallback ports, because
- * something else holds the default one (J044). Null while the default answers,
- * or nothing does; undefined until this worker has looked.
+ * something else holds the default one (J044). Null while Aloud answers on the
+ * default port, or nowhere; undefined until this worker has looked. A rescan
+ * leaves it as it was until the scan is over.
  */
 let located: string | null | undefined
 /** The probe under way, so callers arriving together share one. */
@@ -264,18 +265,26 @@ async function locate(): Promise<HealthReport> {
   const configured = (await loadPrefs()).backendUrl
   let d = await readHealth(configured)
   if (configured === DEFAULT_PREFS.backendUrl) {
-    located = null
     // Nothing on the default port, or something there that isn't Aloud:
-    // native_app.py moves to a fallback port when the default is taken.
-    if (!d) {
+    // native_app.py moves to a fallback port when the default is taken. Only
+    // an answer naming the kokoro engine is ours, as native_app.py's own probe
+    // requires; any other server's /health is no backend at all (K001).
+    if (isAloud(d)) {
+      located = null
+    } else {
       const found = await findOnFallbackPorts(configured)
-      if (found) {
-        located = found.base
-        d = found.body
-      }
+      // Settled once the scan is over: until then synthesis keeps going where
+      // the backend was last found, not to the default port (K004).
+      located = found?.base ?? null
+      d = found?.body ?? null
     }
   }
   return d ? normalizeHealth(d) : OFFLINE
+}
+
+/** Whether a `/health` answer is an Aloud backend's. */
+function isAloud(d: HealthBody | null): d is HealthBody {
+  return d?.engine === 'kokoro'
 }
 
 /** The first fallback port, in port order, where an Aloud backend answers. */
@@ -285,11 +294,15 @@ async function findOnFallbackPorts(base: string): Promise<{ base: string; body: 
     url.port = String(port)
     return url.origin
   })
-  const bodies = await Promise.all(bases.map(readHealth))
-  // Only a backend naming the kokoro engine, as native_app.py's own probe
-  // requires: another server that owns one of these ports is not ours.
-  const i = bodies.findIndex((d) => d?.engine === 'kokoro')
-  return i < 0 ? null : { base: bases[i], body: bodies[i]! }
+  // All asked at once, read in port order: the first Aloud answer settles it
+  // without waiting on a slower port above it (K004). Another server that
+  // owns one of these ports is not ours.
+  const answers = bases.map(readHealth)
+  for (let i = 0; i < answers.length; i++) {
+    const d = await answers[i]
+    if (isAloud(d)) return { base: bases[i], body: d }
+  }
+  return null
 }
 
 /** One `/health` answer; null when nothing answers, or not with JSON. */

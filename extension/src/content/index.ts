@@ -46,6 +46,8 @@ const TAKEOVER_EVENT = 'aloud:takeover'
 /** Where Escape belongs to the page: its dialogs, modals and open menus (J045). */
 const PAGE_ESCAPE_OWNERS =
   'dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]'
+/** What a modal must pass to count as shown: a box, visible, and not see-through (K009). */
+const MODAL_SHOWN = { checkVisibilityCSS: true, visibilityProperty: true, checkOpacity: true, opacityProperty: true }
 
 // A second injection would create a second player over the same page. Bail out
 // early; the already-running instance keeps serving messages.
@@ -505,11 +507,14 @@ async function main(onReady: (respond: Responder) => void) {
       if (typeof el?.closest === 'function' && el.closest(PAGE_ESCAPE_OWNERS)) return true
     }
     // Focus can stay on the page behind a lightbox; an open modal still owns
-    // the key. One that is closed but left in the DOM is hidden, so not this.
+    // the key. One that is closed but left in the DOM is hidden, so not this:
+    // by display, or by the visibility or opacity a fading drawer keeps, which
+    // checkVisibility() only looks at when asked (K009). Both spellings of each
+    // option, for the Chrome versions before and after the rename.
     const modals = document.querySelectorAll?.('dialog:modal, [aria-modal="true"]') ?? []
     for (const modal of modals) {
-      const check = (modal as Element & { checkVisibility?: () => boolean }).checkVisibility
-      if (typeof check !== 'function' || check.call(modal)) return true
+      const check = (modal as Element & { checkVisibility?: (o?: object) => boolean }).checkVisibility
+      if (typeof check !== 'function' || check.call(modal, MODAL_SHOWN)) return true
     }
     return false
   }

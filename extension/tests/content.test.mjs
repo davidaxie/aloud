@@ -552,7 +552,7 @@ test('H033: a voice id past the backend limit is never kept, so it cannot stop e
   assert.equal((await savePrefs({ voiceId: 'bf_emma' })).voiceId, 'bf_emma')
 })
 
-test('J045: an Escape the page uses to close its dialog or modal leaves the reading alone', async () => {
+test('J045/K009: an Escape the page uses to close its dialog or modal leaves the reading alone', async () => {
   const doc = anyDocument([])
   const p = page(doc)
   const reader = await p.boot()
@@ -584,6 +584,16 @@ test('J045: an Escape the page uses to close its dialog or modal leaves the read
     press()
     assert.equal(await active(), true, 'Escape closing an open modal ended the reading')
     // …but one closed and left hidden in the DOM no longer owns the key.
+    // A closed drawer kept in the DOM to fade (K009): it still has a box, so
+    // checkVisibility() passes it unless asked about visibility and opacity.
+    modals = [
+      { checkVisibility: (o = {}) => !(o.checkVisibilityCSS || o.visibilityProperty) },
+      { checkVisibility: (o = {}) => !(o.checkOpacity || o.opacityProperty) },
+    ]
+    press()
+    assert.equal(await active(), false, 'a modal hidden by visibility or opacity kept Escape from stopping the reading')
+    await reader({ kind: 'command', action: 'start-selection', text: 'One sentence here. Another one there.' })
+    assert.equal(await active(), true)
     modals = [{ checkVisibility: () => false }]
     press()
     assert.equal(await active(), false, 'Escape no longer stops the reading')
