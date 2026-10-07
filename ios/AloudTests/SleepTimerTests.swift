@@ -94,6 +94,9 @@ final class SleepTimerTests: XCTestCase {
         landing.select(.minutes(1))
         XCTAssertLessThan(landing.remaining, 0)
         XCTAssertEqual(landing.chipText, "0:00")
+        // A pause there brings the menu back on "0:00": VoiceOver said
+        // "1 minute left" beside it (I003).
+        XCTAssertEqual(landing.chipSpokenLabel, "No time left, sleep timer")
 
         // One "minute" of 1694 s, so the countdown reads 28:14.
         let timer = SleepTimer(timing: SleepTimer.Timing(secondsPerMinute: 1694),

@@ -495,7 +495,7 @@ final class MacPlayerBarTests: XCTestCase {
     /// until the stop clears, as on the iPhone (H050).
     func testAPlaybackErrorStopKeepsTheCircleOnTryAgain() {
         for status in [PlayerStatus.paused, .idle, .error] {
-            let state = PlayButtonState(status: MacPlayerBar.circleStatus(status, stop: .playbackError),
+            let state = PlayButtonState(status: PlayButtonState.circleStatus(status, stop: .playbackError),
                                         isPreparingVoice: false, reduceMotion: false)
             XCTAssertEqual(state.glyph, .retry, "\(status) beside the error line")
             XCTAssertEqual(state.label, "Try again")
@@ -503,13 +503,13 @@ final class MacPlayerBarTests: XCTestCase {
         // Playing again clears the stop; until it does, active playback
         // and the end of the book keep their own faces.
         for status in [PlayerStatus.playing, .buffering, .ended] {
-            XCTAssertEqual(MacPlayerBar.circleStatus(status, stop: .playbackError), status)
+            XCTAssertEqual(PlayButtonState.circleStatus(status, stop: .playbackError), status)
         }
         // Every other stop sits beside a plain Play circle, as before.
         for stop in StopReason.allCases where stop != .playbackError {
-            XCTAssertEqual(MacPlayerBar.circleStatus(.paused, stop: stop), .paused, "\(stop)")
+            XCTAssertEqual(PlayButtonState.circleStatus(.paused, stop: stop), .paused, "\(stop)")
         }
-        XCTAssertEqual(MacPlayerBar.circleStatus(.paused, stop: nil), .paused)
+        XCTAssertEqual(PlayButtonState.circleStatus(.paused, stop: nil), .paused)
     }
 
     // MARK: - Sleep menu

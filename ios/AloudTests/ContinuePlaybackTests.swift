@@ -58,7 +58,8 @@ final class ContinuePlaybackTests: XCTestCase {
             ContinuePlayback.effectiveStatus(documentID: rig.document.id,
                                              loadedID: rig.controller.document?.id,
                                              status: rig.controller.status,
-                                             pendingID: continuePlayback.pendingDocumentID)
+                                             pendingID: continuePlayback.pendingDocumentID,
+                                             stop: rig.controller.stopReason(for: rig.document.id))
         }
     }
 
@@ -89,6 +90,29 @@ final class ContinuePlaybackTests: XCTestCase {
         XCTAssertEqual(h.rig.controller.currentSentence, 3, "it plays from where it was cued")
         XCTAssertEqual(h.gate.calls, 0)
         try await h.rig.waitUntilPlayingOrSkip(after: mark)
+    }
+
+    /// A playback error, then a skip in the reader: the status is paused
+    /// while the stop stays. Back in the Library the card's circle said
+    /// "Play" beside "Playback stopped", while the reader bar (and the
+    /// Mac's Playback menu) said Try again (I002, I014).
+    func testTheCardKeepsTryAgainAfterASkipPastAPlaybackError() async {
+        let rig = PlaybackTestRig(sentences: 40, failing: { _ in true })
+        rig.loadDefault()
+        rig.controller.play()
+        let errored = await rig.waitUntil(5) { rig.controller.status == .error }
+        XCTAssertTrue(errored)
+        XCTAssertNotNil(rig.controller.skip(seconds: PlaybackController.skipInterval))
+        XCTAssertEqual(rig.controller.status, .paused, "the skip leaves the status paused")
+        let stop = rig.controller.stopReason(for: rig.document.id)
+        XCTAssertEqual(stop, .playbackError, "the error stop stays")
+
+        let card = ContinuePlayback.effectiveStatus(documentID: rig.document.id,
+                                                    loadedID: rig.controller.document?.id,
+                                                    status: rig.controller.status, pendingID: nil, stop: stop)
+        let bar = PlayButtonState.circleStatus(rig.controller.status, stop: stop)
+        XCTAssertEqual(card, bar, "the card and the reader bar agree")
+        XCTAssertEqual(PlayButtonState(status: card, isPreparingVoice: false, reduceMotion: false).glyph, .retry)
     }
 
     // MARK: - A book not loaded yet

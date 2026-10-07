@@ -98,14 +98,17 @@ extension SleepTimer {
     /// every other time in the bar, never the visible m:ss countdown, which
     /// VoiceOver reads as a pair of numbers or a clock time. Rounded up, as
     /// the countdown is. "Chapter end" and "Book end" read as shown; "Sleep
-    /// timer" while off. One label for the iPhone chip and the Mac's sleep
-    /// menu, so the two can't drift apart.
+    /// timer" while off. At "0:00" (the landing window, below zero) it says
+    /// there is no time left, never the "1 minute" `spokenPhrase` rounds up
+    /// to. One label for the iPhone chip and the Mac's sleep menu, so the
+    /// two can't drift apart.
     var chipSpokenLabel: String {
         switch option {
         case .off:
             return Copy.section
         case .minutes:
-            let minutes = Int((max(remaining, 0) / 60).rounded(.up))
+            guard remaining > 0 else { return Copy.noTimeLeftSpoken + ", sleep timer" }
+            let minutes = Int((remaining / 60).rounded(.up))
             return ListeningEstimate.spokenPhrase(minutes: minutes) + " left, sleep timer"
         case .endOfChapter:
             return "\(chipText), sleep timer"

@@ -79,6 +79,10 @@ final class SleepTimer: ObservableObject {
             + ListeningEstimate.spokenMorePhrase(minutes: SleepTimer.extensionMinutes)
         static let chapterEnd = "Chapter end"
         static let bookEnd = "Book end"
+        /// The chip's VoiceOver words at "0:00": the deadline has passed and
+        /// the stop waits for the sentence to end (or for playback to
+        /// resume), never "1 minute left".
+        static let noTimeLeftSpoken = "No time left"
     }
 
     static let standardMinuteChoices = [15, 30, 45, 60]

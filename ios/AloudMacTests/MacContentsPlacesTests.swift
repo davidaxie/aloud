@@ -86,6 +86,58 @@ final class MacContentsPlacesTests: XCTestCase {
         XCTAssertEqual(MacContents.remap(1, from: three, to: resumed, in: .chapters), 1)
     }
 
+    /// VoiceOver hears the row a remap leaves the cursor on when it isn't
+    /// the row it heard: Return on the last place shown records a stop above
+    /// it, the place slides behind the toggle and the ring waits there, in
+    /// silence, so the next Return expanded the list unannounced; Return on
+    /// the toggle changed its words in silence too. A place followed down a
+    /// row, and a chapter kept, stay quiet (I013).
+    func testARemapOntoARowNotHeardIsSaid() {
+        func layout(_ sentences: [Int], expanded: Bool = false) -> MacContents.ListLayout {
+            MacContents.listLayout(placeCount: sentences.count, expanded: expanded, chapterCount: 20,
+                                   hasChapterList: true, placeSentences: sentences)
+        }
+        func unheard(_ cursor: Int?, _ old: MacContents.ListLayout, _ new: MacContents.ListLayout,
+                     in mode: MacContents.Mode = .chapters) -> Bool {
+            MacContents.remapIsUnheard(cursor, to: MacContents.remap(cursor, from: old, to: new, in: mode),
+                                       from: old, to: new, in: mode)
+        }
+        let three = layout([4000, 2500, 1200])
+        let four = layout([4100, 4000, 2500, 1200])
+        XCTAssertEqual(four.row(at: MacContents.remap(2, from: three, to: four, in: .chapters)!), .showEarlier)
+        XCTAssertTrue(unheard(2, three, four), "the third place, pushed behind the toggle")
+        XCTAssertFalse(unheard(1, three, four), "the second place, followed down a row")
+        XCTAssertFalse(unheard(three.index(of: .chapter(4)), three, four), "a chapter keeps its chapter")
+        XCTAssertTrue(unheard(0, three, layout([4010, 2500, 1200])), "the newest place replaced, one sitting")
+
+        // The toggle pressed, either way: "Show 1 earlier stop", "Show fewer".
+        let fourOpen = layout([4100, 4000, 2500, 1200], expanded: true)
+        XCTAssertTrue(unheard(MacContents.cursorOnToggle(four.index(of: .showEarlier), before: four), four, fourOpen))
+        XCTAssertTrue(unheard(MacContents.cursorOnToggle(fourOpen.index(of: .showEarlier), before: fourOpen),
+                              fourOpen, four))
+        XCTAssertTrue(unheard(MacContents.cursorOnToggle(four.index(of: .chapter(4)), before: four), four, fourOpen),
+                      "clicked with the ring on a chapter: it lands on the toggle")
+        // Open, one more stop leaves the toggle on "Show fewer": quiet.
+        let fiveOpen = layout([4200, 4100, 4000, 2500, 1200], expanded: true)
+        XCTAssertFalse(unheard(fourOpen.index(of: .showEarlier), fourOpen, fiveOpen))
+        // No cursor, or a result's: never.
+        XCTAssertFalse(unheard(nil, three, four))
+        XCTAssertFalse(unheard(2, three, four, in: .results))
+    }
+
+    /// The panel says the row a remap left unheard, and focus coming back
+    /// to the list says one it missed while away (I013). Focus can't be
+    /// driven from a test, so this pins the source; the rule is above.
+    func testThePanelSaysTheRowARemapLeftUnheard() throws {
+        let path = "Reader/MacContentsPanel.swift"
+        let panel = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [path])[path])
+        let onChange = try XCTUnwrap(panel.range(of: ".onChange(of: listLayout)"))
+        let body = panel[onChange.upperBound...].prefix(600)
+        XCTAssertTrue(body.contains("MacContents.remapIsUnheard("))
+        XCTAssertTrue(body.contains("announceCursor(currentMode)"))
+        XCTAssertTrue(panel.contains("} else if cursorUnheard {"))
+    }
+
     /// A stop recorded while the keyboard walks search results: the
     /// cursor is a result's index, which the places never move, so the ring
     /// stays on its result and Return opens it (never the next result, or

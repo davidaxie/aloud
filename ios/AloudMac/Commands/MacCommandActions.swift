@@ -245,12 +245,13 @@ struct MacCommandActions {
     /// Continue book as its card shows it.
     private var toggleStatus: PlayerStatus {
         if let document = playback.document {
-            return MacPlayerBar.circleStatus(playback.status, stop: playback.stopReason(for: document.id))
+            return PlayButtonState.circleStatus(playback.status, stop: playback.stopReason(for: document.id))
         }
         guard let book = continueBook else { return .idle }
         return ContinuePlayback.effectiveStatus(documentID: book.id, loadedID: playback.document?.id,
                                                 status: playback.status,
-                                                pendingID: continuePlayback.pendingDocumentID)
+                                                pendingID: continuePlayback.pendingDocumentID,
+                                                stop: playback.stopReason(for: book.id))
     }
 
     /// The loaded book toggles; otherwise the Continue book loads and plays

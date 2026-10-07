@@ -27,7 +27,7 @@ final class ContinueCardStateTests: XCTestCase {
         for status in allStatuses {
             for loaded in [nil, other, hero] {
                 XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: loaded,
-                                                                status: status, pendingID: hero),
+                                                                status: status, pendingID: hero, stop: nil),
                                .buffering, "pending wins over \(status), loaded \(String(describing: loaded))")
             }
         }
@@ -38,7 +38,7 @@ final class ContinueCardStateTests: XCTestCase {
             for loaded in [nil, other] {
                 for pending in [nil, other] {
                     XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: loaded,
-                                                                    status: status, pendingID: pending),
+                                                                    status: status, pendingID: pending, stop: nil),
                                    .paused, "\(status) belongs to another book")
                 }
             }
@@ -49,9 +49,48 @@ final class ContinueCardStateTests: XCTestCase {
         for status in allStatuses {
             for pending in [nil, other] {
                 XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: hero,
-                                                                status: status, pendingID: pending),
+                                                                status: status, pendingID: pending, stop: nil),
                                status)
             }
+        }
+    }
+
+    /// The card's subtitle says "Playback stopped" for a playback error's
+    /// stop; its circle said "Play, paused" beside it once a skip left the
+    /// loaded book paused, or a relaunch restored the stop on a book the
+    /// controller doesn't hold, while the reader bars and the Mac's
+    /// Playback menu said Try again (I002, I014). One rule now for all.
+    func testAPlaybackErrorStopKeepsTheCardOnTryAgain() {
+        for (loaded, status) in [(hero, PlayerStatus.paused), (hero, .idle), (hero, .error),
+                                 (nil, .idle), (other, .playing)] {
+            let card = ContinuePlayback.effectiveStatus(documentID: hero, loadedID: loaded, status: status,
+                                                        pendingID: nil, stop: .playbackError)
+            let state = PlayButtonState(status: card, isPreparingVoice: false, reduceMotion: false)
+            XCTAssertEqual(state.glyph, .retry, "\(status), loaded \(String(describing: loaded))")
+            XCTAssertEqual(state.label, "Try again")
+        }
+        // The loaded book as the reader bar shows it: the same status.
+        for status in [PlayerStatus.idle, .buffering, .playing, .paused, .ended, .error] {
+            for stop in [nil] + StopReason.allCases.map(Optional.some) {
+                XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: hero, status: status,
+                                                                pendingID: nil, stop: stop),
+                               PlayButtonState.circleStatus(status, stop: stop),
+                               "\(status), \(String(describing: stop))")
+            }
+        }
+        // Playing again, the end of the book and a circle load keep their own faces.
+        for status in [PlayerStatus.playing, .buffering, .ended] {
+            XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: hero, status: status,
+                                                            pendingID: nil, stop: .playbackError), status)
+        }
+        XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: nil, status: .idle,
+                                                        pendingID: hero, stop: .playbackError), .buffering)
+        // Every other stop sits beside a plain Play circle, as before.
+        for stop in StopReason.allCases where stop != .playbackError {
+            XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: hero, status: .paused,
+                                                            pendingID: nil, stop: stop), .paused, "\(stop)")
+            XCTAssertEqual(ContinuePlayback.effectiveStatus(documentID: hero, loadedID: nil, status: .idle,
+                                                            pendingID: nil, stop: stop), .paused, "\(stop)")
         }
     }
 
@@ -87,7 +126,7 @@ final class ContinueCardStateTests: XCTestCase {
         // The hero while its circle loads the book.
         let id = UUID()
         let pending = PlayButtonState(status: ContinuePlayback.effectiveStatus(documentID: id, loadedID: nil,
-                                                                               status: .idle, pendingID: id),
+                                                                               status: .idle, pendingID: id, stop: nil),
                                       isPreparingVoice: false, reduceMotion: false)
         XCTAssertEqual(ContinueListeningCopy.value(isSpeaking: ContinueListeningCopy.isSpeaking(pending),
                                                    spokenSubtitle: "1 hour left"),

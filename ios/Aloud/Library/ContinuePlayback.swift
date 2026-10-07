@@ -140,11 +140,14 @@ final class ContinuePlayback: ObservableObject {
 
     /// The status the card shows for `documentID`: buffering while its circle
     /// load runs, paused for any book the controller doesn't hold, else the
-    /// controller's own status.
-    nonisolated static func effectiveStatus(documentID: UUID, loadedID: UUID?,
-                                            status: PlayerStatus, pendingID: UUID?) -> PlayerStatus {
+    /// controller's own status; Try again while `stop`, the book's own, is a
+    /// playback error, as the reader bars and the Mac's Playback menu show
+    /// it (`PlayButtonState.circleStatus`), so the card's circle never says
+    /// "Play" beside its "Playback stopped" line.
+    nonisolated static func effectiveStatus(documentID: UUID, loadedID: UUID?, status: PlayerStatus,
+                                            pendingID: UUID?, stop: StopReason?) -> PlayerStatus {
         if pendingID == documentID { return .buffering }
-        guard loadedID == documentID else { return .paused }
-        return status
+        guard loadedID == documentID else { return PlayButtonState.circleStatus(.paused, stop: stop) }
+        return PlayButtonState.circleStatus(status, stop: stop)
     }
 }

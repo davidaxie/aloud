@@ -38,6 +38,17 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertFalse(home.contains("PreferenceToggleRow"))
     }
 
+    /// Voice & speed is drawn on the Mac too (Settings, the Voice & Speed
+    /// popover), where the main screen's hairline is the wrong display's on
+    /// a Mac with a Retina and a 1x screen: its rules are one pixel of the
+    /// screen they are drawn on, as every Mac rule is (I015).
+    func testListeningRulesFollowTheScreenTheyAreDrawnOn() throws {
+        let path = "Settings/ListeningView.swift"
+        let listening = try XCTUnwrap(SourceTree.sources(only: [path])[path])
+        XCTAssertFalse(listening.contains("Theme.Stroke.hairlineWidth"), "the main screen's hairline")
+        XCTAssertTrue(listening.contains(".hairlineHeight()"))
+    }
+
     func testNoSystemErrorTextInDownloadOrSettings() throws {
         let sources = try SourceTree.sources(only: ["TTS", "Settings"])
         XCTAssertEqual(SourceTree.files(containing: "localizedDescription", in: sources), [],

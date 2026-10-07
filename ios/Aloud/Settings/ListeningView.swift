@@ -395,10 +395,13 @@ struct ListeningView: View {
 
     // MARK: - Bits
 
+    /// One pixel of the screen it is drawn on (`hairlineHeight()`): the Mac
+    /// draws this view in Settings and the Voice & Speed popover, on
+    /// whichever display holds the window, not the main one.
     private func hairline(inset: CGFloat = 0) -> some View {
         Rectangle()
             .fill(Theme.Stroke.hairlineColor)
-            .frame(height: Theme.Stroke.hairlineWidth)
+            .hairlineHeight()
             .padding(.horizontal, inset)
     }
 }

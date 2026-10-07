@@ -60,6 +60,9 @@ struct MacContentsPanel: View {
     /// The row the keyboard is on: a chapter index, or a result's.
     @State private var cursor: Int?
     @FocusState private var isListFocused: Bool
+    /// A remap moved the cursor onto a row VoiceOver hasn't heard while the
+    /// list was away; focus coming back says it.
+    @State private var cursorUnheard = false
     /// Whose ↓ handoff is offered: this panel's, until it goes.
     @State private var handoffOwner = UUID()
     /// "Show N earlier stops" pressed; reset when the panel goes.
@@ -119,18 +122,29 @@ struct MacContentsPanel: View {
             ui.searchFocus = nil
         }
         // Focus that lands on the list some other way (Tab, a click on its
-        // background) starts on the row ↓ would have.
+        // background) starts on the row ↓ would have, or says the row a
+        // remap moved the cursor to while the list was away.
         .onChange(of: isListFocused) { _, focused in
-            if focused, cursor == nil {
+            guard focused else { return }
+            if cursor == nil {
                 cursor = initialCursor(mode)
+                announceCursor(mode)
+            } else if cursorUnheard {
                 announceCursor(mode)
             }
         }
         // A stop recorded, or the toggle shown or hidden, while the list is
         // open: the cursor stays on its row, never the one that slid under it.
-        // A results cursor stays on its result.
+        // A results cursor stays on its result. Left on a row VoiceOver
+        // hasn't heard (a place pushed behind the toggle, the toggle's new
+        // words), it says that row, so Return never acts on one unheard.
         .onChange(of: listLayout) { old, new in
-            cursor = MacContents.remap(cursor, from: old, to: new, in: currentMode)
+            let remapped = MacContents.remap(cursor, from: old, to: new, in: currentMode)
+            let unheard = MacContents.remapIsUnheard(cursor, to: remapped, from: old, to: new, in: currentMode)
+            cursor = remapped
+            guard unheard else { return }
+            cursorUnheard = true
+            if isListFocused { announceCursor(currentMode) }
         }
         .onAppear {
             MacSearchHandoff.shared.offer(by: handoffOwner) { focusList() }
@@ -504,6 +518,7 @@ struct MacContentsPanel: View {
     /// each ↑/↓ would be silent, and Return would open a row never heard.
     private func announceCursor(_ mode: MacContents.Mode) {
         guard let cursor, let label = cursorLabel(cursor, mode: mode) else { return }
+        cursorUnheard = false
         MacContents.announceCursor(label, muted: playback.isOutputMuted)
     }
 
@@ -585,7 +600,7 @@ struct MacContentsPanel: View {
 
     /// The cursor stays on the toggle, which moves as rows come and go:
     /// put on it in the list before the press, and carried once by the
-    /// remap of `onChange(of: listLayout)`.
+    /// remap of `onChange(of: listLayout)`, which says its new words.
     private func toggleEarlierPlaces() {
         cursor = MacContents.cursorOnToggle(cursor, before: listLayout)
         showsEarlierPlaces.toggle()
@@ -778,6 +793,41 @@ enum MacContents {
         case nil:
             return nil
         }
+    }
+
+    /// A row of the list as VoiceOver hears it, by what it is rather than
+    /// where it sits: a place by its sentence, the toggle by the stops it
+    /// holds back (none once pressed: "Show fewer"), a chapter by its index.
+    enum HeardRow: Equatable {
+        case place(sentence: Int?)
+        case toggle(earlier: Int)
+        case chapter(Int)
+    }
+
+    static func heardRow(_ cursor: Int?, in layout: ListLayout) -> HeardRow? {
+        switch cursor.flatMap(layout.row(at:)) {
+        case .place(let index):
+            return .place(sentence: layout.placeSentences.indices.contains(index)
+                          ? layout.placeSentences[index] : nil)
+        case .showEarlier:
+            return .toggle(earlier: max(layout.placeSentences.count - layout.placeCount, 0))
+        case .chapter(let index):
+            return .chapter(index)
+        case nil:
+            return nil
+        }
+    }
+
+    /// The remap left the cursor on a row VoiceOver hasn't heard: another
+    /// place (a picked place pushed behind the toggle leaves it on the
+    /// toggle; the newest place replaced in one sitting), another chapter,
+    /// or the toggle with new words (pressed, or holding back one more).
+    /// A place followed down a row by its sentence is the row it heard,
+    /// and stays quiet. Only the list in `.chapters` remaps.
+    static func remapIsUnheard(_ cursor: Int?, to remapped: Int?, from old: ListLayout, to new: ListLayout,
+                               in mode: Mode) -> Bool {
+        guard mode == .chapters, remapped != nil else { return false }
+        return heardRow(cursor, in: old) != heardRow(remapped, in: new)
     }
 
     /// A result as VoiceOver reads its row: the whole sentence, then its

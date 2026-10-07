@@ -46,6 +46,21 @@ struct PlayButtonState: Equatable {
         }
         busy = status == .buffering || isPreparingVoice ? (reduceMotion ? .pulse : .arc) : .none
     }
+
+    /// The status the Play circle shows for a book with `stop`: a playback
+    /// error's stop keeps the retry face for as long as the line beside it
+    /// offers "tap to try again", so a skip or scrub after a failure (which
+    /// leaves the status paused), or a relaunch that restores the stop,
+    /// never pairs that line with a plain "Play, paused" circle. One rule
+    /// for both reader bars, the Continue card and the Mac's Play/Pause
+    /// menu title, so none of them can drift from the others.
+    static func circleStatus(_ status: PlayerStatus, stop: StopReason?) -> PlayerStatus {
+        guard stop == .playbackError else { return status }
+        switch status {
+        case .idle, .paused: return .error
+        case .playing, .buffering, .ended, .error: return status
+        }
+    }
 }
 
 /// The Play circle's face: the glyph in paper on the accent circle (drawn by

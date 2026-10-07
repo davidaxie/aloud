@@ -273,7 +273,8 @@ struct LibraryView: View {
         let status = ContinuePlayback.effectiveStatus(documentID: document.id,
                                                       loadedID: playback.document?.id,
                                                       status: playback.status,
-                                                      pendingID: continuePlayback.pendingDocumentID)
+                                                      pendingID: continuePlayback.pendingDocumentID,
+                                                      stop: playback.stopReason(for: document.id))
         TransportHaptics.emitToggle(isActive: status == .playing || status == .buffering)
         toggleContinue(document)
     }
@@ -366,16 +367,18 @@ private struct ContinueHero<Actions: View>: View {
 
     var body: some View {
         let loaded = playback.document?.id == document.id
+        let stop = playback.stopReason(for: document.id)
         let status = ContinuePlayback.effectiveStatus(documentID: document.id,
                                                       loadedID: playback.document?.id,
                                                       status: playback.status,
-                                                      pendingID: continuePlayback.pendingDocumentID)
+                                                      pendingID: continuePlayback.pendingDocumentID,
+                                                      stop: stop)
         ContinueListeningCard(document: document,
                               rate: rate,
                               playState: PlayButtonState(status: status,
                                                          isPreparingVoice: loaded && playback.isPreparingVoice,
                                                          reduceMotion: reduceMotion),
-                              stop: playback.stopReason(for: document.id),
+                              stop: stop,
                               offersNaturalVoice: naturalVoiceOffer.isVisible,
                               modelState: modelManager.state,
                               spaceNeeded: modelManager.spaceNeeded,
