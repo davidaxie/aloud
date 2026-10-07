@@ -54,5 +54,42 @@ class JoinerTests(unittest.TestCase):
         self.assertEqual(normalize_for_tts(f"café{ZWJ}s"), "cafés")
 
 
+class HyphenTests(unittest.TestCase):
+    """J032: only a hyphen at a line break is a wrap. A suspended hyphen the
+    author wrote mid-line ("pre- and post-war") is spoken as written, and so is
+    one wrapped just before and/or/nor, the follower list TextNormalizer.swift
+    uses."""
+
+    def test_suspended_hyphens_mid_line_are_kept(self) -> None:
+        for text in (
+            "Both pre- and post-war housing, short- and long-term.",
+            "first- or second-order effects",
+            "the x- and y-axis",
+            "mid- to late-1990s",
+            "long- versus short-term",
+            "sixteenth- through eighteenth-century",
+            "up- and downstream",
+        ):
+            self.assertEqual(normalize_for_tts(text), text)
+
+    def test_line_wrap_hyphen_is_rejoined(self) -> None:
+        self.assertEqual(normalize_for_tts("inter-\nnational"), "international")
+        self.assertEqual(normalize_for_tts("inter- \r\n  national law"), "international law")
+        self.assertEqual(normalize_for_tts("house-\nkeeper-\nship"), "housekeepership")
+
+    def test_unicode_line_breaks_count_as_line_breaks(self) -> None:
+        for brk in (" ", " ", "\u0085"):
+            self.assertEqual(normalize_for_tts(f"inter-{brk}national"), "international", repr(brk))
+
+    def test_suspended_hyphen_wrapped_before_a_follower_is_kept(self) -> None:
+        self.assertEqual(
+            normalize_for_tts("short-\nand long-term, two- \nor three-day, neither-\nnor"),
+            "short- and long-term, two- or three-day, neither- nor",
+        )
+
+    def test_compounds_without_a_space_are_untouched(self) -> None:
+        self.assertEqual(normalize_for_tts("well-being and long-term"), "well-being and long-term")
+
+
 if __name__ == "__main__":
     unittest.main()

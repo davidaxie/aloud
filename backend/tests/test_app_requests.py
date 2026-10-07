@@ -403,3 +403,62 @@ class SpaShellCacheTests(unittest.TestCase):
     def test_hashed_bundles_and_other_files_stay_cacheable(self) -> None:
         for path in ("/assets/index-abc.js", "/favicon.svg"):
             self.assertNotIn("no-cache", self.get(path).headers.get("cache-control", ""), path)
+
+
+class BuildAfterStartTests(unittest.TestCase):
+    """J033: started before frontend/dist exists, the server shows the 'build
+    required' page, which says to build and reload. A build made while it runs
+    must then be served on that reload, with no restart."""
+
+    def setUp(self) -> None:
+        engine = load_app().engine  # also quiets the app's import-time logging
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = tmp.name
+        os.mkdir(os.path.join(root, "backend"))
+        shutil.copy(BACKEND / "app.py", os.path.join(root, "backend", "app.py"))
+        self.dist = os.path.join(root, "frontend", "dist")
+        fake = types.ModuleType("kokoro_engine")
+        fake.engine = engine
+        spec = importlib.util.spec_from_file_location(
+            "aloud_app_without_dist", os.path.join(root, "backend", "app.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"kokoro_engine": fake}):
+            spec.loader.exec_module(module)
+        self.addCleanup(module.synth_queue.stop)
+        self.app = module.app
+
+    def build(self) -> None:
+        os.makedirs(os.path.join(self.dist, "assets"))
+        files = {
+            "index.html": "<!doctype html><script src=/assets/index-abc.js></script>",
+            "assets/index-abc.js": "console.log(1)",
+        }
+        for name, text in files.items():
+            with open(os.path.join(self.dist, name), "w") as f:
+                f.write(text)
+
+    def get(self, path: str):
+        reply = call(self.app, "GET", path)
+        self.assertEqual(reply.status, 200, path)
+        return reply
+
+    def test_placeholder_is_shown_and_checked_before_each_use(self) -> None:
+        for path in ("/", "/library/some-book"):
+            reply = self.get(path)
+            self.assertIn(b"build required", reply.body, path)
+            self.assertEqual(reply.headers.get("cache-control"), "no-cache", path)
+
+    def test_a_build_made_after_start_is_served_on_reload(self) -> None:
+        self.assertIn(b"build required", self.get("/").body)
+        self.build()
+        for path in ("/", "/library/some-book"):
+            reply = self.get(path)
+            self.assertIn(b"index-abc.js", reply.body, path)
+            self.assertNotIn(b"build required", reply.body, path)
+            self.assertEqual(reply.headers.get("cache-control"), "no-cache", path)
+        self.assertEqual(self.get("/assets/index-abc.js").body, b"console.log(1)")
+
+    def test_api_routes_still_win_over_the_catch_all(self) -> None:
+        self.assertEqual(self.get("/health").json()["engine"], "kokoro")

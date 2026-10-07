@@ -41,16 +41,21 @@ _DELETE: dict[int, None] = {
 
 # Exotic spaces mapped to a plain ASCII space. NFKC already folds most of these,
 # but the line/paragraph separators (U+2028/U+2029) and NEL (U+0085) survive it,
-# so we map the whole family explicitly for safety and clarity.
+# so we map the whole family explicitly for safety and clarity. Those three
+# become "\n" so the hyphen repair below still sees a line break; the
+# whitespace collapse turns every break into a space afterwards.
 _SPACE_CODEPOINTS: list[int] = [
-    0x0085,  # NEXT LINE (NEL, a C1 control that acts as a line break)
     0x00A0,  # NO-BREAK SPACE
     0x202F,  # NARROW NO-BREAK SPACE
-    0x2028,  # LINE SEPARATOR
-    0x2029,  # PARAGRAPH SEPARATOR
     *range(0x2000, 0x200B),  # EN QUAD .. HAIR SPACE (en/em/thin/figure/etc.)
 ]
+_LINE_BREAK_CODEPOINTS: list[int] = [
+    0x0085,  # NEXT LINE (NEL, a C1 control that acts as a line break)
+    0x2028,  # LINE SEPARATOR
+    0x2029,  # PARAGRAPH SEPARATOR
+]
 _SPACE: dict[int, str] = {cp: " " for cp in _SPACE_CODEPOINTS}
+_SPACE.update({cp: "\n" for cp in _LINE_BREAK_CODEPOINTS})
 
 # Smart / typographic quotes -> straight ASCII quotes.
 _QUOTES: dict[int, str] = {
@@ -164,15 +169,30 @@ def _drop_stray_joiners(text: str) -> str:
 
 # Remaining C0/C1 control characters, keeping only the "normal whitespace"
 # controls TAB, LF, VT, FF, CR (0x09-0x0D). NEL (0x85) was already mapped to a
-# space above, so deleting the 0x7F-0x9F range here is safe.
+# line break above, so deleting the 0x7F-0x9F range here is safe.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
 
-# Line-wrap hyphenation repair: a letter, an ASCII hyphen, whitespace, then a
-# lowercase letter -> join the two fragments ("inter- national" ->
-# "international"; "inter-\nnational" -> "international"). The required space
-# after the hyphen is what makes this safe: genuine compounds like "well-being"
-# have no space and are left untouched.
-_LINEWRAP_HYPHEN_RE = re.compile(r"([A-Za-z])-\s+([a-z])")
+# Line-wrap hyphenation repair: a letter, an ASCII hyphen, whitespace holding a
+# line break, then a lowercase word -> join the two fragments
+# ("inter-\nnational" -> "international"). The required space after the hyphen
+# keeps genuine compounds like "well-being" untouched. A hyphen and space on
+# one line is the author's suspended hyphen ("pre- and post-war",
+# "mid- to late-1990s") and is kept as written. The groups are the letter, the
+# whitespace and the following word.
+_LINEWRAP_HYPHEN_RE = re.compile(r"([A-Za-z])-(\s+)(?=([a-z][A-Za-z]*))")
+_LINE_BREAKS = "\n\r\v\f"
+
+# After a hyphen these words mark a suspended compound ("two- or three-day")
+# even across a line break. Same list as TextNormalizer.swift.
+_SUSPENDED_HYPHEN_FOLLOWERS = frozenset({"and", "or", "nor"})
+
+
+def _repair_line_wrap_hyphen(match: re.Match[str]) -> str:
+    """Re-join a word split at a line break; leave anything else as written."""
+    letter, gap, right = match.groups()
+    if not any(ch in _LINE_BREAKS for ch in gap) or right in _SUSPENDED_HYPHEN_FOLLOWERS:
+        return match.group(0)
+    return letter
 
 # Any run of whitespace -> a single space.
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -188,12 +208,14 @@ def normalize_for_tts(text: str) -> str:
 
     1. Unicode **NFKC** normalization (expands ligatures ``ﬁ`` -> ``fi`` etc.).
     2. Single-pass character translation: delete soft hyphen / zero-width
-       space / BOM, map exotic spaces to a plain space, straighten quotes,
+       space / BOM, map exotic spaces to a plain space (and Unicode line
+       separators to a newline), straighten quotes,
        convert dashes to " - ", expand the ellipsis, and drop non-ASCII
        bullets. Then drop ZWJ/ZWNJ except inside emoji sequences and
        non-Latin words, where they are spelling.
     3. Strip remaining C0/C1 control characters (keeping normal whitespace).
-    4. Repair conservative line-wrap hyphenation.
+    4. Repair conservative line-wrap hyphenation (only across a line break,
+       never before and/or/nor).
     5. Collapse whitespace runs and trim ends.
     6. Remove any space that precedes sentence punctuation.
 
@@ -223,7 +245,7 @@ def normalize_for_tts(text: str) -> str:
     result = _CONTROL_RE.sub("", result)
 
     # 4. Re-join words split by line-wrap hyphenation (conservatively).
-    result = _LINEWRAP_HYPHEN_RE.sub(r"\1\2", result)
+    result = _LINEWRAP_HYPHEN_RE.sub(_repair_line_wrap_hyphen, result)
 
     # 5. Collapse all whitespace to single spaces and trim the ends.
     result = _WHITESPACE_RE.sub(" ", result).strip()

@@ -439,56 +439,65 @@ _PLACEHOLDER_HTML = """<!doctype html>
 """
 
 
+# The routes below are registered whether or not the UI is built yet, and each
+# request looks for index.html, so a build made while the server runs replaces
+# the placeholder on the next reload, with no restart.
+
+# Serve Vite's hashed bundles with proper caching/range headers. The catch-all
+# below also serves them (and is what serves a build made after startup), but a
+# real StaticFiles mount is the canonical path and is checked before the
+# catch-all (registered first wins).
+_assets_dir = os.path.join(_DIST_DIR, "assets")
+if os.path.isdir(_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+
+def _spa_shell() -> Response:
+    """index.html, which the browser must check with us before each use.
+
+    Its hashed bundles change name on every build, but the shell keeps its
+    name. With only Last-Modified to go on, WebKit keeps a copy fresh for
+    a tenth of its age, so a window reopened after a rebuild would load the
+    old shell and its old bundles, which the build has deleted.
+
+    Until the UI is built this is the placeholder page, checked the same way,
+    so the reload it asks for fetches the real shell.
+    """
+    if not os.path.isfile(_INDEX_HTML):
+        return HTMLResponse(_PLACEHOLDER_HTML, headers={"Cache-Control": "no-cache"})
+    return FileResponse(_INDEX_HTML, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/", include_in_schema=False)
+def serve_index() -> Response:
+    """Serve the single-page app shell (or the placeholder) at the root."""
+    return _spa_shell()
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str) -> Response:
+    """Serve a real static file if one exists, else fall back to index.html.
+
+    This is a catch-all for GET requests only, registered after every API
+    route, so it never shadows /health, /voices, /synthesize, or /docs.
+    """
+    requested = os.path.normpath(os.path.join(_DIST_DIR, full_path))
+    # Guard against path traversal: only serve files inside dist.
+    if (
+        requested.startswith(_DIST_DIR + os.sep)
+        and os.path.isfile(requested)
+        and requested != _INDEX_HTML
+    ):
+        return FileResponse(requested)
+    # Unknown non-API path -> hand back the SPA shell (client-side routing).
+    return _spa_shell()
+
+
 if os.path.isfile(_INDEX_HTML):
-    # Serve Vite's hashed bundles with proper caching/range headers. The
-    # catch-all below would also serve them, but a real StaticFiles mount is the
-    # canonical path and is checked before the catch-all (registered first wins).
-    _assets_dir = os.path.join(_DIST_DIR, "assets")
-    if os.path.isdir(_assets_dir):
-        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
-
-    def _spa_shell() -> FileResponse:
-        """index.html, which the browser must check with us before each use.
-
-        Its hashed bundles change name on every build, but the shell keeps its
-        name. With only Last-Modified to go on, WebKit keeps a copy fresh for
-        a tenth of its age, so a window reopened after a rebuild would load the
-        old shell and its old bundles, which the build has deleted.
-        """
-        return FileResponse(_INDEX_HTML, headers={"Cache-Control": "no-cache"})
-
-    @app.get("/", include_in_schema=False)
-    def serve_index() -> FileResponse:
-        """Serve the built single-page app shell at the root."""
-        return _spa_shell()
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def spa_fallback(full_path: str) -> FileResponse:
-        """Serve a real static file if one exists, else fall back to index.html.
-
-        This is a catch-all for GET requests only, registered after every API
-        route, so it never shadows /health, /voices, /synthesize, or /docs.
-        """
-        requested = os.path.normpath(os.path.join(_DIST_DIR, full_path))
-        # Guard against path traversal: only serve files inside dist.
-        if (
-            requested.startswith(_DIST_DIR + os.sep)
-            and os.path.isfile(requested)
-            and requested != _INDEX_HTML
-        ):
-            return FileResponse(requested)
-        # Unknown non-API path -> hand back the SPA shell (client-side routing).
-        return _spa_shell()
-
     logger.info("Serving built frontend from %s", _DIST_DIR)
 else:
     logger.warning(
-        "frontend/dist not found at %s — serving a placeholder page. "
+        "frontend/dist not found at %s — serving a placeholder page until it is built. "
         "Run legacy/build_web_app.sh (or 'cd frontend && npm run build') to build the UI.",
         _DIST_DIR,
     )
-
-    @app.get("/", include_in_schema=False)
-    def serve_placeholder() -> HTMLResponse:
-        """Friendly page shown when the frontend hasn't been built yet."""
-        return HTMLResponse(_PLACEHOLDER_HTML)
