@@ -37,6 +37,16 @@ struct TextExtractor {
             }
             blocks.append(TextBlock(text: paragraph, page: page))
         }
+        // No marker headings: the chapters may be numbered "1", "2", "3".
+        if page == 1 {
+            let numbered = Self.numberedChapterHeadings(in: kept)
+            if !numbered.isEmpty {
+                blocks = kept.enumerated().map { index, paragraph in
+                    if index > 0 && numbered.contains(index) { page += 1 }
+                    return TextBlock(text: paragraph, page: page)
+                }
+            }
+        }
         guard !blocks.isEmpty else { throw ExtractionError.emptyDocument }
         return Output(pageCount: page, blocks: blocks)
     }
@@ -983,11 +993,11 @@ struct TextExtractor {
 
     private static let sentenceEndRegex = #/[.!?]["”’)]?$/#
 
-    /// Six or more words ending a sentence, not in Title Case
-    /// ("Who Do You Reckon It Is?" is a title).
-    private static func isSentence(_ line: String) -> Bool {
+    /// Six (or `minWords`) or more words ending a sentence, not in Title
+    /// Case ("Who Do You Reckon It Is?" is a title).
+    private static func isSentence(_ line: String, minWords: Int = 6) -> Bool {
         let words = line.split(whereSeparator: \.isWhitespace)
-        guard words.count >= 6, line.firstMatch(of: sentenceEndRegex) != nil else { return false }
+        guard words.count >= minWords, line.firstMatch(of: sentenceEndRegex) != nil else { return false }
         let initials = words.compactMap { $0.first { $0.isASCII && $0.isLetter } }
         return initials.filter(\.isUppercase).count * 2 < initials.count
     }
@@ -1146,9 +1156,10 @@ struct TextExtractor {
 
     /// The number runs straight on in lowercase ("Book 9 of the meeting…",
     /// "Part the second commenced…"): a heading only when the line is short
-    /// and unpunctuated ("Part Three of the Current Novel").
+    /// and unpunctuated ("Part Three of the Current Novel"). "the" takes its
+    /// ordinal with it, so "Chapter the last." is a heading.
     private static let runOnRegex =
-        #/^(?:CHAPTER|Chapter|BOOK|Book|PART|Part|ACT|Act)[\s.:—–-]+(?:(?i:the)\s+)?\w+[ \t]+[a-z]/#
+        #/^(?:CHAPTER|Chapter|BOOK|Book|PART|Part|ACT|Act)[\s.:—–-]+(?:(?i:the)\s+\w+|(?!(?i:the)\s)\w+)[ \t]+[a-z]/#
 
     private static func isRunOnProse(_ line: String) -> Bool {
         line.firstMatch(of: runOnRegex) != nil
@@ -1196,10 +1207,14 @@ struct TextExtractor {
         if newlines == 0 {
             let line = paragraph.first?.isWhitespace == true
                 ? paragraph.trimmingCharacters(in: .whitespaces) : paragraph
-            // "CHAPTER IV.–Treaty of 1804      34" is a Contents line, not a heading.
+            // "CHAPTER IV.–Treaty of 1804      34" is a Contents line, not a
+            // heading. The marker needs a numeral as on a heading's first
+            // line, so "Part of me wanted to stay." and "Chapter 5 shows how
+            // the engine works." stay prose.
             return line.count <= 80 && line.firstMatch(of: pageNumberRegex) == nil
-                && (line.firstMatch(of: headingRegex) != nil
+                && (line.firstMatch(of: headingRegex) != nil && line.firstMatch(of: headingFirstLineRegex) != nil
                     || localized && line.firstMatch(of: localizedHeadingRegex) != nil)
+                && line.firstMatch(of: midSentenceRegex) == nil && !isRunOnProse(line)
         }
         let lines = trimmedLines(paragraph)
         guard let first = lines.first, lines.count <= 3, lines.allSatisfy({ $0.count <= 80 }),
@@ -1244,6 +1259,47 @@ struct TextExtractor {
             }
         }
         return entries == 0
+    }
+
+    /// A bare arabic numeral on its own ("1", "12."): the chapter style of
+    /// manuscripts exported from a word processor and of some classics
+    /// ("1\n\nAnthony Cade Signs On").
+    private static let numberedHeadingRegex = #/([0-9]{1,3})\.?/#
+
+    /// The "1", "2", "3"… chapter headings of a book that has no marker
+    /// headings: a rising run from 1 of at least three, each heading the
+    /// book's text (a title may sit between). A stray page or footnote number
+    /// off the run is skipped, one splitting a sentence ("…into the" + "45" +
+    /// "room…") never heads text, and neither does a Contents entry ("1" +
+    /// "Title" + "2"). Text is running text or a short sentence ("She never
+    /// wrote back."), not a Title Case title. Numbering that starts over at 1
+    /// numbers sections, not chapters, so it starts none.
+    private static func numberedChapterHeadings(in paragraphs: [String]) -> Set<Int> {
+        func number(_ index: Int) -> Int? {
+            guard paragraphs[index].utf8.count <= 8,
+                  let match = paragraphs[index].trimmingCharacters(in: .whitespaces)
+                      .wholeMatch(of: numberedHeadingRegex) else { return nil }
+            return Int(match.1)
+        }
+        func opensText(_ index: Int) -> Bool {
+            guard index + 1 < paragraphs.count,
+                  paragraphs[index + 1].first(where: \.isLetter)?.isLowercase != true else { return false }
+            for next in (index + 1)..<min(index + 7, paragraphs.count) {
+                if number(next) != nil { return false }
+                if isRunningText(paragraphs[next]) || isSentence(paragraphs[next], minWords: 2) { return true }
+            }
+            return false
+        }
+        var found: [Int] = []
+        for index in paragraphs.indices {
+            guard let value = number(index), opensText(index) else { continue }
+            if value == found.count + 1 {
+                found.append(index)
+            } else if value == 1 {
+                return []
+            }
+        }
+        return found.count >= 3 ? Set(found) : []
     }
 
     // MARK: - Italics

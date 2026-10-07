@@ -228,7 +228,7 @@ enum SpokenYears {
         return (e, d > k || e > d + 1)
     }
 
-    /// "1914-1918", "1914 - 18", "1862-3", "1920s-1930s" → "… to …". Any
+    /// "1914-1918", "1914 - 18", "1862-3", "1920s-1930s", "1920s-30s" → "… to …". Any
     /// other number-dash-number group ("2015-03-14", "1050 - 1150",
     /// "1874-5-6-7") is returned untouched as a whole, so its far end is
     /// never read as a year on its own.
@@ -267,6 +267,12 @@ enum SpokenYears {
             guard full > a.value, let t = tail(b.value) else { return untouched }
             let end = (2000...2009).contains(a.value) ? year(full, british: british) : t
             return (year(a.value, british: british) + " to " + end, b.end)
+        case (2, .s):
+            // "1920s-30s" → "nineteen twenties to thirties".
+            let full = a.value - a.value % 100 + b.value
+            guard a.value % 10 == 0, b.value % 10 == 0, full > a.value else { return untouched }
+            let end = (2000...2009).contains(a.value) ? decade(year(full, british: british)) : decade(words(b.value))
+            return (decade(year(a.value, british: british)) + " to " + end, b.end)
         case (1, .none):
             let full = a.value - a.value % 10 + b.value
             guard full > a.value, !(2000...2009).contains(full), let t = tail(full % 100)

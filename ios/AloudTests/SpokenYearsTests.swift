@@ -130,6 +130,16 @@ final class SpokenYearsTests: XCTestCase {
         ("1250 square miles", "1250 square miles"),
         ("1347 houses", "1347 houses"),
         ("in 1347 houses burned", "in thirteen forty seven houses burned"),
+        // J000: a short-form decade range ("1920s–30s" arrives normalized
+        // to "1920s - 30s").
+        ("the 1920s-30s", "the nineteen twenties to thirties"),
+        ("The boom of the 1860s-70s ended.", "The boom of the eighteen sixties to seventies ended."),
+        ("the 1920s - 30s", "the nineteen twenties to thirties"),
+        ("the 1920s-30s and 1950s", "the nineteen twenties to thirties and nineteen fifties"),
+        ("the 2000s-10s", "the two thousands to twenty tens"),
+        ("the 1920s-20s", "the 1920s-20s"),
+        ("the 1990s-00s", "the 1990s-00s"),
+        ("the 1920s-35s", "the 1920s-35s"),
     ]
 
     func testTable() {
@@ -168,6 +178,15 @@ final class SpokenYearsTests: XCTestCase {
                        "In nineteen fifteen to nineteen eighteen \"war\"")
         XCTAssertEqual(KokoroSherpaEngine.spokenText("in 2005.", lang: "en-GB"), "in two thousand and five.")
         XCTAssertEqual(KokoroSherpaEngine.spokenText("in 2005.", lang: "en-US"), "in two thousand five.")
+    }
+
+    /// J000: a short-form decade range, with a hyphen or an en dash, is
+    /// said as decades rather than handed to espeak as digits.
+    func testKokoroSpeaksAShortDecadeRange() {
+        XCTAssertEqual(KokoroSherpaEngine.spokenText("The boom of the 1860s-70s ended.", lang: "en-US"),
+                       "The boom of the eighteen sixties to seventies ended.")
+        XCTAssertEqual(KokoroSherpaEngine.spokenText("the 1920s\u{2013}30s", lang: "en-US"),
+                       "the nineteen twenties to thirties")
     }
 
     /// H039: an em dash is a clause break, so Kokoro says the year and

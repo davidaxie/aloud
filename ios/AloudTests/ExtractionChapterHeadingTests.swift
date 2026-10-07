@@ -319,4 +319,96 @@ final class ExtractionChapterHeadingTests: XCTestCase {
         XCTAssertTrue(TextExtractor.isChapterHeading("PROLOGUE"))
         XCTAssertFalse(TextExtractor.isChapterHeading("It was the best of times."))
     }
+
+    /// J006: a one-line paragraph follows the first-line rules of a
+    /// multi-line heading — a numeral after the marker, no run-on prose.
+    func testSingleLineProseOpeningWithAMarkerWordIsNotAHeading() {
+        for prose in ["Part of me wanted to stay.", "Act natural, she said.", "Book lovers never sleep.",
+                      "Chapter 5 shows how the engine works.", "Book 2 of the sea.", "ACT DROP",
+                      "Chapter two was found, and she glanced at its opening sentences.",
+                      "Chapter numbers were retained, even when mis-numbered.",
+                      "Chapter XV, paragraph 12"] {
+            XCTAssertFalse(TextExtractor.isChapterHeading(prose), prose)
+        }
+        for heading in ["Chapter the last.", "CHAPTER THE LAST", "Book the First", "PART ONE", "Act III",
+                        "Chapter viii.", "BOOK II.", "EPILOGUE", "Prologue"] {
+            XCTAssertTrue(TextExtractor.isChapterHeading(heading), heading)
+        }
+    }
+
+    func testSingleLineProseOpeningWithAMarkerWordStartsNoChapter() async throws {
+        let content = try await extract("""
+        CHAPTER I
+
+        It was late when she came home.
+
+        Part of me wanted to stay.
+
+        She went upstairs.
+
+        CHAPTER II
+
+        The morning came.
+        """)
+        XCTAssertEqual(content.pageCount, 2)
+        XCTAssertEqual(content.derivedChapters.map(\.title), ["CHAPTER I", "CHAPTER II"])
+    }
+
+    /// J009: bare arabic numerals head chapters in a book with no marker
+    /// headings, when they run 1, 2, 3… and the book's text follows each.
+    func testBareNumeralHeadingsStartChapters() async throws {
+        let content = try await extract("""
+        1
+
+        It was a cold morning in the valley.
+
+        2
+
+        The train was late again.
+
+        3
+
+        She never wrote back.
+        """)
+        XCTAssertEqual(content.pageCount, 3)
+        XCTAssertEqual(content.derivedChapters.map(\.title), ["Chapter 1", "Chapter 2", "Chapter 3"])
+    }
+
+    func testBareNumeralChapterTitleLineMayFollowTheNumber() async throws {
+        let content = try await extract(["1", "Anthony Cade Signs On", "\u{201C}Gentleman Joe!\u{201D}", body,
+                                         "2", "A Lady in Distress", body, "3", "Uneasiness in High Places", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(content.pageCount, 3)
+        XCTAssertEqual(content.sentences.first { $0.text.hasPrefix("A Lady") }?.page,
+                       content.sentences.first { $0.text == "2" }?.page)
+    }
+
+    /// A page number splitting a sentence, a footnote number off the run and
+    /// a numbered Contents list start no chapter.
+    func testStrayNumbersStartNoChapter() async throws {
+        let content = try await extract([
+            "1", "The Beginning", "2", "The Middle", "3", "The End",
+            "1", body, "2", body, "She walked slowly into the", "3", "room and sat down by the fire.",
+            "12", "See the letter of the year before.", body, "3", body,
+        ].joined(separator: "\n\n"))
+        // The Contents list, then chapters 1, 2 and 3.
+        XCTAssertEqual(content.pageCount, 4)
+        let page: (String) -> Int? = { text in content.sentences.first { $0.text.hasPrefix(text) }?.page }
+        XCTAssertEqual(page("The End"), 1)
+        XCTAssertEqual(page("room and sat down"), 3)
+        XCTAssertEqual(page("See the letter"), 3)
+    }
+
+    func testNumeralsThatAreNotAChapterRunStartNoChapter() async throws {
+        // Two numbers only; numbering that starts over (sections); numbers
+        // under marker headings (Zarathustra's numbered sections).
+        for parts in [["1", body, "2", body],
+                      ["1", body, "2", body, "3", body, "1", body, "2", body, "3", body]] {
+            let content = try await extract(parts.joined(separator: "\n\n"))
+            XCTAssertEqual(content.pageCount, 1, parts.joined(separator: " / "))
+        }
+        let marked = try await extract(["CHAPTER I", body, "1", body, "2", body, "3", body, "CHAPTER II", body]
+            .joined(separator: "\n\n"))
+        XCTAssertEqual(marked.pageCount, 2)
+    }
 }
