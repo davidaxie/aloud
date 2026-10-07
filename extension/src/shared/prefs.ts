@@ -25,11 +25,21 @@ export const DEFAULT_PREFS: Prefs = {
   backendUrl: 'http://localhost:8000',
 }
 
+/**
+ * The backend's own limit on a voice id (MAX_VOICE_CHARS): it answers a longer
+ * one with a 400 for every sentence, so such an id would stop every reader on
+ * every site until the user picked a voice again (H033).
+ */
+const MAX_VOICE_CHARS = 64
+
 /** Clamp/normalize anything we read back, so a corrupt value can't wedge playback. */
 function sanitize(raw: unknown): Prefs {
   const p = { ...DEFAULT_PREFS, ...((raw as Partial<Prefs>) ?? {}) }
   return {
-    voiceId: typeof p.voiceId === 'string' && p.voiceId ? p.voiceId : DEFAULT_PREFS.voiceId,
+    voiceId:
+      typeof p.voiceId === 'string' && p.voiceId && p.voiceId.length <= MAX_VOICE_CHARS
+        ? p.voiceId
+        : DEFAULT_PREFS.voiceId,
     rate: Number.isFinite(p.rate) ? Math.min(3, Math.max(0.5, p.rate)) : DEFAULT_PREFS.rate,
     skipSkippable: !!p.skipSkippable,
     autoScroll: !!p.autoScroll,

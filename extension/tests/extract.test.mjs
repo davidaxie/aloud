@@ -1,8 +1,9 @@
 // Extraction: plain-text pages (F010), the length limit that must not pass for
-// the end of the page (F069), and reading text with no DOM behind it (F070).
+// the end of the page (F069), reading text with no DOM behind it (F070), and a
+// selection read as selected (H030), even from a text field (H032).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { FakeDocument, h, installDocument, load } from './harness.mjs'
+import { FakeDocument, FakeText, h, installDocument, load } from './harness.mjs'
 
 const extract = await load('content/extract.ts')
 const ui = await load('content/ui.ts')
@@ -114,4 +115,69 @@ test('F070: text reported from an unreachable frame is read as plain text', () =
   )
   assert.equal(got.slices.length, 0)
   assert.equal(got.title, 'Selection')
+})
+
+/** A drag from the start of `first` to the end of `last`, under `ancestor`. */
+function dragSelection(ancestor, first, last) {
+  const range = {
+    startContainer: first,
+    startOffset: 0,
+    endContainer: last,
+    endOffset: last.data.length,
+    commonAncestorContainer: ancestor,
+    intersectsNode: () => true,
+    toString: () => ancestor.textContent,
+  }
+  return { isCollapsed: false, rangeCount: 1, getRangeAt: () => range, toString: () => range.toString() }
+}
+
+test('H030: a selection across two comments reads both, highlighted, not "Nothing selected"', () => {
+  const first = new FakeText('First reply here.')
+  const second = new FakeText('Second reply here.')
+  const section = h(
+    'section',
+    {},
+    h('div', { class: 'comment' }, h('p', {}, first)),
+    h('div', { class: 'comment' }, h('p', {}, second)),
+  )
+  installDocument(new FakeDocument({ body: h('body', {}, section) }), dragSelection(section, first, second))
+  const got = extract.extractSelection(null)
+  assert.ok(got, '"Nothing selected to read."')
+  assert.deepEqual(got.sentences.map((s) => s.text), ['First reply here.', 'Second reply here.'])
+  assert.equal(got.slices.length, 2, 'read from the page, so it can be highlighted')
+})
+
+test('H030: a whole WordPress comment reads its author line and its text', () => {
+  const author = new FakeText('Ann says:')
+  const body = new FakeText('Great post, thanks for writing it.')
+  const article = h(
+    'article',
+    { class: 'comment-body' },
+    h('footer', { class: 'comment-meta' }, h('b', { class: 'fn' }, author)),
+    h('div', { class: 'comment-content' }, h('p', {}, body)),
+    h('script', {}, 'trackComment(42)'),
+    h('button', {}, 'Like this comment'),
+  )
+  installDocument(new FakeDocument({ body: h('body', {}, article) }), dragSelection(article, author, body))
+  const got = extract.extractSelection(null)
+  assert.ok(got, '"Nothing selected to read."')
+  assert.deepEqual(got.sentences.map((s) => s.text), ['Ann says:', 'Great post, thanks for writing it.'])
+})
+
+test('H032: text selected in a text field is read, though Chrome reports it collapsed', () => {
+  installDocument(new FakeDocument({ body: h('body', {}, h('form', {}, h('textarea', {}, 'Draft'))) }), {
+    isCollapsed: true,
+    rangeCount: 1,
+    getRangeAt: () => ({ toString: () => '' }),
+    toString: () => 'Please proofread this sentence for me.',
+  })
+  const got = extract.extractSelection(null)
+  assert.ok(got, '"Nothing selected to read."')
+  assert.deepEqual(got.sentences.map((s) => s.text), ['Please proofread this sentence for me.'])
+  assert.equal(got.title, 'Selection')
+})
+
+test('H032: an empty selection is still nothing to read', () => {
+  installDocument(new FakeDocument({ body: h('body') }), { isCollapsed: true, rangeCount: 0, toString: () => '  ' })
+  assert.equal(extract.extractSelection(null), null)
 })

@@ -83,6 +83,19 @@ const SKIP_TAGS = new Set([
   'PRE',
 ])
 
+/**
+ * What a selection still never reads (H030): the subtrees that hold no speech
+ * at all — scripts, styles, media, embeds and form controls. The rest of
+ * SKIP_TAGS, and SKIP_ROLES, JUNK_RE and the link-density rule, guess at what
+ * a reader wants from a whole page. A selection says it outright: a comment, a
+ * sidebar or a footer the user selected is read like any paragraph.
+ */
+const SELECTION_SKIP_TAGS = new Set([
+  'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'IFRAME', 'FRAME', 'OBJECT', 'EMBED',
+  'SVG', 'CANVAS', 'VIDEO', 'AUDIO', 'MAP', 'AREA', 'TRACK', 'SOURCE',
+  'SELECT', 'OPTION', 'TEXTAREA', 'INPUT', 'BUTTON',
+])
+
 /** ARIA roles that mark page furniture rather than content. */
 const SKIP_ROLES = new Set([
   'navigation', 'banner', 'complementary', 'contentinfo', 'search', 'form',
@@ -95,6 +108,8 @@ const BLOCK_TAGS = new Set([
   'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4',
   'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'SECTION',
   'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+  // Walked only in a selection (H030), where they still end a block.
+  'DIALOG', 'MENU', 'PRE',
 ])
 
 /**
@@ -307,16 +322,20 @@ function shouldSkip(el: Element, state: WalkState): boolean {
   // player bar and any toast; uiHost covers anything passed in explicitly.
   if (el.hasAttribute('data-aloud')) return true
   if (state.uiHost && (el === state.uiHost || state.uiHost.contains(el))) return true
-  if (SKIP_TAGS.has(el.tagName)) return true
+  // A selection is read as selected: only what can never be speech is left out
+  // of it, and the page-furniture guesses below are for whole pages (H030).
+  const selecting = state.restrict !== undefined
+  if ((selecting ? SELECTION_SKIP_TAGS : SKIP_TAGS).has(el.tagName)) return true
 
   const role = el.getAttribute('role')
-  if (role && SKIP_ROLES.has(role)) return true
+  if (!selecting && role && SKIP_ROLES.has(role)) return true
 
   // Footnote/reference markers: "1", "[2]" read aloud mid-sentence is noise.
   if (el.tagName === 'SUP' && (el.textContent?.trim().length ?? 0) <= 4) return true
 
-  if (JUNK_RE.test(classId(el))) return true
+  if (!selecting && JUNK_RE.test(classId(el))) return true
   if (isHidden(el)) return true
+  if (selecting) return false
 
   // A list whose text is almost entirely link text is navigation, not prose.
   if (el.tagName === 'LI' || el.tagName === 'UL' || el.tagName === 'OL') {
@@ -498,22 +517,31 @@ export function extractText(text: string): Extraction | null {
  */
 export function extractSelection(uiHost: Element | null): Extraction | null {
   const sel = window.getSelection()
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
-  const range = sel.getRangeAt(0)
-  if (!range.toString().trim()) return null
-
-  const ancestor = range.commonAncestorContainer
-  let root =
-    ancestor.nodeType === Node.ELEMENT_NODE
-      ? (ancestor as Element)
-      : ancestor.parentElement ?? document.body
-  // Select-all on a plain-text page anchors on <body>, whose walk would skip
-  // the PRE that holds every word; start inside it instead.
-  const pre = plainTextPre(document)
-  if (pre && root.contains(pre)) root = pre
-  const extraction = run(root, uiHost, range, pre !== null && pre.contains(root))
-  if (extraction) extraction.title = 'Selection'
-  return extraction
+  if (!sel) return null
+  const range = !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+  if (range && range.toString().trim()) {
+    const ancestor = range.commonAncestorContainer
+    let root =
+      ancestor.nodeType === Node.ELEMENT_NODE
+        ? (ancestor as Element)
+        : ancestor.parentElement ?? document.body
+    // Select-all on a plain-text page anchors on <body>; start inside the PRE
+    // that holds every word, so its hard-wrapped lines are read as paragraphs.
+    const pre = plainTextPre(document)
+    if (pre && root.contains(pre)) root = pre
+    const extraction = run(root, uiHost, range, pre !== null && pre.contains(root))
+    if (extraction) {
+      extraction.title = 'Selection'
+      return extraction
+    }
+  }
+  // Text selected in a text field or a shadow tree has no range in the page's
+  // DOM — Chrome reports such a selection as collapsed — yet toString() still
+  // holds the words (H032). Read them as plain text, as a frame's selection is:
+  // nothing to highlight, but nothing lost. The same net catches a walk that
+  // found nothing speakable in text the user plainly selected (H030).
+  const plain = sel.toString().trim()
+  return plain ? extractText(plain) : null
 }
 
 // ── offset ⇄ DOM mapping ────────────────────────────────────────────────────

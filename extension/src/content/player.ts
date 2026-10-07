@@ -874,6 +874,13 @@ export class AloudPlayer {
       this.halt(Math.max(0, this.index), RELOADED_MESSAGE)
       return
     }
+    // Play at the end listens again from the first sentence, as the apps'
+    // "Listen again" does — not the last sentence once more (H036).
+    if (this.currentStatus === 'ended') {
+      this.streak = []
+      void this.playIndex(0)
+      return
+    }
     const audio = this.ensureAudio()
 
     // Resume-in-place: if we're merely paused mid-sentence and that sentence's
@@ -955,7 +962,32 @@ export class AloudPlayer {
     if (!this.doc) return
     this.streak = [] // a fresh start, as in jump() (G018)
     this.audio?.pause()
+    this.dropStaleLookahead(Math.min(this.total - 1, Math.max(0, index)))
     void this.playIndex(index)
+  }
+
+  /**
+   * Abort look-ahead still in flight for sentences outside the window fill()
+   * would keep ahead of `from` (H038). After a far seek those requests would
+   * hold the whole MAX_PREFETCH_INFLIGHT budget, and the backend's FIFO
+   * prefetch lane, so nothing near the new playhead was fetched until the
+   * backend had finished sentences nobody will hear.
+   */
+  private dropStaleLookahead(from: number) {
+    const targetSource = BUFFER_TARGET_SECONDS * Math.max(0.1, this.hooks.prefs().rate)
+    let last = from
+    let scheduled = 0
+    // The same walk as fill(): the floor, then the target depth.
+    for (let k = 1; from + k < this.total; k++) {
+      if (k > MIN_LOOKAHEAD && scheduled >= targetSource) break
+      last = from + k
+      scheduled += this.durationOf(last)
+    }
+    for (const [key, entry] of [...this.cache]) {
+      if (entry.url || entry.priority !== PREFETCH) continue
+      if (entry.sentenceId >= from && entry.sentenceId <= last) continue
+      this.forget(key)
+    }
   }
 
   /**

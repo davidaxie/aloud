@@ -1,11 +1,14 @@
 // The content script's wiring: listening before the first await (F065),
 // noticing an app's own pushState navigation (F071) and hash routes and swapped
-// text (G020), standing down for a reader injected after a reload (G019), and
-// a shortcut's subframe selection and PDF hint (G034).
+// text (G020), standing down for a reader injected after a reload (G019), a
+// shortcut's subframe selection and PDF hint (G034), its text-field selection
+// (H032) and a selection after "Finished" (H036), and a bar the page cannot
+// work (H033).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   DEFAULT_TEST_PREFS,
+  FakeAudio,
   FakeDocument,
   FakeText,
   h,
@@ -264,7 +267,7 @@ test('G034: the PDF message points to the context menu that can read a selection
     dispatchEvent: () => true,
   })
   const p = page(doc)
-  p.win.getSelection = () => ({ isCollapsed: true, rangeCount: 0 }) // nothing selected up here
+  p.win.getSelection = () => ({ isCollapsed: true, rangeCount: 0, toString: () => '' }) // nothing selected up here
   const reader = await p.boot()
   // Toast timers are seconds long; they must not hold the test run open.
   const realSetTimeout = globalThis.setTimeout
@@ -281,4 +284,180 @@ test('G034: the PDF message points to the context menu that can read a selection
   const toast = written.find((t) => /PDF/.test(t))
   assert.ok(toast, `no PDF message among ${JSON.stringify(written)}`)
   assert.match(toast, /Read selection aloud/)
+})
+
+/** Seconds-long toast timers must not hold the test run open. */
+async function withShortTimers(fn) {
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (cb, ms, ...args) => {
+    const t = realSetTimeout(cb, ms, ...args)
+    if (ms >= 1000) t.unref?.()
+    return t
+  }
+  try {
+    return await fn()
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+}
+
+/** Poll the reader's state until `ok(state)`. */
+async function untilState(reader, ok, what) {
+  const deadline = Date.now() + 3000
+  for (;;) {
+    const { state } = await reader({ kind: 'state' })
+    if (ok(state)) return state
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}: ${JSON.stringify(state)}`)
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
+
+test('H032: the shortcut reads text selected in a text field, not the whole page', async () => {
+  const written = []
+  // No prose on the page: reading it would end in "No readable text found".
+  const doc = new FakeDocument({ body: h('body', {}, h('form', {}, h('textarea', {}, 'Draft'))) })
+  doc.documentElement.appendChild = () => {}
+  Object.assign(doc, {
+    createElement: () => anyNode(written),
+    createRange: () => anyNode(written),
+    getElementById: () => null,
+    addEventListener() {},
+    dispatchEvent: () => true,
+  })
+  const p = page(doc)
+  // What Chrome reports for a selection inside a <textarea>: collapsed, words in toString().
+  p.win.getSelection = () => ({
+    isCollapsed: true,
+    rangeCount: 1,
+    getRangeAt: () => ({ toString: () => '' }),
+    toString: () => 'Please proofread this sentence for me.',
+  })
+  const reader = await p.boot()
+  await withShortTimers(() => reader({ kind: 'command', action: 'toggle' }))
+  try {
+    const { state } = await reader({ kind: 'state' })
+    assert.equal(state.active, true, `not reading; said ${JSON.stringify(written)}`)
+    assert.equal(state.title, 'Selection')
+  } finally {
+    await reader({ kind: 'command', action: 'stop' })
+  }
+})
+
+test('H036: after "Finished", the shortcut reads text selected further on', async () => {
+  const p = page(anyDocument([]))
+  const reader = await p.boot()
+  try {
+    await reader({ kind: 'command', action: 'start-selection', text: 'The first sentence. The last sentence.' })
+    for (let i = 0; i < 2; i++) {
+      await untilState(reader, (s) => s.index === i && s.status === 'playing', `playing ${i}`)
+      FakeAudio.last.ended = true
+      FakeAudio.last.dispatchEvent(new Event('ended'))
+    }
+    await untilState(reader, (s) => s.status === 'ended', 'finished')
+
+    // The truncated page's advice: select later text and go on.
+    p.win.getSelection = () => ({
+      isCollapsed: true,
+      rangeCount: 0,
+      toString: () => 'Text selected further down the page.',
+    })
+    await reader({ kind: 'command', action: 'toggle' })
+    const { state } = await reader({ kind: 'state' })
+    assert.equal(state.total, 1, 'the selection was ignored for the finished page')
+    assert.equal(state.index, 0)
+  } finally {
+    await reader({ kind: 'command', action: 'stop' })
+  }
+})
+
+// ── the bar belongs to the user, not the page (H033) ─────────────────────────
+
+/** Just enough DOM for PlayerBar and showToast; records listeners and shadow modes. */
+function stubDom() {
+  const shadows = []
+  const created = []
+  const found = new Map()
+  const el = (tag) => {
+    const node = {
+      tagName: tag.toUpperCase(),
+      dataset: {},
+      style: {},
+      listeners: {},
+      value: '',
+      classList: { add() {}, remove() {}, toggle() {} },
+      setAttribute() {},
+      addEventListener(type, fn) {
+        ;(this.listeners[type] ??= []).push(fn)
+      },
+      append() {},
+      appendChild: (child) => child,
+      remove() {},
+      attachShadow(init) {
+        shadows.push(init.mode)
+        return el('#shadow-root')
+      },
+      querySelector(selector) {
+        if (!found.has(selector)) found.set(selector, el(selector))
+        return found.get(selector)
+      },
+      getBoundingClientRect: () => ({ left: 0, width: 100 }),
+    }
+    created.push(node)
+    return node
+  }
+  return { shadows, created, found, document: { createElement: el, documentElement: el('html') } }
+}
+
+test('H033: the page can neither reach into the bar nor work it with events it dispatches', async () => {
+  const dom = stubDom()
+  globalThis.document = dom.document
+  const { PlayerBar, showToast } = await load('content/ui.ts')
+  const calls = []
+  new PlayerBar({
+    onToggle: () => calls.push('toggle'),
+    onNext: () => calls.push('next'),
+    onPrev: () => calls.push('prev'),
+    onClose: () => calls.push('close'),
+    onSeekFraction: (f) => calls.push(`seek ${f}`),
+    onVoice: (v) => calls.push(`voice ${v}`),
+    onRate: (r) => calls.push(`rate ${r}`),
+  })
+  showToast('Nothing selected to read.', 10)()
+  assert.deepEqual(dom.shadows, ['closed', 'closed'], 'an open shadow root hands the page the controls')
+
+  const bar = dom.created.find((e) => e.className === 'bar')
+  const track = dom.found.get('.track')
+  const voice = dom.found.get('.chip.voice select')
+  const rate = dom.found.get('.chip.rate select')
+  const planted = 'x'.repeat(80)
+  voice.value = planted
+  rate.value = '3'
+  const fire = (isTrusted) => {
+    const target = { closest: () => ({ dataset: { act: 'toggle' } }) }
+    for (const fn of bar.listeners.click) fn({ isTrusted, target, preventDefault() {}, stopPropagation() {} })
+    for (const fn of track.listeners.pointerdown) fn({ isTrusted, clientX: 50 })
+    for (const fn of voice.listeners.change) fn({ isTrusted })
+    for (const fn of rate.listeners.change) fn({ isTrusted })
+  }
+  fire(false) // document.getElementById('aloud-player-root')…dispatchEvent(new Event('change'))
+  assert.deepEqual(calls, [], 'a page script worked the bar')
+  fire(true) // the user
+  assert.deepEqual(calls, ['toggle', 'seek 0.5', `voice ${planted}`, 'rate 3'])
+})
+
+test('H033: a voice id past the backend limit is never kept, so it cannot stop every reader', async () => {
+  const stored = {}
+  globalThis.chrome = {
+    storage: {
+      sync: {
+        get: () => Promise.resolve(stored),
+        set: (items) => Promise.resolve(Object.assign(stored, items)),
+      },
+      local: { get: () => Promise.resolve({}), set: () => Promise.resolve() },
+    },
+  }
+  const { savePrefs, loadPrefs } = await load('shared/prefs.ts')
+  assert.equal((await savePrefs({ voiceId: 'x'.repeat(80) })).voiceId, 'af_heart')
+  assert.equal((await loadPrefs()).voiceId, 'af_heart')
+  assert.equal((await savePrefs({ voiceId: 'bf_emma' })).voiceId, 'bf_emma')
 })

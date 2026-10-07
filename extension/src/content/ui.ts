@@ -339,7 +339,10 @@ export class PlayerBar {
     // Belt and braces: the shadow boundary hides us from page CSS, and this
     // marker lets our own extractor recognise and skip the subtree.
     this.host.setAttribute('data-aloud', 'ui')
-    this.root = this.host.attachShadow({ mode: 'open' })
+    // Closed: the page's scripts share this DOM, and through an open root they
+    // could work the controls — plant a voice that is synced to every tab
+    // (H033). `root` is the only way in.
+    this.root = this.host.attachShadow({ mode: 'closed' })
     this.render()
     document.documentElement.appendChild(this.host)
   }
@@ -387,7 +390,10 @@ export class PlayerBar {
       this.rateEl.append(opt)
     }
 
+    // Every handler ignores untrusted events: a click or change the page
+    // dispatched is the page's, not the user's (H033).
     bar.addEventListener('click', (e) => {
+      if (!e.isTrusted) return
       const btn = (e.target as Element).closest?.('[data-act]') as HTMLElement | null
       if (!btn) return
       e.preventDefault()
@@ -401,12 +407,17 @@ export class PlayerBar {
     })
 
     this.trackEl.addEventListener('pointerdown', (e) => {
+      if (!e.isTrusted) return
       const rect = this.trackEl.getBoundingClientRect()
       this.cb.onSeekFraction(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)))
     })
 
-    this.voiceEl.addEventListener('change', () => this.cb.onVoice(this.voiceEl.value))
-    this.rateEl.addEventListener('change', () => this.cb.onRate(Number(this.rateEl.value)))
+    this.voiceEl.addEventListener('change', (e) => {
+      if (e.isTrusted) this.cb.onVoice(this.voiceEl.value)
+    })
+    this.rateEl.addEventListener('change', (e) => {
+      if (e.isTrusted) this.cb.onRate(Number(this.rateEl.value))
+    })
 
     // The page must never see our clicks/keys as its own.
     for (const type of ['keydown', 'keyup', 'pointerdown', 'mousedown'] as const) {
@@ -532,7 +543,7 @@ const TOAST_CSS = `
 export function showToast(message: string, ms = 3600): () => void {
   const host = document.createElement('div')
   host.setAttribute('data-aloud', 'toast')
-  const root = host.attachShadow({ mode: 'open' })
+  const root = host.attachShadow({ mode: 'closed' }) // as the bar's (H033)
 
   const style = document.createElement('style')
   style.textContent = TOAST_CSS

@@ -1,7 +1,8 @@
 // Playback failures: a play() the browser refuses (F011), an engine that is
 // down or failing (F064), and an extension reloaded under the page (F068,
 // G019); sentences with nothing to say or that the engine refuses (G017), and
-// failures on either side of a move the user made (G018).
+// failures on either side of a move the user made (G018); Play at the end
+// listening again (H036), and a far seek not stuck behind old look-ahead (H038).
 // Silent throughout: Audio is a fake and the worker is a scripted mock.
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
@@ -361,4 +362,42 @@ test('G032: busy look-ahead for a sentence paused while buffering is cued at now
   current.player.play()
   await until(() => current.player.status === 'playing', 3000, 'playing again')
   assert.equal(current.player.currentIndex, 1)
+})
+
+test('H036: Play at "Finished" listens again from the first sentence, not the last one again', async () => {
+  current = rig(OK, { sentences: SENTENCES.slice(0, 3) })
+  current.player.play()
+  for (let i = 0; i < 3; i++) {
+    await until(() => current.player.currentIndex === i && current.player.status === 'playing', 3000, `playing ${i}`)
+    FakeAudio.last.ended = true
+    FakeAudio.last.dispatchEvent(new Event('ended'))
+  }
+  await until(() => current.player.status === 'ended', 3000, 'finished')
+  assert.equal(current.player.currentIndex, 2)
+
+  current.player.toggle() // the bar's Play, Alt+A
+  assert.equal(current.player.currentIndex, 0, 'replayed only the last sentence')
+  await until(() => current.player.status === 'playing', 3000, 'playing again')
+  assert.equal(current.player.currentIndex, 0)
+})
+
+test('H038: a far seek aborts the old look-ahead and fetches ahead of the new place', async () => {
+  const sentences = Array.from({ length: 40 }, (_, i) => `Sentence number ${i} of a long article goes here.`)
+  // The backend works through `now` at once and sits on look-ahead.
+  current = rig((msg) => (msg.priority === 'now' ? OK(msg) : HELD(msg)), { sentences })
+  const prefetched = () => current.w.calls.filter((c) => c.kind === 'synth' && c.priority === 'prefetch')
+  current.player.play()
+  await until(() => current.player.status === 'playing', 3000, 'playing sentence 0')
+  await until(() => prefetched().length >= 6, 3000, 'look-ahead in flight')
+  const before = prefetched().length
+
+  current.player.seekTo(30) // click-to-jump far down the page
+  await until(() => current.player.currentIndex === 30 && current.player.status === 'playing', 3000, 'playing 30')
+  await until(
+    () => prefetched().slice(before).some((c) => c.text === sentences[31]),
+    3000,
+    'look-ahead for sentence 31 (the stale requests hold the whole in-flight budget)',
+  )
+  const aborted = current.w.calls.filter((c) => c.kind === 'abort').length
+  assert.ok(aborted >= before, `only ${aborted} of ${before} stale requests aborted`)
 })

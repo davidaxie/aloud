@@ -221,7 +221,11 @@ async function main(onReady: (respond: Responder) => void) {
           const target = Math.min(player.total - 1, Math.floor(f * player.total))
           player.seekTo(Math.max(0, target))
         },
-        onVoice: (voiceId) => void savePrefs({ voiceId }),
+        // Only a voice the engine offered: anything else is not the user's
+        // pick, and would be synced to every tab and profile (H033).
+        onVoice: (voiceId) => {
+          if (voices.some((v) => v.id === voiceId)) void savePrefs({ voiceId })
+        },
         onRate: (rate) => void savePrefs({ rate }),
       })
       void getShortcuts().then((keys) => bar?.setShortcuts(keys))
@@ -284,6 +288,15 @@ async function main(onReady: (respond: Responder) => void) {
 
   const isActive = () => extraction !== null
 
+  /**
+   * Whether the page holds a selection to read. Text selected in a text field
+   * or a shadow tree comes back collapsed, its words only in toString() (H032).
+   */
+  function hasSelection(): boolean {
+    const sel = window.getSelection()
+    return !!sel && (!sel.isCollapsed || sel.toString().trim() !== '')
+  }
+
   // ── engine health ─────────────────────────────────────────────────────────
   // Only /health may call the engine offline (§1.4). A failed synthesis is a
   // failed synthesis: blaming a backend that is up and answering is exactly the
@@ -335,10 +348,13 @@ async function main(onReady: (respond: Responder) => void) {
         start('selection', text)
         break
       case 'toggle':
-        // `text` is a selection the worker found in a subframe (G034).
-        if (isActive()) player.toggle()
+        // `text` is a selection the worker found in a subframe (G034). A
+        // finished page gives way to one: "select later text to go on" is the
+        // advice a page cut short ends on (H036). Without one, Play at the end
+        // listens again from the first sentence (player.play).
+        if (isActive() && !(status === 'ended' && (text || hasSelection()))) player.toggle()
         else if (text) start('selection', text)
-        else if (!window.getSelection()?.isCollapsed) start('selection')
+        else if (hasSelection()) start('selection')
         else start('page')
         break
       case 'next':
