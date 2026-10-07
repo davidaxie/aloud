@@ -6,14 +6,17 @@ then opens the reader in a native pywebview window on the main thread.
 
 Before starting anything it probes ``GET /health`` on the target port: if an
 Aloud backend is already serving there, the window attaches to it rather than
-starting a rival on the same socket.
+starting a rival on the same socket. While attached it keeps watching, and if
+that backend stops and leaves the port free, it starts its own there, so the
+open window gets its speech back without a relaunch.
 
 macOS requires the GUI toolkit to run on the main thread, so uvicorn runs in a
 worker thread and ``webview.start()`` owns the main thread. When the window is
 closed, the server is asked to shut down and the process exits cleanly.
 
 Environment variables:
-    ALOUD_PORT      Force a specific port (otherwise prefer 8000, else a free one).
+    ALOUD_PORT      Force a specific port (otherwise prefer 8000, then 8001-8010,
+                    else a free one).
                     Anything that is not a port number is ignored with a warning.
     ALOUD_HEADLESS  If set to "1", start the server, wait for health, print the
                     URL, then exit 0 — everything except opening the window. Used
@@ -50,38 +53,52 @@ logger = logging.getLogger("aloud.native")
 HOST = "127.0.0.1"
 HEALTH_TIMEOUT_SECS = 30.0
 DEFAULT_PORT = 8000
+# Tried in order when 8000 is taken, before a random port. The page's origin
+# includes the port and its saved preferences belong to the origin, so a fixed
+# fallback keeps them from one launch to the next.
+FALLBACK_PORTS = range(DEFAULT_PORT + 1, DEFAULT_PORT + 11)
 PROBE_TIMEOUT_SECS = 1.0
+# How often a window attached to another backend checks that it is still there.
+ATTACH_WATCH_SECS = 2.0
+# Both addresses "localhost" can mean. The reader and the extension dial
+# http://localhost:<port>, which macOS resolves to ::1 first, and a dev server
+# that Node or Vite binds to localhost listens on ::1 alone.
+LOOPBACK_HOSTS = (HOST, "::1")
 
 
-def port_in_use(port: int) -> bool:
-    """True if anything is accepting connections on ``HOST:port``.
-
-    This is deliberately a CONNECT test rather than a bind test. Binding
-    ``127.0.0.1:8000`` with SO_REUSEADDR *succeeds* on macOS while another
-    process holds ``0.0.0.0:8000``, so the old check called a busy port free and
-    we started a second backend: two 325 MB model loads and requests routed
-    non-deterministically to one of them.
-    """
+def _accepts(host: str, port: int) -> bool:
     try:
-        with socket.create_connection((HOST, port), timeout=PROBE_TIMEOUT_SECS):
+        with socket.create_connection((host, port), timeout=PROBE_TIMEOUT_SECS):
             return True
     except OSError:
         return False
 
 
-def probe_backend(port: int) -> dict | None:
-    """Return the ``/health`` payload if an Aloud backend answers on ``port``.
+def port_in_use(port: int) -> bool:
+    """True if anything is accepting connections on ``port`` at either loopback address.
 
-    None means "not ours": nothing listening, not HTTP, or some other service
-    that happens to own the port. Only a payload naming the kokoro engine counts,
-    so we never attach a window to an unrelated dev server.
+    This is deliberately a CONNECT test rather than a bind test. Binding
+    ``127.0.0.1:8000`` with SO_REUSEADDR *succeeds* on macOS while another
+    process holds ``0.0.0.0:8000``, so the old check called a busy port free and
+    we started a second backend: two 325 MB model loads and requests routed
+    non-deterministically to one of them. ``::1`` counts too: a server there
+    does not stop us binding 127.0.0.1, but it is the one the clients reach.
     """
-    if not port_in_use(port):
-        return None
+    return any(_accepts(host, port) for host in LOOPBACK_HOSTS)
+
+
+def _health(host: str, port: int) -> dict | None:
+    """The ``/health`` payload at ``host:port`` if it names the kokoro engine."""
+    if ":" in host:
+        # Ask the way a client that dialed localhost does; the backend only
+        # accepts its own Host names.
+        request = urllib.request.Request(
+            f"http://[{host}]:{port}/health", headers={"Host": f"localhost:{port}"}
+        )
+    else:
+        request = urllib.request.Request(f"http://{host}:{port}/health")
     try:
-        with urllib.request.urlopen(
-            f"http://{HOST}:{port}/health", timeout=PROBE_TIMEOUT_SECS
-        ) as resp:
+        with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT_SECS) as resp:
             if resp.status != 200:
                 return None
             payload = json.loads(resp.read().decode("utf-8"))
@@ -90,6 +107,24 @@ def probe_backend(port: int) -> dict | None:
     if isinstance(payload, dict) and payload.get("engine") == "kokoro":
         return payload
     return None
+
+
+def probe_backend(port: int) -> dict | None:
+    """Return the ``/health`` payload if an Aloud backend answers on ``port``.
+
+    None means "not ours": nothing listening, not HTTP, or some other service
+    that happens to own the port. Only a payload naming the kokoro engine counts,
+    so we never attach a window to an unrelated dev server. Every loopback
+    address that accepts has to be Aloud: one on 127.0.0.1 is no use to a
+    client that dials localhost and lands on another server on ::1.
+    """
+    listening = [host for host in LOOPBACK_HOSTS if _accepts(host, port)]
+    if HOST not in listening:
+        return None
+    payloads = [_health(host, port) for host in listening]
+    if any(payload is None for payload in payloads):
+        return None
+    return payloads[0]
 
 
 def _find_free_port() -> int:
@@ -129,15 +164,59 @@ def find_running_backend() -> int | None:
 
 
 def choose_port() -> int:
-    """Pick the port to SERVE on: ALOUD_PORT, else 8000 if truly unused, else any free port."""
+    """Pick the port to SERVE on: ALOUD_PORT, else 8000 if truly unused, else the
+    first unused FALLBACK_PORTS entry, else any free port."""
     forced = env_port()
     if forced is not None:
         return forced
     if not port_in_use(DEFAULT_PORT):
         return DEFAULT_PORT
-    port = _find_free_port()
+    port = next((p for p in FALLBACK_PORTS if not port_in_use(p)), None) or _find_free_port()
     logger.info("Port %d is already in use; using free port %d instead", DEFAULT_PORT, port)
     return port
+
+
+def _start_own_server(port: int) -> tuple[uvicorn.Server, threading.Thread] | None:
+    """Start the Aloud backend on ``port`` in a daemon thread; None if it cannot load.
+
+    Importing the ASGI app triggers the one-time Kokoro model load, so a startup
+    failure surfaces here, before anything depends on the server.
+    """
+    try:
+        from app import app as asgi_app
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to import the Aloud backend app")
+        return None
+    config = uvicorn.Config(asgi_app, host=HOST, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    # Run uvicorn in a daemon thread; the window (or headless wait) owns main.
+    thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _take_over_when_gone(
+    port: int,
+    own: list[tuple[uvicorn.Server, threading.Thread]],
+    stop: threading.Event,
+    interval: float = ATTACH_WATCH_SECS,
+) -> None:
+    """While attached to another backend, start our own on ``port`` once it stops.
+
+    The page polls /health on its own origin, so a backend back on the same port
+    brings its speech back without a relaunch. A port that something else holds
+    is left alone, and so is one the old backend is already serving again.
+    """
+    while not stop.wait(interval):
+        if probe_backend(port) is not None or port_in_use(port):
+            continue
+        if stop.is_set():
+            return
+        logger.info("The Aloud backend on port %d stopped; starting our own there.", port)
+        started = _start_own_server(port)
+        if started is not None:
+            own.append(started)
+        return
 
 
 def _wait_for_health(
@@ -176,8 +255,11 @@ def _wait_for_health(
 
 
 def main() -> int:
-    server: uvicorn.Server | None = None
+    # Servers this process started: one at launch, or one the attach watcher
+    # starts later when the backend the window attached to goes away.
+    own: list[tuple[uvicorn.Server, threading.Thread]] = []
     server_thread: threading.Thread | None = None
+    watch_stop = threading.Event()
 
     attach_port = find_running_backend()
     if attach_port is not None:
@@ -189,27 +271,18 @@ def main() -> int:
     else:
         port = choose_port()
         base_url = f"http://{HOST}:{port}"
-
-        # Import the ASGI app here (triggers the one-time Kokoro model load) so
-        # any startup failure surfaces before we spawn threads or open a window.
-        try:
-            from app import app as asgi_app
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed to import the Aloud backend app")
+        started = _start_own_server(port)
+        if started is None:
             return 1
-
-        config = uvicorn.Config(asgi_app, host=HOST, port=port, log_level="info")
-        server = uvicorn.Server(config)
-
-        # Run uvicorn in a daemon thread; the window (or headless wait) owns main.
-        server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
-        server_thread.start()
+        own.append(started)
+        server_thread = started[1]
 
     def stop_server() -> None:
-        """Shut down the server we started. A no-op when we attached to another."""
-        if server is not None and server_thread is not None:
+        """Shut down the servers we started. A no-op when we only attached to another."""
+        watch_stop.set()
+        for server, thread in list(own):
             server.should_exit = True
-            server_thread.join(timeout=5.0)
+            thread.join(timeout=5.0)
 
     logger.info("Waiting for backend health at %s/health ...", base_url)
     if not _wait_for_health(base_url, HEALTH_TIMEOUT_SECS, server_thread):
@@ -237,6 +310,14 @@ def main() -> int:
         stop_server()
         return 0
 
+    if attach_port is not None:
+        threading.Thread(
+            target=_take_over_when_gone,
+            args=(port, own, watch_stop),
+            name="aloud-attach-watch",
+            daemon=True,
+        ).start()
+
     # Open the native window on the MAIN thread (required on macOS).
     import webview
 
@@ -248,7 +329,10 @@ def main() -> int:
         min_size=(720, 560),
     )
     try:
-        webview.start()
+        # pywebview defaults to private mode, which on macOS wipes the web
+        # view's stored data at every launch, and with it the reader's saved
+        # voice, rate and theme.
+        webview.start(private_mode=False)
     finally:
         # Window closed (or start() raised): stop uvicorn and clean up.
         stop_server()

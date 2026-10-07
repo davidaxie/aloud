@@ -19,7 +19,8 @@ Environment variables:
     ALOUD_HOST       Bind address (default 127.0.0.1, this Mac only). Set
                      0.0.0.0 to open the server to the LAN on purpose; it has no
                      login, so also list the names other devices will use in
-                     ALOUD_ALLOWED_HOSTS (read by ``app``).
+                     ALOUD_ALLOWED_HOSTS (read by ``app``). They are added to
+                     localhost and 127.0.0.1, which this Mac keeps using.
     ALOUD_PORT       Port to serve on (default 8000). Useful for running a
                      second backend alongside the first without a port clash.
                      Anything that is not a port number is ignored with a warning.
@@ -47,7 +48,9 @@ def preflight(port: int) -> int | None:
 
     Returns None when the port is free to serve on, otherwise the exit code:
     0 when an Aloud backend is already serving there, 1 when something else is.
-    The check connects to 127.0.0.1 because that is where both clients look.
+    The check connects to 127.0.0.1 and ::1, since both clients dial localhost,
+    which can mean either; a server on ::1 alone would otherwise go unseen
+    while it took every request.
     """
     if probe_backend(port) is not None:
         print(f"Aloud backend is already running on http://localhost:{port}; using that one.")

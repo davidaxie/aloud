@@ -1,13 +1,17 @@
-"""run.py and native_app.py: bind address, port checks, ALOUD_PORT parsing.
+"""run.py, native_app.py, run.sh and download_models.py.
 
 F053 (loopback by default), F060 (run.py checks the port first) and F103
-(native_app parses ALOUD_PORT once and only trusts an Aloud /health). Every
-probe is mocked; nothing binds or connects.
+(native_app parses ALOUD_PORT once and only trusts an Aloud /health). H026
+(a server on ::1 alone counts), H061 (the window keeps its storage), H062 (the
+reader keeps to the port run.sh prints), H063 (pinned packages and model
+hashes) and H064 (an attached window takes over when its backend stops). Every
+probe is mocked; nothing binds or connects, and nothing is downloaded.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -18,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
@@ -71,10 +76,18 @@ exec sleep 30
 """
 _FAKE_NPM = """#!/bin/bash
 echo "${VITE_API_BASE-unset}" > "$FAKE_LOG/npm"
+echo "$*" > "$FAKE_LOG/npm-args"
+exit "${FAKE_NPM_STATUS:-0}"
 """
 _FAKE_CURL = """#!/bin/bash
 for url; do :; done
-echo "$url" >> "$FAKE_LOG/curl"
+if [[ "$url" == */health ]]; then
+  echo "$url" >> "$FAKE_LOG/curl"
+fi
+if [[ -n "${FAKE_UI_BUSY:-}" && "$url" == "http://localhost:$FAKE_UI_BUSY/" ]]; then
+  echo '<html>another app</html>'
+  exit 0
+fi
 if [[ "$url" == "http://127.0.0.1:$FAKE_SERVE_PORT/health" ]]; then
   echo '{"status":"ok","engine":"kokoro"}'
   exit 0
@@ -181,6 +194,40 @@ class RunShTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ALOUD_HOST", result.stderr)
 
+    def test_taken_reader_port_stops_before_anything_starts(self) -> None:
+        # H062: Vite used to slide to 5174 while run.sh still printed 5173.
+        result = self.run_sh(8000, FAKE_UI_BUSY="5173")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Port 5173", result.stderr)
+        self.assertIn("ALOUD_UI_PORT", result.stderr)
+        self.assertNotIn("Aloud is ready", result.stdout)
+        self.assertFalse((self.log / "npm").exists())
+        self.assertFalse((self.log / "python").exists())
+
+    def test_reader_keeps_to_the_port_it_prints(self) -> None:
+        result = self.run_sh(8000, ALOUD_UI_PORT="5180")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (self.log / "npm-args").read_text().split(),
+            ["run", "dev", "--", "--port", "5180", "--strictPort"],
+        )
+        self.assertIn("Aloud is ready. Open  →  http://localhost:5180", result.stdout)
+        self.assertNotIn("5173", result.stdout)
+
+    def test_default_reader_port_is_strict(self) -> None:
+        result = self.run_sh(8000)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--port 5173 --strictPort", (self.log / "npm-args").read_text())
+
+    def test_reader_that_fails_to_start_is_reported(self) -> None:
+        result = self.run_sh(8000, FAKE_NPM_STATUS="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("reader UI stopped", result.stderr)
+
+    def test_vite_config_keeps_to_its_port(self) -> None:
+        config = (BACKEND.parent / "frontend" / "vite.config.ts").read_text()
+        self.assertIn("strictPort: true", config)
+
 
 class RunPreflightTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -232,7 +279,95 @@ class FakeResponse:
         return None
 
 
+def accepting(*hosts: str):
+    """A ``socket.create_connection`` stand-in that accepts only on ``hosts``."""
+
+    def connect(address, timeout=None):
+        if address[0] in hosts:
+            return contextlib.nullcontext()
+        raise ConnectionRefusedError(address)
+
+    return connect
+
+
+class NativeLoopbackTests(unittest.TestCase):
+    """H026: a server on ::1 alone is the one clients dialing localhost reach."""
+
+    def setUp(self) -> None:
+        self.requests: list = []
+
+    def health(self, by_host: dict[str, object]):
+        def urlopen(request, timeout=None):
+            self.requests.append(request)
+            for prefix, payload in by_host.items():
+                if request.full_url.startswith(prefix):
+                    return FakeResponse(payload)
+            raise urllib.error.URLError("connection refused")
+
+        return urlopen
+
+    def test_server_on_ipv6_loopback_alone_counts_as_busy(self) -> None:
+        with mock.patch.object(native_app.socket, "create_connection", accepting("::1")):
+            self.assertTrue(native_app.port_in_use(8000))
+        with mock.patch.object(native_app.socket, "create_connection", accepting()):
+            self.assertFalse(native_app.port_in_use(8000))
+
+    def test_run_py_refuses_a_port_held_on_ipv6_alone(self) -> None:
+        run = load_run()
+        err = io.StringIO()
+        with mock.patch.object(
+            native_app.socket, "create_connection", accepting("::1")
+        ), mock.patch.object(
+            native_app.urllib.request, "urlopen", self.health({})
+        ), redirect_stdout(io.StringIO()), redirect_stderr(err):
+            self.assertEqual(run.preflight(8000), 1)
+        self.assertIn("in use by another program", err.getvalue())
+
+    def test_native_app_does_not_serve_next_to_it(self) -> None:
+        # Every port answers on ::1 here, so it falls through to a free port.
+        with mock.patch.object(
+            native_app.socket, "create_connection", accepting("::1")
+        ), mock.patch.dict(os.environ, {"ALOUD_PORT": ""}), mock.patch.object(
+            native_app, "_find_free_port", return_value=54321
+        ):
+            self.assertEqual(native_app.choose_port(), 54321)
+
+    def test_aloud_on_ipv4_with_another_server_on_ipv6_is_not_ours(self) -> None:
+        with mock.patch.object(
+            native_app.socket, "create_connection", accepting("127.0.0.1", "::1")
+        ), mock.patch.object(
+            native_app.urllib.request,
+            "urlopen",
+            self.health(
+                {"http://127.0.0.1:": {"status": "ok", "engine": "kokoro"}, "http://[::1]:": {"ok": 1}}
+            ),
+        ):
+            self.assertIsNone(native_app.probe_backend(8000))
+
+    def test_dual_stack_aloud_is_ours_and_asked_as_localhost(self) -> None:
+        payload = {"status": "ok", "engine": "kokoro"}
+        with mock.patch.object(
+            native_app.socket, "create_connection", accepting("127.0.0.1", "::1")
+        ), mock.patch.object(
+            native_app.urllib.request,
+            "urlopen",
+            self.health({"http://127.0.0.1:": payload, "http://[::1]:": payload}),
+        ):
+            self.assertEqual(native_app.probe_backend(8000), payload)
+        ipv6 = [r for r in self.requests if r.full_url.startswith("http://[::1]:")]
+        self.assertEqual([r.get_header("Host") for r in ipv6], ["localhost:8000"])
+
+
 class NativePortTests(unittest.TestCase):
+    def test_busy_default_port_falls_back_to_a_fixed_one(self) -> None:
+        # H061: a random port is a new origin, and the reader's preferences
+        # live with the origin.
+        with mock.patch.dict(os.environ, {"ALOUD_PORT": ""}), mock.patch.object(
+            native_app, "port_in_use", side_effect=lambda port: port == 8000
+        ), mock.patch.object(native_app, "_find_free_port") as free:
+            self.assertEqual(native_app.choose_port(), 8001)
+        free.assert_not_called()
+
     def test_invalid_aloud_port_does_not_crash_choose_port(self) -> None:
         with mock.patch.dict(os.environ, {"ALOUD_PORT": "abc"}), mock.patch.object(
             native_app, "port_in_use", return_value=False
@@ -277,6 +412,148 @@ class NativeHealthTests(unittest.TestCase):
         ):
             self.assertFalse(native_app._wait_for_health("http://127.0.0.1:1", 30, dead))
         self.assertLess(time.monotonic() - started, 2)
+
+
+class NativeWindowTests(unittest.TestCase):
+    """H061 and H064: what main() does once the backend is healthy."""
+
+    def run_main(self, *, attach: bool):
+        webview = types.ModuleType("webview")
+        webview.create_window = mock.Mock()
+        webview.start = mock.Mock()
+        watched = threading.Event()
+        watcher = mock.Mock(side_effect=lambda *args: watched.set())
+        server = mock.Mock()
+        finished = threading.Thread(target=lambda: None)
+        finished.start()
+        finished.join()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ALOUD_")}
+        with mock.patch.dict(sys.modules, {"webview": webview}), mock.patch.dict(
+            os.environ, env, clear=True
+        ), mock.patch.object(
+            native_app, "find_running_backend", return_value=8000 if attach else None
+        ), mock.patch.object(native_app, "choose_port", return_value=8000), mock.patch.object(
+            native_app, "_start_own_server", return_value=(server, finished)
+        ) as start_own, mock.patch.object(
+            native_app, "_wait_for_health", return_value=True
+        ), mock.patch.object(native_app, "_take_over_when_gone", watcher):
+            self.assertEqual(native_app.main(), 0)
+            if attach:
+                self.assertTrue(watched.wait(2), "the attached window never watched its backend")
+        return webview, watcher, start_own
+
+    def test_window_keeps_its_storage_between_launches(self) -> None:
+        webview, _, _ = self.run_main(attach=False)
+        self.assertEqual(webview.start.call_args.kwargs.get("private_mode"), False)
+
+    def test_attached_window_watches_its_backend(self) -> None:
+        webview, watcher, start_own = self.run_main(attach=True)
+        start_own.assert_not_called()
+        port, own, stop = watcher.call_args.args
+        self.assertEqual((port, own), (8000, []))
+        self.assertTrue(stop.is_set(), "closing the window stops the watch")
+        self.assertEqual(webview.start.call_args.kwargs.get("private_mode"), False)
+
+    def test_window_on_its_own_server_does_not_watch(self) -> None:
+        _, watcher, start_own = self.run_main(attach=False)
+        start_own.assert_called_once_with(8000)
+        watcher.assert_not_called()
+
+
+class AttachWatchTests(unittest.TestCase):
+    """H064: the attached backend stopping no longer leaves the window mute."""
+
+    def watch(self, *, probes: list, in_use: list, rounds: int):
+        stop = mock.Mock()
+        stop.wait.side_effect = [False] * rounds + [True]
+        stop.is_set.return_value = False
+        own: list = []
+        with mock.patch.object(native_app, "probe_backend", side_effect=probes), mock.patch.object(
+            native_app, "port_in_use", side_effect=in_use
+        ), mock.patch.object(
+            native_app, "_start_own_server", return_value=("server", "thread")
+        ) as start_own:
+            native_app._take_over_when_gone(8000, own, stop, interval=0)
+        return own, start_own
+
+    def test_backend_gone_and_port_free_starts_our_own_there(self) -> None:
+        own, start_own = self.watch(probes=[None], in_use=[False], rounds=5)
+        start_own.assert_called_once_with(8000)
+        self.assertEqual(own, [("server", "thread")])
+
+    def test_live_backend_or_taken_port_is_left_alone(self) -> None:
+        own, start_own = self.watch(
+            probes=[{"engine": "kokoro"}, None], in_use=[True], rounds=2
+        )
+        start_own.assert_not_called()
+        self.assertEqual(own, [])
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+class ModelDownloadTests(unittest.TestCase):
+    """H063: a model file is trusted by its pinned SHA-256, not its size."""
+
+    def setUp(self) -> None:
+        self.dl = load_module("aloud_download_under_test", "download_models.py")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.dest = self.dir / "model.bin"
+        for name, value in (
+            ("_MODELS_DIR", str(self.dir)),
+            ("_ASSETS", [("model.bin", "https://example.invalid/model.bin", 3, sha256(b"abc"))]),
+        ):
+            patcher = mock.patch.object(self.dl, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def main(self, served: bytes):
+        def download(url: str, dest: str) -> None:
+            Path(dest).write_bytes(served)
+
+        with mock.patch.object(self.dl, "_download", side_effect=download) as fetch, redirect_stdout(
+            io.StringIO()
+        ), redirect_stderr(io.StringIO()):
+            code = self.dl.main()
+        return code, fetch
+
+    def test_right_sized_wrong_file_is_fetched_again(self) -> None:
+        self.dest.write_bytes(b"xyz")
+        code, fetch = self.main(b"abc")
+        self.assertEqual(code, 0)
+        fetch.assert_called_once()
+        self.assertEqual(self.dest.read_bytes(), b"abc")
+
+    def test_matching_file_is_skipped(self) -> None:
+        self.dest.write_bytes(b"abc")
+        code, fetch = self.main(b"abc")
+        self.assertEqual(code, 0)
+        fetch.assert_not_called()
+
+    def test_download_that_does_not_match_is_deleted(self) -> None:
+        code, _ = self.main(b"abd")
+        self.assertEqual(code, 1)
+        self.assertFalse(self.dest.exists())
+
+    def test_real_assets_pin_a_sha256(self) -> None:
+        dl = load_module("aloud_download_pins", "download_models.py")
+        self.assertEqual(len(dl._ASSETS), 2)
+        for name, _url, size, digest in dl._ASSETS:
+            self.assertGreater(size, 0, name)
+            self.assertRegex(digest, r"^[0-9a-f]{64}$", name)
+
+    def test_backend_requirements_are_pinned(self) -> None:
+        lines = [
+            line.strip()
+            for line in (BACKEND / "requirements.txt").read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertRegex(line, r"^[A-Za-z0-9_.\-\[\]]+==[0-9][0-9A-Za-z.]*$", line)
 
 
 if __name__ == "__main__":

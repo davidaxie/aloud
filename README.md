@@ -237,17 +237,19 @@ cd ../frontend && npm install
 
 Open http://localhost:5173 and drop in a PDF. `./run.sh` stops both on
 Ctrl-C. If port 8000 is taken, `ALOUD_PORT=8001 ./run.sh` moves the server,
-and the reader follows it.
+and the reader follows it. If port 5173 is taken, `./run.sh` stops and says
+so rather than moving the reader elsewhere; `ALOUD_UI_PORT=5174 ./run.sh`
+moves it, and the address it prints follows.
 
 The server listens on this Mac only. To reach it from a phone or another
 computer on your network, opt in with `ALOUD_HOST=0.0.0.0` and list every
-name the other device uses for this Mac in `ALOUD_ALLOWED_HOSTS`, which
-replaces the default `localhost,127.0.0.1`, for example
-`ALOUD_HOST=0.0.0.0 ALOUD_ALLOWED_HOSTS=localhost,127.0.0.1,my-mac.local ./run.sh`.
+name the other device uses for this Mac in `ALOUD_ALLOWED_HOSTS`. These are
+added to `localhost` and `127.0.0.1`, which this Mac keeps using, for example
+`ALOUD_HOST=0.0.0.0 ALOUD_ALLOWED_HOSTS=my-mac.local ./run.sh`.
 Requests with any other Host name are refused. The server has no login, so do
 this only on a network you trust.
 
-The reader on port 5173 only works on this Mac. For the other device, build
+The reader on port 5173 (or `ALOUD_UI_PORT`) only works on this Mac. For the other device, build
 the reader once with `cd frontend && npm run build`. The server then serves it
 itself, so open http://my-mac.local:8000 on the phone. No other setting is
 needed. For the extension on another computer, set *Local TTS server* in its

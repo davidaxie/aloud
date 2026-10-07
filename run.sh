@@ -3,6 +3,7 @@
 # Ctrl-C stops both.
 #
 # ALOUD_PORT picks the backend's port (default 8000) and the reader follows it.
+# ALOUD_UI_PORT picks the reader's port (default 5173).
 # ALOUD_START_TIMEOUT is how many seconds to wait for the backend (default 120).
 set -euo pipefail
 
@@ -31,6 +32,23 @@ PORT="$(cd "$BACKEND" && .venv/bin/python run.py --print-port)" || PORT=8000
 [[ "$PORT" =~ ^[0-9]+$ ]] || PORT=8000
 START_TIMEOUT="${ALOUD_START_TIMEOUT:-120}"
 [[ "$START_TIMEOUT" =~ ^[0-9]+$ ]] || START_TIMEOUT=120
+UI_PORT="${ALOUD_UI_PORT:-5173}"
+if ! [[ "$UI_PORT" =~ ^[0-9]+$ ]] || (( 10#$UI_PORT < 1 || 10#$UI_PORT > 65535 )); then
+  UI_PORT=5173
+fi
+UI_PORT=$((10#$UI_PORT))
+
+# The reader keeps to UI_PORT (--strictPort) so the address printed below is
+# the one it serves. Say so now if something already answers there, before
+# the model loads; curl tries both ::1 and 127.0.0.1, as a browser would.
+ui_rc=0
+curl -s -o /dev/null --max-time 1 "http://localhost:$UI_PORT/" 2>/dev/null || ui_rc=$?
+case "$ui_rc" in
+  0|28|52|56)
+    echo "✗ Port $UI_PORT is already in use by another program, so the reader cannot start there. Stop that program, or set ALOUD_UI_PORT to a free port." >&2
+    exit 1
+    ;;
+esac
 
 pids=()
 cleanup() { echo; echo "Stopping Aloud…"; for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
@@ -49,12 +67,28 @@ echo "→ Starting TTS backend on http://localhost:$PORT …"
 backend_pid=$!
 pids+=("$backend_pid")
 
-echo "→ Starting reader UI on http://localhost:5173 …"
+echo "→ Starting reader UI on http://localhost:$UI_PORT …"
 # Point the reader at that port; .env.development says 8000. A VITE_API_BASE
 # set by hand still wins.
-( cd "$FRONTEND" && export VITE_API_BASE="${VITE_API_BASE:-http://localhost:$PORT}" && exec npm run dev ) &
+( cd "$FRONTEND" && export VITE_API_BASE="${VITE_API_BASE:-http://localhost:$PORT}" && exec npm run dev -- --port "$UI_PORT" --strictPort ) &
 frontend_pid=$!
 pids+=("$frontend_pid")
+
+# True once the reader has exited, with its exit status in reader_status.
+reader_status=""
+reader_stopped() {
+  [[ -n "$reader_status" ]] && return 0
+  kill -0 "$frontend_pid" 2>/dev/null && return 1
+  reader_status=0
+  wait "$frontend_pid" || reader_status=$?
+  return 0
+}
+reader_failed() {
+  reader_stopped && (( reader_status != 0 ))
+}
+reader_failed_message() {
+  echo "✗ The reader UI stopped (see the message above). If port $UI_PORT is taken, set ALOUD_UI_PORT to a free port." >&2
+}
 
 # Only point anyone at the reader once the backend answers. run.py exits 0 when
 # an Aloud backend is already serving (the reader uses that one) and 1 when
@@ -63,6 +97,10 @@ pids+=("$frontend_pid")
 echo "→ Waiting for the TTS backend to load …"
 deadline=$((SECONDS + START_TIMEOUT))
 until backend_ready; do
+  if reader_failed; then
+    reader_failed_message
+    exit 1
+  fi
   if ! kill -0 "$backend_pid" 2>/dev/null; then
     backend_ready && break
     echo "✗ The TTS backend stopped before it was ready (see the message above)." >&2
@@ -79,8 +117,13 @@ until backend_ready; do
   sleep 0.5
 done
 
+if reader_failed; then
+  reader_failed_message
+  exit 1
+fi
+
 echo
-echo "Aloud is ready. Open  →  http://localhost:5173"
+echo "Aloud is ready. Open  →  http://localhost:$UI_PORT"
 echo "(Press Ctrl-C to stop both.)"
 
 # Stay up while the reader runs. If the backend goes away, stop the reader too
@@ -92,3 +135,7 @@ while kill -0 "$frontend_pid" 2>/dev/null; do
   fi
   sleep 1
 done
+if reader_failed; then
+  reader_failed_message
+  exit 1
+fi

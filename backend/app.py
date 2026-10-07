@@ -25,9 +25,10 @@ Environment variables:
     ALOUD_QUEUE_MAX  Max WAITING prefetch requests before /synthesize answers
                      429 + Retry-After. Default 8. `now` requests are never
                      rejected for depth.
-    ALOUD_ALLOWED_HOSTS  Comma-separated Host names to accept, replacing the
-                     default "localhost,127.0.0.1". Needed only when the server
-                     is opened to the LAN on purpose (ALOUD_HOST in run.py).
+    ALOUD_ALLOWED_HOSTS  Comma-separated extra Host names to accept, on top of
+                     "localhost" and "127.0.0.1", which are always accepted.
+                     Needed only when the server is opened to the LAN on
+                     purpose (ALOUD_HOST in run.py).
     ALOUD_CORS_ORIGINS  Comma-separated extra browser origins allowed to call
                      the API. Pages on localhost or 127.0.0.1, any port, and
                      Chrome extensions are always allowed.
@@ -191,7 +192,10 @@ app.add_middleware(
 )
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=_env_list("ALOUD_ALLOWED_HOSTS", ["localhost", "127.0.0.1"]),
+    # The env list adds to this Mac's own names rather than replacing them, so
+    # opening the server to the LAN never shuts out the local reader, run.sh's
+    # readiness check or the native window.
+    allowed_hosts=["localhost", "127.0.0.1", *_env_list("ALOUD_ALLOWED_HOSTS", [])],
 )
 
 
@@ -332,8 +336,9 @@ async def synthesize(req: SynthesizeRequest, request: Request) -> Response:
     The call runs on the single synthesis worker. If the client hangs up while
     the job is still waiting, the job is dropped and never synthesized.
     """
-    # FastAPI 0.132+ already refuses an untyped body, but requirements.txt allows
-    # older releases that parse it as JSON, so do not rely on the default.
+    # FastAPI 0.132+ already refuses an untyped body, but a venv set up before
+    # requirements.txt pinned it can hold an older release that parses it as
+    # JSON, so do not rely on the default.
     if not _is_json(request.headers.get("content-type")):
         return _error(
             415, "request body must be sent as application/json", retryable=False, req=req

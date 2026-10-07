@@ -14,7 +14,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    strictPort: false,
+    strictPort: true,
   },
   // pdfjs ships large assets; keep them out of the inlining path.
   build: {

@@ -6,13 +6,24 @@ Run from the repo root:
 
 from __future__ import annotations
 
+import os
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
 from fastapi import FastAPI
-from support import WARMUP_TEXT, call, load_app, make_queue, silent_synth, synth_body
+from support import (
+    WARMUP_TEXT,
+    FakeEngine,
+    call,
+    load_app,
+    load_module,
+    make_queue,
+    silent_synth,
+    synth_body,
+)
 from synth_queue import QueueFullError
 
 
@@ -193,6 +204,30 @@ class LocalOnlyTests(unittest.TestCase):
         self.assertEqual(reply.headers.get("retry-after"), "1")
         exposed = reply.headers.get("access-control-expose-headers", "")
         self.assertIn("retry-after", [h.strip().lower() for h in exposed.split(",")])
+
+
+class AllowedHostsTests(unittest.TestCase):
+    """H028: ALOUD_ALLOWED_HOSTS adds LAN names; this Mac's own stay allowed."""
+
+    def setUp(self) -> None:
+        load_app()  # quiets the app's import-time logging, as for every other test
+        fake = types.ModuleType("kokoro_engine")
+        fake.engine = FakeEngine()
+        with mock.patch.dict(os.environ, {"ALOUD_ALLOWED_HOSTS": "my-mac.local"}):
+            self.app_module = load_module(
+                "aloud_app_lan_under_test", "app.py", {"kokoro_engine": fake}
+            )
+        self.addCleanup(self.app_module.synth_queue.stop)
+
+    def status(self, host: str) -> int:
+        return call(self.app_module.app, "GET", "/health", host=host).status
+
+    def test_loopback_names_are_kept_alongside_the_lan_name(self) -> None:
+        for host in ("localhost:8000", "127.0.0.1:8000", "my-mac.local:8000"):
+            self.assertEqual(self.status(host), 200, host)
+
+    def test_other_names_are_still_refused(self) -> None:
+        self.assertEqual(self.status("rebind.attacker.example:8000"), 400)
 
 
 class ContentTypeTests(unittest.TestCase):
