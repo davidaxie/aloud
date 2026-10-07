@@ -124,6 +124,37 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertTrue(body.contains("Font.custom(serifFamilyName, fixedSize: size)"), String(body))
     }
 
+    /// J029: the Aa sheet's pinned title keeps the sheet gutter and wraps
+    /// centered at the accessibility sizes, as the Voice & speed sheet's
+    /// does: bare, it ran to the edges and wrapped "Text &" to the left.
+    func testTheSheetTitlesWrapCenteredInsideTheGutters() throws {
+        let paths = ["Reader/AppearanceSheet.swift": "Text(AppearanceCopy.title)",
+                     "Settings/ListeningSheet.swift": "Text(ListeningCopy.title)"]
+        let sources = try SourceTree.sources(only: Array(paths.keys))
+        for (path, title) in paths {
+            let text = try XCTUnwrap(sources[path])
+            let start = try XCTUnwrap(text.range(of: title), path)
+            let modifiers = text[start.upperBound...].prefix(400)
+            let header = try XCTUnwrap(modifiers.range(of: ".accessibilityAddTraits(.isHeader)"), path)
+            let block = modifiers[..<header.lowerBound]
+            for needle in [".multilineTextAlignment(.center)", ".fixedSize(horizontal: false, vertical: true)",
+                           ".padding(.horizontal, Theme.Space.sheetGutter)"] {
+                XCTAssertTrue(block.contains(needle), "\(path): the title lacks \(needle)")
+            }
+        }
+    }
+
+    /// J027: under Bold Text the Aa sample sets in the column's own bold
+    /// face (`ReaderPageStyle.serif(size:bold:)`), not the regular one.
+    func testTheAaSampleFollowsBoldText() throws {
+        let path = "Reader/AppearanceSheet.swift"
+        let sheet = try XCTUnwrap(try SourceTree.sources(only: [path])[path])
+        let sample = try XCTUnwrap(sheet.range(of: "Text(\"Aa\")"))
+        XCTAssertTrue(sheet[sample.upperBound...].prefix(300)
+            .contains("weight: legibilityWeight == .bold ? .bold : .regular"))
+        XCTAssertTrue(sheet.contains("@Environment(\\.legibilityWeight) private var legibilityWeight"))
+    }
+
     func testUITestsReadThePlayheadThroughTheHelpers() throws {
         let uiTests = try SourceTree.sources(in: SourceTree.uiTestsRoot)
         XCTAssertEqual(SourceTree.occurrences(of: "[\"reader.sentence\"]", in: uiTests), 0,

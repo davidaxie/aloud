@@ -220,6 +220,9 @@ struct MacLibraryView: View {
                                 continuePlayback: continuePlayback,
                                 onOpen: { open(hero) },
                                 onTogglePlayback: { toggleContinue(hero) }) {
+                    // VoiceOver gets the grid cards' list (R12g, J018).
+                    MacDocumentActions(document: hero, perform: { perform($0, on: hero) })
+                } menu: {
                     MacDocumentMenu(document: hero, onOpen: { open(hero) },
                                     perform: { perform($0, on: hero) })
                 }
@@ -486,8 +489,9 @@ private struct MacEmptyLibrary: View {
 
 /// The shared Continue card wired to playback: the one Library view that
 /// observes the controller, so a sentence change redraws it alone. Hover
-/// draws the plate behind the whole card.
-private struct MacContinueHero<Actions: View>: View {
+/// draws the plate behind the whole card. `actions` are its VoiceOver
+/// actions, `menu` its context menu.
+private struct MacContinueHero<Actions: View, MenuItems: View>: View {
     let document: LibraryDocument
     let rate: Double
     @ObservedObject var playback: PlaybackController
@@ -495,6 +499,7 @@ private struct MacContinueHero<Actions: View>: View {
     let onOpen: () -> Void
     let onTogglePlayback: () -> Void
     private let actions: Actions
+    private let menu: MenuItems
 
     @EnvironmentObject private var naturalVoiceOffer: NaturalVoiceOffer
     // Observed for the offer's line, as on the iPhone.
@@ -503,7 +508,8 @@ private struct MacContinueHero<Actions: View>: View {
 
     init(document: LibraryDocument, rate: Double, playback: PlaybackController,
          continuePlayback: ContinuePlayback, onOpen: @escaping () -> Void,
-         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
+         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions,
+         @ViewBuilder menu: () -> MenuItems) {
         self.document = document
         self.rate = rate
         self.playback = playback
@@ -511,6 +517,7 @@ private struct MacContinueHero<Actions: View>: View {
         self.onOpen = onOpen
         self.onTogglePlayback = onTogglePlayback
         self.actions = actions()
+        self.menu = menu()
     }
 
     var body: some View {
@@ -534,6 +541,8 @@ private struct MacContinueHero<Actions: View>: View {
                               onOpen: onOpen,
                               onTogglePlayback: onTogglePlayback) {
             actions
+        } menu: {
+            menu
         }
         .modifier(MacHoverPlate(radius: Theme.Radius.lg, outset: MacGridMetrics.plateOutset))
     }

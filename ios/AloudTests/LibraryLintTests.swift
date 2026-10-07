@@ -98,6 +98,66 @@ final class LibraryLintTests: XCTestCase {
                       "continueBook should pass the controller's stop")
     }
 
+    /// J014: a plain button hit-tests only what its label draws, so the
+    /// card claims its whole cell; its width is DocumentCardLayoutTests'.
+    func testTheCardIsTappableAcrossItsCell() throws {
+        let path = "Library/DocumentCardView.swift"
+        let text = try XCTUnwrap(try SourceTree.sources(only: [path])[path])
+        let body = body(ofStruct: "DocumentCardView", in: text)
+        let shape = try XCTUnwrap(body.range(of: ".contentShape(Rectangle())"))
+        let frame = try XCTUnwrap(body.range(of: ".frame(maxWidth: .infinity, alignment: .leading)"))
+        let element = try XCTUnwrap(body.range(of: ".accessibilityElement(children: .combine)"))
+        XCTAssertLessThan(frame.lowerBound, shape.lowerBound, "the shape covers the full-width frame")
+        XCTAssertLessThan(shape.lowerBound, element.lowerBound)
+    }
+
+    /// J017: Voice Control answers to a book's title on every card, on the
+    /// iPhone and the Mac, and on the Continue card (before its overlay, so
+    /// the circle keeps its own Play or Pause name).
+    func testEveryCardAnswersVoiceControlByTitle() throws {
+        let shared = ["Library/LibraryView.swift", "Library/ContinueListeningCard.swift"]
+        let app = try SourceTree.sources(only: shared)
+        let mac = try SourceTree.sources(in: SourceTree.macRoot, only: ["Library/MacLibraryCard.swift"])
+        let grid = ".accessibilityInputLabels(DocumentCardView.inputLabels(for: document))"
+        XCTAssertTrue(try XCTUnwrap(app[shared[0]]).contains(grid), "the iPhone grid card")
+        XCTAssertTrue(try XCTUnwrap(mac["Library/MacLibraryCard.swift"]).contains(grid), "the Mac grid card")
+        let card = try XCTUnwrap(app[shared[1]])
+        let labels = try XCTUnwrap(card.range(of: ".accessibilityInputLabels(ContinueListeningCopy.inputLabels(title: document.title))"))
+        let overlay = try XCTUnwrap(card.range(of: ".overlayPreferenceValue("))
+        XCTAssertLessThan(labels.lowerBound, overlay.lowerBound)
+    }
+
+    /// J018, R12g: the Mac's Continue card offers VoiceOver the grid cards'
+    /// three actions under the iPhone's names; the Mac's menu wording (Open,
+    /// Rename…) stays in its context menu.
+    func testTheMacContinueCardOffersTheGridCardsVoiceOverActions() throws {
+        let card = try XCTUnwrap(try SourceTree.sources(only: ["Library/ContinueListeningCard.swift"])["Library/ContinueListeningCard.swift"])
+        XCTAssertTrue(card.contains(".accessibilityActions { actions }"))
+        XCTAssertTrue(card.contains(".contextMenu { menu }"), "the menu is its own builder")
+        let files = ["Library/MacLibraryCard.swift", Self.macLibraryFile]
+        let mac = try SourceTree.sources(in: SourceTree.macRoot, only: files)
+        let grid = body(ofStruct: "MacLibraryCard", in: try XCTUnwrap(mac[files[0]]))
+        XCTAssertTrue(grid.contains("MacDocumentActions(document: document, perform: perform)"))
+        let library = try XCTUnwrap(mac[files[1]])
+        let hero = try XCTUnwrap(library.range(of: "MacContinueHero(document: hero,"))
+        let call = library[hero.lowerBound...].prefix(1200)
+        let actions = try XCTUnwrap(call.range(of: "MacDocumentActions(document: hero,"))
+        let menu = try XCTUnwrap(call.range(of: "} menu: {"))
+        let menuItems = try XCTUnwrap(call.range(of: "MacDocumentMenu(document: hero,"))
+        XCTAssertLessThan(actions.lowerBound, menu.lowerBound, "VoiceOver gets the grid's list")
+        XCTAssertLessThan(menu.lowerBound, menuItems.lowerBound, "the menu keeps the Mac's wording")
+    }
+
+    /// J020: the bar caps its text size, so the Library's title, like every
+    /// other bar title, shows large on a long press.
+    func testTheLibraryTitleOffersTheLargeContentViewer() throws {
+        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let item = try XCTUnwrap(text.range(of: "ToolbarItem(placement: .navigationBarLeading) {"))
+        let title = text[item.upperBound...].prefix { $0 != "}" }
+        XCTAssertTrue(title.contains("Text(\"Aloud\")"), String(title))
+        XCTAssertTrue(title.contains(".accessibilityShowsLargeContentViewer()"), String(title))
+    }
+
     /// F045: every shelf the Library derives hears the controller's
     /// unattended stop, so its hero is the book the shortcut and remote Play
     /// would continue (`DocumentStore.isAtItsEnd`).

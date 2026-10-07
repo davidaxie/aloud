@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 
 /// Semantic design tokens. Views consume these exclusively — never raw colors.
@@ -132,6 +133,14 @@ enum Theme {
         case numeral
         /// Serif 15 italic, relative to .footnote — the privacy line.
         case aside
+
+        /// Set in the serif, which Bold Text doesn't reach by itself.
+        var isSerif: Bool {
+            switch self {
+            case .display, .title, .headline, .aside: return true
+            default: return false
+            }
+        }
     }
 
     static func font(_ style: TypeStyle) -> Font {
@@ -144,10 +153,22 @@ enum Theme {
     /// as they are.
     static func font(_ style: TypeStyle, scale: ChromeScale) -> Font {
         if let fixed = PlatformTypeRamp.font(for: style, scale: scale) { return fixed }
+        // Only a serif style reads the setting, so only its view redraws.
+        return font(style, boldText: style.isSerif && BoldText.shared.isOn)
+    }
+
+    /// `style` on the iPhone. Under Bold Text (`boldText`) a serif style
+    /// takes its family's bold face, as the reading column does
+    /// (`ReaderPageStyle.serif(size:bold:)`): SwiftUI bolds the system
+    /// styles itself but never a named face, so the serif titles stayed
+    /// thin beside bolded sans chrome (J027). The headline's semibold is
+    /// already Iowan's bold face, the iPhone's heaviest.
+    static func font(_ style: TypeStyle, boldText: Bool) -> Font {
         switch style {
-        case .display:  return .custom(serifFamilyName, size: 28, relativeTo: .largeTitle)
-        case .title:    return .custom(serifFamilyName, size: 22, relativeTo: .title2)
-        case .headline: return .custom(serifFamilyName, size: 17, relativeTo: .headline).weight(.semibold)
+        case .display:  return serif(28, relativeTo: .largeTitle, boldText: boldText)
+        case .title:    return serif(22, relativeTo: .title2, boldText: boldText)
+        case .headline:
+            return .custom(serifFamilyName, size: 17, relativeTo: .headline).weight(boldText ? .bold : .semibold)
         case .body:     return .callout
         case .callout:  return .subheadline
         case .subhead:  return .footnote.weight(.semibold)
@@ -155,7 +176,34 @@ enum Theme {
         case .caption:  return .caption.weight(.medium).monospacedDigit()
         case .eyebrow:  return .caption.weight(.semibold).lowercaseSmallCaps()
         case .numeral:  return .largeTitle.weight(.bold).monospacedDigit()
-        case .aside:    return .custom(serifFamilyName, size: 15, relativeTo: .footnote).italic()
+        case .aside:    return serif(15, relativeTo: .footnote, boldText: boldText).italic()
+        }
+    }
+
+    /// The serif at `size`, scaling with `textStyle`; its bold face under
+    /// Bold Text.
+    private static func serif(_ size: CGFloat, relativeTo textStyle: Font.TextStyle, boldText: Bool) -> Font {
+        let font = Font.custom(serifFamilyName, size: size, relativeTo: textStyle)
+        return boldText ? font.weight(.bold) : font
+    }
+
+    /// The system Bold Text setting (`legibilityWeight == .bold`), for the
+    /// serif styles, which a static font can't read from the environment.
+    /// Observable: a body that set a serif style draws again when it
+    /// changes. Always off on the Mac, which has no such setting.
+    @Observable
+    final class BoldText {
+        static let shared = BoldText()
+
+        var isOn = PlatformLegibility.isBoldTextOn
+
+        @ObservationIgnored private var observer: NSObjectProtocol?
+
+        private init() {
+            guard let name = PlatformLegibility.boldTextDidChange else { return }
+            observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.isOn = PlatformLegibility.isBoldTextOn
+            }
         }
     }
 

@@ -28,11 +28,10 @@ struct MacLibraryCard: View {
         }
         // A Finished book opens paused at its end, so it promises nothing.
         .accessibilityHint(document.isFinished ? "" : "Opens and starts reading aloud")
+        .accessibilityInputLabels(DocumentCardView.inputLabels(for: document))
         .accessibilityIdentifier("library.card")
         .accessibilityActions {
-            ForEach(DocumentAction.available(for: document), id: \.self) { action in
-                Button(action.title) { perform(action) }
-            }
+            MacDocumentActions(document: document, perform: perform)
         }
         .contextMenu {
             MacDocumentMenu(document: document, onOpen: onOpen, perform: perform)
@@ -68,6 +67,21 @@ struct MacDocumentMenu: View {
         ForEach(DocumentAction.available(for: document), id: \.self) { action in
             if action == .delete { Divider() }
             Button(action.menuTitle, role: action.role) { perform(action) }
+        }
+    }
+}
+
+/// A book's VoiceOver actions, on a grid card and the Continue card alike:
+/// the shared `DocumentAction` list under the iPhone's names (R12g). No
+/// Open: the card's own press opens it. The menu's wording is
+/// `MacDocumentMenu`'s alone (J018).
+struct MacDocumentActions: View {
+    let document: LibraryDocument
+    let perform: (DocumentAction) -> Void
+
+    var body: some View {
+        ForEach(DocumentAction.available(for: document), id: \.self) { action in
+            Button(action.title) { perform(action) }
         }
     }
 }

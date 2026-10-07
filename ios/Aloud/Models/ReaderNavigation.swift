@@ -430,6 +430,22 @@ struct ReaderNavigation {
         return index > 0 ? pageRuns[index - 1].startSentence : nil
     }
 
+    /// What the Chapters (Pages) rotor steps through: the Contents rows, or
+    /// the single pages where Contents groups a page-range PDF's pages into
+    /// rows, so the rotor named Pages moves one page, as Next Page does
+    /// (`stepTarget`), never a whole "Pages 13–24" row (J019).
+    var rotorSteps: [DerivedChapter] { pageRuns.isEmpty ? chapters : pageRuns }
+
+    /// The name of the rotor step holding `sentence`: its Contents row's
+    /// title, or its own page ("Page 13") where rows group pages, as a
+    /// search hit names it. nil only when there are no rows.
+    func rotorStepTitle(containing sentence: Int) -> String? {
+        if let runLabels, let index = Self.run(containing: sentence, in: pageRuns) {
+            return runLabels.pageRangeLabel(pageRuns[index].page)
+        }
+        return chapterIndex(containing: sentence).map { title(ofChapter: $0) }
+    }
+
     /// The first sentence of the step holding `sentence` (`stepTarget`).
     func stepStart(containing sentence: Int) -> Int? {
         if !pageRuns.isEmpty {

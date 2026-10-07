@@ -14,8 +14,19 @@ struct DocumentCardView: View {
             cover
             details
         }
+        // The whole cell is the card: at the accessibility sizes the 64pt
+        // cover left a blank band beside it that a plain button ignored, and
+        // a short title's card sat centred in its column (J014).
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Self.accessibilityLabel(for: document, rate: rate))
+    }
+
+    /// What Voice Control answers to ("Tap The Great Gatsby"): the title
+    /// alone, since the label's time left changes as you listen (J017).
+    static func inputLabels(for document: LibraryDocument) -> [String] {
+        [document.title]
     }
 
     /// "Title, Author, 1 hour 12 minutes left" (R12f, R25): the visible lines

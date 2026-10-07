@@ -14,6 +14,13 @@ enum ContinueListeningCopy {
         return parts.joined(separator: ", ")
     }
 
+    /// What Voice Control answers to: the title, as on a grid card, or the
+    /// eyebrow. The label leads with the eyebrow, so "Tap The Great Gatsby"
+    /// matched nothing (J017).
+    static func inputLabels(title: String) -> [String] {
+        [title, eyebrow]
+    }
+
     /// A stopped reason outranks the natural-voice offer, which outranks the
     /// estimate: the card mirrors the chapter line's precedence. The offer
     /// reads the offer row's line, so after a failed space check the card
@@ -64,8 +71,11 @@ enum ContinueListeningCopy {
 /// surface outside the reader (R18): the card body opens the reader, and its
 /// circle is a real 44pt button that plays and pauses in place. The circle
 /// floats over a placeholder in the card's accessory slot, so no button sits
-/// inside another and VoiceOver reaches each one on its own.
-struct ContinueListeningCard<Actions: View>: View {
+/// inside another and VoiceOver reaches each one on its own. `actions` are
+/// its VoiceOver actions and `menu` its context menu: one list on the
+/// iPhone, and on the Mac the grid cards' VoiceOver list beside the Mac's
+/// menu (J018).
+struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
     private let document: LibraryDocument
     private let rate: Double
     private let playState: PlayButtonState
@@ -78,12 +88,14 @@ struct ContinueListeningCard<Actions: View>: View {
     private let onOpen: () -> Void
     private let onTogglePlayback: () -> Void
     private let actions: Actions
+    private let menu: MenuItems
 
     init(document: LibraryDocument, rate: Double, playState: PlayButtonState, stop: StopReason?,
          offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
          spaceNeeded: Int64 = ModelManager.requiredFreeBytes, opensPlaying: Bool,
          onOpen: @escaping () -> Void,
-         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
+         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions,
+         @ViewBuilder menu: () -> MenuItems) {
         self.document = document
         self.rate = rate
         self.playState = playState
@@ -95,6 +107,7 @@ struct ContinueListeningCard<Actions: View>: View {
         self.onOpen = onOpen
         self.onTogglePlayback = onTogglePlayback
         self.actions = actions()
+        self.menu = menu()
     }
 
     private var isSpeaking: Bool { ContinueListeningCopy.isSpeaking(playState) }
@@ -123,6 +136,7 @@ struct ContinueListeningCard<Actions: View>: View {
                                                                  modelState: modelState,
                                                                  spaceNeeded: spaceNeeded)))
         .accessibilityHint(ContinueListeningCopy.hint(isSpeaking: isSpeaking, opensPlaying: opensPlaying))
+        .accessibilityInputLabels(ContinueListeningCopy.inputLabels(title: document.title))
         .accessibilityActions { actions }
         .accessibilityIdentifier("library.continue")
         .overlayPreferenceValue(CircleSlotKey.self) { slot in
@@ -135,7 +149,7 @@ struct ContinueListeningCard<Actions: View>: View {
         }
         // The hero is lifted out of the grid, so it carries the management
         // affordances its grid card would have given it.
-        .contextMenu { actions }
+        .contextMenu { menu }
     }
 
     private var circle: some View {
@@ -151,6 +165,21 @@ struct ContinueListeningCard<Actions: View>: View {
         .largeContentViewerIfAvailable {
             Label(playState.label, systemImage: playState.glyph.rawValue)
         }
+    }
+}
+
+extension ContinueListeningCard where MenuItems == Actions {
+    /// One list as both the VoiceOver actions and the context menu, as the
+    /// iPhone's grid cards have.
+    init(document: LibraryDocument, rate: Double, playState: PlayButtonState, stop: StopReason?,
+         offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
+         spaceNeeded: Int64 = ModelManager.requiredFreeBytes, opensPlaying: Bool,
+         onOpen: @escaping () -> Void,
+         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
+        self.init(document: document, rate: rate, playState: playState, stop: stop,
+                  offersNaturalVoice: offersNaturalVoice, modelState: modelState,
+                  spaceNeeded: spaceNeeded, opensPlaying: opensPlaying, onOpen: onOpen,
+                  onTogglePlayback: onTogglePlayback, actions: actions, menu: actions)
     }
 }
 

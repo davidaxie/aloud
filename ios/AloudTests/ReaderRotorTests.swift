@@ -98,6 +98,42 @@ final class ReaderRotorTests: XCTestCase {
         XCTAssertNil(target(.chapters, from: 0, forward: true, content: text, navigation: nil))
     }
 
+    /// J019: in a PDF with no outline and more pages than Contents lists,
+    /// the rows group pages ("Pages 13–24"), but the rotor named Pages still
+    /// moves one page a flick, as Next Page does, and names the page it
+    /// lands on.
+    func testPagesRotorStepsOnePageWhereContentsGroupsPages() {
+        // 60 pages of two 41-word sentences: page p starts at sentence 2(p-1).
+        let sentences = (1...60).flatMap { page in [page, page] }.enumerated().map { index, page in
+            Sentence(id: index, text: String(repeating: "Word ", count: 40) + "end.", para: index, page: page)
+        }
+        let pdf = DocContent(title: "Long", pageCount: 60, sentences: sentences, paragraphs: [],
+                             contentHash: "long")
+        let navigation = ReaderNavigation(content: pdf, kind: .pdf)
+        XCTAssertLessThan(navigation.chapters.count, 60, "fixture: Contents groups the pages")
+        XCTAssertEqual(ReaderRotor.chapters.name(listing: navigation, isChapterBook: false), "Pages")
+        func step(from: Int?, anchor: Int = 0, forward: Bool) -> Int? {
+            target(.chapters, from: from, anchor: anchor, forward: forward, content: pdf, navigation: navigation)
+        }
+        var landed: [Int] = []
+        var at = step(from: nil, forward: true)
+        while let here = at {
+            landed.append(here)
+            at = step(from: here, forward: true)
+        }
+        XCTAssertEqual(landed, Array(stride(from: 0, through: 118, by: 2)), "every page, one flick each")
+        XCTAssertEqual(step(from: 27, forward: false), 26, "back to this page's start")
+        XCTAssertEqual(step(from: 26, forward: false), 24, "then the page before")
+        XCTAssertEqual(step(from: nil, anchor: 27, forward: true), 26, "the first flick lands on the playhead's page")
+        XCTAssertEqual(navigation.rotorStepTitle(containing: 27), "Page 14", "the landing names its own page")
+        XCTAssertEqual(navigation.rotorStepTitle(containing: 0), "Page 1")
+        // Ungrouped rows are the steps, named as Contents names them.
+        let text = content(pages: [1, 1, 2, 2, 2, 3])
+        let chaptered = ReaderNavigation(content: text, kind: .text)
+        XCTAssertEqual(chaptered.rotorSteps.map(\.startSentence), chaptered.chapters.map(\.startSentence))
+        XCTAssertEqual(chaptered.rotorStepTitle(containing: 3), chaptered.title(ofChapter: 1))
+    }
+
     // MARK: - Cost
 
     /// Pepys-scale: 1,000 paragraph steps over 60,000 sentences in 20,000

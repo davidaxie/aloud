@@ -80,6 +80,9 @@ struct LibraryView: View {
                     .foregroundStyle(Theme.text)
                     .fixedSize()
                     .accessibilityAddTraits(.isHeader)
+                    // The bar caps text scaling; at accessibility sizes a
+                    // long press shows the title large instead (J020).
+                    .accessibilityShowsLargeContentViewer()
                     .accessibilityAction(.magicTap) { magicTap() }
                     .accessibilityHidden(importer.isImporting)
             }
@@ -258,6 +261,7 @@ struct LibraryView: View {
                 .buttonStyle(.plain)
                 // A Finished book opens paused at its end, so it promises nothing.
                 .accessibilityHint(document.isFinished ? "" : "Opens and starts reading aloud")
+                .accessibilityInputLabels(DocumentCardView.inputLabels(for: document))
                 .accessibilityIdentifier("library.card")
                 .accessibilityActions { documentActions(for: document) }
                 .contextMenu { documentActions(for: document) }

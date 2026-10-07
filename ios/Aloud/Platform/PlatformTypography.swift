@@ -70,6 +70,13 @@ enum PlatformLegibility {
     static func isBold(_ traits: UITraitCollection) -> Bool {
         traits.legibilityWeight == .bold
     }
+
+    /// The Bold Text setting now, for chrome that has no traits to hand
+    /// (`Theme.BoldText`).
+    static var isBoldTextOn: Bool { UIAccessibility.isBoldTextEnabled }
+
+    /// Posted on the default center when Bold Text changes.
+    static let boldTextDidChange: Notification.Name? = UIAccessibility.boldTextStatusDidChangeNotification
 }
 #elseif os(macOS)
 extension PlatformFont {
@@ -138,5 +145,9 @@ enum PlatformLegibility {
     static func isBold(_ appearance: NSAppearance) -> Bool {
         false
     }
+
+    static var isBoldTextOn: Bool { false }
+
+    static let boldTextDidChange: Notification.Name? = nil
 }
 #endif

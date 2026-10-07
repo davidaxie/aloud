@@ -92,4 +92,18 @@ final class ShelfAccessibilityTests: XCTestCase {
         XCTAssertTrue(marked.isFinished)
         XCTAssertFalse(DocumentAction.available(for: marked).contains(.markFinished))
     }
+
+    // MARK: - Voice Control
+
+    /// J017: "Tap The Great Gatsby" reaches the book. Voice Control matched
+    /// the spoken labels, which end in a time left that changes as you
+    /// listen (a grid card) or start with the eyebrow (the Continue card).
+    func testVoiceControlAnswersToTheTitle() {
+        let gatsby = doc(title: "The Great Gatsby", author: "F. Scott Fitzgerald")
+        XCTAssertEqual(DocumentCardView.inputLabels(for: gatsby), ["The Great Gatsby"])
+        XCTAssertEqual(DocumentCardView.inputLabels(for: doc(title: "The Great Gatsby", progress: 0.9)),
+                       ["The Great Gatsby"], "the time left never enters the name")
+        XCTAssertEqual(ContinueListeningCopy.inputLabels(title: gatsby.title),
+                       ["The Great Gatsby", "Continue listening"])
+    }
 }

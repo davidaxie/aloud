@@ -17,6 +17,7 @@ struct AppearanceView: View {
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.legibilityWeight) private var legibilityWeight
 
     @EnvironmentObject private var model: AppModel
 
@@ -85,8 +86,11 @@ struct AppearanceView: View {
                        label: "Smaller text", identifier: "appearance.textSize.smaller")
 
             VStack(spacing: Theme.Space.xxs) {
+                // In the column's own weight: its bold face under Bold Text
+                // (`ReaderPageStyle.serif(size:bold:)`), J027.
                 Text("Aa")
-                    .font(Theme.readerSerif(min(currentPoints, Self.sampleMaxPoints)))
+                    .font(Theme.readerSerif(min(currentPoints, Self.sampleMaxPoints),
+                                            weight: legibilityWeight == .bold ? .bold : .regular))
                     .foregroundStyle(Theme.text)
                     .frame(height: 40)
                     .accessibilityHidden(true)
@@ -234,9 +238,15 @@ struct AppearanceSheet: View {
             // Pinned above the scroll view: the title never scrolls away.
             VStack(spacing: Theme.Space.xs) {
                 SheetGrabber()
+                // Wraps, centered inside the gutters, rather than running to
+                // the sheet's edges at the largest sizes (J029), as the Voice
+                // & speed sheet's title does.
                 Text(AppearanceCopy.title)
                     .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Theme.Space.sheetGutter)
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityIdentifier("appearance.title")
             }

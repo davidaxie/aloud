@@ -285,6 +285,14 @@ final class PlatformSeamTests: XCTestCase {
         XCTAssertFalse(PlatformLegibility.isBold(UITraitCollection(legibilityWeight: .unspecified)))
     }
 
+    /// J027: the serif chrome reads Bold Text where it has no traits, and
+    /// hears it change.
+    func testBoldTextIsTheSystemSetting() {
+        XCTAssertEqual(PlatformLegibility.isBoldTextOn, UIAccessibility.isBoldTextEnabled)
+        XCTAssertEqual(PlatformLegibility.boldTextDidChange, UIAccessibility.boldTextStatusDidChangeNotification)
+        XCTAssertEqual(Theme.BoldText.shared.isOn, UIAccessibility.isBoldTextEnabled)
+    }
+
     // MARK: R4 · accessibility
 
     func testReduceMotionIsTheSystemSetting() {

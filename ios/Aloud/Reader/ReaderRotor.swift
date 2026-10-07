@@ -56,7 +56,8 @@ enum ReaderRotor: CaseIterable {
                         start: { paragraphs[$0].sentenceIDs.lowerBound },
                         isEmpty: { paragraphs[$0].sentenceIDs.isEmpty })
         case .chapters:
-            guard let chapters = navigation?.chapters else { return nil }
+            // One page a step in a PDF whose Contents groups its pages.
+            guard let chapters = navigation?.rotorSteps else { return nil }
             return step(count: chapters.count, from: from, anchor: anchor, forward: forward,
                         start: { chapters[$0].startSentence }, isEmpty: { chapters[$0].sentenceCount == 0 })
         }

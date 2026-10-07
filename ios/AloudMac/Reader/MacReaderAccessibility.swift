@@ -159,11 +159,11 @@ final class MacReaderAccessibility {
         return content.sentences.indices.contains(id) ? content.sentences[id].text : ""
     }
 
-    /// The Contents row's name for the chapter holding sentence `id`: its
-    /// title in a text book, "Page 12" (or "Pages 12–14") in a PDF.
+    /// The name of the rotor step holding sentence `id`: its title in a text
+    /// book, "Page 12" (or "Pages 12–14") in a PDF, and its own page where
+    /// Contents groups pages, since the rotor steps one page there (J019).
     private static func chapterName(_ id: Int, navigation: ReaderNavigation?) -> String? {
-        guard let navigation, let index = navigation.chapterIndex(containing: id) else { return nil }
-        return navigation.title(ofChapter: index)
+        navigation?.rotorStepTitle(containing: id)
     }
 
     // MARK: VoiceOver's cursor

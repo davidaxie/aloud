@@ -91,6 +91,62 @@ final class DocumentCardLayoutTests: XCTestCase {
         }
     }
 
+    /// J014: at the accessibility sizes the card spans its one column, so
+    /// the band beside the 64pt cover is part of the tap target (with the
+    /// card's content shape) and a short title's card starts at the
+    /// column's leading edge instead of sitting centred in it.
+    func testTheCardFillsItsColumnAtAccessibilitySizes() {
+        let width = Self.oneColumn
+        for title in ["Emma", Self.title] {
+            for size in [DynamicTypeSize.accessibility1, .accessibility3, .accessibility5] {
+                let card = DocumentCardView(document: doc(title: title, author: "Jane Austen"), rate: 1)
+                    .environment(\.dynamicTypeSize, size)
+                let fitted = UIHostingController(rootView: card)
+                    .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+                XCTAssertEqual(fitted.width, width, accuracy: 0.5, "\(size) '\(title)': the card should fill the column")
+            }
+        }
+    }
+
+    /// The width `line` sets in `font`, on one line.
+    private func lineWidth(_ line: String, _ font: Font) -> CGFloat {
+        UIHostingController(rootView: Text(line).font(font).fixedSize())
+            .sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
+            .width
+    }
+
+    /// J027: under Bold Text the serif styles (the card's title among them)
+    /// take the family's bold face, as SwiftUI bolds the sans styles itself
+    /// and the column swaps its own face; nothing else changes. The styles
+    /// views set follow the system setting.
+    func testTheSerifStylesTakeTheirBoldFaceUnderBoldText() {
+        let line = "Hamburgefonstiv Library"
+        XCTAssertEqual(Theme.TypeStyle.allCases.filter(\.isSerif), [.display, .title, .headline, .aside])
+        for style in Theme.TypeStyle.allCases {
+            let regular = Theme.font(style, boldText: false), bold = Theme.font(style, boldText: true)
+            guard style.isSerif else {
+                XCTAssertEqual(bold, regular, "\(style): SwiftUI bolds a system style itself")
+                continue
+            }
+            if style == .headline {
+                // Its semibold is already Iowan's bold face.
+                XCTAssertGreaterThanOrEqual(lineWidth(line, bold), lineWidth(line, regular) - 0.5)
+            } else {
+                XCTAssertGreaterThan(lineWidth(line, bold), lineWidth(line, regular) + 1,
+                                     "\(style) should set in the bold face under Bold Text")
+            }
+        }
+        let saved = Theme.BoldText.shared.isOn
+        defer { Theme.BoldText.shared.isOn = saved }
+        for isOn in [false, true] {
+            Theme.BoldText.shared.isOn = isOn
+            for style in Theme.TypeStyle.allCases {
+                XCTAssertEqual(Theme.font(style), Theme.font(style, boldText: style.isSerif && isOn),
+                               "\(style) with Bold Text \(isOn ? "on" : "off")")
+            }
+        }
+    }
+
     func testTheTwoColumnCardKeepsItsLimits() {
         let width = Self.twoColumns
         let title = Theme.font(.headline)
