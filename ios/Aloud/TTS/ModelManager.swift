@@ -170,6 +170,13 @@ final class ModelManager: ObservableObject {
         max(0, requiredFreeBytes - max(0, stagedBytes))
     }
 
+    /// What a download fetches with `stagedBytes` already on disk: staged
+    /// files are only hashed. The metered prompt names it, and with nothing
+    /// left there is nothing to ask about (J007).
+    nonisolated static func bytesLeftToFetch(stagedBytes: Int64 = 0) -> Int64 {
+        max(0, totalExpectedBytes - max(0, stagedBytes))
+    }
+
     /// The pinned files staged in `staging` at their exact size: what an
     /// earlier attempt left for the next one to hash rather than fetch.
     nonisolated static func stagedBytes(in staging: URL) -> Int64 {
@@ -370,8 +377,11 @@ final class ModelManager: ObservableObject {
     }
 
     /// R5's prompt and its message for the path the download would take:
-    /// "on cellular?" only over cellular.
-    var cellularPrompt: String { NaturalVoiceCopy.cellularPrompt(onCellular: pathSource.usesCellular) }
+    /// "on cellular?" only over cellular, naming what is left to fetch.
+    var cellularPrompt: String {
+        NaturalVoiceCopy.cellularPrompt(onCellular: pathSource.usesCellular,
+                                        size: Self.formattedSize(bytesLeftToFetch))
+    }
     var cellularPromptMessage: String { NaturalVoiceCopy.cellularPromptMessage(onCellular: pathSource.usesCellular) }
 
     /// A Wi-Fi-only run waiting on a costly network that could carry it:
@@ -383,6 +393,20 @@ final class ModelManager: ObservableObject {
     }
 
     var hasActiveTask: Bool { activeTask != nil }
+
+    /// What Download would still fetch: in a run, what its progress hasn't
+    /// reached; before one, what no earlier attempt staged.
+    private var bytesLeftToFetch: Int64 {
+        guard let progress = inFlightProgress else { return Self.bytesLeftToFetch(stagedBytes: stagedBytes) }
+        let total = Double(Self.totalExpectedBytes)
+        return max(0, Int64((total - total * min(max(progress, 0), 1)).rounded()))
+    }
+
+    /// A costly path asks first, unless every file is staged and the run
+    /// would only hash them (as it does offline, unasked).
+    private var needsMeteredConfirmation: Bool {
+        pathSource.isExpensiveOrConstrained && bytesLeftToFetch > 0
+    }
 
     /// Says what the user didn't ask for: entering `.waitingForWiFi`, and
     /// every failure. Tests replace it.
@@ -695,7 +719,7 @@ final class ModelManager: ObservableObject {
             awaitFirstPath(asker: asker)
             return .awaitingNetworkPath
         }
-        if pathSource.isExpensiveOrConstrained { return .needsCellularConfirmation }
+        if needsMeteredConfirmation { return .needsCellularConfirmation }
         startDownload(allowingCellular: false)
         return .started
     }
@@ -864,8 +888,10 @@ final class ModelManager: ObservableObject {
             resumed = false
         }
         // The task carries its file's name, so a relaunch (or a callback
-        // for a task this run never registered) knows what it holds.
-        task.taskDescription = file.name
+        // for a task this run never registered) knows what it holds, and
+        // whether it resumed a partial file, so a relaunched run that adopts
+        // it still restarts the file once when its stale link fails (R21).
+        task.taskDescription = Self.taskDescription(for: file.name, resumedFromData: resumed)
         return (task, resumed)
     }
 
@@ -1082,8 +1108,8 @@ final class ModelManager: ObservableObject {
             let live = tasks
                 .compactMap { $0 as? URLSessionDownloadTask }
                 .filter { $0.state == .running || $0.state == .suspended }
-            let task = live.first { $0.taskDescription == fileName }
-            let later = live.filter { laterNames.contains($0.taskDescription ?? "") }
+            let task = live.first { Self.modelFileName($0.taskDescription) == fileName }
+            let later = live.filter { Self.modelFileName($0.taskDescription).map(laterNames.contains) ?? false }
             Task { @MainActor [weak self] in
                 self?.finishReattach(adopting: task, queued: later, fileIndex: fileIndex)
             }
@@ -1100,17 +1126,17 @@ final class ModelManager: ObservableObject {
         }
         // Later files' tasks the run queued before the relaunch.
         for later in queued {
-            guard let name = later.taskDescription, queuedTasks[name] == nil else {
+            guard let name = Self.modelFileName(later.taskDescription), queuedTasks[name] == nil else {
                 cancelKeepingResumeData(later)
                 continue
             }
-            queuedTasks[name] = (later, false)
+            queuedTasks[name] = (later, Self.taskWasResumed(later.taskDescription))
         }
         guard let task else {
             startTask(forFileAt: fileIndex)
             return
         }
-        track(task)
+        track(task, resumedFromData: Self.taskWasResumed(task.taskDescription))
         let expected = Self.remoteFiles[fileIndex].expectedBytes
         publishProgress(bytesInFlight: min(task.countOfBytesReceived, expected))
         task.resume()
@@ -1190,7 +1216,7 @@ final class ModelManager: ObservableObject {
         case .downloading, .waitingForWiFi, .installed: return
         case .notInstalled, .failed: break
         }
-        if pathSource.isExpensiveOrConstrained {
+        if needsMeteredConfirmation {
             cellularQuestion = CellularQuestion(asker: request.asker)
         } else {
             startDownload(allowingCellular: false)
@@ -1218,10 +1244,27 @@ final class ModelManager: ObservableObject {
         staging.appendingPathComponent(fileName + ".resume")
     }
 
+    /// Marks the description of a task made from resume data. It lives on
+    /// the task, so it outlasts a relaunch that adopts the task (R21).
+    nonisolated private static let resumedMark = "#resumed"
+
+    /// A task's description: its file's name, marked when the task resumed
+    /// a partial file. An unmarked one reads as a fresh task, as before.
+    nonisolated static func taskDescription(for fileName: String, resumedFromData: Bool) -> String {
+        resumedFromData ? fileName + resumedMark : fileName
+    }
+
+    /// Whether a model file's task was made from resume data.
+    nonisolated static func taskWasResumed(_ description: String?) -> Bool {
+        guard let description, description.hasSuffix(resumedMark) else { return false }
+        return modelFileName(description) != nil
+    }
+
     /// The model file a task description names; nil for anything else, so
     /// no callback can write outside the two known names.
-    nonisolated fileprivate static func modelFileName(_ description: String?) -> String? {
-        remoteFiles.first { $0.name == description }?.name
+    nonisolated static func modelFileName(_ description: String?) -> String? {
+        let name = description.map { $0.hasSuffix(resumedMark) ? String($0.dropLast(resumedMark.count)) : $0 }
+        return remoteFiles.first { $0.name == name }?.name
     }
 
     /// Never creates the staging directory: after Remove, a late callback

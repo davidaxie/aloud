@@ -180,8 +180,19 @@ def lint(books: list[dict]) -> list[str]:
     lines: list[str] = []
     for book in books:
         book_id = book.get("gutenberg_id")
-        lines += [f"#{book_id} title: {p}" for p in title_violations(book.get("title", ""))]
-        lines += [f"#{book_id} author: {p}" for p in author_violations(book.get("author", ""))]
+        title, author = book.get("title", ""), book.get("author", "")
+        # A null or numeric value is reported, never a TypeError: the sync
+        # reads exit 1 as "lint violations only" and still ships the catalog.
+        if not isinstance(title, str):
+            lines.append(f"#{book_id} title: is not a string: {title!r}")
+        elif not title.strip():
+            lines.append(f"#{book_id} title: is empty")
+        else:
+            lines += [f"#{book_id} title: {p}" for p in title_violations(title)]
+        if not isinstance(author, str):
+            lines.append(f"#{book_id} author: is not a string: {author!r}")
+        else:
+            lines += [f"#{book_id} author: {p}" for p in author_violations(author)]
     return lines
 
 
@@ -192,6 +203,14 @@ def load_overrides(path: Path = OVERRIDES_PATH) -> dict:
         return {}
     if not isinstance(overrides, dict):
         raise ValueError(f"{path} must hold an object keyed by Gutenberg id")
+    # An override wins verbatim, so a bad one must stop the build before the
+    # sync touches the bundle (exit 2), not ship a null or blank row.
+    for book_id, override in overrides.items():
+        if not isinstance(override, dict):
+            raise ValueError(f"{path}: #{book_id} must be an object")
+        for key in ("title", "author"):
+            if key in override and (not isinstance(override[key], str) or not override[key].strip()):
+                raise ValueError(f"{path}: #{book_id} {key} must be a non-empty string")
     return overrides
 
 

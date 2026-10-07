@@ -33,14 +33,17 @@ enum DeviceCopy {
     /// the gesture that retries it.
     static let playbackFailed = "Playback stopped · tap to try again"
     /// The confirmation before the natural voice downloads on a costly
-    /// network.
-    static var meteredPrompt: String { "Download \(ModelManager.downloadSizeText) on cellular?" }
+    /// network, naming what is left to fetch: the whole download, or less
+    /// after an attempt that staged a file.
+    static var meteredPrompt: String { meteredPrompt(size: ModelManager.downloadSizeText) }
+    static func meteredPrompt(size: String) -> String { "Download \(size) on cellular?" }
     /// A line under that prompt naming the costly network. None on the
     /// iPhone, where "cellular" already says it.
     static let meteredDetail: String? = nil
     /// The same question on a costly path that isn't cellular: a Wi-Fi
     /// with Low Data Mode on, or another phone's Personal Hotspot.
-    static var meteredNetworkPrompt: String { "Download \(ModelManager.downloadSizeText) on a metered connection?" }
+    static var meteredNetworkPrompt: String { meteredNetworkPrompt(size: ModelManager.downloadSizeText) }
+    static func meteredNetworkPrompt(size: String) -> String { "Download \(size) on a metered connection?" }
     /// Under that prompt, what makes the Wi-Fi costly.
     static let meteredNetworkDetail: String? = "This Wi-Fi is a Personal Hotspot or uses Low Data Mode."
     /// The download waits for a network that costs nothing.
@@ -63,12 +66,14 @@ enum DeviceCopy {
     static let closedUnexpectedly = "Stopped when Aloud quit unexpectedly"
     /// The Mac's line carries no gesture: its Try again button retries.
     static let playbackFailed = "Playback stopped"
-    static var meteredPrompt: String { "Download \(ModelManager.downloadSizeText) on a metered connection?" }
+    static var meteredPrompt: String { meteredPrompt(size: ModelManager.downloadSizeText) }
+    static func meteredPrompt(size: String) -> String { "Download \(size) on a metered connection?" }
     /// A Mac has no cellular radio: the costly path is a phone's hotspot or
     /// a network the listener marked Low Data.
     static let meteredDetail: String? = "Your Mac is using a Personal Hotspot or Low Data Mode."
     /// Every costly path a Mac has is one of those: the same question.
     static var meteredNetworkPrompt: String { meteredPrompt }
+    static func meteredNetworkPrompt(size: String) -> String { meteredPrompt(size: size) }
     static let meteredNetworkDetail: String? = meteredDetail
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi or Ethernet"
     /// "353 MB on this Mac · works offline" (M17).

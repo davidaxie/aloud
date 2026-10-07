@@ -20,6 +20,20 @@ final class NaturalVoiceCopyTests: XCTestCase {
                        "Downloads once from Hugging Face. Nothing about you is sent.")
     }
 
+    /// J007: after an attempt staged a file, the prompt names what is left.
+    func testTheCellularPromptNamesTheSizeLeft() {
+        #if os(iOS)
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt(onCellular: true, size: "28 MB"), "Download 28 MB on cellular?")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt(onCellular: true, size: "28 MB"),
+                       "Download 28 MB on a metered connection?")
+        #endif
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt(onCellular: false, size: "28 MB"),
+                       "Download 28 MB on a metered connection?")
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt(onCellular: true, size: ModelManager.downloadSizeText),
+                       NaturalVoiceCopy.cellularPrompt)
+    }
+
     /// H006: "on cellular?" only over cellular. A costly Wi-Fi (Low Data
     /// Mode, another phone's Personal Hotspot) is asked about as metered,
     /// the message names it, and its wait never says Wi-Fi is missing.

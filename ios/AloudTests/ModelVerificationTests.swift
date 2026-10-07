@@ -484,6 +484,37 @@ final class ModelVerificationTests: XCTestCase {
         await drain(manager)
     }
 
+    /// J007: staged files are only hashed, so with every file staged a
+    /// costly path has nothing to ask about: the run hashes and installs,
+    /// as it does offline.
+    func testEveryFileStagedInstallsOnACostlyPathUnasked() async throws {
+        try writePinnedSizes(in: staging)
+        let hasher = CountingHasher()
+        let manager = makeManager(hasher, path: FixedNetworkPath(isExpensiveOrConstrained: true))
+
+        XCTAssertEqual(manager.requestDownload(), .started, "Nothing to fetch, nothing to ask")
+        XCTAssertNil(manager.cellularQuestion)
+        await drain(manager)
+        XCTAssertEqual(manager.state, .installed)
+        XCTAssertEqual(Set(hasher.reads), Set(ModelManager.remoteFiles.map(\.name)))
+    }
+
+    /// J007: with model.onnx staged, the prompt names the voices.bin still
+    /// to fetch (28 MB), not the whole download (353 MB).
+    func testTheMeteredPromptNamesOnlyWhatIsLeft() throws {
+        try writeSparse(staging.appendingPathComponent(model.name), size: model.expectedBytes)
+        let left = ModelManager.formattedSize(voices.expectedBytes)
+        for usesCellular in [true, false] {
+            let manager = makeManager(CountingHasher(), path: FixedNetworkPath(isExpensiveOrConstrained: true,
+                                                                              usesCellular: usesCellular))
+            XCTAssertEqual(manager.requestDownload(), .needsCellularConfirmation)
+            XCTAssertEqual(manager.cellularPrompt, NaturalVoiceCopy.cellularPrompt(onCellular: usesCellular, size: left))
+            XCTAssertTrue(manager.cellularPrompt.contains(left), manager.cellularPrompt)
+            XCTAssertFalse(manager.cellularPrompt.contains(ModelManager.downloadSizeText), manager.cellularPrompt)
+            XCTAssertFalse(exists(staging.appendingPathComponent(voices.name)), "Asking sends nothing")
+        }
+    }
+
     /// H042: installed files found damaged stay on disk, and Settings' card
     /// can remove them without starting a download: nothing is staged, so
     /// the staged size alone hid its Remove.

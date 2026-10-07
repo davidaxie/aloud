@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -142,6 +143,19 @@ class SyncBookshelfTests(unittest.TestCase):
     def test_overrides_that_are_not_objects_keep_the_bundle(self):
         self.write_catalog(self.src, [book(900003, "Sanditon", "3-sanditon.txt")])
         self.assertBundleKept(self.sync_with_overrides('{"900003": "Sanditon"}'), "skipping sync")
+
+    def test_override_values_that_are_not_titles_keep_the_bundle(self):
+        """A null or numeric override crashed the lint (exit 1, read as lint
+        violations, so the catalog shipped); a blank one shipped a blank row."""
+        self.write_catalog(self.src, [book(900003, "Sanditon", "3-sanditon.txt")])
+        for value in ("null", "1984", '""', '"   "'):
+            for key in ("title", "author"):
+                with self.subTest(key=key, value=value):
+                    tree = self.src.parent / "repo"
+                    if tree.exists():
+                        shutil.rmtree(tree)
+                    result = self.sync_with_overrides(f'{{"900003": {{"{key}": {value}}}}}')
+                    self.assertBundleKept(result, f"{key} must be a non-empty string")
 
     def test_a_catalog_that_fails_the_lint_still_lands_whole(self):
         """The lint fails the build as before, with the files and catalog in step."""

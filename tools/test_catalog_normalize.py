@@ -166,6 +166,43 @@ class LintTests(unittest.TestCase):
         self.assertEqual(cn.title_violations("Love and Freindship [sic]"), [])
         self.assertEqual(cn.title_violations("Notes, Arguments, &c."), [])
 
+    def test_null_numeric_and_blank_values_are_flagged_not_raised(self):
+        """The sync reads a crash's exit 1 as "lint violations only" and ships
+        the catalog, so a bad value must be a lint line, never a TypeError."""
+        books = [{"gutenberg_id": 1, "title": None, "author": "Jane Austen"},
+                 {"gutenberg_id": 2, "title": 1984, "author": None},
+                 {"gutenberg_id": 3, "title": "", "author": "Jane Austen"},
+                 {"gutenberg_id": 4, "title": "   ", "author": "   "}]
+        problems = cn.lint(books)
+        self.assertIn("#1 title: is not a string: None", problems)
+        self.assertIn("#2 title: is not a string: 1984", problems)
+        self.assertIn("#2 author: is not a string: None", problems)
+        self.assertIn("#3 title: is empty", problems)
+        self.assertIn("#4 title: is empty", problems)
+        self.assertTrue(any(p.startswith("#4 author:") for p in problems))
+
+
+class OverridesTests(unittest.TestCase):
+    def load(self, text: str) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "catalog_overrides.json"
+            path.write_text(text, encoding="utf-8")
+            return cn.load_overrides(path)
+
+    def test_the_shipped_overrides_load(self):
+        self.assertTrue(cn.load_overrides())
+
+    def test_good_overrides_load(self):
+        self.assertEqual(self.load('{"2": {"title": "Emma", "author": "Jane Austen"}}'),
+                         {"2": {"title": "Emma", "author": "Jane Austen"}})
+
+    def test_values_that_are_not_non_empty_strings_are_errors(self):
+        for text in ('{"2": {"title": null}}', '{"2": {"title": 1984}}', '{"2": {"title": ""}}',
+                     '{"2": {"title": "   "}}', '{"2": {"author": null}}', '{"2": {"author": ""}}',
+                     '{"2": "Emma"}', '{"2": null}'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.load(text)
+
 
 class CLITests(unittest.TestCase):
     def setUp(self):

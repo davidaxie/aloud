@@ -242,8 +242,9 @@ enum NaturalVoiceCopy {
     /// The prompt for the path the download would take: "on cellular?"
     /// only over cellular. A costly Wi-Fi (Low Data Mode, another phone's
     /// Personal Hotspot) is asked about as metered, never as cellular.
-    static func cellularPrompt(onCellular: Bool) -> String {
-        onCellular ? DeviceCopy.meteredPrompt : DeviceCopy.meteredNetworkPrompt
+    /// `size` is what is left to fetch (J007): less after a staged file.
+    static func cellularPrompt(onCellular: Bool, size: String = ModelManager.downloadSizeText) -> String {
+        onCellular ? DeviceCopy.meteredPrompt(size: size) : DeviceCopy.meteredNetworkPrompt(size: size)
     }
     static let privacyLine = "Downloads once from Hugging Face. Nothing about you is sent."
     /// The Mac card's promise under the offer (M17).

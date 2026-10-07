@@ -109,6 +109,47 @@ final class ModelDownloadStateTests: XCTestCase {
                                                         leftResumeData: false))
     }
 
+    /// J005: whether a task resumed a partial file rides on the task, so a
+    /// relaunched run that adopts it still starts the file once more from
+    /// the pinned URL when the stale link answers 403.
+    func testAResumedTaskStillStartsOverAfterARelaunch() {
+        for file in ModelManager.remoteFiles {
+            let resumed = ModelManager.taskDescription(for: file.name, resumedFromData: true)
+            XCTAssertEqual(ModelManager.modelFileName(resumed), file.name)
+            XCTAssertTrue(ModelManager.taskWasResumed(resumed))
+            XCTAssertTrue(ModelManager.restartsFromScratch(after: .interrupted,
+                                                           resumedFromData: ModelManager.taskWasResumed(resumed),
+                                                           leftResumeData: false))
+            // A fresh task, or one an earlier build made, reads as before.
+            let fresh = ModelManager.taskDescription(for: file.name, resumedFromData: false)
+            XCTAssertEqual(fresh, file.name)
+            XCTAssertEqual(ModelManager.modelFileName(fresh), file.name)
+            XCTAssertFalse(ModelManager.taskWasResumed(fresh))
+        }
+        // Still only the two known names.
+        XCTAssertNil(ModelManager.modelFileName("../model.onnx#resumed"))
+        XCTAssertNil(ModelManager.modelFileName("#resumed"))
+        XCTAssertFalse(ModelManager.taskWasResumed("notes.txt#resumed"))
+        XCTAssertFalse(ModelManager.taskWasResumed(nil))
+    }
+
+    /// J005: the relaunch adopts the current file's task and the queued
+    /// ones with the bit their descriptions carry, never as fresh tasks.
+    /// A source pin: no test host can hand a relaunch a background task.
+    func testTheRelaunchAdoptsTasksWithTheirResumedBit() throws {
+        let source = try XCTUnwrap(SourceTree.sources(only: ["TTS/ModelManager.swift"])["TTS/ModelManager.swift"])
+        let start = try XCTUnwrap(source.range(of: "private func finishReattach("))
+        let end = try XCTUnwrap(source.range(of: "private func wireCoordinator(",
+                                             range: start.upperBound..<source.endIndex))
+        let reattach = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(reattach.contains("track(task)"), "Adopted as fresh, it never starts over")
+        XCTAssertFalse(reattach.contains("(later, false)"), "Queued tasks keep their bit too")
+        XCTAssertTrue(reattach.contains("track(task, resumedFromData: Self.taskWasResumed(task.taskDescription))"))
+        XCTAssertTrue(reattach.contains("Self.taskWasResumed(later.taskDescription)"))
+        XCTAssertTrue(source.contains("task.taskDescription = Self.taskDescription(for: file.name, resumedFromData: resumed)"),
+                      "makeTask marks the tasks it resumes")
+    }
+
     func testFixedPathWiFiFollowsTheCostUnlessGiven() {
         XCTAssertFalse(FixedNetworkPath(isExpensiveOrConstrained: true).allowsWiFiOnlyTransfer)
         XCTAssertTrue(FixedNetworkPath(isExpensiveOrConstrained: false).allowsWiFiOnlyTransfer)
