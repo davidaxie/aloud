@@ -1,11 +1,12 @@
 // The service worker's activation paths: a selection made inside a subframe,
 // from the context menu (F070) or the shortcut (G034), and keyboard shortcuts
-// that are real rather than assumed (F012).
+// that are real rather than assumed (F012); and a default backend URL on the
+// port the backend serves on by default.
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { load, SRC } from './harness.mjs'
+import { load, ROOT, SRC } from './harness.mjs'
 
 function chromeMock() {
   const on = {}
@@ -148,4 +149,18 @@ test('G034: next and previous never go looking for a selection', async () => {
   await settle()
   assert.equal(calls.length, 0)
   assert.equal(mock.sent.find((s) => s.msg.kind === 'command').msg.action, 'next')
+})
+
+test('the default backend URL dials the port the backend serves on by default', async () => {
+  const { DEFAULT_PREFS } = await load('shared/prefs.ts')
+  const nativeApp = await readFile(join(ROOT, '..', 'backend', 'native_app.py'), 'utf8')
+  const backendPort = nativeApp.match(/^DEFAULT_PORT = (\d+)$/m)?.[1]
+  assert.ok(backendPort, 'DEFAULT_PORT not found in backend/native_app.py')
+  const url = new URL(DEFAULT_PREFS.backendUrl)
+  assert.equal(url.port, backendPort)
+  assert.ok(['localhost', '127.0.0.1'].includes(url.hostname), url.hostname)
+  const popup = await readFile(join(SRC, 'popup', 'popup.html'), 'utf8')
+  assert.match(popup, new RegExp(`placeholder="${DEFAULT_PREFS.backendUrl}"`))
+  const manifest = JSON.parse(await readFile(join(SRC, 'manifest.json'), 'utf8'))
+  assert.ok(manifest.host_permissions.includes(`http://${url.hostname}/*`), 'no host permission for the default backend')
 })

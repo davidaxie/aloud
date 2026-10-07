@@ -22,6 +22,12 @@ export const DEFAULT_PREFS: Prefs = {
   autoScroll: true,
   clickToJump: true,
   highlightWords: true,
+  // The backend's default port: DEFAULT_PORT in backend/native_app.py, which
+  // run.py and native_app.py both serve on unless ALOUD_PORT says otherwise
+  // (native_app.py moves to 8001–8010, or any free port, only when 8000 is
+  // taken). A backend on another port is set in the popup's Backend field; the
+  // manifest's localhost host permissions cover any port. The popup's
+  // placeholder shows this value, and a test checks all three agree.
   backendUrl: 'http://localhost:8000',
 }
 

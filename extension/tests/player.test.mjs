@@ -2,7 +2,8 @@
 // down or failing (F064), and an extension reloaded under the page (F068,
 // G019); sentences with nothing to say or that the engine refuses (G017), and
 // failures on either side of a move the user made (G018); Play at the end
-// listening again (H036), and a far seek not stuck behind old look-ahead (H038).
+// listening again (H036), and a far seek or a quick run of steps not stuck
+// behind old look-ahead (H038, H031).
 // Silent throughout: Audio is a fake and the worker is a scripted mock.
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
@@ -400,4 +401,36 @@ test('H038: a far seek aborts the old look-ahead and fetches ahead of the new pl
   )
   const aborted = current.w.calls.filter((c) => c.kind === 'abort').length
   assert.ok(aborted >= before, `only ${aborted} of ${before} stale requests aborted`)
+})
+
+const LONG = Array.from({ length: 40 }, (_, i) => `Sentence number ${i} of a long article goes here.`)
+
+/** Sentence numbers whose synthesis requests were aborted, without repeats. */
+function abortedSentences(w) {
+  const textById = new Map(w.calls.filter((c) => c.kind === 'synth').map((c) => [c.id, c.text]))
+  const ids = w.calls.filter((c) => c.kind === 'abort').map((c) => LONG.indexOf(textById.get(c.id)))
+  return [...new Set(ids)].sort((a, b) => a - b)
+}
+
+test('H031: a step while playing drops the requests for the sentences it leaves', async () => {
+  current = rig(HELD, { sentences: LONG }) // the backend sits on everything
+  current.player.play()
+  await until(() => current.player.status === 'buffering', 3000, 'buffering sentence 0')
+  for (let k = 0; k < 4; k++) current.player.next()
+  assert.equal(current.player.currentIndex, 4)
+  // Sentence 4 must not wait behind 0–3 in the backend's queues.
+  await until(() => abortedSentences(current.w).length >= 4, 3000, 'requests for 0–3 aborted')
+  await new Promise((r) => setTimeout(r, 20))
+  assert.deepEqual(abortedSentences(current.w), [0, 1, 2, 3])
+})
+
+test('H031: a step while paused drops the requests for the sentence it leaves', async () => {
+  current = rig(HELD, { sentences: LONG })
+  for (let k = 0; k < 5; k++) current.player.next() // each cues its sentence at `now`
+  assert.equal(current.player.currentIndex, 5)
+  assert.equal(current.player.status, 'ready')
+  await until(() => abortedSentences(current.w).length >= 4, 3000, 'requests for 1–4 aborted')
+  await new Promise((r) => setTimeout(r, 20))
+  // The landing sentence and its look-ahead stay in flight.
+  assert.deepEqual(abortedSentences(current.w), [1, 2, 3, 4])
 })

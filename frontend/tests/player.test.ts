@@ -320,3 +320,28 @@ test('H031: a step while paused drops the requests for the sentence it leaves', 
     player.stop()
   }
 })
+
+test('H036: Play at the end listens again from the first sentence, not the last one again', async () => {
+  try {
+    player.play()
+    for (let i = 0; i < doc.sentences.length; i++) {
+      await settle()
+      assert.equal(state().currentSentence, i)
+      assert.equal(state().status, 'playing')
+      // A finished clip reports ended, which turns the resume-in-place check off.
+      audioEl!.ended = i === doc.sentences.length - 1
+      audioEl!.dispatchEvent(new Event('ended'))
+    }
+    assert.equal(state().status, 'ended')
+    assert.equal(state().currentSentence, 3)
+
+    player.toggle() // the Play button, Space
+    assert.equal(state().currentSentence, 0, 'replayed only the last sentence')
+    await settle()
+    assert.equal(state().currentSentence, 0)
+    assert.equal(state().status, 'playing')
+  } finally {
+    audioEl!.ended = false
+    player.stop()
+  }
+})

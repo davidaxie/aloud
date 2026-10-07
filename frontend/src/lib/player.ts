@@ -619,6 +619,14 @@ class PlayerImpl implements Player {
 
   play() {
     if (!this.doc) return
+    // Play at the end listens again from the first sentence, as the apps'
+    // "Listen again" and the extension do — not the last sentence once more,
+    // which the resume check below would fall through to (H036).
+    if (store().status === 'ended') {
+      this.consecutiveSkips = 0
+      this.playIndex(0)
+      return
+    }
     const audio = this.ensureAudio()
 
     // Resume-in-place: if we're merely paused mid-sentence and the current

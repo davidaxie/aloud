@@ -941,6 +941,9 @@ export class AloudPlayer {
       this.wantPlaying || this.currentStatus === 'playing' || this.currentStatus === 'buffering'
 
     this.audio?.pause()
+    // The sentence left behind, and any look-ahead past the new window, must not
+    // hold the backend's queues ahead of the one landed on (H031).
+    this.dropStaleLookahead(i)
 
     if (wasPlaying) {
       void this.playIndex(i)
@@ -967,11 +970,15 @@ export class AloudPlayer {
   }
 
   /**
-   * Abort look-ahead still in flight for sentences outside the window fill()
-   * would keep ahead of `from` (H038). After a far seek those requests would
-   * hold the whole MAX_PREFETCH_INFLIGHT budget, and the backend's FIFO
+   * Abort synthesis still in flight for sentences outside the window fill()
+   * would keep ahead of `from` (H038, H031). After a far seek those requests
+   * would hold the whole MAX_PREFETCH_INFLIGHT budget, and the backend's FIFO
    * prefetch lane, so nothing near the new playhead was fetched until the
-   * backend had finished sentences nobody will hear.
+   * backend had finished sentences nobody will hear. A `now` request counts
+   * too: quick steps (jump) cue each sentence passed over at `now`, and the
+   * sentence landed on would wait behind them all. Finished clips stay cached.
+   * Called on the user's moves only: a natural advance keeps what fill() asked
+   * for, even where measured durations have since moved the window's end.
    */
   private dropStaleLookahead(from: number) {
     const targetSource = BUFFER_TARGET_SECONDS * Math.max(0.1, this.hooks.prefs().rate)
@@ -984,7 +991,7 @@ export class AloudPlayer {
       scheduled += this.durationOf(last)
     }
     for (const [key, entry] of [...this.cache]) {
-      if (entry.url || entry.priority !== PREFETCH) continue
+      if (entry.url) continue
       if (entry.sentenceId >= from && entry.sentenceId <= last) continue
       this.forget(key)
     }
