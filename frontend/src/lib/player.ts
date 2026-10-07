@@ -31,7 +31,7 @@
 import { synthesize, SynthesisError } from './api'
 import { spokenText, tokenizeSentence } from './chunker'
 import { useStore } from '../store'
-import type { Doc, SynthesisPriority, WordToken } from '../types'
+import type { Doc, PlayerStatus, SynthesisPriority, WordToken } from '../types'
 
 export interface Player {
   /** Attach a freshly parsed document and reset playback to its start. */
@@ -99,6 +99,21 @@ function errorName(err: unknown): string | undefined {
 
 function isAbortError(err: unknown): boolean {
   return errorName(err) === 'AbortError'
+}
+
+/** A sentence is being read, or is on its way to being read. */
+function isRunning(status: PlayerStatus): boolean {
+  return status === 'playing' || status === 'buffering'
+}
+
+/**
+ * What the page tells the browser's media session about playback (K013). A
+ * sentence still buffering counts as playing: the element is paused then, and
+ * a browser left to judge by the element sends the play action for the ⏯ key.
+ */
+export function mediaPlaybackState(status: PlayerStatus): MediaSessionPlaybackState {
+  if (isRunning(status)) return 'playing'
+  return status === 'idle' ? 'none' : 'paused'
 }
 
 class PlayerImpl implements Player {
@@ -179,7 +194,14 @@ class PlayerImpl implements Player {
       run()
     }
     const handlers: Array<[MediaSessionAction, () => void]> = [
-      ['play', remote(() => this.play())],
+      // A play action while a sentence plays or buffers has nothing to do, as in
+      // the apps: play() would ask for the buffering sentence again (K013).
+      [
+        'play',
+        remote(() => {
+          if (!isRunning(store().status)) this.play()
+        }),
+      ],
       ['pause', remote(() => this.pause())],
       ['nexttrack', remote(() => this.next())],
       ['previoustrack', remote(() => this.prev())],
@@ -191,6 +213,19 @@ class PlayerImpl implements Player {
         /* This browser doesn't support the action; the in-app controls still work. */
       }
     }
+    // Keep the browser's idea of playing in step with the store, so the ⏯ key
+    // pauses a sentence that is still buffering instead of asking to play it.
+    const declare = (status: PlayerStatus) => {
+      try {
+        navigator.mediaSession.playbackState = mediaPlaybackState(status)
+      } catch {
+        /* Older browsers judge by the element; the play handler still holds. */
+      }
+    }
+    declare(store().status)
+    useStore.subscribe((s, prev) => {
+      if (s.status !== prev.status) declare(s.status)
+    })
   }
 
   /**

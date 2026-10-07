@@ -6,7 +6,8 @@ import './support/hooks.mjs'
 import { beforeEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { cancelPdfIntake, openPdf } = await import('../src/lib/intake.ts')
+const intake = await import('../src/lib/intake.ts')
+const { cancelPdfIntake, openPdf } = intake
 const { useStore } = await import('../src/store.ts')
 
 const state = () => useStore.getState()
@@ -241,4 +242,9 @@ test('J041: a parse abandoned with New announces nothing more', async () => {
   parse.resolve(makeDoc('Slow', 1))
   await opening
   assert.deepEqual(said, ['Preparing slow.pdf…'])
+})
+
+test('K017: New says which book it closed, as opening says which one opened', () => {
+  assert.equal(typeof intake.closedMessage, 'function', 'New closes the book in silence')
+  assert.equal(intake.closedMessage({ ...makeDoc('Walden', 2), pageCount: 12 }), 'Closed Walden')
 })

@@ -578,3 +578,53 @@ test('J038: Play after a pause while buffering plays the clip that landed, witho
     player.stop()
   }
 })
+
+test('K013: the media session hears a buffering sentence as playing, so the ⏯ key pauses it', async () => {
+  const { mediaPlaybackState } = await import('../src/lib/player.ts')
+  const session = (globalThis.navigator as unknown as { mediaSession: { playbackState?: string } })
+    .mediaSession
+  const own = player.play
+  try {
+    player.play()
+    await settle()
+    assert.equal(state().status, 'playing')
+    assert.equal(session.playbackState, 'playing')
+
+    // A seek pauses the element while the next sentence synthesizes. Left to
+    // judge by the element, the browser sends play for the ⏯ key.
+    heldSynth = []
+    player.seekTo(3)
+    await settle()
+    assert.equal(state().status, 'buffering')
+    assert.equal(audioEl!.paused, true)
+    assert.equal(session.playbackState, 'playing', 'the browser takes the buffering sentence for paused')
+
+    // A Play from a hub or a headset meanwhile leaves the sentence on its way.
+    let plays = 0
+    player.play = () => {
+      plays++
+      own.call(player)
+    }
+    mediaActions.get('play')!()
+    assert.equal(plays, 0, 'play() asked for the buffering sentence again')
+    player.play = own
+
+    mediaActions.get('pause')!()
+    assert.equal(state().status, 'paused')
+    assert.equal(session.playbackState, 'paused')
+    releaseSynth()
+    await settle()
+    assert.equal(state().status, 'paused', 'the sentence played through the pause')
+    assert.equal(audioEl!.paused, true)
+
+    player.stop()
+    assert.equal(session.playbackState, 'none')
+    for (const status of ['ready', 'paused', 'ended', 'error', 'loading'] as const) {
+      assert.equal(mediaPlaybackState(status), 'paused', status)
+    }
+  } finally {
+    player.play = own
+    releaseSynth()
+    player.stop()
+  }
+})

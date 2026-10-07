@@ -29,6 +29,11 @@ export function openedMessage(doc: Doc): string {
   return `Opened ${doc.title}, ${doc.pageCount} ${doc.pageCount === 1 ? 'page' : 'pages'}`
 }
 
+/** What a screen reader hears once the header's reset button closed the book (K017). */
+export function closedMessage(doc: Doc): string {
+  return `Closed ${doc.title}`
+}
+
 /** The parse in progress, if any. */
 let parsing: AbortController | null = null
 

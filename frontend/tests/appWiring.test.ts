@@ -54,7 +54,11 @@ test('J041: opening a PDF is announced from a live region that stays mounted', (
   // together with its text is not read out.
   assert.ok(region > app.indexOf('<Toast />'))
   const reset = app.slice(app.indexOf('const handleReset'), app.indexOf('}, [reset])'))
-  assert.match(reset, /setAnnouncement\(''\)/, 'New leaves a stale "Preparing" behind')
+  assert.match(
+    reset,
+    /setAnnouncement\((?:''|open \? closedMessage\(open\) : '')\)/,
+    'New leaves a stale "Preparing" behind',
+  )
 })
 
 test('J041: the reader takes the focus the loading view dropped, on its title', () => {
@@ -64,6 +68,27 @@ test('J041: the reader takes the focus the loading view dropped, on its title', 
   assert.match(effect, /focused !== document\.body\) return/, 'focus moved on purpose is taken away')
   assert.match(effect, /titleRef\.current\?\.focus\(\{ preventScroll: true \}\)/)
   assert.match(effect, /\}, \[\]\)/, 'runs once, as the reader mounts')
+})
+
+const dropzone = readFileSync(new URL('../src/components/Dropzone.tsx', import.meta.url), 'utf8')
+
+test('K017: New says the book closed and hands its focus to the drop target', () => {
+  const reset = app.slice(app.indexOf('const handleReset'), app.indexOf('}, [reset])'))
+  // The open book is read before the store forgets it.
+  assert.ok(reset.indexOf('useStore.getState().doc') < reset.indexOf('reset()'))
+  assert.match(reset, /setAnnouncement\(open \? closedMessage\(open\) : ''\)/, 'nothing is said')
+  assert.match(reset, /setFocusDropzone\(true\)/)
+  assert.match(app, /const \[focusDropzone, setFocusDropzone\] = useState\(false\)/, 'first load moves focus')
+  assert.match(app, /<Dropzone onFile=\{handleFile\} focusOnMount=\{focusDropzone\} \/>/)
+})
+
+test('K017: the drop target takes focus the reset button dropped, once, as it mounts', () => {
+  assert.match(dropzone, /<button\s+ref=\{buttonRef\}\s+type="button"\s+className=\{`dropzone/)
+  const effect = dropzone.slice(dropzone.indexOf('useEffect('), dropzone.indexOf('function pick'))
+  assert.match(effect, /if \(!focusOnMount\) return/)
+  assert.match(effect, /focused !== document\.body\) return/, 'focus moved on purpose is taken away')
+  assert.match(effect, /buttonRef\.current\?\.focus\(\)/)
+  assert.match(effect, /\}, \[\]\)/, 'runs once, as the drop target mounts')
 })
 
 test('J043: the sentence being read is marked current for assistive technology', () => {

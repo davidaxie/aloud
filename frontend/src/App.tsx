@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { getHealth, getVoices } from './lib/api'
 import { guardFileDrops, isPdf } from './lib/dropGuard'
 import { watchEngine } from './lib/engineWatch'
-import { cancelPdfIntake, openPdf } from './lib/intake'
+import { cancelPdfIntake, closedMessage, openPdf } from './lib/intake'
 import { loadPdf } from './lib/pdf'
 import { player } from './lib/player'
 import { useStore } from './store'
@@ -36,6 +36,9 @@ export default function App() {
   // What a screen reader hears as a PDF opens (J041): the view that had focus
   // is replaced by the loading view, and only failures are alerts.
   const [announcement, setAnnouncement] = useState('')
+  // The header's reset button goes with the book it closes, so the empty state
+  // takes the focus from then on (K017); the first page load leaves it be.
+  const [focusDropzone, setFocusDropzone] = useState(false)
 
   // ── Bootstrap: probe the backend and load the voice roster. ────────────────
   // Re-polls while offline so a backend that starts AFTER the page loads (the
@@ -88,9 +91,13 @@ export default function App() {
   )
 
   const handleReset = useCallback(() => {
+    const open = useStore.getState().doc
     // 'New' while a PDF parses abandons it, so it can't open over what comes next.
     cancelPdfIntake()
-    setAnnouncement('')
+    // Say the book closed, over any word of a parse it abandoned, and hand the
+    // focus the reset button had to the drop target (K017).
+    setAnnouncement(open ? closedMessage(open) : '')
+    setFocusDropzone(true)
     try {
       player.stop()
     } catch (err) {
@@ -160,7 +167,7 @@ export default function App() {
         ) : doc ? (
           <Reader doc={doc} />
         ) : (
-          <Dropzone onFile={handleFile} />
+          <Dropzone onFile={handleFile} focusOnMount={focusDropzone} />
         )}
       </main>
 
