@@ -552,9 +552,9 @@ final class PDFTextExtractorTests: XCTestCase {
              Line(text: "civil", y: 646, height: 14),
              Line(text: "44", y: 40, height: 14)],
         ]
-        let folios = PDFTextExtractor.romanFolioLines(pages)
+        let folios = PDFTextExtractor.folioLines(pages)
         let kept = pages.indices.flatMap {
-            PDFTextExtractor.stripNoise(pages[$0], running: [], romanFolios: folios[$0]).map(\.text)
+            PDFTextExtractor.stripNoise(pages[$0], running: [], folios: folios[$0]).map(\.text)
         }
         for noise in ["vii", "viii", "ix", "41", "42", "44"] {
             XCTAssertFalse(kept.contains(noise), "\(noise) is a folio")
@@ -569,7 +569,181 @@ final class PDFTextExtractorTests: XCTestCase {
         XCTAssertTrue(PDFTextExtractor.isPageNumberLine("xii"))
     }
 
+    /// J004: a book in another language opens its short chapters with
+    /// "Глава n", "Kapitel n", "第n章" or "제n장", numbered afresh in digits
+    /// or Han numerals, so none is a running header, whether the run or
+    /// the whole-book rule sees it. A chapter's own "Глава 3 Возвращение"
+    /// through chapter 3 still is one.
+    func testLocalizedChapterOpeningsAreNeverRunningHeaders() {
+        typealias Line = PDFTextExtractor.Line
+        let han = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"]
+        let labels: [(prefix: String, label: (Int) -> String)] = [
+            ("Глава", { "Глава \($0)" }), ("ГЛАВА", { "ГЛАВА \($0)" }), ("Kapitel", { "Kapitel \($0)" }),
+            ("Capítulo", { "Capítulo \($0)" }), ("Chapitre", { "Chapitre \($0)" }), ("Capitolo", { "Capitolo \($0)" }),
+            ("第", { "第\($0)章" }), ("제", { "제\($0)장" }), ("第", { "第\(han[$0 - 1])章" }),
+        ]
+        for (prefix, label) in labels {
+            for length in [2, 3] {
+                var pages: [[Line]] = []
+                for chapter in 1...12 {
+                    pages.append([Line(text: label(chapter), y: 600, height: 16)] + chapterBody(pages.count, top: 500))
+                    for _ in 1..<length { pages.append(chapterBody(pages.count, top: 740)) }
+                }
+                XCTAssertEqual(keptAfterHeaderPass(pages).filter { $0.hasPrefix(prefix) }.count, 12,
+                               "\(label(1)) openings, \(length)-page chapters")
+            }
+        }
+
+        var headed: [[Line]] = []
+        for chapter in 1...3 {
+            headed.append([Line(text: "Глава \(chapter)", y: 600, height: 16)] + chapterBody(headed.count, top: 500))
+            for _ in 1...4 {
+                headed.append([Line(text: "Глава \(chapter) Возвращение", y: 760, height: 16)]
+                              + chapterBody(headed.count, top: 700))
+            }
+        }
+        let text = keptAfterHeaderPass(headed)
+        XCTAssertFalse(text.contains { $0.hasSuffix("Возвращение") }, "a chapter's own running header goes")
+        XCTAssertEqual(text.filter { $0.hasPrefix("Глава") }.count, 3)
+        XCTAssertEqual(PDFTextExtractor.openingNumber("第十二章"), 12)
+        XCTAssertEqual(PDFTextExtractor.openingNumber("제7장"), 7)
+        XCTAssertNil(PDFTextExtractor.openingNumber("Глава семьи сказал"))
+    }
+
+    /// J004 end to end: two-page chapters opening "Глава n" keep their
+    /// headings in the text and list as chapters.
+    func testLocalizedShortChaptersKeepTheirHeadingsAndRows() async throws {
+        let names = ["amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "heath", "inlet", "juniper"]
+        let url = try makePDF(pages: (0..<24).map { page -> [(String, CGFloat)] in
+            let word = names[page % 10] + " " + names[page / 10 % 10]
+            let top: CGFloat = page % 2 == 0 ? 300 : 80
+            var lines = (0..<4).map { ("The \(word) path wound past the \(names[$0]) wall.", top + CGFloat($0) * 20) }
+            if page % 2 == 0 { lines.insert(("Глава \(page / 2 + 1)", 200), at: 0) }
+            return lines
+        })
+
+        let content = try await ExtractionPipeline().extract(pdfURL: url, progress: nil)
+        let joined = content.sentences.map(\.text).joined(separator: " ")
+        for chapter in 1...12 { XCTAssertTrue(joined.contains("Глава \(chapter)"), "Глава \(chapter) read aloud") }
+        let map = try XCTUnwrap(content.chapterMap)
+        XCTAssertEqual(map.source, .headings)
+        XCTAssertEqual(map.entries.count, 12, "\(map.entries.map(\.title))")
+    }
+
+    /// J040: a chapter's bare number ("7", "1984") set large on its
+    /// opening page stays. Folios at the foot go, and so do folios set
+    /// large that count on from page to page.
+    func testBareNumberHeadingsStayButFoliosGo() {
+        typealias Line = PDFTextExtractor.Line
+        func body(_ text: String, top: CGFloat) -> [Line] {
+            (0..<3).map { Line(text: "\(text) line \(["one", "two", "three"][$0]).", y: top - CGFloat($0) * 18, height: 14) }
+        }
+        let pages: [[Line]] = [
+            body("The harbour was still", top: 700) + [Line(text: "41", y: 40, height: 14)],
+            [Line(text: "7", y: 600, height: 28)] + body("The river was high that spring", top: 520),
+            body("The orchard had flowered", top: 700) + [Line(text: "43", y: 40, height: 14)],
+            [Line(text: "1984", y: 600, height: 28)] + body("The winter came early", top: 520)
+                + [Line(text: "44", y: 40, height: 14)],
+            [Line(text: "45", y: 760, height: 28)] + body("The meadow lay under snow", top: 700),
+            [Line(text: "46", y: 760, height: 28)] + body("The nettles came back", top: 700),
+        ]
+        let folios = PDFTextExtractor.folioLines(pages)
+        let kept = pages.indices.flatMap {
+            PDFTextExtractor.stripNoise(pages[$0], running: [], folios: folios[$0]).map(\.text)
+        }
+        for noise in ["41", "43", "44", "45", "46"] {
+            XCTAssertFalse(kept.contains(noise), "\(noise) is a folio")
+        }
+        for heading in ["7", "1984"] {
+            XCTAssertTrue(kept.contains(heading), "\(heading) is a chapter's heading")
+        }
+    }
+
+    /// J035: a page set in two columns reads its left column, then its
+    /// right, under a title spanning both. A page of one column with a
+    /// centred heading, and a contents page's right-hand page numbers,
+    /// keep their order.
+    func testTwoColumnPagesReadColumnByColumn() {
+        typealias Line = PDFTextExtractor.Line
+        func line(_ text: String, _ y: CGFloat, x: CGFloat, width: CGFloat) -> Line {
+            Line(text: text, y: y, height: 10, minX: x, maxX: x + width)
+        }
+        let title = line("Title", 740, x: 150, width: 230)
+        let left = (0..<5).map { line("L\($0)", 700 - CGFloat($0) * 12, x: 36, width: $0 == 4 ? 120 : 230) }
+        let right = (0..<4).map { line("R\($0)", 700 - CGFloat($0) * 12, x: 316, width: 225) }
+        let page = [title] + zip(left, right).flatMap { [$0, $1] } + [left[4]]
+        XCTAssertEqual(PDFTextExtractor.columnRuns(page).map { $0.map(\.text) },
+                       [["Title"], ["L0", "L1", "L2", "L3", "L4"], ["R0", "R1", "R2", "R3"]])
+
+        let single = [line("CHAPTER 3", 740, x: 250, width: 100)]
+            + (0..<9).map { line("S\($0)", 700 - CGFloat($0) * 12, x: 36, width: $0 % 3 == 2 ? 200 : 480) }
+        XCTAssertNil(PDFTextExtractor.gutter(single))
+        XCTAssertEqual(PDFTextExtractor.columnRuns(single).map { $0.map(\.text) }, [single.map(\.text)])
+
+        let contents = (0..<8).flatMap { row in
+            [line("Chapter \(row + 1) of the book", 700 - CGFloat(row) * 14, x: 36, width: 200),
+             line("\(row * 10 + 1)", 700 - CGFloat(row) * 14, x: 500, width: 12)]
+        }
+        XCTAssertNil(PDFTextExtractor.gutter(contents))
+    }
+
+    /// J035 end to end: a typeset two-column page reads each column
+    /// through, a paragraph running on from the left column's foot into
+    /// the right's top, not the two a line of each in turn.
+    func testTwoColumnPDFReadsColumnByColumn() throws {
+        let left = ["The harbour lay quiet under a low grey sky,", "and the fishing boats rocked against the old",
+                    "stone wall while the gulls circled over the", "nets that the men had left to dry along the",
+                    "pier since the early hours of the morning and"]
+        let right = ["nobody came down to the water until noon.", "Results from the survey arrived by the late",
+                     "post and the clerk read them twice before he", "carried them up the hill to the council hall",
+                     "where the members were waiting for the news."]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("aloud-test-\(UUID().uuidString).pdf")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &mediaBox, nil))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 10, nil)
+        func draw(_ text: String, x: CGFloat, y: CGFloat) {
+            let attributed = NSAttributedString(string: text, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+            ])
+            context.textPosition = CGPoint(x: x, y: y)
+            CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+        }
+        context.beginPDFPage(nil)
+        draw("Notes From a Quiet Harbour Town", x: 200, y: 740)
+        for row in 0..<5 {
+            draw(left[row], x: 54, y: 700 - CGFloat(row) * 12)
+            draw(right[row], x: 316, y: 700 - CGFloat(row) * 12)
+        }
+        draw("7", x: 303, y: 40)
+        context.endPDFPage()
+        context.closePDF()
+
+        let output = try PDFTextExtractor().extract(url: url)
+        let joined = output.blocks.map(\.text).joined(separator: " ")
+        XCTAssertTrue(joined.hasPrefix("Notes From a Quiet Harbour Town"), joined)
+        XCTAssertTrue(joined.contains("The harbour lay quiet under a low grey sky, and the fishing boats rocked"), joined)
+        XCTAssertTrue(joined.contains("early hours of the morning and nobody came down to the water until noon."), joined)
+        XCTAssertTrue(joined.hasSuffix("where the members were waiting for the news."), joined)
+    }
+
     // MARK: - Helpers
+
+    /// Four body lines from `top` down, worded for page `page` alone.
+    private func chapterBody(_ page: Int, top: CGFloat) -> [PDFTextExtractor.Line] {
+        let names = ["amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "heath", "inlet", "juniper"]
+        let word = names[page % 10] + " " + names[page / 10 % 10]
+        return (0..<4).map {
+            PDFTextExtractor.Line(text: "The \(word) path wound along wall \(["one", "two", "three", "four"][$0]).",
+                                  y: top - CGFloat($0) * 20, height: 16)
+        }
+    }
+
+    /// The pages' lines left after the running-header and noise passes.
+    private func keptAfterHeaderPass(_ pages: [[PDFTextExtractor.Line]]) -> [String] {
+        let running = PDFTextExtractor.runningHeadersByPage(pages)
+        return pages.indices.flatMap { PDFTextExtractor.stripNoise(pages[$0], running: running[$0]).map(\.text) }
+    }
 
     private func occurrences(of needle: String, in haystack: String) -> Int {
         haystack.components(separatedBy: needle).count - 1

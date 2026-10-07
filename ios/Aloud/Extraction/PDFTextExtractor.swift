@@ -64,10 +64,11 @@ struct PDFTextExtractor {
         // Detect repeating headers/footers: across the whole document, and
         // per page for the ones that run through a chapter or alternate.
         let running = Self.runningHeadersByPage(pageLines)
-        let romanFolios = Self.romanFolioLines(pageLines)
+        let folios = Self.folioLines(pageLines)
         let english = Self.readsAsEnglish(Self.languageSample(pageLines))
 
-        // Pass 2: strip noise, fold into paragraphs, stitch across pages.
+        // Pass 2: strip noise, fold into paragraphs column by column,
+        // stitch across columns and pages.
         var blocks: [TextBlock] = []
         var pageHeaders: [Int: String] = [:]
         var pagesWithText = 0
@@ -75,10 +76,14 @@ struct PDFTextExtractor {
             if let header = Self.topHeader(lines, running: running[index]) {
                 pageHeaders[index + 1] = header
             }
-            let cleaned = Self.stripNoise(lines, running: running[index], romanFolios: romanFolios[index])
-            let paragraphs = Self.paragraphs(from: cleaned, english: english)
-            if !paragraphs.isEmpty { pagesWithText += 1 }
-            Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1, english: english)
+            let cleaned = Self.stripNoise(lines, running: running[index], folios: folios[index])
+            var hasText = false
+            for run in Self.columnRuns(cleaned) {
+                let paragraphs = Self.paragraphs(from: run, english: english)
+                if !paragraphs.isEmpty { hasText = true }
+                Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1, english: english)
+            }
+            if hasText { pagesWithText += 1 }
         }
         // A scan whose only text layer is a cover sheet or a usage notice
         // reads as having no text, not as a book of a few sentences.
@@ -144,10 +149,76 @@ struct PDFTextExtractor {
                               minX: bounds.minX,
                               maxX: bounds.maxX))
         }
-        // Top-to-bottom reading order (multi-column layouts remain a known
-        // limitation, as on the web).
+        // Top to bottom, so the edge passes see the page's top and foot; a
+        // page set in two columns is read column by column after them
+        // (`columnRuns`).
         return lines.sorted { $0.y > $1.y }
     }
+
+    // MARK: - Columns
+
+    /// A page's body lines as runs to fold in reading order: the page
+    /// itself, or on a page set in two columns each band's left column,
+    /// then its right, between the lines that span the gutter (a title, an
+    /// abstract, a wide figure's caption). Sorted top to bottom alone, the
+    /// two columns read a line of each in turn.
+    static func columnRuns(_ lines: [Line]) -> [[Line]] {
+        guard let gutter = gutter(lines) else { return [lines] }
+        var runs: [[Line]] = []
+        var across: [Line] = [], left: [Line] = [], right: [Line] = []
+        for line in lines {
+            if line.minX < gutter && line.maxX > gutter {
+                runs += [left, right]
+                left = []
+                right = []
+                across.append(line)
+            } else {
+                if !across.isEmpty { runs.append(across) }
+                across = []
+                if line.maxX <= gutter { left.append(line) } else { right.append(line) }
+            }
+        }
+        runs += [across, left, right]
+        return runs.filter { !$0.isEmpty }
+    }
+
+    /// Where a page set in two columns divides: just left of the right
+    /// column's margin, in the middle of the text, with `minimumColumnLines`
+    /// or more lines wholly on each side. Each column's lines mostly start
+    /// at one margin and run a third of the text's width or more (not a
+    /// contents page's page numbers or a centred heading), and the columns
+    /// stand side by side, line beside line. Nil on a page of one column.
+    static func gutter(_ lines: [Line]) -> CGFloat? {
+        guard lines.count >= minimumColumnLines * 2,
+              let textLeft = lines.map(\.minX).min(), let textRight = lines.map(\.maxX).max() else { return nil }
+        let width = textRight - textLeft
+        let height = median(lines.map(\.height))
+        let tolerance = max(1.5, height * 0.15)
+        guard width > height * 10 else { return nil }
+
+        let middle = (textLeft + width * 0.3)...(textLeft + width * 0.7)
+        var best: (x: CGFloat, left: [Line], right: [Line])?
+        for start in Set(lines.map { $0.minX.rounded(.down) }).sorted() where middle.contains(start) {
+            let x = start - tolerance
+            let left = lines.filter { $0.maxX <= x }, right = lines.filter { $0.minX >= x }
+            guard left.count >= minimumColumnLines, right.count >= minimumColumnLines,
+                  left.count + right.count > (best.map { $0.left.count + $0.right.count } ?? 0) else { continue }
+            best = (x, left, right)
+        }
+        guard let best else { return nil }
+
+        func isColumn(_ column: [Line]) -> Bool {
+            guard let margin = mostCommon(column.map(\.minX)) else { return false }
+            let atMargin = column.filter { abs($0.minX - margin) <= tolerance }.count
+            return atMargin * 2 >= column.count && median(column.map { $0.maxX - $0.minX }) >= width / 3
+        }
+        let beside = best.right.filter { line in best.left.contains { abs($0.y - line.y) <= height } }.count
+        guard isColumn(best.left), isColumn(best.right), beside >= minimumColumnLines,
+              beside * 2 >= min(best.left.count, best.right.count) else { return nil }
+        return best.x
+    }
+
+    static let minimumColumnLines = 3
 
     // MARK: - Lines → paragraphs
 
@@ -356,15 +427,22 @@ struct PDFTextExtractor {
     private static let romanDigits: [Character: Int] =
         ["I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000]
 
-    /// Each page's edge lines that are roman folios: a roman numeral with
-    /// another on a page up to two away, at about the same height, that
-    /// counts on by the pages between, as front matter numbers its pages
-    /// ("vii", "viii"). A bare "II" opening a chapter has none, so it stays.
-    static func romanFolioLines(_ pageLines: [[Line]]) -> [Set<Int>] {
+    /// A page number's value: up to four digits ("41") or a well-formed
+    /// roman numeral ("xiv"), else nil.
+    static func folioValue(_ text: String) -> Int? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.wholeMatch(of: #/[0-9]{1,4}/#) != nil ? Int(t) : romanValue(t)
+    }
+
+    /// Each page's edge lines that are folios: a page number with another
+    /// on a page up to two away, at about the same height, that counts on
+    /// by the pages between, as a book numbers its pages ("vii", "viii";
+    /// "41", "42"). A bare "II" or "7" opening a chapter has none.
+    static func folioLines(_ pageLines: [[Line]]) -> [Set<Int>] {
         let numerals = pageLines.map { lines in
             let n = lines.count
             return Set([0, 1, n - 2, n - 1]).filter { $0 >= 0 && $0 < n }.compactMap { index in
-                romanValue(lines[index].text).map { (index: index, line: lines[index], value: $0) }
+                folioValue(lines[index].text).map { (index: index, line: lines[index], value: $0) }
             }
         }
         return numerals.indices.map { page in
@@ -415,12 +493,20 @@ struct PDFTextExtractor {
         return Set(counts.filter { $0.value >= threshold && !areChapterOpenings(texts[$0.key] ?? []) }.keys)
     }
 
-    /// "CHAPTER 12", "Day 3": a label numbered afresh at every hit is a run
-    /// of chapter openings, not a running header, which repeats its
-    /// chapter's number ("Chapter 3 The Return" through chapter 3).
+    /// "CHAPTER 12", "Day 3", "Глава 12", "第十二章": a label numbered afresh
+    /// at every hit is a run of chapter openings, not a running header,
+    /// which repeats its chapter's number ("Chapter 3 The Return" through
+    /// chapter 3).
     static func areChapterOpenings(_ texts: [String]) -> Bool {
-        let numbers = texts.compactMap { $0.firstMatch(of: openingLabel).flatMap { Int($0.1) } }
+        let numbers = texts.compactMap(openingNumber)
         return !numbers.isEmpty && numbers.count == texts.count && Set(numbers).count == numbers.count
+    }
+
+    /// An opening label's number: an English one ("CHAPTER 12", "Day 3")
+    /// or a localized chapter marker the headings tier lists ("Глава 12",
+    /// "Kapitel 12", "Chapitre 12", "第十二章", "제12장").
+    static func openingNumber(_ text: String) -> Int? {
+        text.firstMatch(of: openingLabel).flatMap { Int($0.1) } ?? HeadingChapters.localizedNumber(text)
     }
 
     private static let openingLabel = #/(?i)^(?:chapter|day|letter|lesson|week|part|book|volume|section)\s+(\d{1,4})\b/#
@@ -433,7 +519,8 @@ struct PDFTextExtractor {
     /// and recurs at least `minimumRun` times no more than `maximumRunGap`
     /// pages apart (a chapter opening or a blank page between). A chapter's
     /// title on its opening page sits lower or larger, so it stays, and so
-    /// do short chapters' "CHAPTER 12" openings, numbered afresh each time.
+    /// do short chapters' "CHAPTER 12" or "Глава 12" openings, numbered
+    /// afresh each time.
     static func runningHeadersByPage(_ pageLines: [[Line]]) -> [Set<String>] {
         let global = detectRunningHeaders(pageLines)
         var byPage = Array(repeating: global, count: pageLines.count)
@@ -496,18 +583,25 @@ struct PDFTextExtractor {
 
     /// Drop noise lines near the page edges: repeating headers/footers and
     /// standalone page numbers. Body lines that merely resemble them survive:
-    /// a roman numeral goes only when it is one of the page's
-    /// `romanFolios` (`romanFolioLines`).
-    static func stripNoise(_ lines: [Line], running: Set<String>, romanFolios: Set<Int> = []) -> [Line] {
+    /// a roman numeral goes only when it is one of the page's `folios`
+    /// (`folioLines`), and so does a bare number set larger than the
+    /// page's text. A chapter's "7" or "1984" on its opening page counts
+    /// on from no other page, so it stays.
+    static func stripNoise(_ lines: [Line], running: Set<String>, folios: Set<Int> = []) -> [Line] {
         let n = lines.count
+        let textHeight = median(lines.map(\.height))
         return lines.enumerated().compactMap { index, line in
             let nearEdge = index <= 1 || index >= n - 2
             if nearEdge && running.contains(normalizeRunning(line.text)) { return nil }
             if nearEdge && isPageNumberLine(line.text)
-                && (romanValue(line.text) == nil || romanFolios.contains(index)) { return nil }
+                && (folios.contains(index)
+                    || romanValue(line.text) == nil && line.height <= textHeight * headingScale) { return nil }
             return line
         }
     }
+
+    /// A heading's least size over the page's text: a folio is set no larger.
+    static let headingScale: CGFloat = 1.3
 
     // MARK: - Cross-page stitching
 

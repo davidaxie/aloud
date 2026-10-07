@@ -449,6 +449,15 @@ enum HeadingChapters {
         return numberWords[parts[1]].map { head + $0 }
     }
 
+    /// A localized chapter marker's number ("Глава 12", "Kapitel 12",
+    /// "Capítulo 12", "第十二章", "제12장"), else nil: the extractor's
+    /// running-header pass keeps a run of them, numbered afresh, as the
+    /// chapter openings this tier lists.
+    static func localizedNumber(_ line: String) -> Int? {
+        let text = ChapterText.collapsed(line)
+        return text.wholeMatch(of: localizedHeading) != nil ? chapterNumber(text) : nil
+    }
+
     private static func romanValue(_ token: String) -> Int? {
         let values: [Character: Int] = ["i": 1, "v": 5, "x": 10, "l": 50, "c": 100]
         let digits = token.compactMap { values[$0] }
