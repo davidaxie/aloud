@@ -158,7 +158,9 @@ final class PlaybackConfigurationChangeTests: XCTestCase {
     // MARK: - A call holds the audio (iPhone)
 
     /// Play during a call: the session can't be claimed, which is an
-    /// interruption, not a failure. The call's end resumes it.
+    /// interruption, not a failure. Aloud never held this session, so iOS
+    /// sends it no end (G023): nothing is promised, the reason is said at
+    /// once, and Play after the call reads on.
     func testPlayWhileACallHoldsTheAudioPausesAsInterrupted() async throws {
         let rig = PlaybackTestRig(sentences: 40, clipDuration: 2)
         try XCTSkipIf(rig.controller.rendersOffline, "offline there is no session to claim")
@@ -169,12 +171,14 @@ final class PlaybackConfigurationChangeTests: XCTestCase {
         XCTAssertTrue(settled)
         XCTAssertEqual(rig.controller.status, .paused, "an interruption, not a failure")
         XCTAssertEqual(rig.controller.stopped, PlaybackStop(reason: .interrupted, documentID: rig.document.id))
-        XCTAssertEqual(rig.announcements, [], "announced only if the audio never comes back")
+        XCTAssertEqual(rig.announcements, [StopReason.interrupted.spokenText], "no end will come to say it")
         XCTAssertFalse(rig.controller.isEngineRunning)
 
         rig.audioSession.activationError = nil
-        let mark = rig.statuses.count
         rig.audioSession.onInterruption?(.ended(shouldResume: true))
+        XCTAssertEqual(rig.controller.status, .paused, "no resume was promised")
+        let mark = rig.statuses.count
+        rig.controller.play()
         try await rig.waitUntilPlayingOrSkip(after: mark)
     }
 

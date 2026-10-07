@@ -177,6 +177,8 @@ final class PlaybackTestRig {
         private(set) var bindings = 0
         private(set) var activations = 0
         private(set) var deactivations = 0
+        /// The deactivations that told an interrupted app it may resume.
+        private(set) var notifyingDeactivations = 0
         private let session = PlatformAudioOutput.makeMonitor()
 
         func activate() throws {
@@ -184,9 +186,12 @@ final class PlaybackTestRig {
             if let activationError { throw activationError }
             try session.activate()
         }
-        func deactivate() {
+        /// Counted; the real session goes quietly either way, so a test
+        /// never tells another app it may resume.
+        func deactivate(notifyingOthers: Bool) {
             deactivations += 1
-            session.deactivate()
+            if notifyingOthers { notifyingDeactivations += 1 }
+            session.deactivate(notifyingOthers: false)
         }
         func bindOutput(of engine: AVAudioEngine) { bindings += 1 }
 

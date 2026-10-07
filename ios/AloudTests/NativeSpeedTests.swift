@@ -201,9 +201,45 @@ final class NativeSpeedTests: XCTestCase {
         try await rig.waitUntilPlayingOrSkip()
         XCTAssertEqual(rig.controller.timePitchRate, 1.0, accuracy: 0.01, "stretched before scheduling")
         XCTAssertTrue(rig.controller.isTimePitchBypassed)
-        rig.controller.rate = 2.5   // a slider step: the unit plays the difference until new clips come
+        rig.controller.pause(rampsOut: false)
+        // Paused, the node is still: a speed pick switches the unit at once,
+        // to play the difference until new clips come.
+        rig.controller.rate = 2.5
         XCTAssertEqual(rig.controller.timePitchRate, 1.25, accuracy: 0.02)
         XCTAssertFalse(rig.controller.isTimePitchBypassed)
+        rig.controller.rate = 2.0
+        XCTAssertEqual(rig.controller.timePitchRate, 1.0, "nothing left: exactly 1x")
+        XCTAssertTrue(rig.controller.isTimePitchBypassed)
+    }
+
+    /// G025: a slider tick while audio plays never switches the time-pitch
+    /// unit's bypass, which would drop or restart its buffered audio
+    /// mid-word: only its rate moves, and the bypass follows at the next
+    /// clip boundary. A share within 1% plays at exactly 1x.
+    @MainActor
+    func testASliderTickMidSentenceNeverSwitchesTheBypass() async throws {
+        let rig = PlaybackTestRig(sentences: 40, clipDuration: 0.5)
+        rig.controller.rate = 2.0
+        rig.loadDefault(at: 0)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        XCTAssertTrue(rig.controller.isTimePitchBypassed)
+
+        rig.controller.rate = 2.5   // mid-render
+        XCTAssertEqual(rig.controller.timePitchRate, 1.25, accuracy: 0.02)
+        XCTAssertTrue(rig.controller.isTimePitchBypassed, "not switched mid-word")
+        rig.controller.rate = 2.0   // dragged back
+        XCTAssertEqual(rig.controller.timePitchRate, 1.0, "nothing left: exactly 1x")
+        XCTAssertTrue(rig.controller.isTimePitchBypassed)
+
+        rig.controller.rate = 2.5
+        // At a boundary the unit takes up the difference for the clips
+        // still queued, or the clips stretched to 2.5x play bypassed.
+        let settled = await rig.waitUntil(8) {
+            (!rig.controller.isTimePitchBypassed && abs(rig.controller.timePitchRate - 1.25) < 0.02)
+                || (rig.controller.isTimePitchBypassed && rig.controller.playingSpeedUp > 2.4)
+        }
+        XCTAssertTrue(settled, "the bypass follows at a boundary: \(rig.controller.timePitchRate)")
         rig.controller.pause(rampsOut: false)
     }
 

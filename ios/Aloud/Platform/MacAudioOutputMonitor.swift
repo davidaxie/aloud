@@ -59,7 +59,7 @@ final class MacAudioOutputMonitor: AudioOutputMonitoring {
     /// No session to claim: a Mac app plays to its device without asking.
     func activate() throws {}
 
-    func deactivate() {}
+    func deactivate(notifyingOthers: Bool) {}
 
     /// Pins the engine to today's default output: when that device goes
     /// away, the output fails instead of following the system default to

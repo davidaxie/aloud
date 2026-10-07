@@ -18,7 +18,10 @@ protocol AudioOutputMonitoring: AnyObject {
     /// The output playback was using went away (headphones unplugged).
     var onRouteRequiresPause: (() -> Void)? { get set }
     func activate() throws
-    func deactivate()
+    /// Gives the audio back once the engine has stopped. Only when
+    /// listening is over (`notifyingOthers`) may an app Aloud interrupted
+    /// take it back up on its own.
+    func deactivate(notifyingOthers: Bool)
     /// Points the engine's output at the device playback follows. Called
     /// only while the engine is stopped, and never while it renders offline.
     func bindOutput(of engine: AVAudioEngine)

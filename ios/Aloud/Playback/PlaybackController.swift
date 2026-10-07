@@ -92,11 +92,19 @@ final class PlaybackController: ObservableObject {
     /// The time-pitch unit's share of the listener's speed: nothing, and
     /// bypassed, once each clip is stretched to the speed in the time domain
     /// (`SpeechStretcher`); a slider move plays the small difference until
-    /// the clips at the new speed arrive.
-    private func applyTimePitchRate() {
+    /// the clips at the new speed arrive. A share within 1% plays at exactly
+    /// 1x, which the unit passes through untouched. The bypass switches only
+    /// at a clip boundary (`atBoundary`: the compression marker, a
+    /// sentence's end) or with the node still: switched mid-render, the unit
+    /// drops or restarts its buffered audio mid-word. So a slider tick while
+    /// audio plays changes only the rate, and a bypassed unit takes the new
+    /// share up at the next boundary.
+    private func applyTimePitchRate(atBoundary: Bool = false) {
         let residual = rate / max(playingCompression, 0.1)
-        timePitch.rate = Float(residual)
-        timePitch.bypass = abs(residual - 1) < 0.01
+        let nothingLeft = abs(residual - 1) < 0.01
+        timePitch.rate = nothingLeft ? 1 : Float(residual)
+        guard atBoundary || !player.isPlaying, timePitch.bypass != nothingLeft else { return }
+        timePitch.bypass = nothingLeft
     }
 
     /// `clip` sped up to the listener's speed in the time domain, off the
@@ -412,6 +420,11 @@ final class PlaybackController: ObservableObject {
     /// transport and every later stop clears it, so `.ended(shouldResume:)`
     /// brings back that stop and nothing the listener paused since.
     private var resumeAfterInterruption = false
+    /// Aloud claimed the audio session and hasn't given it back: iOS tells
+    /// only such a session when an interruption begins and ends. The idle
+    /// stop's release, an interruption's end and a media-services reset
+    /// leave it unclaimed until the next Play claims it.
+    private var holdsAudioSession = false
     private var noticeTask: Task<Void, Never>?
     /// True for the length of a document switch, so the `.paused` cue of the
     /// INCOMING book can't be mistaken for the outgoing book's stop.
@@ -1648,7 +1661,7 @@ final class PlaybackController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, token == self.playToken else { return }
                 self.playingCompression = compression
-                self.applyTimePitchRate()
+                self.applyTimePitchRate(atBoundary: true)
             }
         }
         wordTiming.appendGap(1 / format.sampleRate)
@@ -1674,7 +1687,7 @@ final class PlaybackController: ObservableObject {
             // A schedule's first clip: the node is stopped, so the unit
             // switches at once.
             playingCompression = compression
-            applyTimePitchRate()
+            applyTimePitchRate(atBoundary: true)
         }
         lastScheduledCompression = compression
 
@@ -1717,6 +1730,9 @@ final class PlaybackController: ObservableObject {
         // flushed its queue and called every completion at once: nobody
         // heard those clips, so the place stays where it is.
         guard audioEngine.isRunning else { return }
+        // Between two sentences: a speed picked mid-render switches the
+        // time-pitch unit's bypass here, never mid-word.
+        applyTimePitchRate(atBoundary: true)
         // A sample handed back to the end (`returnAuditionToTheEnd`) is
         // there already: its clip ending inside the ramp is no second end
         // (no haptic, announcement or progress write), and the ramp's own
@@ -1826,16 +1842,22 @@ final class PlaybackController: ObservableObject {
 
     /// The hardware wouldn't start. A call, or an app that outranks Aloud,
     /// holding the audio (`AudioOutputHeldElsewhere`) is an interruption,
-    /// not a failure: playback pauses with that reason, and the
-    /// interruption's end resumes it when iOS says it may. Anything else
-    /// fails.
+    /// not a failure: playback pauses with that reason. A session Aloud
+    /// holds hears the interruption end, which resumes it when iOS says it
+    /// may. One it doesn't hold (given back by the idle stop) never hears
+    /// an end, so nothing is promised: the reason is said now, and Play
+    /// after the call reads on. Anything else fails.
     private func audioHardwareFailed(_ error: Error) {
         guard error is AudioOutputHeldElsewhere else { return failPlayback() }
         let auditioning = audition != nil
         if isActive { pause(rampsOut: false) }
         guard !auditioning else { return }
         record(.interrupted)
-        resumeAfterInterruption = true
+        if holdsAudioSession {
+            resumeAfterInterruption = true
+        } else if isAppActive() {
+            sceneDidBecomeActive()   // says the stop held back for an end
+        }
     }
 
     // MARK: - Speed / voice / skip changes
@@ -2158,7 +2180,7 @@ final class PlaybackController: ObservableObject {
             guard let format = self.graphFormat,
                   let buffer = Self.pcmBuffer(from: clip, in: format) else { return }
             self.playingCompression = clip.nativeSpeed > 0 ? clip.nativeSpeed : 1
-            self.applyTimePitchRate()
+            self.applyTimePitchRate(atBoundary: true)   // the node was stopped for it
             if !self.isRampingVolume { self.setOutputVolume(1) }   // a hard start
             do { try self.startAudioHardware() } catch { return }
             self.player.scheduleBuffer(buffer, at: nil, options: [],
@@ -2256,6 +2278,7 @@ final class PlaybackController: ObservableObject {
         // reports no playhead (already paused or stopped) keeps the last one.
         if let now = playerMediaSeconds { wordTiming.pausedPlayhead = now }
         player.pause()
+        applyTimePitchRate()   // the node is still: a speed picked mid-render settles
         onAudioEdge?(.nodePaused)
     }
 
@@ -2323,6 +2346,7 @@ final class PlaybackController: ObservableObject {
         player = AVAudioPlayerNode()
         timePitch = AVAudioUnitTimePitch()
         graphFormat = nil
+        holdsAudioSession = false   // the session went with the media server
         assembleAudioGraph()
     }
 
@@ -2354,6 +2378,7 @@ final class PlaybackController: ObservableObject {
         if !rendersOffline {
             do {
                 try audioOutput.activate()
+                holdsAudioSession = true
             } catch let heldElsewhere as AudioOutputHeldElsewhere {
                 throw heldElsewhere
             } catch {
@@ -2447,8 +2472,11 @@ final class PlaybackController: ObservableObject {
     /// the engine again on the way, behind the same fences as every start.
     /// Offline (muted), the pump stops with it. Then, on an iPhone, the
     /// session goes (never before the engine stops, which iOS refuses), so a
-    /// paused Aloud can be suspended and an app it interrupted may resume;
-    /// Play claims it again. Not while an interruption may still hand the
+    /// paused Aloud can be suspended; Play claims it again. An app Aloud
+    /// interrupted is told it may resume only once listening is over (a
+    /// book heard to its end at full level, the book closed), never after a
+    /// pause or a sleep stop, nor under the sleep timer's End-of-book fade,
+    /// which a sleeper hears. Not while an interruption may still hand the
     /// audio back: its end resumes through the same Play.
     private func stopIdleEngine() {
         idleEngineStopItem = nil
@@ -2457,13 +2485,21 @@ final class PlaybackController: ObservableObject {
             invalidateSchedule()   // also ends a pause's ramp, pausing the node
             cuePrefetch()
         }
+        // From here iOS may suspend a paused Aloud, and a suspended app gets
+        // no memory warning to free the natural voice by: in the background
+        // it goes now, as at the move there. Play warms it again.
+        if PlatformTuning.releasesNeuralOnBackground, !isAppActive() { releaseNeuralEngineIfIdle() }
         guard audioEngine.isRunning else { return }
         let engine = audioEngine
         withEngineHeld { engine.stop() }
         #if DEBUG
         renderPump?.stop()
         #endif
-        if !rendersOffline, !resumeAfterInterruption { audioOutput.deactivate() }
+        if !rendersOffline, !resumeAfterInterruption {
+            let listeningIsOver = status == .idle || (status == .ended && requestedOutputVolume >= 1)
+            audioOutput.deactivate(notifyingOthers: listeningIsOver)
+            holdsAudioSession = false
+        }
     }
 
     /// The idle stop's clock outside tests.
@@ -2525,6 +2561,8 @@ final class PlaybackController: ObservableObject {
             stop(because: .interrupted)
             resumeAfterInterruption = !auditioning
         case .ended(let shouldResume):
+            // The session comes back inactive: the resume's Play claims it.
+            holdsAudioSession = false
             // Auto-resume is not a user action — no `userPlayAction` bump,
             // so the reader never re-centers on interruption recovery.
             if resumeAfterInterruption && shouldResume {

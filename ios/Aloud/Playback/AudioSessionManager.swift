@@ -69,10 +69,13 @@ final class AudioSessionManager: AudioOutputMonitoring {
     }
 
     /// Gives the audio back once the engine has stopped (the idle stop), so
-    /// iOS can suspend a paused Aloud and an app it interrupted may resume.
-    func deactivate() {
+    /// iOS can suspend a paused Aloud. An app it interrupted (Music, a
+    /// podcast) is told it may resume only once listening is over
+    /// (`notifyingOthers`): after a pause, that app would start by itself a
+    /// minute later.
+    func deactivate(notifyingOthers: Bool) {
         try? AVAudioSession.sharedInstance()
-            .setActive(false, options: .notifyOthersOnDeactivation)
+            .setActive(false, options: notifyingOthers ? .notifyOthersOnDeactivation : [])
     }
 
     /// The session already plays to the route iOS picked; the engine is

@@ -245,7 +245,7 @@ final class MacAudioOutputMonitorTests: XCTestCase {
         var interruptions = 0
         monitor.onInterruption = { _ in interruptions += 1 }
         try monitor.activate()
-        monitor.deactivate()
+        monitor.deactivate(notifyingOthers: true)
         XCTAssertEqual(interruptions, 0)
         XCTAssertTrue(PlatformAudioOutput.makeMonitor() is MacAudioOutputMonitor)
     }

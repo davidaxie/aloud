@@ -82,7 +82,7 @@ final class IdleEngineStopTests: XCTestCase {
     }
 
     /// The idle stop stops the engine, then gives the session back (an
-    /// iPhone's notifyOthersOnDeactivation; offline there is none). Play
+    /// iPhone's; offline there is none). Play
     /// claims it again and reads on from the same sentence's start: what
     /// lock-screen Play after a long pause does.
     func testTheIdleStopLetsTheSessionGoAndPlayClaimsItAgain() async throws {
@@ -106,6 +106,94 @@ final class IdleEngineStopTests: XCTestCase {
         XCTAssertEqual(rig.events[eventMark...].first(where: Self.isScheduled),
                        .scheduled(sentence: cue, voiceID: PlaybackTestRig.voiceA.id),
                        "from the same sentence's start")
+    }
+
+    /// G004: after a pause (a lock-screen Pause, AirPods, a sleep stop) the
+    /// session goes quietly: an app Aloud interrupted (Music) is never told
+    /// it may resume, so it can't start by itself a minute later.
+    func testAPauseGivesTheSessionBackWithoutWakingAnotherApp() async throws {
+        let (rig, clock) = try await startReading()
+        rig.controller.pause()
+        clock.advance(by: try XCTUnwrap(PlatformTuning.idleEngineStopDelay))
+        XCTAssertEqual(rig.audioSession.deactivations, rig.controller.rendersOffline ? 0 : 1)
+        XCTAssertEqual(rig.audioSession.notifyingDeactivations, 0, "a pause never hands the audio on")
+    }
+
+    /// G004: once the book has been heard to its end, listening is over:
+    /// the session goes, and an app Aloud interrupted may take the audio
+    /// back up. Not under the sleep timer's End-of-book fade: the listener
+    /// may be asleep.
+    func testTheBooksEndLetsAnInterruptedAppResume() async throws {
+        for sleepFade in [false, true] {
+            let rig = PlaybackTestRig(sentences: 4, clipDuration: 1)
+            let clock = IdleStopClock()
+            clock.drive(rig.controller)
+            rig.loadDefault(at: 3)
+            rig.controller.play()
+            try await rig.waitUntilPlayingOrSkip()
+            if sleepFade { rig.controller.rampOutputVolume(to: 0, over: 0.5) }
+            let ended = await rig.waitUntil { rig.controller.status == .ended }
+            XCTAssertTrue(ended)
+            clock.advance(by: try XCTUnwrap(PlatformTuning.idleEngineStopDelay))
+            XCTAssertFalse(rig.controller.isEngineRunning)
+            let notifies = rig.controller.rendersOffline || sleepFade ? 0 : 1
+            XCTAssertEqual(rig.audioSession.notifyingDeactivations, notifies,
+                           sleepFade ? "under the sleep fade" : "heard to the end")
+        }
+    }
+
+    /// G007: paused in the background (from the lock screen), the idle
+    /// stop frees the natural voice before iOS can suspend the process,
+    /// where no memory warning would reach it. A Mac keeps it (macOS never
+    /// ends an app for its memory), and so does a paused app on screen.
+    func testInTheBackgroundTheIdleStopFreesTheNaturalVoice() async throws {
+        for background in [false, true] {
+            let neural = PlaybackTestRig.FakeNeuralEngine(warm: true)
+            let rig = PlaybackTestRig(sentences: 40, clipDuration: 1, neural: neural)
+            let clock = IdleStopClock()
+            clock.drive(rig.controller)
+            rig.controller.voice = PlaybackTestRig.michael
+            rig.loadDefault(at: 3)
+            rig.controller.play()
+            try await rig.waitUntilPlayingOrSkip()
+            rig.appActive = !background
+            rig.controller.pause()
+            XCTAssertTrue(neural.isWarm)
+            clock.advance(by: try XCTUnwrap(PlatformTuning.idleEngineStopDelay))
+            XCTAssertEqual(neural.isWarm, !(background && PlatformTuning.releasesNeuralOnBackground),
+                           background ? "in the background" : "on screen")
+        }
+    }
+
+    /// G023: once the idle stop has given the session back, iOS tells it
+    /// nothing about a call. A Play refused by that call is an
+    /// interruption, but no end will come to resume it: nothing is
+    /// promised, the reason is said at once, and Play after the call reads
+    /// on.
+    func testAPlayRefusedAfterTheReleasePromisesNoResume() async throws {
+        let (rig, clock) = try await startReading()
+        try XCTSkipIf(rig.controller.rendersOffline, "offline there is no session to claim")
+        rig.controller.pause()
+        clock.advance(by: try XCTUnwrap(PlatformTuning.idleEngineStopDelay))
+        XCTAssertEqual(rig.audioSession.deactivations, 1)
+
+        rig.audioSession.activationError = AudioOutputHeldElsewhere()
+        rig.clearRecordings()
+        rig.controller.play()
+        let settled = await rig.waitUntil { rig.statuses.contains(.paused) || rig.statuses.contains(.error) }
+        XCTAssertTrue(settled)
+        XCTAssertEqual(rig.controller.status, .paused, "an interruption, not a failure")
+        XCTAssertEqual(rig.controller.stopped, PlaybackStop(reason: .interrupted, documentID: rig.document.id))
+        XCTAssertEqual(rig.announcements, [StopReason.interrupted.spokenText], "said now: no end will come")
+
+        // Even a stray end resumes nothing it never promised.
+        rig.audioSession.activationError = nil
+        rig.audioSession.onInterruption?(.ended(shouldResume: true))
+        XCTAssertEqual(rig.controller.status, .paused)
+
+        let mark = rig.statuses.count
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip(after: mark)
     }
 
     /// An interruption's pause keeps the session past the idle stop, so the

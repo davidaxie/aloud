@@ -28,7 +28,9 @@ enum PlatformTuning {
     /// engine keeps iOS from suspending a paused Aloud in the background,
     /// rendering silence all night, and keeps the audio from an app it
     /// interrupted; a minute after playback stops the engine stops and the
-    /// session goes (`notifyOthersOnDeactivation`). A shorter pause still
+    /// session goes, quietly after a pause (that app is told it may resume
+    /// only at the book's end), and a natural voice paused in the
+    /// background goes with it. A shorter pause still
     /// resumes mid-sentence; a longer one reads on from the sentence start,
     /// and lock-screen Play claims the session again on the way.
     static let idleEngineStopDelay: TimeInterval? = 60
