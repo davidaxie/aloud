@@ -189,11 +189,13 @@ struct ModelDownloadView: View {
 
     /// What a cancelled or failed download staged stays for the next
     /// attempt, unseen by the size on disk. Settings' card can remove it
-    /// (R21), confirming first as the installed voice's Remove does.
+    /// (R21), confirming first as the installed voice's Remove does. So it
+    /// can installed files found damaged, which stay on disk until Download
+    /// again replaces them, so a Download is never the only way to free them.
     @ViewBuilder
     private var removePartialDownload: some View {
-        let staged = manager.stagedBytes
-        if showsInstalledState, staged > 0 {
+        let removable = manager.removableBytes
+        if showsInstalledState, removable > 0 {
             Button {
                 isConfirmingRemovePartial = true
             } label: {
@@ -205,13 +207,14 @@ struct ModelDownloadView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityIdentifier("model.removePartial")
-            .confirmationDialog(NaturalVoiceCopy.removePartialTitle,
+            .confirmationDialog(manager.state == .failed(.damaged)
+                                    ? NaturalVoiceCopy.removeDamagedTitle : NaturalVoiceCopy.removePartialTitle,
                                 isPresented: $isConfirmingRemovePartial,
                                 titleVisibility: .visible) {
                 Button("Remove Download", role: .destructive) { manager.deleteModel() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(NaturalVoiceCopy.removePartialMessage(ModelManager.formattedSize(staged)))
+                Text(NaturalVoiceCopy.removePartialMessage(ModelManager.formattedSize(removable)))
             }
         }
     }
@@ -245,7 +248,7 @@ struct ModelDownloadView: View {
     /// The whole line is the retry: "Download failed · Try again". Too little
     /// space checks again, and on cellular the prompt asks first.
     private func retry(_ failure: ModelManager.DownloadFailure) -> some View {
-        let copy = NaturalVoiceCopy.failure(failure)
+        let copy = NaturalVoiceCopy.failure(failure, need: manager.spaceNeeded)
         return Button {
             requestDownload()
         } label: {
@@ -263,7 +266,7 @@ struct ModelDownloadView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .accessibilityLabel(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(failure)))
+        .accessibilityLabel(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(failure, need: manager.spaceNeeded)))
         .accessibilityIdentifier("model.failure")
     }
 

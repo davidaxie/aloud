@@ -161,7 +161,13 @@ final class ModelManager: ObservableObject {
     /// a cancel or a failure needs that much less.
     nonisolated static func hasRoom(freeBytes: Int64?, stagedBytes: Int64 = 0) -> Bool {
         guard let freeBytes else { return true }
-        return freeBytes >= requiredFreeBytes - max(0, stagedBytes)
+        return freeBytes >= freeBytesNeeded(stagedBytes: stagedBytes)
+    }
+
+    /// The free space a download needs with `stagedBytes` already on disk:
+    /// what the space check asks for, and what its line names.
+    nonisolated static func freeBytesNeeded(stagedBytes: Int64 = 0) -> Int64 {
+        max(0, requiredFreeBytes - max(0, stagedBytes))
     }
 
     /// The pinned files staged in `staging` at their exact size: what an
@@ -303,6 +309,11 @@ final class ModelManager: ObservableObject {
 
     @Published private(set) var state: ModelState = .notInstalled
 
+    /// The free space the last space check asked for, set as it fails, so
+    /// "need … free" names the check's own figure. Staged files change only
+    /// by a Remove or a new attempt, and both leave `.failed(.notEnoughSpace)`.
+    private(set) var spaceNeeded: Int64 = ModelManager.requiredFreeBytes
+
     /// Files on disk that the install record doesn't vouch for are being
     /// hashed ("Checking voice files…"). Meanwhile `state` stays
     /// `.notInstalled`, so nothing engages or warms the engine on unverified
@@ -341,11 +352,27 @@ final class ModelManager: ObservableObject {
     /// hashes them rather than fetching them again.
     var stagedBytes: Int64 { Self.stagedBytes(in: stagingDirectory) }
 
-    /// The waiting line: a run allowed onto cellular waits for any
-    /// connection, a Wi-Fi-only run for Wi-Fi.
-    var waitingLine: String {
-        allowsCellularThisRun ? NaturalVoiceCopy.waitingForConnection : NaturalVoiceCopy.waitingForWiFi
+    /// What Settings' Remove frees short of an installed voice: what an
+    /// attempt staged, and after a damage report the installed files too,
+    /// which stay on disk until Download again replaces them.
+    var removableBytes: Int64 {
+        guard state == .failed(.damaged), ownsInstallDirectory else { return stagedBytes }
+        return stagedBytes + sizeOnDisk
     }
+
+    /// The waiting line: a run allowed onto cellular waits for any
+    /// connection, a Wi-Fi-only run for Wi-Fi, unless a costly Wi-Fi (Low
+    /// Data Mode, a hotspot) is what holds it.
+    var waitingLine: String {
+        if allowsCellularThisRun { return NaturalVoiceCopy.waitingForConnection }
+        return pathSource.isExpensiveOrConstrained && !pathSource.usesCellular
+            ? NaturalVoiceCopy.waitingOnMeteredNetwork : NaturalVoiceCopy.waitingForWiFi
+    }
+
+    /// R5's prompt and its message for the path the download would take:
+    /// "on cellular?" only over cellular.
+    var cellularPrompt: String { NaturalVoiceCopy.cellularPrompt(onCellular: pathSource.usesCellular) }
+    var cellularPromptMessage: String { NaturalVoiceCopy.cellularPromptMessage(onCellular: pathSource.usesCellular) }
 
     /// A Wi-Fi-only run waiting on a costly network that could carry it:
     /// its Download raises R5's prompt again, and confirming moves the run
@@ -954,8 +981,9 @@ final class ModelManager: ObservableObject {
         clearActiveTask()
         cancelQueuedTasks()
         ModelDownloadRecord.clear(from: defaults)
+        if failure == .notEnoughSpace { spaceNeeded = Self.freeBytesNeeded(stagedBytes: stagedBytes) }
         state = .failed(failure)
-        announce(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(failure)))
+        announce(NaturalVoiceCopy.spoken(NaturalVoiceCopy.failureLine(failure, need: spaceNeeded)))
     }
 
     private func removeOwnedModelFiles() {
@@ -1406,6 +1434,7 @@ private final class SharedNetworkPath: NetworkPathSource, @unchecked Sendable {
 
     var isExpensiveOrConstrained: Bool { hub.source.isExpensiveOrConstrained }
     var allowsWiFiOnlyTransfer: Bool { hub.source.allowsWiFiOnlyTransfer }
+    var usesCellular: Bool { hub.source.usesCellular }
     var hasPath: Bool { hub.source.hasPath }
 
     func setChangeHandler(_ handler: @escaping @Sendable () -> Void) {

@@ -239,6 +239,12 @@ enum NaturalVoiceCopy {
     /// The confirmation before a download on a costly network: on the
     /// iPhone, "Download 353 MB on cellular?".
     static var cellularPrompt: String { DeviceCopy.meteredPrompt }
+    /// The prompt for the path the download would take: "on cellular?"
+    /// only over cellular. A costly Wi-Fi (Low Data Mode, another phone's
+    /// Personal Hotspot) is asked about as metered, never as cellular.
+    static func cellularPrompt(onCellular: Bool) -> String {
+        onCellular ? DeviceCopy.meteredPrompt : DeviceCopy.meteredNetworkPrompt
+    }
     static let privacyLine = "Downloads once from Hugging Face. Nothing about you is sent."
     /// The Mac card's promise under the offer (M17).
     static let beforeFlight = "Download before you fly. After that, everything works offline."
@@ -251,8 +257,12 @@ enum NaturalVoiceCopy {
     }
     /// Under the cellular prompt: the costly network, where the prompt
     /// doesn't name it (`DeviceCopy.meteredDetail`), then the privacy line.
-    static var cellularPromptMessage: String {
-        DeviceCopy.meteredDetail.map { "\($0) \(privacyLine)" } ?? privacyLine
+    static var cellularPromptMessage: String { cellularPromptMessage(onCellular: true) }
+    /// Under `cellularPrompt(onCellular:)`: a costly Wi-Fi is named, as the
+    /// prompt doesn't name it.
+    static func cellularPromptMessage(onCellular: Bool) -> String {
+        let detail = onCellular ? DeviceCopy.meteredDetail : DeviceCopy.meteredNetworkDetail
+        return detail.map { "\($0) \(privacyLine)" } ?? privacyLine
     }
     static func downloading(_ fraction: Double) -> String {
         "Downloading natural voice · \(min(max(Int(fraction * 100), 0), 100))%"
@@ -263,12 +273,18 @@ enum NaturalVoiceCopy {
     /// A Wi-Fi-only download with no free network: on the iPhone,
     /// "Download paused · waiting for Wi-Fi".
     static var waitingForWiFi: String { DeviceCopy.waitingForNetwork }
+    /// A Wi-Fi-only download held back by a costly Wi-Fi: Wi-Fi isn't
+    /// missing, so the line names what holds it.
+    static let waitingOnMeteredNetwork = "Download paused · Low Data Mode or hotspot"
     /// A download allowed onto a costly network, with no network at all.
     static let waitingForConnection = "Download paused · waiting for a connection"
     /// Beside the Wi-Fi wait on a costly network: raises the cellular prompt.
     static let continueNow = "Continue Now"
     /// Removing what a cancelled or failed download staged.
     static let removePartialTitle = "Remove the partial download?"
+    /// Removing installed files found damaged, which stay on disk until
+    /// Download again replaces them.
+    static let removeDamagedTitle = "Remove the damaged voice files?"
     static func removePartialMessage(_ size: String) -> String {
         "Frees \(size). The next download starts over."
     }
@@ -277,11 +293,15 @@ enum NaturalVoiceCopy {
     static func onDevice(_ size: String) -> String { "\(size) \(DeviceCopy.onDevice) · works offline" }
 
     /// A failure's line in two parts: what happened, then what to do (an
-    /// action when the line itself retries, as on the card).
-    static func failure(_ failure: ModelManager.DownloadFailure) -> (status: String, detail: String, detailIsAction: Bool) {
+    /// action when the line itself retries, as on the card). Too little
+    /// space names `need`, the free space the check asked for
+    /// (`ModelManager.spaceNeeded`): less than the whole requirement once
+    /// an earlier attempt staged files.
+    static func failure(_ failure: ModelManager.DownloadFailure,
+                        need: Int64 = ModelManager.requiredFreeBytes) -> (status: String, detail: String, detailIsAction: Bool) {
         switch failure {
         case .notEnoughSpace:
-            return ("Not enough space", "need \(ModelManager.formattedSize(ModelManager.requiredFreeBytes)) free", false)
+            return ("Not enough space", "need \(ModelManager.formattedSize(need)) free", false)
         case .interrupted:
             return ("Download failed", "Try again", true)
         case .damaged:
@@ -289,8 +309,9 @@ enum NaturalVoiceCopy {
         }
     }
 
-    static func failureLine(_ failure: ModelManager.DownloadFailure) -> String {
-        let copy = Self.failure(failure)
+    static func failureLine(_ failure: ModelManager.DownloadFailure,
+                            need: Int64 = ModelManager.requiredFreeBytes) -> String {
+        let copy = Self.failure(failure, need: need)
         return "\(copy.status) · \(copy.detail)"
     }
 
@@ -299,9 +320,10 @@ enum NaturalVoiceCopy {
     /// offer up, and the line then says so (R21), still naming the voice:
     /// on the card, with no Download beside it, a bare "Not enough space"
     /// read as if the book or its storage were the problem.
-    static func offerLine(modelState: ModelManager.ModelState) -> String {
+    static func offerLine(modelState: ModelManager.ModelState,
+                          need: Int64 = ModelManager.requiredFreeBytes) -> String {
         guard modelState == .failed(.notEnoughSpace) else { return offer }
-        let space = failure(.notEnoughSpace)
+        let space = failure(.notEnoughSpace, need: need)
         return "Natural voice · \(space.status.lowercased()) · \(space.detail)"
     }
 

@@ -181,6 +181,14 @@ final class ContinueCardStateTests: XCTestCase {
         XCTAssertEqual(ContinueListeningCopy.label(title: document.title, author: document.author) + ", " + spoken,
                        "Continue listening, Gatsby, F. Scott Fitzgerald, Natural voice, not enough space, need 707 MB free",
                        "VoiceOver hears whose space is short")
+        // H043: an earlier attempt staged model.onnx, so the check asked for
+        // less, and the card names the check's own figure.
+        XCTAssertEqual(ContinueListeningCopy.subtitle(for: document, rate: 1, stop: nil, offersNaturalVoice: offers,
+                                                      modelState: lacking, spaceNeeded: 380_988_269),
+                       "Natural voice · not enough space · need 381 MB free")
+        XCTAssertEqual(ContinueListeningCopy.spokenSubtitle(for: document, rate: 1, stop: nil, offersNaturalVoice: offers,
+                                                            modelState: lacking, spaceNeeded: 380_988_269),
+                       "Natural voice, not enough space, need 381 MB free")
         // Download found room: the plain offer again.
         XCTAssertEqual(ContinueListeningCopy.subtitle(for: document, rate: 1, stop: nil,
                                                       offersNaturalVoice: true, modelState: .notInstalled),

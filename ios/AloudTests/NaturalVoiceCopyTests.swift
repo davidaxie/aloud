@@ -20,6 +20,25 @@ final class NaturalVoiceCopyTests: XCTestCase {
                        "Downloads once from Hugging Face. Nothing about you is sent.")
     }
 
+    /// H006: "on cellular?" only over cellular. A costly Wi-Fi (Low Data
+    /// Mode, another phone's Personal Hotspot) is asked about as metered,
+    /// the message names it, and its wait never says Wi-Fi is missing.
+    func testACostlyWiFiIsNeverCalledCellular() {
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt(onCellular: true), NaturalVoiceCopy.cellularPrompt)
+        XCTAssertEqual(NaturalVoiceCopy.cellularPromptMessage(onCellular: true), NaturalVoiceCopy.cellularPromptMessage)
+        XCTAssertEqual(NaturalVoiceCopy.cellularPrompt(onCellular: false), "Download 353 MB on a metered connection?")
+        #if os(iOS)
+        XCTAssertEqual(NaturalVoiceCopy.cellularPromptMessage(onCellular: false),
+                       "This Wi-Fi is a Personal Hotspot or uses Low Data Mode. "
+                       + "Downloads once from Hugging Face. Nothing about you is sent.")
+        #else
+        XCTAssertEqual(NaturalVoiceCopy.cellularPromptMessage(onCellular: false), NaturalVoiceCopy.cellularPromptMessage)
+        #endif
+        XCTAssertEqual(NaturalVoiceCopy.waitingOnMeteredNetwork, "Download paused \u{00B7} Low Data Mode or hotspot")
+        XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingOnMeteredNetwork),
+                       "Download paused, Low Data Mode or hotspot")
+    }
+
     /// C1: the lines that name the device or its network come from the
     /// platform's copy, and on the iPhone read exactly as they always have.
     /// The iPhone prompt's message is the privacy line alone, since

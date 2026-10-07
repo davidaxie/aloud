@@ -72,6 +72,12 @@ final class ListeningFormatTests: XCTestCase {
         XCTAssertEqual(ListeningFormat.rate(2.5), "2.5×")
         XCTAssertEqual(ListeningFormat.rate(1.2499999), "1.25×", "rounded to the hundredth")
         XCTAssertEqual(ListeningFormat.chipTitle(voice: michael, rate: 1.25), "Michael · 1.25×")
+        #if os(iOS)
+        // H058: Settings' row says the chip's value without its middle dot,
+        // which VoiceOver reads aloud as a word, after the visible title.
+        XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: michael, rate: 1.25), "Voice & speed, Michael, 1.25×")
+        XCTAssertFalse(SettingsView.listeningRowSpokenLabel(voice: michael, rate: 1.25).contains("\u{00B7}"))
+        #endif
     }
 
     func testSpokenRateIsWords() throws {

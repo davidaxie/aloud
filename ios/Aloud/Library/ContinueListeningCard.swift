@@ -19,17 +19,21 @@ enum ContinueListeningCopy {
     /// reads the offer row's line, so after a failed space check the card
     /// says so instead of advertising the download that just failed (R21).
     static func subtitle(for document: LibraryDocument, rate: Double, stop: StopReason?,
-                         offersNaturalVoice: Bool, modelState: ModelManager.ModelState) -> String {
+                         offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
+                         spaceNeeded: Int64 = ModelManager.requiredFreeBytes) -> String {
         if let stop { return stop.text }
-        if offersNaturalVoice { return NaturalVoiceCopy.offerLine(modelState: modelState) }
+        if offersNaturalVoice { return NaturalVoiceCopy.offerLine(modelState: modelState, need: spaceNeeded) }
         return document.listeningSubtitle(rate: rate)
     }
 
     /// The same line as VoiceOver says it.
     static func spokenSubtitle(for document: LibraryDocument, rate: Double, stop: StopReason?,
-                               offersNaturalVoice: Bool, modelState: ModelManager.ModelState) -> String {
+                               offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
+                               spaceNeeded: Int64 = ModelManager.requiredFreeBytes) -> String {
         if let stop { return stop.spokenText }
-        if offersNaturalVoice { return NaturalVoiceCopy.spoken(NaturalVoiceCopy.offerLine(modelState: modelState)) }
+        if offersNaturalVoice {
+            return NaturalVoiceCopy.spoken(NaturalVoiceCopy.offerLine(modelState: modelState, need: spaceNeeded))
+        }
         return document.spokenListeningSubtitle(rate: rate)
     }
 
@@ -68,13 +72,16 @@ struct ContinueListeningCard<Actions: View>: View {
     private let stop: StopReason?
     private let offersNaturalVoice: Bool
     private let modelState: ModelManager.ModelState
+    /// `ModelManager.spaceNeeded`, for the offer's too-little-space line.
+    private let spaceNeeded: Int64
     private let opensPlaying: Bool
     private let onOpen: () -> Void
     private let onTogglePlayback: () -> Void
     private let actions: Actions
 
     init(document: LibraryDocument, rate: Double, playState: PlayButtonState, stop: StopReason?,
-         offersNaturalVoice: Bool, modelState: ModelManager.ModelState, opensPlaying: Bool,
+         offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
+         spaceNeeded: Int64 = ModelManager.requiredFreeBytes, opensPlaying: Bool,
          onOpen: @escaping () -> Void,
          onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
         self.document = document
@@ -83,6 +90,7 @@ struct ContinueListeningCard<Actions: View>: View {
         self.stop = stop
         self.offersNaturalVoice = offersNaturalVoice
         self.modelState = modelState
+        self.spaceNeeded = spaceNeeded
         self.opensPlaying = opensPlaying
         self.onOpen = onOpen
         self.onTogglePlayback = onTogglePlayback
@@ -96,7 +104,8 @@ struct ContinueListeningCard<Actions: View>: View {
             ShelfHeroCard(eyebrow: ContinueListeningCopy.eyebrow, title: document.title,
                           subtitle: ContinueListeningCopy.subtitle(for: document, rate: rate, stop: stop,
                                                                    offersNaturalVoice: offersNaturalVoice,
-                                                                   modelState: modelState)) {
+                                                                   modelState: modelState,
+                                                                   spaceNeeded: spaceNeeded)) {
                 DocumentCoverView(document: document, showsProgress: false)
             } accessory: {
                 Color.clear
@@ -111,7 +120,8 @@ struct ContinueListeningCard<Actions: View>: View {
             isSpeaking: isSpeaking,
             spokenSubtitle: ContinueListeningCopy.spokenSubtitle(for: document, rate: rate, stop: stop,
                                                                  offersNaturalVoice: offersNaturalVoice,
-                                                                 modelState: modelState)))
+                                                                 modelState: modelState,
+                                                                 spaceNeeded: spaceNeeded)))
         .accessibilityHint(ContinueListeningCopy.hint(isSpeaking: isSpeaking, opensPlaying: opensPlaying))
         .accessibilityActions { actions }
         .accessibilityIdentifier("library.continue")

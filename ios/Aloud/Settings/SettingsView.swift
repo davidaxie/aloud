@@ -19,6 +19,7 @@ struct SettingsView: View {
                 } label: {
                     listeningRowLabel
                 }
+                .accessibilityLabel(Self.listeningRowSpokenLabel(voice: playback.voice, rate: model.globalRate))
                 .accessibilityInputLabels([Text(ListeningCopy.title), Text("Voice"), Text("Speed")])
                 .accessibilityIdentifier("settings.listening")
 
@@ -71,6 +72,13 @@ struct SettingsView: View {
         Text(title)
             .font(Theme.font(.body))
             .foregroundStyle(Theme.text)
+    }
+
+    /// The row as VoiceOver says it: the title first, so Voice Control still
+    /// matches it, then the value as the player chip says it, without the
+    /// middle dot VoiceOver would read aloud as a word.
+    nonisolated static func listeningRowSpokenLabel(voice: TtsVoice, rate: Double) -> String {
+        "\(ListeningCopy.title), \(ListeningFormat.shortName(voice)), \(ListeningFormat.rate(rate))"
     }
 
     /// "Voice & speed" with the app-wide "Michael · 1.25×" after it; at

@@ -45,7 +45,7 @@ struct NaturalVoiceOfferRow: View {
 
     /// The Continue card's rule too, so both surfaces read the same line.
     private var line: String {
-        NaturalVoiceCopy.offerLine(modelState: manager.state)
+        NaturalVoiceCopy.offerLine(modelState: manager.state, need: manager.spaceNeeded)
     }
 
     /// The offer takes the chapter line's place, so its text still opens
@@ -104,7 +104,7 @@ struct NaturalVoiceOfferRow: View {
 }
 
 extension View {
-    /// The one metered-download confirmation (`NaturalVoiceCopy.cellularPrompt`).
+    /// The one metered-download confirmation (`ModelManager.cellularPrompt`).
     /// Every Download button that gets `.needsCellularConfirmation` presents
     /// this, and so does the manager's late `cellularQuestion` for `asker`,
     /// the id the button passed to `requestDownload(asker:)`.
@@ -134,13 +134,13 @@ private struct NaturalVoiceCellularPrompt: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog(NaturalVoiceCopy.cellularPrompt,
+            .confirmationDialog(manager.cellularPrompt,
                                 isPresented: isAsking,
                                 titleVisibility: .visible) {
                 Button(NaturalVoiceCopy.download) { manager.startDownload(allowingCellular: true) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(NaturalVoiceCopy.cellularPromptMessage)
+                Text(manager.cellularPromptMessage)
             }
     }
 }

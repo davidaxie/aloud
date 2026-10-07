@@ -7,6 +7,10 @@ import Network
 /// is waiting for Wi-Fi (R21).
 protocol NetworkPathSource: AnyObject, Sendable {
     var isExpensiveOrConstrained: Bool { get }
+    /// Whether the path runs over cellular. A costly path that doesn't is
+    /// a Wi-Fi with Low Data Mode on or another phone's Personal Hotspot,
+    /// and the copy never calls that cellular. An unknown path reads false.
+    var usesCellular: Bool { get }
     /// Whether the Wi-Fi-only session can move bytes right now. An unknown
     /// path reads true, so nothing claims "waiting" before the first update.
     var allowsWiFiOnlyTransfer: Bool { get }
@@ -20,6 +24,12 @@ protocol NetworkPathSource: AnyObject, Sendable {
     /// the network before the first call (M4), so a launch never does.
     /// Returns at once: the first path arrives through the change handler.
     func start()
+}
+
+extension NetworkPathSource {
+    /// A source that can't tell reads a costly path as cellular, the
+    /// iPhone's usual costly path.
+    var usesCellular: Bool { isExpensiveOrConstrained }
 }
 
 /// The live path, from NWPathMonitor. Building it watches nothing: the
@@ -75,6 +85,13 @@ final class SystemNetworkPath: NetworkPathSource, @unchecked Sendable {
         return path.status == .satisfied && !path.isExpensive && !path.isConstrained
     }
 
+    /// Satisfied over a cellular interface: Low Data Mode or a hotspot
+    /// over Wi-Fi is costly, never cellular.
+    var usesCellular: Bool {
+        guard let path = currentPath else { return false }
+        return path.status == .satisfied && path.usesInterfaceType(.cellular)
+    }
+
     var hasPath: Bool { currentPath != nil }
 
     func setChangeHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -101,14 +118,18 @@ final class FixedNetworkPath: NetworkPathSource {
 
     let isExpensiveOrConstrained: Bool
     let allowsWiFiOnlyTransfer: Bool
+    let usesCellular: Bool
     /// Known from the start, so a Download decides at once.
     let hasPath = true
 
     /// `wifiAvailable` defaults to the opposite of an expensive path: a
     /// cellular-only phone has no Wi-Fi, an inexpensive path is Wi-Fi.
-    init(isExpensiveOrConstrained: Bool, wifiAvailable: Bool? = nil) {
+    /// `usesCellular` defaults to an expensive path too; false with an
+    /// expensive path is a Low Data or hotspot Wi-Fi.
+    init(isExpensiveOrConstrained: Bool, wifiAvailable: Bool? = nil, usesCellular: Bool? = nil) {
         self.isExpensiveOrConstrained = isExpensiveOrConstrained
         allowsWiFiOnlyTransfer = wifiAvailable ?? !isExpensiveOrConstrained
+        self.usesCellular = usesCellular ?? isExpensiveOrConstrained
     }
 
     /// A fixed path never changes.

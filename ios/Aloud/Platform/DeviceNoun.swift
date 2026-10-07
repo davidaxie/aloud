@@ -38,6 +38,11 @@ enum DeviceCopy {
     /// A line under that prompt naming the costly network. None on the
     /// iPhone, where "cellular" already says it.
     static let meteredDetail: String? = nil
+    /// The same question on a costly path that isn't cellular: a Wi-Fi
+    /// with Low Data Mode on, or another phone's Personal Hotspot.
+    static var meteredNetworkPrompt: String { "Download \(ModelManager.downloadSizeText) on a metered connection?" }
+    /// Under that prompt, what makes the Wi-Fi costly.
+    static let meteredNetworkDetail: String? = "This Wi-Fi is a Personal Hotspot or uses Low Data Mode."
     /// The download waits for a network that costs nothing.
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi"
     /// Where the installed voice lives: "353 MB on device · works offline".
@@ -62,6 +67,9 @@ enum DeviceCopy {
     /// A Mac has no cellular radio: the costly path is a phone's hotspot or
     /// a network the listener marked Low Data.
     static let meteredDetail: String? = "Your Mac is using a Personal Hotspot or Low Data Mode."
+    /// Every costly path a Mac has is one of those: the same question.
+    static var meteredNetworkPrompt: String { meteredPrompt }
+    static let meteredNetworkDetail: String? = meteredDetail
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi or Ethernet"
     /// "353 MB on this Mac · works offline" (M17).
     static let onDevice = "on this Mac"

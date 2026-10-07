@@ -139,6 +139,7 @@ final class NetworkBoundaryTests: XCTestCase {
         XCTAssertFalse(path.isMonitoring)
         XCTAssertFalse(path.isExpensiveOrConstrained)
         XCTAssertTrue(path.allowsWiFiOnlyTransfer)
+        XCTAssertFalse(path.usesCellular, "an unknown path never says cellular")
     }
 
     // MARK: - First use

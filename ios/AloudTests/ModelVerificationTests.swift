@@ -378,6 +378,8 @@ final class ModelVerificationTests: XCTestCase {
         XCTAssertEqual(manager.waitingLine, NaturalVoiceCopy.waitingForWiFi)
         XCTAssertTrue(manager.canContinueOnCellular)
         XCTAssertEqual(manager.requestDownload(), .needsCellularConfirmation, "The prompt, not a silent no-op")
+        XCTAssertEqual(manager.cellularPrompt, NaturalVoiceCopy.cellularPrompt, "Over cellular, it says cellular")
+        XCTAssertEqual(manager.cellularPromptMessage, NaturalVoiceCopy.cellularPromptMessage)
 
         manager.startDownload(allowingCellular: true)
         XCTAssertEqual(manager.state, .downloading(0))
@@ -460,6 +462,70 @@ final class ModelVerificationTests: XCTestCase {
         await drain(manager)
         XCTAssertEqual(hasher.reads.sorted(), [model.name, voices.name])
         XCTAssertEqual(manager.state, .installed)
+    }
+
+    /// H006: a costly Wi-Fi (Low Data Mode, another phone's Personal
+    /// Hotspot) holds a Wi-Fi-only run back, but Wi-Fi isn't missing: the
+    /// line names what holds it, and the prompt never says cellular.
+    func testACostlyWiFiIsNamedNeverCalledCellular() async throws {
+        try writePinnedSizes(in: staging)
+        let manager = makeManager(CountingHasher(),
+                                  path: FixedNetworkPath(isExpensiveOrConstrained: true, usesCellular: false))
+
+        manager.startDownload()
+        XCTAssertEqual(manager.state, .waitingForWiFi(0))
+        XCTAssertEqual(manager.waitingLine, NaturalVoiceCopy.waitingOnMeteredNetwork)
+        XCTAssertEqual(announcements, [NaturalVoiceCopy.spoken(NaturalVoiceCopy.waitingOnMeteredNetwork)])
+        XCTAssertTrue(manager.canContinueOnCellular)
+        XCTAssertEqual(manager.requestDownload(), .needsCellularConfirmation)
+        XCTAssertEqual(manager.cellularPrompt, NaturalVoiceCopy.cellularPrompt(onCellular: false))
+        XCTAssertEqual(manager.cellularPromptMessage, NaturalVoiceCopy.cellularPromptMessage(onCellular: false))
+        XCTAssertFalse(manager.cellularPrompt.contains("cellular"), manager.cellularPrompt)
+        await drain(manager)
+    }
+
+    /// H042: installed files found damaged stay on disk, and Settings' card
+    /// can remove them without starting a download: nothing is staged, so
+    /// the staged size alone hid its Remove.
+    func testDamagedFilesAreRemovableWithoutADownload() throws {
+        try writeSparse(directory.appendingPathComponent(model.name), size: model.expectedBytes)
+        try writeSparse(directory.appendingPathComponent(voices.name), size: 28_200_960)
+        let manager = makeManager(CountingHasher())
+        XCTAssertEqual(manager.state, .failed(.damaged))
+        XCTAssertEqual(manager.stagedBytes, 0)
+        XCTAssertEqual(manager.removableBytes, model.expectedBytes + 28_200_960)
+
+        manager.deleteModel()
+        XCTAssertEqual(manager.state, .notInstalled)
+        XCTAssertFalse(manager.isInFlight, "Remove fetches nothing")
+        XCTAssertFalse(exists(directory.appendingPathComponent(model.name)))
+        XCTAssertFalse(exists(directory.appendingPathComponent(voices.name)))
+        XCTAssertEqual(manager.removableBytes, 0)
+    }
+
+    /// H043: the space line names the check's own figure. With model.onnx
+    /// staged a retry needs 381 MB, not the whole 707 MB; once Remove takes
+    /// the staged file, the whole 707 MB again.
+    func testTheSpaceLineNamesWhatTheCheckAskedFor() throws {
+        try writeSparse(staging.appendingPathComponent(model.name), size: model.expectedBytes)
+        let manager = makeManager(CountingHasher(), freeBytes: 350_000_000)
+
+        XCTAssertEqual(manager.requestDownload(), .notEnoughSpace)
+        XCTAssertEqual(manager.state, .failed(.notEnoughSpace))
+        XCTAssertEqual(manager.spaceNeeded, 380_988_269)
+        XCTAssertEqual(manager.spaceNeeded, ModelManager.freeBytesNeeded(stagedBytes: model.expectedBytes))
+        XCTAssertFalse(ModelManager.hasRoom(freeBytes: manager.spaceNeeded - 1, stagedBytes: model.expectedBytes))
+        XCTAssertTrue(ModelManager.hasRoom(freeBytes: manager.spaceNeeded, stagedBytes: model.expectedBytes))
+        XCTAssertEqual(announcements, ["Not enough space, need 381 MB free"])
+        XCTAssertEqual(NaturalVoiceCopy.failureLine(.notEnoughSpace, need: manager.spaceNeeded),
+                       "Not enough space · need 381 MB free")
+        XCTAssertEqual(NaturalVoiceCopy.offerLine(modelState: manager.state, need: manager.spaceNeeded),
+                       "Natural voice · not enough space · need 381 MB free")
+
+        manager.deleteModel()
+        XCTAssertEqual(manager.requestDownload(), .notEnoughSpace)
+        XCTAssertEqual(manager.spaceNeeded, ModelManager.requiredFreeBytes)
+        XCTAssertEqual(announcements.last, "Not enough space, need 707 MB free")
     }
 
     func testAWrongHashAtLaunchIsDamagedAndStaysOnDisk() async throws {

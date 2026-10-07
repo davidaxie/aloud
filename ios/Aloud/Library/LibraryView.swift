@@ -364,6 +364,7 @@ private struct ContinueHero<Actions: View>: View {
                               stop: playback.stopReason(for: document.id),
                               offersNaturalVoice: naturalVoiceOffer.isVisible,
                               modelState: modelManager.state,
+                              spaceNeeded: modelManager.spaceNeeded,
                               opensPlaying: playback.opensPlaying(document),
                               onOpen: onOpen,
                               onTogglePlayback: onTogglePlayback) {
