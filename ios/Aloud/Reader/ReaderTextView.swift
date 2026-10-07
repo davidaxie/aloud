@@ -81,7 +81,13 @@ struct ReaderTextView: UIViewRepresentable {
         let obscuredBottomChanged = coordinator.parent.obscuredBottom != obscuredBottom
         coordinator.parent = self
 
-        if coordinator.builtHash != content.contentHash || coordinator.builtFontSize != fontSize {
+        if coordinator.builtHash == content.contentHash, coordinator.builtFontSize != fontSize {
+            // A text-size step keeps the reader's place: the voice while
+            // following, else the passage at the top of the screen.
+            // Following is left as it was (mirrors the Mac's changeTextSize).
+            // The checks below then pick up anything else this update moved.
+            coordinator.reflowKeepingPlace(fontSize: fontSize)
+        } else if coordinator.builtHash != content.contentHash {
             coordinator.rebuild(content: content, fontSize: fontSize)
             // A fresh column starts on the voice.
             coordinator.lastFollowRequest = followRequest
@@ -139,7 +145,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// The traits the built string was set and colored for. A trait
         /// change that leaves them as built rebuilds nothing; a Bold Text
         /// flip reflows every line.
-        private var builtLook: TraitLook?
+        private(set) var builtLook: TraitLook?
         /// Whole-column builds, the costliest thing the reader makes (a
         /// trait flip must not pay for one it doesn't need). Test seam.
         private(set) var columnBuilds = 0
@@ -267,7 +273,15 @@ struct ReaderTextView: UIViewRepresentable {
             ]
             textView.accessibilitySentenceText = { [weak self] in self?.spokenSentence }
             textView.accessibilityHintText = { [weak self] in self?.colophonHint }
-            textView.onActivate = { [weak self] in self?.playFromHere() ?? false }
+            // Over the colophon double-tap does nothing, and says it was
+            // handled: a false would have VoiceOver fall back to a tap at
+            // the column's center, which plays whatever sentence is drawn
+            // there. The Play from here action still reports false.
+            textView.onActivate = { [weak self] in
+                guard let self else { return false }
+                if self.readsColophon { return true }
+                return self.playFromHere()
+            }
             textView.onMagicTap = { [weak self] in
                 guard let self else { return false }
                 self.parent.onMagicTap()
@@ -287,10 +301,10 @@ struct ReaderTextView: UIViewRepresentable {
         func rebuild(content: DocContent, fontSize: CGFloat) {
             guard let textView else { return }
             cancelGlide()
-            let built = ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
-                                                              isChapterBook: parent.isChapterBook,
-                                                              colophon: parent.colophon,
-                                                              traits: textView.traitCollection)
+            let built = Self.makeAttributedString(content: content, fontSize: fontSize,
+                                                  isChapterBook: parent.isChapterBook,
+                                                  colophon: parent.colophon,
+                                                  traits: textView.traitCollection)
             textView.attributedText = built.string
             sentenceRanges = built.sentenceRanges
             // A fresh column, a reopen included, shows the colophon in place:
@@ -322,39 +336,88 @@ struct ReaderTextView: UIViewRepresentable {
             }
         }
 
-        /// Dynamic colors resolve at attribute-set time in some paths; rebuilding on
-        /// light/dark flips keeps the column and highlight correct.
+        /// Times the column took a new look in place, with no rebuild
+        /// (`recolor`); for tests.
+        private(set) var columnRecolors = 0
+
+        /// Light/dark and Increase Contrast only recolor: the text's colors
+        /// resolve as they draw and each rule carries every look
+        /// (`ReaderInk.live(traits:)`), so the column redraws with no edit.
+        /// TextKit keeps its layout, and nothing is laid out again from the
+        /// top of the book, a long main-thread stall deep in one (the Mac's
+        /// G012). Bold Text swaps the serif's face and reflows the whole
+        /// book: that one rebuilds, keeping the reader's place
+        /// (`reflowKeepingPlace`).
         ///
-        /// Only a look the string wasn't built for rebuilds it, and never in
-        /// the background: there iOS flips light/dark and back just to take
-        /// the app switcher's snapshots, and each flip would set the whole
-        /// book again on the main thread. A real change made meanwhile is
-        /// caught when the app is active again (`appBecameActive`).
+        /// Only a look the column wasn't set for changes anything, and never
+        /// in the background: there iOS flips light/dark and back just to
+        /// take the app switcher's snapshots. A real change made meanwhile
+        /// is caught when the app is active again (`appBecameActive`).
         func rebuildForTraitChange() {
             guard builtHash == parent.content.contentHash, let textView else { return }
             let look = TraitLook(textView.traitCollection)
             guard look != builtLook, !isInBackground() else { return }
+            guard look.boldText != builtLook?.boldText else {
+                recolor(for: look)
+                return
+            }
+            reflowKeepingPlace(fontSize: parent.fontSize)
+        }
+
+        /// Takes `look` in place: each rule swaps to its variant for the
+        /// new traits (no storage edit), the page redraws, and the layers
+        /// colored once (the highlight, the underline, a colophon's veil)
+        /// take the new colors.
+        private func recolor(for look: TraitLook) {
+            guard let textView else { return }
+            builtLook = look
+            columnRecolors += 1
+            let traits = textView.traitCollection
+            let storage = textView.textStorage
+            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+                guard let attachment = value as? NSTextAttachment,
+                      let asset = attachment.image?.imageAsset else { return }
+                attachment.image = asset.image(with: traits)
+            }
+            Self.redraw(textView)
+            renderSentenceHighlight(animated: false)
+            renderWordUnderline(animated: false)
+            colophonVeil?.backgroundColor = UIColor(Theme.bg).resolvedColor(with: traits)
+        }
+
+        /// `view` and every view in it: TextKit 2 draws its fragments in
+        /// views of its own.
+        private static func redraw(_ view: UIView) {
+            view.setNeedsDisplay()
+            view.subviews.forEach(redraw)
+        }
+
+        /// Rebuilds for a change that reflows the book (a text-size step,
+        /// Bold Text) and keeps the reader's place: the voice while
+        /// following (the spoken word in a tall sentence), else the passage
+        /// at the top of the screen, laid out for real first (`putBack`).
+        /// Following is left as it was, so a reader who scrolled away to
+        /// another passage is never thrown back to the voice.
+        func reflowKeepingPlace(fontSize: CGFloat) {
+            guard let textView else { return }
+            let following = isFollowing
             let active = activeSentence
+            let oldSize = builtFontSize
             let offset = textView.contentOffset
-            let anchor = viewportAnchor()
-            let wasBoldText = builtLook?.boldText
-            rebuild(content: parent.content, fontSize: parent.fontSize)
-            // Light/dark and Increase Contrast only recolor (metrics are
-            // identical), so the passage on screen is put back where it was.
-            // Bold Text swaps the serif's face and reflows the whole book:
-            // the old offset would land a paused reader on another passage.
-            let reflowed = look.boldText != wasBoldText
-            if !reflowed {
-                follow.pendingPlacement = false   // trait flip preserves the passage instead
+            // The offset into the anchor's line scales with the text.
+            let anchor = following ? nil : viewportAnchor().map {
+                (character: $0.character, below: oldSize > 0 ? $0.below * fontSize / oldSize : $0.below)
+            }
+            rebuild(content: parent.content, fontSize: fontSize)
+            if !following {
+                follow.pendingPlacement = false   // the passage is put back instead
                 putBack(anchor, else: offset)
             }
             setActiveSentence(active, scroll: false)
             setActiveWord(parent.activeWord)
             setSpokenWord(parent.followWord, follows: false)
-            if reflowed {
-                // Back on the voice, placed once the new string has settled
-                // (mirrors the size-change rebuild).
-                isFollowing = true
+            if following {
+                // Back on the voice, placed once the new string has settled.
                 Task { @MainActor [weak self] in self?.placeActiveSentence() }
             }
         }
@@ -410,8 +473,8 @@ struct ReaderTextView: UIViewRepresentable {
             // Only once a column is built: the mark is always its tail.
             guard endMarkRange.length > 0, NSMaxRange(endMarkRange) == storage.length else { return }
             let appearing = shownColophon == nil && colophon != nil
-            let mark = ReaderColumnText.makeEndMark(colophon: colophon, fontSize: builtFontSize,
-                                                    traits: textView.traitCollection)
+            let mark = Self.makeEndMark(colophon: colophon, fontSize: builtFontSize,
+                                        traits: textView.traitCollection)
             storage.replaceCharacters(in: endMarkRange, with: mark)
             endMarkRange = NSRange(location: endMarkRange.location, length: mark.length)
             shownColophon = colophon
@@ -1230,7 +1293,9 @@ struct ReaderTextView: UIViewRepresentable {
 
         // MARK: Attributed string
 
-        /// The whole column, built by `ReaderColumnText` for `traits`.
+        /// The whole column, built by `ReaderColumnText` for `traits`, in
+        /// ink that takes a light/dark or contrast change without a rebuild
+        /// (`ReaderInk.live(traits:)`).
         static func makeAttributedString(content: DocContent, fontSize: CGFloat,
                                          isChapterBook: Bool = false,
                                          colophon: ReaderColophon? = nil,
@@ -1238,13 +1303,16 @@ struct ReaderTextView: UIViewRepresentable {
             -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
             ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
                                                   isChapterBook: isChapterBook, colophon: colophon,
-                                                  traits: traits)
+                                                  bold: traits.legibilityWeight == .bold,
+                                                  ink: .live(traits: traits))
         }
 
-        /// The end of the text (`ReaderColumnText.makeEndMark`).
+        /// The end of the text (`ReaderColumnText.makeEndMark`), in the same ink.
         static func makeEndMark(colophon: ReaderColophon?, fontSize: CGFloat,
                                 traits: UITraitCollection) -> NSAttributedString {
-            ReaderColumnText.makeEndMark(colophon: colophon, fontSize: fontSize, traits: traits)
+            ReaderColumnText.makeEndMark(colophon: colophon, fontSize: fontSize,
+                                         bold: traits.legibilityWeight == .bold,
+                                         ink: .live(traits: traits))
         }
     }
 }
@@ -1379,6 +1447,51 @@ struct TraitLook: Equatable {
         style = traits.userInterfaceStyle == .dark ? .dark : .light
         contrast = traits.accessibilityContrast == .high ? .high : .normal
         boldText = traits.legibilityWeight == .bold
+    }
+}
+
+// MARK: - Colors
+
+extension ReaderInk {
+    /// The theme's colors as they draw: each dynamic `UIColor` resolves
+    /// for the traits it is drawn under (light or dark, Increase Contrast or
+    /// not). Rule images can't resolve as they draw, so each carries all
+    /// four looks in its image asset, shown for `traits`; a change of look
+    /// swaps every rule for its variant (`Coordinator.recolor`) instead of
+    /// setting the whole book again.
+    static func live(traits: UITraitCollection) -> ReaderInk {
+        var rules: [String: UIImageAsset] = [:]
+        return ReaderInk(text: UIColor(Theme.text),
+                         textMuted: UIColor(Theme.textMuted),
+                         accent: UIColor(Theme.accent),
+                         lineStrong: UIColor(Theme.lineStrong),
+                         ruleImage: { size, color in
+                             // One asset per rule size and color: a book's
+                             // chapter openings share theirs.
+                             let key = "\(size.width)x\(size.height)-\(ObjectIdentifier(color))"
+                             if let asset = rules[key] { return asset.image(with: traits) }
+                             let asset = ruleAsset(size: size, color: color, scale: traits.displayScale)
+                             rules[key] = asset
+                             return asset.image(with: traits)
+                         })
+    }
+
+    /// A solid rule of `size` in `color`, drawn for each look a theme token
+    /// tells apart.
+    static func ruleAsset(size: CGSize, color: UIColor, scale: CGFloat) -> UIImageAsset {
+        let asset = UIImageAsset()
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            for contrast in [UIAccessibilityContrast.normal, .high] {
+                let look = UITraitCollection { traits in
+                    traits.userInterfaceStyle = style
+                    traits.accessibilityContrast = contrast
+                }
+                asset.register(PlatformRuleImage.make(size: size, color: color.resolvedColor(with: look),
+                                                      scale: scale),
+                               with: look)
+            }
+        }
+        return asset
     }
 }
 

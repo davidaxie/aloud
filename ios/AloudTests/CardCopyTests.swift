@@ -24,6 +24,26 @@ final class CardCopyTests: XCTestCase {
 
     // MARK: - The three forms
 
+    /// A Classics row shows the book's length at the app-wide speed, like
+    /// the featured card and the book's Library card once added. It read
+    /// 14 min at 2× beside a 7 min featured card (H016).
+    func testClassicsRowsReadTheirLengthAtTheAppWideSpeed() {
+        let cask = BookshelfBook(gutenbergID: 1063, title: "The Cask of Amontillado",
+                                 author: "Edgar Allan Poe", year: nil,
+                                 file: "1063-the-cask-of-amontillado.txt", words: 2317)
+        XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: 1), "Edgar Allan Poe · 14 min")
+        XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: 2), "Edgar Allan Poe · 7 min")
+        XCTAssertEqual(BookshelfView.rowLabel(for: cask, rate: 2),
+                       "The Cask of Amontillado, by Edgar Allan Poe, about 7 minutes")
+        for rate in [0.5, 1, 1.5, 2, 3] {
+            XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: rate),
+                           FeaturedClassic.subtitle(for: cask, rate: rate), "the featured card agrees at \(rate)×")
+        }
+        let added = doc(title: cask.title, author: cask.author, wordCount: cask.words)
+        XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: 2),
+                       "\(cask.author) · \(added.listeningSubtitle(rate: 2))", "the Library card agrees")
+    }
+
     /// The Great Gatsby, never started: 48,208 words at 1× is 292 minutes.
     func testAnUnstartedBookReadsItsLength() {
         let gatsby = doc(wordCount: 48_208)

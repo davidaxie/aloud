@@ -889,7 +889,8 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
     /// With Appearance on System, iOS flips light/dark and back while the
     /// app is in the background, to snapshot it for the app switcher. Each
     /// flip set the whole book again on the main thread; now neither does,
-    /// and a real change made meanwhile is rebuilt once the app is back.
+    /// and a real change made meanwhile is taken, in place, once the app is
+    /// back.
     func testTheAppSwitchersSnapshotFlipsRebuildNothing() throws {
         let (coordinator, textView) = try makeColumn()
         let builds = coordinator.columnBuilds
@@ -902,7 +903,9 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         textView.overrideUserInterfaceStyle = builtStyle
         textView.updateTraitsIfNeeded()
         coordinator.rebuildForTraitChange()
+        let recolors = coordinator.columnRecolors
         XCTAssertEqual(coordinator.columnBuilds, builds, "both snapshot flips leave the column as built")
+        XCTAssertEqual(coordinator.columnRecolors, recolors)
 
         coordinator.isInBackground = { false }
         coordinator.appBecameActive()
@@ -914,14 +917,15 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.columnBuilds, builds, "a real change waits for the app to be active")
         coordinator.isInBackground = { false }
         coordinator.appBecameActive()
-        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "and is rebuilt once it is")
+        XCTAssertEqual(coordinator.columnRecolors, recolors + 1, "and is taken once it is")
+        XCTAssertEqual(coordinator.columnBuilds, builds, "in place: a recolor never sets the book again")
     }
 
-    /// A light/dark flip rebuilds the column, which drops its layout. A
-    /// reader who scrolled away from the voice deep in a long book keeps
-    /// the passage they were reading: TextKit's estimate of everything
-    /// above it is thousands of points off, so the raw offset framed
-    /// another passage.
+    /// A light/dark flip deep in a long book keeps the passage on screen.
+    /// It used to rebuild the column and lay the book out again from the
+    /// top on the main thread (H017); now it only recolors, so TextKit
+    /// keeps its layout and the reader who scrolled away from the voice
+    /// keeps reading where they were.
     func testALightDarkFlipKeepsThePassageOnScreen() throws {
         let taps = Taps()
         let (coordinator, textView) = try makeColumn(count: 1_200, taps: taps)
@@ -943,10 +947,94 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
 
         guard flipAppearance(textView) else { throw XCTSkip("This host doesn't override traits outside a window") }
         coordinator.rebuildForTraitChange()
-        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "one rebuild for the flip")
+        XCTAssertEqual(coordinator.columnBuilds, builds, "no rebuild for the flip")
         runLayoutPasses(textView)
 
         XCTAssertFalse(coordinator.isFollowing)
         XCTAssertEqual(try sentenceMidScreen(), before, "the same passage is on screen")
+    }
+
+    /// A column whose reader scrolled away from the voice: the passage
+    /// around sentence 1,100 is on screen, following is off, and the voice
+    /// sits back at sentence 10.
+    private func readAwayFromTheVoice(taps: Taps) throws
+        -> (coordinator: ReaderTextView.Coordinator, textView: ReaderUITextView, sentenceAtTop: () throws -> Int) {
+        let (coordinator, textView) = try makeColumn(count: 1_200, taps: taps)
+        coordinator.isInBackground = { false }
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.setActiveSentence(1_100, scroll: true)
+        coordinator.resumeFollowing()
+        runLayoutPasses(textView)
+        coordinator.userTookOverScroll()   // the reader reads on there, not following
+        coordinator.setActiveSentence(10, scroll: true)
+        runLayoutPasses(textView)
+        XCTAssertFalse(coordinator.isFollowing)
+
+        func sentenceAtTop() throws -> Int {
+            let viewport = try XCTUnwrap(coordinator.viewport())
+            coordinator.handleTap(at: CGPoint(x: textView.textContainerInset.left + 8, y: viewport.minY + 4),
+                                  isDecelerating: false)
+            return try XCTUnwrap(taps.sentences.last)
+        }
+        return (coordinator, textView, sentenceAtTop)
+    }
+
+    /// A text-size step while the reader is away from the voice keeps the
+    /// passage at the top of the screen and leaves following off. It used
+    /// to take the fresh-column path: following forced on and the paused
+    /// voice's sentence placed, so the reader lost their place (H018).
+    func testATextSizeStepKeepsTheReadersPassage() throws {
+        let taps = Taps()
+        let (coordinator, textView, sentenceAtTop) = try readAwayFromTheVoice(taps: taps)
+        let before = try sentenceAtTop()
+        XCTAssertGreaterThan(before, 1_000)
+
+        coordinator.reflowKeepingPlace(fontSize: 23)
+        runLayoutPasses(textView)
+        settle()
+
+        XCTAssertEqual(coordinator.builtFontSize, 23)
+        XCTAssertFalse(coordinator.isFollowing, "following is left as it was")
+        XCTAssertEqual(coordinator.activeSentence, 10, "the voice is where it was")
+        let after = try sentenceAtTop()
+        XCTAssertLessThanOrEqual(abs(after - before), 1, "the same passage is at the top")
+    }
+
+    /// While following, a text-size step stays on the voice.
+    func testATextSizeStepWhileFollowingStaysOnTheVoice() throws {
+        let (coordinator, textView) = try makeColumn(count: 1_200)
+        coordinator.setActiveSentence(600, scroll: false)
+        coordinator.resumeFollowing()
+        settleLayout(textView)
+        XCTAssertTrue(coordinator.isFollowing)
+
+        coordinator.reflowKeepingPlace(fontSize: 23)
+        settle()
+        settleLayout(textView)
+
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertTrue(isInBand(coordinator), "the voice is placed in the band")
+    }
+
+    /// Bold Text reflows the book like a size step and keeps the reader's
+    /// passage too, with following left off (H018).
+    func testABoldTextFlipKeepsTheReadersPassage() throws {
+        let taps = Taps()
+        let (coordinator, textView, sentenceAtTop) = try readAwayFromTheVoice(taps: taps)
+        let before = try sentenceAtTop()
+        let builds = coordinator.columnBuilds
+
+        textView.traitOverrides.legibilityWeight = .bold
+        textView.updateTraitsIfNeeded()
+        guard textView.traitCollection.legibilityWeight == .bold else {
+            throw XCTSkip("This host doesn't override traits outside a window")
+        }
+        coordinator.rebuildForTraitChange()
+        runLayoutPasses(textView)
+        settle()
+
+        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "Bold Text reflows, so it rebuilds")
+        XCTAssertFalse(coordinator.isFollowing, "following is left as it was")
+        XCTAssertLessThanOrEqual(abs(try sentenceAtTop() - before), 1, "the same passage is at the top")
     }
 }

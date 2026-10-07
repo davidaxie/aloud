@@ -121,10 +121,9 @@ struct BookshelfView: View {
     private func row(_ book: BookshelfBook) -> some View {
         let inLibrary = libraryIDs.contains(book.id)
         let adding = importer.addingClassicID == book.id
-        let label = "\(book.title), by \(book.author), "
-            + ListeningEstimate.aboutPhrase(minutes: book.estimatedListeningMinutes)
+        let label = Self.rowLabel(for: book, rate: model.globalRate)
         return Button { listen(to: book) } label: {
-            BookshelfRow(book: book, inLibrary: inLibrary, adding: adding,
+            BookshelfRow(book: book, rate: model.globalRate, inLibrary: inLibrary, adding: adding,
                          stacked: dynamicTypeSize.isAccessibilitySize)
         }
         .buttonStyle(ShelfRowButtonStyle())
@@ -132,6 +131,27 @@ struct BookshelfView: View {
         .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
         .accessibilityHint("Double-tap to listen")
         .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
+    }
+
+    // MARK: Row copy
+
+    /// A book's length at the app-wide speed, as the featured card and
+    /// every Library card show it (R7). The shelves still group at 1×
+    /// (`BookshelfSection`), so a book never changes shelf with the speed.
+    nonisolated static func rowMinutes(of book: BookshelfBook, rate: Double) -> Int {
+        ListeningEstimate.minutes(words: book.words,
+                                  wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate)
+    }
+
+    /// "Edgar Allan Poe · 7 min" at 2×.
+    nonisolated static func rowSubtitle(for book: BookshelfBook, rate: Double) -> String {
+        "\(book.author) · \(ListeningEstimate.phrase(minutes: rowMinutes(of: book, rate: rate)))"
+    }
+
+    /// "The Cask of Amontillado, by Edgar Allan Poe, about 7 minutes" at 2×.
+    nonisolated static func rowLabel(for book: BookshelfBook, rate: Double) -> String {
+        "\(book.title), by \(book.author), "
+            + ListeningEstimate.aboutPhrase(minutes: rowMinutes(of: book, rate: rate))
     }
 
     /// The only tap handler. The importer adds the book if needed (or finds
@@ -157,6 +177,8 @@ struct BookshelfView: View {
 /// would squeeze the title.
 private struct BookshelfRow: View {
     let book: BookshelfBook
+    /// The app-wide speed the length is shown at.
+    let rate: Double
     let inLibrary: Bool
     let adding: Bool
     let stacked: Bool
@@ -197,7 +219,7 @@ private struct BookshelfRow: View {
         Text(book.title)
             .font(Theme.font(.headline))
             .foregroundStyle(Theme.text)
-        Text("\(book.author) · \(ListeningEstimate.phrase(minutes: book.estimatedListeningMinutes))")
+        Text(BookshelfView.rowSubtitle(for: book, rate: rate))
             .font(Theme.font(.footnote))
             .foregroundStyle(Theme.textMuted)
     }

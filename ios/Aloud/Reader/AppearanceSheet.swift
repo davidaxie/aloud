@@ -183,6 +183,9 @@ struct AppearanceView: View {
                 .background(
                     selected ? Theme.accentSoft : Color.clear,
                     in: Capsule())
+                // Edged under Increase Contrast, so the selection isn't a faint tint alone.
+                .overlay(Capsule().strokeBorder(selected ? Theme.Stroke.selectedColor : Color.clear,
+                                                lineWidth: Theme.Stroke.selectedWidth))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)

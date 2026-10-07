@@ -120,9 +120,9 @@ final class ReaderChromeUITest: XCTestCase {
         let thirty = app.buttons["30 minutes"].firstMatch
         XCTAssertTrue(thirty.waitForExistence(timeout: 5), "The sleep options should open")
         thirty.tap()
-        // Paused, so the countdown holds at 30:00.
-        XCTAssertTrue(wait(for: "label BEGINSWITH %@", "30:00", on: chip, timeout: 5),
-                      "Armed chip should read 30:00, got \(chip.label)")
+        // Paused, so the countdown holds at 30:00, spoken in words.
+        XCTAssertTrue(wait(for: "label BEGINSWITH %@", "30 minutes left", on: chip, timeout: 5),
+                      "Armed chip should read 30 minutes left, got \(chip.label)")
 
         chip.tap()
         let off = app.buttons["Off"].firstMatch

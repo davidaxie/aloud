@@ -79,6 +79,14 @@ enum Theme {
                                       highContrast: (0x7A4C17, 0xEBC690))
     static let accentSoft = dynamic(light: 0xA87434, dark: 0xC99A5B,
                                     lightAlpha: 0.12, darkAlpha: 0.20)
+    /// The edge on a selected option drawn as an `accentSoft` fill (an
+    /// Appearance segment, a speed preset). Clear by default; Increase
+    /// Contrast takes it to `accentStrong`, ≥ 3:1 on every solid ground and
+    /// on the fill itself, so the selection never rests on a 12% tint and
+    /// a heavier label alone. Stroke it only on the selected option.
+    static let selectedEdge = dynamic(light: 0x8A5B22, dark: 0xE0B478,
+                                      lightAlpha: 0, darkAlpha: 0, highContrastAlpha: 1,
+                                      highContrast: (0x7A4C17, 0xEBC690))
     /// Sentence fill, drawn beneath the text: findable at a glance against
     /// the page (1.35:1 light, 1.66:1 dark) while body text on it stays
     /// ≥ 9.4:1. Increase Contrast raises it to 34%.
@@ -188,6 +196,10 @@ enum Theme {
         /// 1pt of `line`: card and chip borders.
         static let borderWidth: CGFloat = 1
         static let borderColor = Theme.line
+        /// 1.5pt of `selectedEdge` on the selected option only (clear
+        /// unless Increase Contrast is on).
+        static let selectedWidth: CGFloat = 1.5
+        static let selectedColor = Theme.selectedEdge
     }
 
     // MARK: Elevation (R3)

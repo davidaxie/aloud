@@ -42,7 +42,7 @@ struct SleepChip: View {
         }
         .menuOrderNearestFirst()
         .menuIndicator(.hidden)
-        .accessibilityLabel(sleepTimer.isArmed ? "\(sleepTimer.chipText), sleep timer" : SleepTimer.Copy.section)
+        .accessibilityLabel(sleepTimer.chipSpokenLabel)
         .accessibilityValue(sleepTimer.isArmed ? "" : "Off")
         .accessibilityInputLabels([Text(SleepTimer.Copy.section)])
         .accessibilityIdentifier("player.sleep")
@@ -89,5 +89,26 @@ struct SleepChip: View {
                                    Text(SleepTimer.Copy.extendSpoken),
                                    Text(SleepTimer.Copy.section)])
         .accessibilityIdentifier("player.sleep")
+    }
+}
+
+extension SleepTimer {
+    /// The armed chip's VoiceOver label, with the time left spelled out
+    /// ("29 minutes left, sleep timer", "1 hour left, sleep timer") like
+    /// every other time in the bar, never the visible m:ss countdown, which
+    /// VoiceOver reads as a pair of numbers or a clock time. Rounded up, as
+    /// the countdown is. "Chapter end" and "Book end" read as shown; "Sleep
+    /// timer" while off. One label for the iPhone chip and the Mac's sleep
+    /// menu, so the two can't drift apart.
+    var chipSpokenLabel: String {
+        switch option {
+        case .off:
+            return Copy.section
+        case .minutes:
+            let minutes = Int((max(remaining, 0) / 60).rounded(.up))
+            return ListeningEstimate.spokenPhrase(minutes: minutes) + " left, sleep timer"
+        case .endOfChapter:
+            return "\(chipText), sleep timer"
+        }
     }
 }

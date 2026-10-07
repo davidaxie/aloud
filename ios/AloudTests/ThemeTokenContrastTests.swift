@@ -162,6 +162,28 @@ final class ThemeTokenContrastTests: XCTestCase {
         }
     }
 
+    /// A selected option (an Appearance segment, a speed preset) differed
+    /// from its neighbours only by a 12% `accentSoft` tint, 1.14:1, and
+    /// Increase Contrast left it so. Under Increase Contrast its edge
+    /// (`selectedEdge`) now reaches 3:1 on every solid ground and on the
+    /// fill itself; it stays clear otherwise (H056).
+    func testIncreaseContrastEdgesTheSelectedOption() {
+        for appearance in Appearance.all {
+            guard appearance.highContrast else {
+                XCTAssertEqual(resolve(Theme.selectedEdge, appearance).alpha, 0, accuracy: 0.001, "\(appearance)")
+                continue
+            }
+            for ground in Self.solidGrounds {
+                let onGround = contrast(Theme.selectedEdge, on: ground.color, appearance)
+                XCTAssertGreaterThanOrEqual(onGround, 3, "selectedEdge on \(ground.name), \(appearance): "
+                                            + String(format: "%.2f:1", onGround))
+                let onFill = contrast(Theme.selectedEdge, on: Theme.accentSoft, over: ground.color, appearance)
+                XCTAssertGreaterThanOrEqual(onFill, 3, "selectedEdge on accentSoft over \(ground.name), \(appearance): "
+                                            + String(format: "%.2f:1", onFill))
+            }
+        }
+    }
+
     /// A progress fill (`accent`) stays the 3:1 non-text minimum on its
     /// track in every appearance: the scrubs, cover progress, the download
     /// and import bars. On the Increase Contrast `line` it was 1.00:1.

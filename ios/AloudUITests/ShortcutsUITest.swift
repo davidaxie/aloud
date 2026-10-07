@@ -59,7 +59,7 @@ final class ShortcutsUITest: XCTestCase {
     // MARK: - Set sleep timer
 
     func testSleepShortcutArmsTheReaderChip() {
-        assertSleepShortcut("sleep-30", showsChip: "30:00, sleep timer")
+        assertSleepShortcut("sleep-30", showsChip: "30 minutes left, sleep timer")
     }
 
     /// The Great Gatsby has chapters, so End of chapter reads as such once

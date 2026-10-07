@@ -161,6 +161,9 @@ struct ReaderScreen: View {
             // The sheet's own title, so Aa and Settings share one name.
             .accessibilityLabel(AppearanceCopy.title)
             .accessibilityInputLabels([Text("Aa"), Text("Text and appearance"), Text("Appearance")])
+            // The bar caps its text size, and iOS hosts this custom label
+            // apart from the screen: long-press shows the glyph large.
+            .accessibilityShowsLargeContentViewer { Text("Aa") }
             .accessibilityIdentifier("reader.appearance")
             .accessibilityAction(.magicTap) { togglePlayback() }
         }

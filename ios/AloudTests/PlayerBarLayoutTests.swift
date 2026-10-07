@@ -122,4 +122,27 @@ final class PlayerBarLayoutTests: XCTestCase {
         XCTAssertTrue(storage is GestureState<ScrubDrag?>,
                       "drag must be @GestureState, got \(storage.map { type(of: $0) } as Any)")
     }
+
+    /// After a playback error, a skip or scrub leaves the status paused
+    /// while the chapter line still offers "tap to try again". The circle
+    /// turned back to "Play, paused" beside it; now it keeps the retry face
+    /// until the stop clears (H050).
+    func testAPlaybackErrorStopKeepsTheCircleOnTryAgain() {
+        for status in [PlayerStatus.paused, .idle, .error] {
+            let state = PlayButtonState(status: PlayerBarView.circleStatus(status, stop: .playbackError),
+                                        isPreparingVoice: false, reduceMotion: false)
+            XCTAssertEqual(state.glyph, .retry, "\(status) beside the error line")
+            XCTAssertEqual(state.label, "Try again")
+        }
+        // Playing again clears the stop; until it does, active playback
+        // and the end of the book keep their own faces.
+        for status in [PlayerStatus.playing, .buffering, .ended] {
+            XCTAssertEqual(PlayerBarView.circleStatus(status, stop: .playbackError), status)
+        }
+        // Every other stop sits beside a plain Play circle, as before.
+        for stop in StopReason.allCases where stop != .playbackError {
+            XCTAssertEqual(PlayerBarView.circleStatus(.paused, stop: stop), .paused, "\(stop)")
+        }
+        XCTAssertEqual(PlayerBarView.circleStatus(.paused, stop: nil), .paused)
+    }
 }

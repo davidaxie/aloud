@@ -197,6 +197,10 @@ struct ListeningView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .background(selected ? Theme.accentSoft : Theme.surface2,
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                // Edged under Increase Contrast, so the selection isn't a faint tint alone.
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                    .strokeBorder(selected ? Theme.Stroke.selectedColor : Color.clear,
+                                  lineWidth: Theme.Stroke.selectedWidth))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

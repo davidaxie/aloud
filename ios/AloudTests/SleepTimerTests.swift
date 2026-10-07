@@ -84,6 +84,9 @@ final class SleepTimerTests: XCTestCase {
         let hour = SleepTimer(defaults: PlaybackTestRig.freshDefaults())
         hour.select(.minutes(60))
         XCTAssertEqual(hour.chipText, "60:00")
+        // VoiceOver hears the time left in words, never the m:ss countdown
+        // it reads as numbers or a clock time (H051).
+        XCTAssertEqual(hour.chipSpokenLabel, "1 hour left, sleep timer")
         // Inside the landing window the clock runs below zero; a negative
         // "minute" puts it there at once, with nothing playing.
         let landing = SleepTimer(timing: SleepTimer.Timing(secondsPerMinute: -0.4),
@@ -96,10 +99,13 @@ final class SleepTimerTests: XCTestCase {
         let timer = SleepTimer(timing: SleepTimer.Timing(secondsPerMinute: 1694),
                                defaults: PlaybackTestRig.freshDefaults())
         XCTAssertEqual(timer.chipText, "")
+        XCTAssertEqual(timer.chipSpokenLabel, "Sleep timer")
         timer.select(.minutes(1))
         XCTAssertEqual(timer.chipText, "28:14")
+        XCTAssertEqual(timer.chipSpokenLabel, "29 minutes left, sleep timer", "rounded up, as the countdown is")
         timer.select(.endOfChapter)
         XCTAssertEqual(timer.chipText, "Book end", "no book with chapters")
+        XCTAssertEqual(timer.chipSpokenLabel, "Book end, sleep timer")
 
         let (_, chaptered) = await harness(pages: Array(repeating: 0, count: 6) + Array(repeating: 1, count: 6))
         XCTAssertTrue(chaptered.endsAtChapter)

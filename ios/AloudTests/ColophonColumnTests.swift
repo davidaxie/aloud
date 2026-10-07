@@ -315,6 +315,50 @@ final class ColophonColumnTests: XCTestCase {
         XCTAssertEqual(taps.sentences, [159])
     }
 
+    // MARK: - Light/dark (H017)
+
+    /// A light/dark flip in the foreground (Control Center, sunset, the Aa
+    /// sheet) set the whole book again and laid it out from the top on the
+    /// main thread. Now the column takes the look in place: no rebuild, no
+    /// storage edit, and the colophon's rule shows its variant for the new
+    /// look.
+    func testALightDarkFlipRecolorsTheColumnInPlace() throws {
+        let (coordinator, textView) = try makeColumn(active: 159, colophon: colophon)
+        coordinator.isInBackground = { false }
+        let storage = textView.textStorage
+        var rule: NSTextAttachment?
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, stop in
+            if let attachment = value as? NSTextAttachment { rule = attachment; stop.pointee = true }
+        }
+        let attachment = try XCTUnwrap(rule, "the colophon opens on a rule")
+        let asset = try XCTUnwrap(attachment.image?.imageAsset, "the rule carries every look")
+        let before = try XCTUnwrap(attachment.image?.pngData())
+        let builds = coordinator.columnBuilds
+        let recolors = coordinator.columnRecolors
+        let text = storage.string
+        let edits = Edits()
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+                                                              object: storage, queue: nil) { _ in edits.count += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let original = textView.traitCollection.userInterfaceStyle
+        textView.overrideUserInterfaceStyle = original == .dark ? .light : .dark
+        textView.updateTraitsIfNeeded()
+        guard textView.traitCollection.userInterfaceStyle != original else {
+            throw XCTSkip("This host doesn't override traits outside a window")
+        }
+        coordinator.rebuildForTraitChange()
+
+        XCTAssertEqual(coordinator.columnBuilds, builds, "a recolor never sets the book again")
+        XCTAssertEqual(coordinator.columnRecolors, recolors + 1)
+        XCTAssertEqual(edits.count, 0, "no storage edit, so no layout from the top")
+        XCTAssertEqual(storage.string, text)
+        XCTAssertEqual(coordinator.builtLook, TraitLook(textView.traitCollection), "the new look is taken")
+        let after = try XCTUnwrap(attachment.image?.pngData())
+        XCTAssertEqual(after, asset.image(with: textView.traitCollection).pngData(), "the rule shows the new look")
+        XCTAssertNotEqual(after, before, "accent differs between light and dark")
+    }
+
     // MARK: - VoiceOver (R12)
 
     func testVoiceOverReadsTheColophonAsOneLabel() throws {
@@ -325,8 +369,13 @@ final class ColophonColumnTests: XCTestCase {
         XCTAssertEqual(textView.accessibilityLabel, colophon.spokenText)
         XCTAssertEqual(textView.accessibilityHint, "", "double-tap does nothing here")
         XCTAssertNil(textView.accessibilityValue)
-        XCTAssertFalse(textView.accessibilityActivate())
+        // Handled, doing nothing: a false has VoiceOver fall back to a tap
+        // at the column's center, which played the sentence drawn there.
+        XCTAssertTrue(textView.accessibilityActivate(), "double-tap is handled, so VoiceOver never taps the center")
         XCTAssertEqual(taps.sentences, [], "no sentence plays")
+        let playFromHere = try XCTUnwrap(textView.accessibilityCustomActions?.first)
+        XCTAssertEqual(playFromHere.actionHandler?(playFromHere), false, "Play from here still has nothing to play")
+        XCTAssertEqual(taps.sentences, [])
 
         // A Sentences rotor step brings the sentence behaviour back.
         let rotor = try XCTUnwrap(textView.accessibilityCustomRotors?.first { $0.name == "Sentences" })

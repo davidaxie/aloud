@@ -80,6 +80,22 @@ final class ReaderLintTests: XCTestCase {
         }
     }
 
+    /// The navigation bar caps its text size, so every control the reader
+    /// puts in it opts in to the Large Content Viewer, as its title does:
+    /// the Aa button was left out (H053).
+    func testTheReadersBarControlsOfferTheLargeContentViewer() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let code = codeLines(try XCTUnwrap(try SourceTree.sources(only: [path])[path]))
+        let items = code.indices.filter { code[$0].contains("ToolbarItem(placement:") }
+        XCTAssertFalse(items.isEmpty, "the lint reads the reader's bar items")
+        for item in items {
+            let body = code[item..<min(item + 20, code.endIndex)]
+            let end = body.firstIndex { $0.contains("ToolbarItem(") && $0 != code[item] } ?? body.endIndex
+            XCTAssertTrue(body[..<end].contains { $0.contains(".accessibilityShowsLargeContentViewer") },
+                          "\(path): \(code[item].trimmingCharacters(in: .whitespaces)) has no Large Content Viewer")
+        }
+    }
+
     /// The player bar's capped transport (Back 15, Forward 15 and Play)
     /// shows its glyph large on a long press too (F099). The scrub preview
     /// is a floating label, not a control, so it is left alone.
