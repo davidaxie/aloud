@@ -33,3 +33,11 @@ test('H029: New abandons a PDF that is still parsing', () => {
 test('G016: a healthy /health answer clears a stale engine-offline banner', () => {
   assert.match(app, /onHealthy: async \(\) => \{[^}]*player\.engineRecovered\(\)/)
 })
+
+test('I018: the dev reader dials the backend on 127.0.0.1, the address it binds', () => {
+  const api = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf8')
+  const env = readFileSync(new URL('../.env.development', import.meta.url), 'utf8')
+  assert.match(api, /VITE_API_BASE \?\? 'http:\/\/127\.0\.0\.1:8000'/)
+  assert.match(env, /^VITE_API_BASE=http:\/\/127\.0\.0\.1:8000$/m)
+  assert.doesNotMatch(env, /^VITE_API_BASE=http:\/\/localhost/m, 'localhost can reach another program on ::1')
+})

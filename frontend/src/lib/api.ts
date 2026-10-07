@@ -18,7 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EngineState, SynthesizeRequest, Voice } from '../types'
 
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
 
 /** Per-attempt ceiling. A request still running after this is treated as a timeout. */
 const ATTEMPT_TIMEOUT_MS = 30_000

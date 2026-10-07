@@ -8,7 +8,7 @@ import { dirname } from 'node:path'
 const root = dirname(fileURLToPath(import.meta.url))
 
 // Aloud frontend. Backend (Kokoro TTS) runs on :8000 and is called directly
-// via VITE_API_BASE (defaults to http://localhost:8000) from src/lib/api.ts.
+// via VITE_API_BASE (defaults to http://127.0.0.1:8000) from src/lib/api.ts.
 export default defineConfig({
   root,
   plugins: [react()],
