@@ -63,7 +63,7 @@ for index, book in enumerate(books):
         if not isinstance(book.get(key), str) or not book[key]:
             problems.append(f"{where}: {key} is not a string")
     for key in ("header_title", "header_author"):
-        if book.get(key) is not None and not isinstance(book[key], str):
+        if key in book and not isinstance(book[key], str):
             problems.append(f"{where}: {key} is not a string")
     name = book.get("file")
     if isinstance(name, str) and name and (os.path.basename(name) != name
@@ -80,9 +80,31 @@ PY
   keep_bundle
 fi
 
+# The catalog is built before the bundle changes. One that can't be built (a
+# typo in tools/catalog_overrides.json, a field the normalizer can't read)
+# would otherwise leave rsync's new files under the old catalog.json.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+normalized=0
+normalize_log="$(python3 "$NORMALIZE" "$SRC/catalog.json" --out "$STAGE/catalog.json" 2>&1)" || normalized=$?
+if (( normalized > 1 )) || [[ ! -f "$STAGE/catalog.json" ]]; then
+  echo "warning: catalog_normalize.py could not build the catalog from $SRC/catalog.json and tools/catalog_overrides.json — skipping sync: $normalize_log" >&2
+  keep_bundle
+fi
+
 mkdir -p "$DST"
 # catalog.json is derived, never copied; rewriting it every build would change
 # its mtime and make Xcode recopy the ~270 MB folder reference.
 rsync -a --delete --exclude catalog.json "${SRC%/}/" "$DST"
-python3 "$NORMALIZE" "$SRC/catalog.json" --out "$DST/catalog.json"
+if ! cmp -s "$STAGE/catalog.json" "$DST/catalog.json"; then
+  cp "$STAGE/catalog.json" "$DST/.catalog.json.new"
+  mv -f "$DST/.catalog.json.new" "$DST/catalog.json"
+fi
+# A catalog that builds but fails the lint still lands, and still fails the build.
+if [[ -n "$normalize_log" ]]; then
+  echo "$normalize_log" >&2
+fi
+if (( normalized != 0 )); then
+  exit "$normalized"
+fi
 echo "Bookshelf synced: $(ls "$DST" | wc -l | tr -d ' ') files"
