@@ -229,10 +229,15 @@ struct ReaderColumnView: NSViewRepresentable {
         private var inLiveScroll = false
         /// A finger on the trackpad or the scroller holds the page: a live
         /// scroll short of its momentum. Momentum alone never keeps the
-        /// page from the voice: following stops it, as on the iPhone.
+        /// page from the voice: following stops it, as on the iPhone. The
+        /// mouse button held down on the text holds it too (a drag
+        /// selection AppKit is tracking ends where the pointer is), as a
+        /// finger resting on the iPhone's page does, until it comes up.
         private var userHoldsScroll: Bool {
-            inLiveScroll && scrollView?.inMomentum != true
+            (inLiveScroll && scrollView?.inMomentum != true) || textView?.isMouseHeld == true
         }
+        /// A follow the held mouse button kept back, run as it comes up.
+        private var followKeptBack = false
         /// The clip view's bounds and the page's height when last seen, to
         /// tell a scroll from a resize or a reflow.
         private var lastClipBounds = CGRect.zero
@@ -345,6 +350,7 @@ struct ReaderColumnView: NSViewRepresentable {
             textView.onClickEnded = { [weak self] point, clicks, selectionMade in
                 self?.clickEnded(at: point, clickCount: clicks, selectionMade: selectionMade)
             }
+            textView.onMouseReleased = { [weak self] in self?.mouseReleased() }
             textView.sentenceAtPoint = { [weak self] point in self?.sentence(at: point) }
             textView.characterOffsetAtPoint = { [weak self] point in self?.column?.characterOffset(at: point) }
             textView.baselineOrigin = { [weak self] range in
@@ -1037,6 +1043,7 @@ struct ReaderColumnView: NSViewRepresentable {
         /// under Reduce Motion and past one viewport, jumps) to the landing
         /// line. Never moves under a gesture.
         func followIfNeeded(animated: Bool) {
+            if isFollowing { noteFollowKeptBack() }
             guard isFollowing, !userHoldsScroll,
                   let sentence = activeSentenceRect(), let viewport = viewport(), viewport.height > 0 else { return }
             let rect = followedRect(sentence: sentence, in: viewport)
@@ -1066,6 +1073,7 @@ struct ReaderColumnView: NSViewRepresentable {
         func resumeFollowing() {
             follow.resume()   // the voice owns the scroll again
             defer { updateFollowChip() }
+            noteFollowKeptBack()
             guard !userHoldsScroll else { return }
             // Following takes the scroll back from a coast.
             stopCoasting()
@@ -1103,6 +1111,7 @@ struct ReaderColumnView: NSViewRepresentable {
         /// Puts the active sentence on the landing line without motion (a
         /// fresh column), then verifies on every layout pass.
         func placeActiveSentence() {
+            if isFollowing { noteFollowKeptBack() }
             guard isFollowing, !userHoldsScroll, let viewport = viewport(), viewport.height > 0 else { return }
             follow.pendingReveal = nil
             ensureLayoutThroughActiveSentence()
@@ -1589,6 +1598,20 @@ struct ReaderColumnView: NSViewRepresentable {
                 userTookOverScroll()
                 userScrollEnded()
             }
+        }
+
+        /// The button is up: a voice that left the band while it held the
+        /// page is followed now. A click that only stopped a glide keeps
+        /// the page where it stopped.
+        func mouseReleased() {
+            guard followKeptBack else { return }
+            followKeptBack = false
+            followIfNeeded(animated: true)
+        }
+
+        /// Notes a follow the held mouse button keeps back.
+        private func noteFollowKeptBack() {
+            if textView?.isMouseHeld == true { followKeptBack = true }
         }
 
         /// The click AppKit tracked has ended: one click, with no selection

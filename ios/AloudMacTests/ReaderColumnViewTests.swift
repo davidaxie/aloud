@@ -302,6 +302,59 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(page.played.ids, [])
     }
 
+    /// ⌘C across a chapter's opening (or a PDF page's mark, or the
+    /// colophon) quotes the words: the rule paragraph between them is an
+    /// attachment, and neither its U+FFFC nor the line it stood on reaches
+    /// the pasteboard (H054). A private pasteboard, so the test leaves the
+    /// clipboard alone.
+    func testACopyAcrossARuleParagraphQuotesOnlyTheWords() {
+        let textView = ReaderNSTextView(usingTextLayoutManager: true)
+        textView.frame = NSRect(x: 0, y: 0, width: 400, height: 400)
+        let text = NSMutableAttributedString(string: "Last sentence.\nChapter Two\n")
+        text.append(NSAttributedString(attachment: NSTextAttachment()))
+        text.append(NSAttributedString(string: "\nFirst line of chapter two."))
+        textView.textStorage?.setAttributedString(text)
+        textView.setSelectedRange(NSRange(location: 0, length: text.length))
+
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.davidxie.AloudMacTests.rule.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        XCTAssertTrue(textView.writeSelection(to: pasteboard, types: textView.writablePasteboardTypes))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Last sentence.\nChapter Two\nFirst line of chapter two.")
+        XCTAssertEqual(ReaderNSTextView.quotable("words\n\u{FFFC}"), "words\n", "a selection ending on the rule")
+        XCTAssertEqual(ReaderNSTextView.quotable("plain words"), "plain words")
+    }
+
+    /// The mouse button held on the page (a click, or a drag selection
+    /// AppKit is tracking) holds it as a finger on the trackpad does: the
+    /// voice leaving the band moves nothing under the pointer, so the
+    /// selection ends where the pointer is. As the button comes up, the
+    /// page follows the voice, once (H020).
+    func testAHeldMouseButtonKeepsThePageUntilItComesUp() throws {
+        let page = try makePage(sentences: 300, active: 100, size: NSSize(width: 800, height: 500),
+                                reduceMotion: true)
+        let coordinator = page.coordinator
+        nextMainTurn()   // the opening placement runs first, as when a book opens
+        XCTAssertTrue(page.activeSentenceIsInTheBand())
+        let next = try page.firstSentenceBelowTheBand(after: 100)
+        let held = page.offset
+        let scrolls = coordinator.programmaticScrollCount
+
+        page.textView.isMouseHeld = true
+        page.update(activeSentence: next)
+        nextMainTurn()
+        XCTAssertEqual(page.offset, held, "the page holds still under the pointer")
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
+        XCTAssertFalse(page.activeSentenceIsInTheBand())
+        XCTAssertTrue(coordinator.isFollowing, "a held button is not a scroll away")
+
+        page.textView.isMouseHeld = false
+        page.textView.onMouseReleased?()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "one follow, as the button comes up")
+        XCTAssertTrue(page.activeSentenceIsInTheBand())
+        page.textView.onMouseReleased?()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "nothing kept back, nothing more")
+    }
+
     /// Lets one turn of the main queue run: a follow glide sets off one turn
     /// after the update that asks for it (`startGlide`), outside SwiftUI's
     /// pass, and a new page's opening placement runs on a task. Queued

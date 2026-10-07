@@ -121,7 +121,10 @@ struct MacContentsPanel: View {
         // Focus that lands on the list some other way (Tab, a click on its
         // background) starts on the row ↓ would have.
         .onChange(of: isListFocused) { _, focused in
-            if focused, cursor == nil { cursor = initialCursor(mode) }
+            if focused, cursor == nil {
+                cursor = initialCursor(mode)
+                announceCursor(mode)
+            }
         }
         // A stop recorded, or the toggle shown or hidden, while the list is
         // open: the cursor stays on its row, never the one that slid under it.
@@ -184,7 +187,7 @@ struct MacContentsPanel: View {
         let rate = playback.rate
         let rows = placeRows
         // Chapters follow the places in the flat list (ids, cursor).
-        let offset = flatLayout(placeCount: rows.count).chapterOffset
+        let offset = flatLayout(rows).chapterOffset
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -287,17 +290,18 @@ struct MacContentsPanel: View {
                                      playhead: playback.currentSentence)
     }
 
-    private var listLayout: MacContents.ListLayout { flatLayout(placeCount: placeRows.count) }
+    private var listLayout: MacContents.ListLayout { flatLayout(placeRows) }
 
-    private func flatLayout(placeCount: Int) -> MacContents.ListLayout {
-        MacContents.listLayout(placeCount: placeCount, expanded: showsEarlierPlaces,
+    private func flatLayout(_ places: [PlaceRow]) -> MacContents.ListLayout {
+        MacContents.listLayout(placeCount: places.count, expanded: showsEarlierPlaces,
                                chapterCount: navigation.chapters.count,
-                               hasChapterList: navigation.hasChapterList)
+                               hasChapterList: navigation.hasChapterList,
+                               placeSentences: places.map(\.sentence))
     }
 
     @ViewBuilder
     private func placesSection(_ rows: [PlaceRow]) -> some View {
-        let list = flatLayout(placeCount: rows.count)
+        let list = flatLayout(rows)
         eyebrow(PlaceHistoryCopy.header, identifier: "places.header")
         ForEach(Array(rows.prefix(list.placeCount))) { row in
             placeRow(row)
@@ -476,6 +480,7 @@ struct MacContentsPanel: View {
         guard let entry = initialCursor(currentMode) else { return false }
         cursor = entry
         isListFocused = true
+        announceCursor(currentMode)
         return true
     }
 
@@ -486,10 +491,39 @@ struct MacContentsPanel: View {
 
     private func moveCursor(by delta: Int, mode: MacContents.Mode) -> KeyPress.Result {
         switch MacContents.step(cursor ?? initialCursor(mode), by: delta, count: rowCount(mode)) {
-        case .row(let row): cursor = row
+        case .row(let row):
+            cursor = row
+            announceCursor(mode)
         case .field: focusField()
         }
         return .handled
+    }
+
+    /// VoiceOver hears the row the keyboard's cursor lands on: the ring is
+    /// drawn only, and the list is one element, so ↓ from the field and
+    /// each ↑/↓ would be silent, and Return would open a row never heard.
+    private func announceCursor(_ mode: MacContents.Mode) {
+        guard let cursor, let label = cursorLabel(cursor, mode: mode) else { return }
+        MacContents.announceCursor(label, muted: playback.isOutputMuted)
+    }
+
+    private func cursorLabel(_ index: Int, mode: MacContents.Mode) -> String? {
+        switch mode {
+        case .chapters:
+            let rows = placeRows
+            let layout = flatLayout(rows)
+            return MacContents.cursorLabel(layout.row(at: index), places: rows,
+                                           earlier: rows.count - layout.placeCount,
+                                           expanded: showsEarlierPlaces, navigation: navigation,
+                                           current: navigation.chapterIndex(containing: playback.currentSentence),
+                                           rate: playback.rate)
+        case .results:
+            guard results.indices.contains(index) else { return nil }
+            let match = results[index]
+            return MacContents.resultLabel(match, location: navigation.searchLocation(ofSentence: match.sentenceID,
+                                                                                      page: match.page))
+        case .searchOnly, .searching, .noMatches: return nil
+        }
     }
 
     private func activateCursor(_ mode: MacContents.Mode) -> KeyPress.Result {
@@ -539,7 +573,9 @@ struct MacContentsPanel: View {
         jump(to: navigation.chapters[index].startSentence, origin: .chapter)
     }
 
-    /// A place is a chapter row's jump: it plays, and ⌘Z restores.
+    /// A place is a chapter row's jump: it plays, and ⌘Z restores. The
+    /// stop the jump records lands above the place, and the remap follows
+    /// the place down by its sentence.
     private func pickPlace(_ index: Int) {
         let rows = placeRows
         guard rows.indices.contains(index) else { return }
@@ -547,10 +583,12 @@ struct MacContentsPanel: View {
         jump(to: rows[index].sentence, origin: .chapter)
     }
 
-    /// The cursor stays on the toggle, which moves as rows come and go.
+    /// The cursor stays on the toggle, which moves as rows come and go:
+    /// put on it in the list before the press, and carried once by the
+    /// remap of `onChange(of: listLayout)`.
     private func toggleEarlierPlaces() {
+        cursor = MacContents.cursorOnToggle(cursor, before: listLayout)
         showsEarlierPlaces.toggle()
-        if cursor != nil { cursor = listLayout.index(of: .showEarlier) }
     }
 
     private func pickResult(_ index: Int) {
@@ -722,6 +760,40 @@ enum MacContents {
         guard let cursor else { return delta < 0 ? .field : .row(0) }
         let next = cursor + delta
         return next < 0 ? .field : .row(min(next, count - 1))
+    }
+
+    /// What VoiceOver hears as the cursor lands on a row of the list: the
+    /// row's own label (a place's, a chapter's), or the toggle's words.
+    /// `earlier`: the places the collapsed list holds back.
+    static func cursorLabel(_ row: ListRow?, places: [PlaceRow], earlier: Int, expanded: Bool,
+                            navigation: ReaderNavigation, current: Int?, rate: Double) -> String? {
+        switch row {
+        case .place(let index):
+            return places.indices.contains(index) ? places[index].accessibilityLabel : nil
+        case .showEarlier:
+            return expanded ? PlaceHistoryCopy.showFewer : PlaceHistoryCopy.showEarlier(earlier)
+        case .chapter(let index):
+            guard navigation.chapters.indices.contains(index) else { return nil }
+            return chapterRow(navigation, index: index, current: current, rate: rate).accessibilityLabel
+        case nil:
+            return nil
+        }
+    }
+
+    /// A result as VoiceOver reads its row: the whole sentence, then its
+    /// chapter or page.
+    static func resultLabel(_ match: SentenceMatch, location: String?) -> String {
+        [ReaderTypography.typeset(match.text), location].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// The cursor's row, said at once: unqueued, so a run of ↑/↓ says the
+    /// row it is on now, never every row it passed.
+    static func announceCursor(_ label: String, muted: Bool) {
+        #if DEBUG
+        UITestAnnouncementLog.shared.record(label)
+        #endif
+        guard !muted else { return }
+        A11yAnnounce.post(label, queued: false)
     }
 
     enum Escape: Equatable {

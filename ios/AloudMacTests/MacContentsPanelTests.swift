@@ -139,6 +139,42 @@ final class MacContentsPanelTests: XCTestCase {
 
     // MARK: - Keys
 
+    /// The keyboard's cursor is a ring VoiceOver can't see, over a list
+    /// that is one element: each row it lands on (↓ from the field, ↑/↓)
+    /// is said by the row's own label, at once, through the shared log;
+    /// muted, nothing is spoken (H024).
+    func testTheCursorsRowIsSaidAsItLands() throws {
+        let chaptered = Self.chaptered()
+        let navigation = ReaderNavigation(content: chaptered, kind: .text)
+        let place = PlaceRow(index: 0, sentence: 3, when: "Yesterday, 10:41 PM", location: "CHAPTER I",
+                             text: "It was a dark night.", isCurrent: false)
+        func label(_ row: MacContents.ListRow?, expanded: Bool = false) -> String? {
+            MacContents.cursorLabel(row, places: [place], earlier: 3, expanded: expanded,
+                                    navigation: navigation, current: 1, rate: 1)
+        }
+        XCTAssertEqual(label(.place(0)), place.accessibilityLabel)
+        XCTAssertEqual(label(.showEarlier), PlaceHistoryCopy.showEarlier(3))
+        XCTAssertEqual(label(.showEarlier, expanded: true), PlaceHistoryCopy.showFewer)
+        XCTAssertEqual(label(.chapter(1)),
+                       MacContents.chapterRow(navigation, index: 1, current: 1, rate: 1).accessibilityLabel)
+        XCTAssertNil(label(.chapter(9)))
+        XCTAssertNil(label(.place(4)))
+        XCTAssertNil(label(nil))
+
+        let match = try XCTUnwrap(chaptered.matches(of: "amontillado").first)
+        XCTAssertEqual(MacContents.resultLabel(match, location: "CHAPTER III"),
+                       ReaderTypography.typeset(match.text) + ", CHAPTER III")
+        XCTAssertEqual(MacContents.resultLabel(match, location: nil), ReaderTypography.typeset(match.text))
+
+        #if DEBUG
+        let log = UITestAnnouncementLog.shared
+        log.reset()
+        MacContents.announceCursor(place.accessibilityLabel, muted: true)
+        XCTAssertEqual(log.entries, [place.accessibilityLabel])
+        log.reset()
+        #endif
+    }
+
     func testArrowsWalkTheRowsAndUpLeavesForTheField() {
         XCTAssertEqual(MacContents.step(nil, by: 1, count: 5), .row(0))
         XCTAssertEqual(MacContents.step(2, by: 1, count: 5), .row(3))

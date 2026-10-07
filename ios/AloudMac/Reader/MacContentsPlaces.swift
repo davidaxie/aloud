@@ -22,6 +22,9 @@ extension MacContents {
         let hasShowEarlier: Bool
         /// Zero in a book without a chapter list.
         let chapterCount: Int
+        /// Every place's sentence, newest first, shown or not: how the
+        /// cursor finds its place again when a stop lands above it.
+        var placeSentences: [Int] = []
 
         var chapterOffset: Int { placeCount + (hasShowEarlier ? 1 : 0) }
         var count: Int { chapterOffset + chapterCount }
@@ -52,9 +55,13 @@ extension MacContents {
     /// The keyboard cursor found again after the list changed under it (a
     /// stop recorded while Contents is open, the toggle coming or going): a
     /// chapter stays on its chapter, the toggle on the toggle, a place on
-    /// its position, clamped into the new list. Only the list in `.chapters`
-    /// counts the places: in any other mode the cursor is a result's index
-    /// (or none), which a stop recorded never moves, and it stays.
+    /// its sentence (a stop recorded above it, such as the one its own jump
+    /// left, pushes it down a row; pushed behind the toggle, the cursor
+    /// waits on the toggle), else on its position, clamped into the new
+    /// list. `cursor` counts in `old`: the panel sets it before the change,
+    /// and this moves it once. Only the list in `.chapters` counts the
+    /// places: in any other mode the cursor is a result's index (or none),
+    /// which a stop recorded never moves, and it stays.
     static func remap(_ cursor: Int?, from old: ListLayout, to new: ListLayout, in mode: Mode) -> Int? {
         guard mode == .chapters else { return cursor }
         guard let cursor else { return nil }
@@ -68,20 +75,36 @@ extension MacContents {
         case .showEarlier:
             target = new.hasShowEarlier ? .showEarlier : (lastPlace ?? .chapter(0))
         case .place(let index):
-            target = index < new.placeCount ? .place(index)
-                : (lastPlace ?? (new.hasShowEarlier ? .showEarlier : .chapter(0)))
+            let sentence = old.placeSentences.indices.contains(index) ? old.placeSentences[index] : nil
+            if let moved = sentence.flatMap({ new.placeSentences.firstIndex(of: $0) }) {
+                target = moved < new.placeCount ? .place(moved)
+                    : (new.hasShowEarlier ? .showEarlier : (lastPlace ?? .chapter(0)))
+            } else {
+                target = index < new.placeCount ? .place(index)
+                    : (lastPlace ?? (new.hasShowEarlier ? .showEarlier : .chapter(0)))
+            }
         }
         return min(new.index(of: target), new.count - 1)
     }
 
     /// The list for `placeCount` places (expanded or not) over
-    /// `chapterCount` chapters.
+    /// `chapterCount` chapters; `placeSentences`, the places' sentences.
     static func listLayout(placeCount total: Int, expanded: Bool,
-                           chapterCount: Int, hasChapterList: Bool) -> ListLayout {
+                           chapterCount: Int, hasChapterList: Bool, placeSentences: [Int] = []) -> ListLayout {
         ListLayout(placeCount: PlaceHistory.visibleCount(total: total, hasChapterList: hasChapterList,
                                                          expanded: expanded),
                    hasShowEarlier: PlaceHistory.offersEarlier(total: total, hasChapterList: hasChapterList),
-                   chapterCount: hasChapterList ? chapterCount : 0)
+                   chapterCount: hasChapterList ? chapterCount : 0,
+                   placeSentences: placeSentences)
+    }
+
+    /// "Show N earlier stops" (or "Show fewer") pressed: a keyboard cursor
+    /// goes onto the toggle, counted in the list `before` the press, and
+    /// the remap that follows the change carries it to the toggle's new
+    /// row. Counted in the list after, it was carried twice: onto a chapter
+    /// as the list grew, onto the third stop as it shrank.
+    static func cursorOnToggle(_ cursor: Int?, before: ListLayout) -> Int? {
+        cursor == nil ? nil : before.index(of: .showEarlier)
     }
 }
 

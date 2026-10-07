@@ -34,6 +34,9 @@ final class ReaderNSTextView: NSTextView {
     /// The click ended: its point in this view, its click count, and
     /// whether it left a selection.
     var onClickEnded: (@MainActor (CGPoint, Int, Bool) -> Void)?
+    /// The mouse button came up after a mouse-down on the page: a follow
+    /// the held button kept back can run.
+    var onMouseReleased: (@MainActor () -> Void)?
     /// The sentence under a point (Play from Here), nil off the text.
     var sentenceAtPoint: (@MainActor (CGPoint) -> Int?)?
     /// The UTF-16 offset under a point (Look Up's word), nil off the text.
@@ -59,6 +62,11 @@ final class ReaderNSTextView: NSTextView {
     private(set) var isLayingOut = false
     /// The click count of the mouse-down AppKit is tracking; 0 when none.
     private var armedClickCount = 0
+    /// The mouse button is down on the page, a click or a drag selection
+    /// AppKit is tracking: the page holds still under the pointer, as the
+    /// iPhone's does under a finger, or the selection would end on text the
+    /// pointer never reached. Set by `mouseDown` (and by tests).
+    var isMouseHeld = false
     /// True while an accessibility client sets the selection: the
     /// selection that moves then is VoiceOver's cursor.
     private var isPlacingAccessibilityCursor = false
@@ -111,10 +119,13 @@ final class ReaderNSTextView: NSTextView {
         }
         onClickLanded?()
         armedClickCount = max(event.clickCount, 1)
+        isMouseHeld = true
         super.mouseDown(with: event)
+        isMouseHeld = false
         if armedClickCount > 0, let up = NSApp.currentEvent, up.type == .leftMouseUp {
             finishClick(at: up)
         }
+        onMouseReleased?()
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -226,6 +237,27 @@ final class ReaderNSTextView: NSTextView {
     }
 
     private static let legacyPlainText = NSPasteboard.PasteboardType("NSStringPboardType")
+
+    /// The words only: the rule paragraphs between them (a chapter's
+    /// opening, a PDF page's mark, the colophon's) are attachments, which
+    /// the plain text would carry as U+FFFC on a line of its own.
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard super.writeSelection(to: pboard, types: types) else { return false }
+        if let text = pboard.string(forType: .string), text.contains(Self.attachmentMark) {
+            pboard.setString(Self.quotable(text), forType: .string)
+        }
+        return true
+    }
+
+    /// `text` without its attachment characters, and without the line each
+    /// rule paragraph ("\u{FFFC}\n") stood on.
+    static func quotable(_ text: String) -> String {
+        text.replacingOccurrences(of: attachmentMark + "\n", with: "")
+            .replacingOccurrences(of: attachmentMark, with: "")
+    }
+
+    /// `NSTextAttachment.character`, as a string.
+    private static let attachmentMark = "\u{FFFC}"
 
     /// Speech would read the selection through the system synthesizer, on
     /// the speakers, past the muted engine. `MacMenuPruner` keeps it out of
