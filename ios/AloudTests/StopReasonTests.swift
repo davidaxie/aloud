@@ -340,6 +340,44 @@ final class StopReasonTests: XCTestCase {
         XCTAssertNil(rig.controller.stopped, "a notice is not a stop")
     }
 
+    /// A sentence one voice couldn't read is that voice's failure: picked
+    /// instead, another voice reads it from any way back to it (Back, a
+    /// chapter pick), not only from a tap on that sentence.
+    func testAnotherVoiceReadsASentenceTheFirstSkipped() async throws {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25, failing: { $0.hasPrefix("Line3 ") })
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        let skipped = await rig.waitUntil(5) { rig.controller.skippedSentences == [3] }
+        XCTAssertTrue(skipped)
+        rig.controller.pause()
+
+        rig.controller.voice = PlaybackTestRig.voiceB
+        XCTAssertEqual(rig.controller.skippedSentences, [], "Bravo never failed on it")
+
+        rig.controller.seek(to: 1, andPlay: true)   // lands before it, as Back would
+        let read = await rig.waitUntil(5) { rig.requestedSentences(rig.engineB).contains(3) }
+        XCTAssertTrue(read, "Bravo reads sentence 3 on its way past: \(rig.requestedSentences(rig.engineB))")
+        rig.controller.pause()
+    }
+
+    /// The same for a switch that lands at a sentence boundary (R5's
+    /// install switch, heat's): the voice it replaces takes its skips along.
+    func testASkipGoesWithTheVoiceASwitchReplaces() async throws {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 0.25, failing: { $0.hasPrefix("Line3 ") })
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        let skipped = await rig.waitUntil(5) { rig.controller.skippedSentences == [3] }
+        XCTAssertTrue(skipped)
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: PlaybackTestRig.voiceB)
+        let landed = await rig.waitUntil(5) { rig.controller.voice == PlaybackTestRig.voiceB }
+        XCTAssertTrue(landed)
+        XCTAssertEqual(rig.controller.skippedSentences, [], "Bravo never failed on it")
+        rig.controller.pause()
+    }
+
     /// Refuses one sentence as a full prefetch lane does
     /// (`SynthesisSchedulerError.backlogFull`), `times` times, then reads it.
     private final class RefusingEngine: TtsEngine, @unchecked Sendable {

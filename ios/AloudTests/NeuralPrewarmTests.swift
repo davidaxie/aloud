@@ -347,4 +347,24 @@ final class NeuralPrewarmTests: XCTestCase {
         XCTAssertTrue(cancelled)
         harness.neural.finishWarmUp()   // never leave the warm-up parked
     }
+
+    /// The System voice reading with the natural voice's engine still
+    /// loaded (heat's switch to System, the fallback after three failures):
+    /// nothing reads the engine, so a memory warning frees it mid-play, at
+    /// either level, and the reading goes on.
+    func testAMemoryWarningFreesAnEngineTheSystemVoiceLeftLoaded() async throws {
+        let harness = makeHarness(neuralVoice: false)
+        let rig = harness.rig
+        harness.neural.finishWarmUp()   // loaded, as the switch to System leaves it
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+
+        PlatformLifecycle.post(.memoryWarning, to: harness.center, pressure: .warning)
+        let released = await rig.waitUntil(2) { !harness.neural.isWarm }
+        XCTAssertTrue(released, "the System voice playing never holds the natural voice's memory")
+        XCTAssertEqual(rig.controller.status, .playing, "the reading never stops for it")
+        XCTAssertTrue(harness.neural.requests.isEmpty)
+        rig.controller.pause()
+    }
 }

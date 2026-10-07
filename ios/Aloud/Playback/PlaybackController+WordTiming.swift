@@ -66,9 +66,17 @@ final class WordKaraokeState {
 
     /// Wall seconds the node takes from media time `from` to `to` at speed
     /// `rate`: each clip's stretch at its own compression, and any stretch
-    /// no clip covers (a dry spell, a marker) at `gapCompression`.
-    func wallSeconds(from: TimeInterval, to: TimeInterval, rate: Double, gapCompression: Double) -> TimeInterval {
+    /// no clip covers (a dry spell, a marker) at `gapCompression`. Up to
+    /// `passThroughUntil` the time-pitch unit is still bypassed, holding a
+    /// speed picked mid-sentence for the next boundary, so that stretch
+    /// passes 1:1.
+    func wallSeconds(from: TimeInterval, to: TimeInterval, rate: Double, gapCompression: Double,
+                     passThroughUntil: TimeInterval? = nil) -> TimeInterval {
         guard to > from, rate > 0 else { return 0 }
+        if let edge = passThroughUntil, edge > from {
+            let split = min(edge, to)
+            return (split - from) + wallSeconds(from: split, to: to, rate: rate, gapCompression: gapCompression)
+        }
         var wall = 0.0, covered = 0.0
         for clip in clips.values {
             let overlap = min(to, clip.start + clip.duration) - max(from, clip.start)

@@ -80,7 +80,7 @@ final class PlaybackController: ObservableObject {
     private var playingCompression: Double = 1.0
     /// The compression of the last clip handed to the node; nil before a
     /// schedule's first. A clip of another one is switched to as it starts
-    /// (`scheduleCompressionSwitch`).
+    /// (`scheduleBoundaryMarker`).
     private var lastScheduledCompression: Double?
 
     /// What the time-pitch unit is playing at now, whether it is bypassed,
@@ -94,8 +94,8 @@ final class PlaybackController: ObservableObject {
     /// (`SpeechStretcher`); a slider move plays the small difference until
     /// the clips at the new speed arrive. A share within 1% plays at exactly
     /// 1x, which the unit passes through untouched. The bypass switches only
-    /// at a clip boundary (`atBoundary`: the compression marker, a
-    /// sentence's end) or with the node still: switched mid-render, the unit
+    /// at a clip boundary (`atBoundary`: the marker the render reaches
+    /// ahead of each clip) or with the node still: switched mid-render, the unit
     /// drops or restarts its buffered audio mid-word. So a slider tick while
     /// audio plays changes only the rate, and a bypassed unit takes the new
     /// share up at the next boundary.
@@ -487,6 +487,10 @@ final class PlaybackController: ObservableObject {
     }
     private var handoff: VoiceHandoff?
     private var isSettingVoiceQuietly = false
+    /// The voice a pending switch is moving to, still on its way in behind
+    /// `voice` (its engine warming, or its first clips queued past the
+    /// splice); nil with none. Heat reads it (`ThermalGuard`).
+    var incomingVoice: TtsVoice? { handoff?.voice }
 
     private static let lookAhead = 2
     /// Spoken seconds of a sentence at 1x, from its characters: Kokoro's
@@ -615,9 +619,22 @@ final class PlaybackController: ObservableObject {
     /// What the output has still to present behind the render clock above
     /// (wall seconds: the time-pitch, mixer and device downstream of the
     /// player; zero rendering offline), and the time-pitch rate the render
-    /// pulls media at. The word tint subtracts the lag they make.
+    /// pulls media at. The word tint subtracts the lag they make. A bypassed
+    /// unit passes media 1:1, whatever rate a speed picked mid-sentence has
+    /// already set on it for the next boundary (`applyTimePitchRate`).
     var outputLag: (latency: TimeInterval, timePitchRate: Double) {
-        (player.outputPresentationLatency, Double(timePitch.rate))
+        (player.outputPresentationLatency, timePitch.bypass ? 1 : Double(timePitch.rate))
+    }
+
+    /// The end of the clip rendering at media time `now` while the bypassed
+    /// time-pitch unit holds a speed picked mid-sentence for the next
+    /// boundary: up to there the media passes 1:1, not at the share the
+    /// clip's compression implies. Nil when the unit plays that share.
+    private func pendingSpeedBoundary(at now: TimeInterval) -> TimeInterval? {
+        guard timePitch.bypass, timePitch.rate != 1 else { return nil }
+        return wordTiming.clips.values
+            .first { $0.start <= now && now < $0.start + $0.duration }
+            .map { $0.start + $0.duration }
     }
 
     /// Where a clip handed to the node now starts if the queue has run dry
@@ -1170,7 +1187,8 @@ final class PlaybackController: ObservableObject {
     private func sentenceEnd(_ sentence: Int, clip: WordKaraokeState.Clip, now: TimeInterval) -> SentenceEnd {
         SentenceEnd(sentence: sentence,
                     secondsFromNow: wordTiming.wallSeconds(from: now, to: clip.start + clip.duration, rate: rate,
-                                                           gapCompression: playingCompression))
+                                                           gapCompression: playingCompression,
+                                                           passThroughUntil: pendingSpeedBoundary(at: now)))
     }
 
     /// The sleep timer's landing: the sentence it aimed at has been heard,
@@ -1601,6 +1619,14 @@ final class PlaybackController: ObservableObject {
         if currentSentence > first { currentSentence = first }
     }
 
+    /// A sentence skipped as unreadable failed in one voice with one bracket
+    /// setting: another voice, or the brackets read or skipped, reads it
+    /// again from any way back to it, not only a tap on it.
+    private func forgetSkips() {
+        skippedSentences = []
+        failedRunSkips = []
+    }
+
     /// The voice sentence `index` is queued in: the handoff's from its splice
     /// on, otherwise the active voice.
     private func voiceForSentence(_ index: Int) -> TtsVoice {
@@ -1644,11 +1670,16 @@ final class PlaybackController: ObservableObject {
     /// switches the time-pitch unit by itself.
     private var compressionForSilence: Double { lastScheduledCompression ?? playingCompression }
 
-    /// Clips of another compression follow (a voice handoff, or a speed pick
-    /// that changed Kokoro's pace): a one-frame marker ahead of them switches
-    /// the time-pitch unit as the node renders it, in the quiet between two
-    /// sentences. The clips already queued keep playing at the right speed.
-    private func scheduleCompressionSwitch(to compression: Double, in format: AVAudioFormat, token: UInt64) {
+    /// A one-frame marker ahead of every clip after a schedule's first
+    /// switches the time-pitch unit as the node renders it, in the quiet
+    /// between two sentences: to the clip's compression when that changes (a
+    /// voice handoff, or a speed pick that changed Kokoro's pace), and to a
+    /// speed picked mid-sentence, which a bypassed unit takes up only at a
+    /// boundary. `.dataRendered`, never the sentence's `.dataPlayedBack` end:
+    /// that comes one output latency later (a Bluetooth route's ~0.2 s), with
+    /// the unit already inside the next sentence's first word. The clips
+    /// already queued keep playing at the right speed.
+    private func scheduleBoundaryMarker(compression: Double, in format: AVAudioFormat, token: UInt64) {
         guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1),
               let channels = marker.floatChannelData else {
             playingCompression = compression
@@ -1679,10 +1710,8 @@ final class PlaybackController: ObservableObject {
         }
 
         let compression = clip.nativeSpeed > 0 ? clip.nativeSpeed : 1
-        if let last = lastScheduledCompression {
-            if abs(last - compression) > 0.0005 {
-                scheduleCompressionSwitch(to: compression, in: format, token: token)
-            }
+        if lastScheduledCompression != nil {
+            scheduleBoundaryMarker(compression: compression, in: format, token: token)
         } else {
             // A schedule's first clip: the node is stopped, so the unit
             // switches at once.
@@ -1730,9 +1759,6 @@ final class PlaybackController: ObservableObject {
         // flushed its queue and called every completion at once: nobody
         // heard those clips, so the place stays where it is.
         guard audioEngine.isRunning else { return }
-        // Between two sentences: a speed picked mid-render switches the
-        // time-pitch unit's bypass here, never mid-word.
-        applyTimePitchRate(atBoundary: true)
         // A sample handed back to the end (`returnAuditionToTheEnd`) is
         // there already: its clip ending inside the ramp is no second end
         // (no haptic, announcement or progress write), and the ramp's own
@@ -1990,6 +2016,7 @@ final class PlaybackController: ObservableObject {
     private func commitHandoff() {
         guard let pending = handoff else { return }
         handoff = nil
+        forgetSkips()   // the incoming voice never failed on them
         setVoiceQuietly(pending.voice)
         if content != nil { postNotice(pending.notice ?? .nowReadingIn(voiceName: pending.voice.name)) }
     }
@@ -2012,6 +2039,7 @@ final class PlaybackController: ObservableObject {
     /// Switching to a cold Kokoro voice warms the engine first, surfacing
     /// "Preparing voice…", and degrades to the system voice on failure.
     private func applyVoiceOrSkipChange() {
+        forgetSkips()
         if let content {
             cache.purge(keepingPrefix: AudioClipCache.keyPrefix(
                 voice: voice, skipBrackets: skipBrackets, contentHash: content.contentHash))
@@ -2105,7 +2133,8 @@ final class PlaybackController: ObservableObject {
 
     /// Listening view hook: auditioning a natural voice may have warmed the
     /// ~800 MB neural engine before the listener settled on another voice —
-    /// give it back when the active voice isn't neural. Playback with a
+    /// give it back when the active voice isn't neural. A memory warning asks
+    /// the same at any status (`NeuralPrewarm`). Playback with a
     /// non-neural voice never touches Kokoro (pending
     /// neural work was cancelled on the switch), so this is safe even
     /// mid-play; the next neural synthesis transparently re-warms.

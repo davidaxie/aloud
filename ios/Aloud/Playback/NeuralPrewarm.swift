@@ -226,6 +226,11 @@ final class NeuralPrewarm {
         let cancelledLoad = warmTask != nil
         warmTask?.cancel()
         warmTask = nil
+        // Loaded behind a voice that isn't natural (heat's switch to System,
+        // the fallback after three failures), nothing reads the engine, so
+        // it goes at either level whatever is playing. It stays for a
+        // natural voice reading or one a pending switch is moving to.
+        playback.releaseNeuralEngineIfUnused()
         guard cancelledLoad || Self.releasesEngine(under: pressure, status: playback.status) else { return }
         // Kokoro's serial queue runs this release after a load already in
         // progress, so a warm-up the cancel came too late for is freed too.

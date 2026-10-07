@@ -6,6 +6,8 @@ import Foundation
 /// - crossing up to `.serious` while a Kokoro voice reads hands off to the
 ///   System voice at the next sentence (gapless, with the cooling notice);
 /// - crossing back down to `.fair` or below returns to `preferredVoice()`;
+///   heating up again before that switch lands drops it, and the next
+///   cool-down tries again;
 /// - entering `.critical` while audio plays stops it (`.tooHot`); stopped or
 ///   already paused, the neural engine is freed.
 ///
@@ -78,6 +80,7 @@ final class ThermalGuard {
                     playback.switchVoiceAtSentenceBoundary(to: systemVoice, notice: .coolingDown)
                 }
             }
+            dropIncomingNaturalVoice()
             // Stopped or already paused (a switch to System still pending
             // included), nothing needs the engine's memory now.
             playback.releaseNeuralEngineIfIdle()
@@ -86,6 +89,8 @@ final class ThermalGuard {
             isCooling = true
             isSwitchPending = true   // before the call: a switch that lands at once clears it
             playback.switchVoiceAtSentenceBoundary(to: systemVoice, notice: .coolingDown)
+        } else if new >= serious, old < serious {
+            dropIncomingNaturalVoice()
         } else if new < serious, old >= serious, isCooling {
             isCooling = false
             isSwitchPending = false
@@ -97,5 +102,17 @@ final class ThermalGuard {
     /// voice waits for the cool-down instead of loading now.
     func holdNaturalVoiceUntilCool() {
         isCooling = true
+    }
+
+    /// A natural voice still on its way in behind the System voice (the
+    /// cool-down's switch back, an install switch) is the heaviest work of
+    /// all, its engine loading or its first clips synthesizing: heating up
+    /// drops it, the System voice reads on, and the cool-down brings it back.
+    /// Clips already queued past its splice go too (the current sentence
+    /// reloads in System), so none plays under the System chip.
+    private func dropIncomingNaturalVoice() {
+        guard playback.voice.engine != .kokoro, playback.incomingVoice?.engine == .kokoro else { return }
+        isCooling = true
+        playback.cancelVoiceHandoff()
     }
 }

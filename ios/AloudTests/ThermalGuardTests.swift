@@ -340,6 +340,78 @@ final class ThermalGuardTests: XCTestCase {
         XCTAssertTrue(neural.isWarm, "the queued natural voice still needs it")
     }
 
+    // MARK: - Heating up again before the switch back lands
+
+    /// .serious again while the cool-down's switch back to the natural
+    /// voice waits for its splice: heat drops that switch, so no natural
+    /// clip is queued and the System voice reads on. The next cool-down
+    /// tries again.
+    func testReheatingBeforeTheSwitchBackLandsKeepsTheSystemVoice() async throws {
+        let neural = FakeNeuralEngine(warm: true)
+        let rig = makeRig(neural)
+        try await startPlaying(rig)
+        let thermal = makeGuard(rig)
+        thermal.thermalStateChanged(.serious)
+        let cooled = await rig.waitUntil { rig.controller.voice == Self.system }
+        XCTAssertTrue(cooled)
+
+        thermal.thermalStateChanged(.fair)
+        XCTAssertEqual(rig.controller.incomingVoice, Self.michael, "the switch back waits for its splice")
+        rig.clearRecordings()
+        thermal.thermalStateChanged(.serious)   // same turn: the splice hasn't played
+
+        XCTAssertNil(rig.controller.incomingVoice, "heat drops the switch back")
+        let landed = await rig.waitUntil(1.5) { rig.controller.voice == Self.michael }
+        XCTAssertFalse(landed, "the natural voice never takes over while hot")
+        XCTAssertEqual(rig.controller.status, .playing)
+        let queued = Self.scheduled(rig.events)
+        XCTAssertFalse(queued.isEmpty)
+        XCTAssertTrue(queued.allSatisfy { $0.voiceID == Self.system.id },
+                      "no natural clip plays under the System chip: \(queued)")
+        XCTAssertEqual(selections, [], "heat is never persisted as a pick")
+
+        thermal.thermalStateChanged(.nominal)
+        let restored = await rig.waitUntil { rig.controller.voice == Self.michael }
+        XCTAssertTrue(restored, "the next cool-down brings the natural voice back")
+        rig.controller.pause()
+    }
+
+    /// .critical while the switch back to a natural voice still loads its
+    /// engine: the stop drops the switch, so the load finishes for nothing,
+    /// Kokoro never reads while it's hot, and Play reads the System voice.
+    func testCriticalWhileTheSwitchBackWarmsDropsIt() async throws {
+        let neural = FakeNeuralEngine()   // cold: the switch back loads it
+        let rig = makeRig(neural)
+        try await startPlaying(rig, in: Self.system)
+        let thermal = makeGuard(rig)
+        thermal.thermalStateChanged(.serious)
+        thermal.holdNaturalVoiceUntilCool()   // the model installed while hot
+        thermal.thermalStateChanged(.fair)
+        XCTAssertEqual(rig.controller.incomingVoice, Self.michael, "the engine loads behind the System voice")
+        rig.clearRecordings()
+
+        thermal.thermalStateChanged(.critical)
+
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.stopped?.reason, .tooHot)
+        XCTAssertNil(rig.controller.incomingVoice, "the stop drops the switch back")
+        XCTAssertEqual(rig.controller.voice, Self.system)
+        XCTAssertEqual(rig.announcements, [Self.tooHotSpoken])
+        neural.finishWarmUp()
+        await elapse(0.3)
+        XCTAssertTrue(neural.requests.isEmpty, "Kokoro never reads while it's hot")
+
+        let mark = rig.statuses.count
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        await elapse(1)
+        XCTAssertEqual(rig.controller.voice, Self.system, "Play reads the System voice the stop left")
+        XCTAssertTrue(Self.scheduled(rig.events).allSatisfy { $0.voiceID == Self.system.id })
+        XCTAssertTrue(neural.requests.isEmpty)
+        XCTAssertEqual(selections, [])
+        rig.controller.pause()
+    }
+
     func testPlayWhileStillCriticalIsHonoured() async throws {
         let rig = makeRig()
         try await startPlaying(rig, in: Self.system)

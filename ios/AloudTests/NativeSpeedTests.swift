@@ -243,6 +243,94 @@ final class NativeSpeedTests: XCTestCase {
         rig.controller.pause(rampsOut: false)
     }
 
+    /// The boundary switch rides the one-frame `.dataRendered` marker ahead
+    /// of every clip after a schedule's first, so it lands as the render
+    /// crosses into the next sentence. A sentence's end is heard
+    /// (`.dataPlayedBack`) one output latency later, a Bluetooth route's
+    /// ~0.2 s, with the unit already inside the next sentence's first word:
+    /// it never switches the unit. (Rendering offline, both callbacks come
+    /// at once, so the source is what tells them apart.)
+    func testTheBypassSwitchesAsTheRenderCrossesABoundary() throws {
+        let path = "Playback/PlaybackController.swift"
+        let code = try SourceTree.sources(only: [path]).mapValues(SwiftLiterals.code(in:))
+        let source = try XCTUnwrap(code[path])
+        let finished = try XCTUnwrap(Self.body(after: "func sentenceFinished(", in: source))
+        XCTAssertFalse(finished.contains("applyTimePitchRate"), "a sentence's heard end never switches the unit")
+        let schedule = try XCTUnwrap(Self.body(after: "func scheduleClip(", in: source))
+        XCTAssertTrue(schedule.contains("scheduleBoundaryMarker("), "every clip after the first gets its marker")
+        XCTAssertFalse(schedule.contains("abs(last - compression)"),
+                       "a marker at every boundary, not only where the compression changes")
+        let marker = try XCTUnwrap(Self.body(after: "func scheduleBoundaryMarker(", in: source))
+        XCTAssertTrue(marker.contains(".dataRendered"))
+        XCTAssertTrue(marker.contains("applyTimePitchRate(atBoundary: true)"))
+    }
+
+    /// The text of the first `{ … }` block after `marker`, braces balanced.
+    private static func body(after marker: String, in source: String) -> String? {
+        guard let start = source.range(of: marker),
+              let open = source[start.upperBound...].firstIndex(of: "{") else { return nil }
+        var depth = 0
+        var index = open
+        while index < source.endIndex {
+            switch source[index] {
+            case "{": depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 { return String(source[open...index]) }
+            default: break
+            }
+            index = source.index(after: index)
+        }
+        return nil
+    }
+
+    /// A bypassed unit passes media 1:1, even while it holds a speed picked
+    /// mid-sentence for the next boundary: the word tint's lag and the
+    /// sentence ends read it so, never at the share it hasn't taken up.
+    @MainActor
+    func testABypassedUnitIsReadAtOneToOne() async throws {
+        let rig = PlaybackTestRig(sentences: 4, clipDuration: 4)
+        rig.controller.rate = 2.0
+        rig.loadDefault(at: 0)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        let rendering = await rig.waitUntil(2) { rig.controller.playerMediaSeconds != nil }
+        XCTAssertTrue(rendering)
+
+        rig.controller.rate = 2.5   // mid-render: the unit holds 1.25 for the boundary
+        XCTAssertTrue(rig.controller.isTimePitchBypassed)
+        XCTAssertEqual(rig.controller.outputLag.timePitchRate, 1, "bypassed, the unit pulls media 1:1")
+        let sentence = rig.controller.currentSentence
+        let until = try XCTUnwrap(rig.controller.secondsUntilEnd(ofSentence: sentence))
+        let clip = try XCTUnwrap(rig.controller.wordTiming.clip(for: sentence))
+        let now = try XCTUnwrap(rig.controller.playerMediaSeconds)
+        // Read after `until`, so the render has only moved on: a lower bound.
+        XCTAssertGreaterThanOrEqual(until, clip.start + clip.duration - now - 0.01,
+                                    "the rest of the clip plays at the speed it was made for")
+
+        rig.controller.pause(rampsOut: false)
+        rig.controller.rate = 3.0   // still: the unit switches at once
+        XCTAssertFalse(rig.controller.isTimePitchBypassed)
+        XCTAssertEqual(rig.controller.outputLag.timePitchRate, 1.5, accuracy: 0.02)
+    }
+
+    @MainActor
+    func testWallTimePassesABypassedStretchOneToOne() {
+        let timeline = WordKaraokeState()
+        timeline.appendScheduled(sentence: 0, duration: 1.0, windows: [], compression: 2.0)
+        timeline.appendScheduled(sentence: 1, duration: 1.0, windows: [], compression: 2.0)
+        // At 2.5x, bypassed to the end of clip 0: its last 0.5 s passes 1:1,
+        // then clip 1 plays at its 1.25 share, 1 × 2 / 2.5 = 0.8 s.
+        XCTAssertEqual(timeline.wallSeconds(from: 0.5, to: 2.0, rate: 2.5, gapCompression: 2.0,
+                                            passThroughUntil: 1.0), 1.3, accuracy: 1e-9)
+        XCTAssertEqual(timeline.wallSeconds(from: 0.5, to: 0.75, rate: 2.5, gapCompression: 2.0,
+                                            passThroughUntil: 1.0), 0.25, accuracy: 1e-9,
+                       "an end inside the bypassed stretch")
+        XCTAssertEqual(timeline.wallSeconds(from: 1.5, to: 2.0, rate: 2.5, gapCompression: 2.0,
+                                            passThroughUntil: 1.0), 0.4, accuracy: 1e-9,
+                       "a boundary already crossed changes nothing")
+    }
+
     /// A speed pick that changes Kokoro's pace mid-book: later sentences
     /// come at the new pace, and the unit switches to their share once they
     /// play; the queued clips keep theirs.
