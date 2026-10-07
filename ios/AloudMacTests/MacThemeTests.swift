@@ -76,6 +76,28 @@ final class MacThemeTests: XCTestCase {
         XCTAssertEqual(Theme.Stroke.hairlineWidth, PlatformScreen.hairline)
     }
 
+    /// A rule is one pixel of the screen it is drawn on, whichever screen
+    /// is main (H059): at 1x a bottom-aligned rule (Classics' separators)
+    /// is one whole pixel, never rounded away, and at 2x one pixel, not two.
+    @MainActor
+    func testAHairlineFollowsTheScreenItIsDrawnOn() throws {
+        XCTAssertEqual(PlatformScreen.hairline(scale: 1), 1)
+        XCTAssertEqual(PlatformScreen.hairline(scale: 2), 0.5)
+        XCTAssertEqual(PlatformScreen.hairline(scale: 0), 1, "never wider than a point")
+        for scale: CGFloat in [1, 2] {
+            let rule = Color.white
+                .frame(width: 4, height: 6)
+                .overlay(alignment: .bottom) { Rectangle().fill(Color.black).hairlineHeight() }
+                .environment(\.displayScale, scale)
+            let renderer = ImageRenderer(content: rule)
+            renderer.scale = scale
+            let rows = try grayRows(of: XCTUnwrap(renderer.cgImage))
+            XCTAssertEqual(rows.count, Int(6 * scale), "\(scale)x")
+            XCTAssertLessThan(rows[rows.count - 1], 64, "\(scale)x: the bottom pixel row is the rule")
+            XCTAssertGreaterThan(rows[rows.count - 2], 191, "\(scale)x: one pixel, not two")
+        }
+    }
+
     // MARK: T1 · the type ramp and the chrome bands
 
     func testRampHasTheMacSizes() {
@@ -221,6 +243,19 @@ final class MacThemeTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// Each pixel row's mean gray (0 black, 255 white), top row first.
+    private func grayRows(of image: CGImage) throws -> [Int] {
+        let width = image.width, height = image.height
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                                              bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        return (0..<height).map { row in
+            (0..<width).reduce(0) { $0 + Int(bytes[row * context.bytesPerRow + $1]) } / width
+        }
+    }
 
     /// `make()`'s color in sRGB, built and read while `name` is the drawing
     /// appearance (as AppKit resolves a dynamic color when it draws).

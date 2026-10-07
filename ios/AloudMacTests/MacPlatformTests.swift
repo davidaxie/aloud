@@ -207,6 +207,16 @@ final class MacPlatformTests: XCTestCase {
         XCTAssertEqual(StopReason.playbackError.text, "Playback stopped", "the Mac's Try again button retries")
     }
 
+    /// The Mac's error line names no action, so its button's hint says what
+    /// pressing it does (H049): VoiceOver heard only "Playback stopped,
+    /// button". The hint is its own sentence, not the label again.
+    func testTheErrorLineHintSaysItRetries() {
+        XCTAssertEqual(ReaderMessageLine.retryHint, "Plays from the sentence that failed")
+        XCTAssertFalse(StopReason.playbackError.spokenText.localizedCaseInsensitiveContains("try again"),
+                       "the Mac's label carries no action: the hint is the only one")
+        XCTAssertNotEqual(ReaderMessageLine.retryHint, StopReason.playbackError.spokenText)
+    }
+
     func testDownloadCopyReadsAsTheMacs() {
         XCTAssertEqual(DeviceCopy.meteredPrompt, "Download 353 MB on a metered connection?")
         XCTAssertEqual(DeviceCopy.meteredDetail, "Your Mac is using a Personal Hotspot or Low Data Mode.")

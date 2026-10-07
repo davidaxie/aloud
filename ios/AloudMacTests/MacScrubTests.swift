@@ -49,6 +49,41 @@ final class MacScrubTests: XCTestCase {
         MacScrubModel(navigation: navigation, sentences: content.sentences, playhead: playhead, rate: 1)
     }
 
+    // MARK: - Chapter line
+
+    /// A press shows its target in the bar's chapter line too, before the
+    /// release, as the iPhone's line follows a drag (H052): the target's
+    /// time left, and at the end of the book the target's line in place of
+    /// "Finished". With no press the line stays on the playhead.
+    func testAPressMovesTheChapterLineToItsTarget() throws {
+        let count = 400
+        let (_, navigation, _) = load(pages: nil, count: count, pausedAt: 3)
+        func line(playhead: Int, press: Int?, isAtEnd: Bool = false) -> ReaderPositionLine {
+            MacPlayerBar.positionLine(navigation, playhead: playhead, pressTarget: press,
+                                      rate: 1, documentTitle: "Book", isAtEnd: isAtEnd)
+        }
+        let resting = line(playhead: 3, press: nil)
+        XCTAssertEqual(resting, navigation.positionLine(at: 3, rate: 1, documentTitle: "Book"))
+        let pressed = line(playhead: 3, press: count - 10)
+        XCTAssertEqual(pressed, navigation.positionLine(at: count - 10, rate: 1, documentTitle: "Book"))
+        XCTAssertLessThan(try XCTUnwrap(pressed.minutesLeft), try XCTUnwrap(resting.minutesLeft),
+                          "the target's time left, not the playhead's")
+
+        let finished = line(playhead: count - 1, press: nil, isAtEnd: true)
+        XCTAssertNil(finished.minutesLeft, "Finished at rest")
+        XCTAssertNotNil(line(playhead: count - 1, press: count - 10, isAtEnd: true).minutesLeft,
+                        "a press at the end shows its target's time")
+    }
+
+    /// One scrub in the bar: its press, while there is one, is the line's.
+    func testThePressKeyKeepsThePress() {
+        var value = MacScrubPressKey.defaultValue
+        XCTAssertNil(value)
+        MacScrubPressKey.reduce(value: &value) { 7 }
+        MacScrubPressKey.reduce(value: &value) { nil }
+        XCTAssertEqual(value, 7)
+    }
+
     // MARK: - Hover
 
     func testTheTrackSpansTheChapterHoldingThePlayhead() {

@@ -74,6 +74,12 @@ struct MacCommandActions {
     // MARK: - Enabled
 
     func isEnabled(_ command: MacCommand) -> Bool {
+        // Under Rename or the Delete confirmation, a command that acts in
+        // the main window would ask for another root presentation (or a
+        // second Delete), and SwiftUI would close the alert without its
+        // Save. The key router holds plain keys behind an alert the same
+        // way (`MacKeyRouter.run`).
+        if isRootAlertShown, needsMainWindow(command) || command == .deleteBook { return false }
         switch command {
         case .playPause: return playback.document != nil || continueBook != nil
         case .back15, .forward15, .sleepTimer: return hasBook
@@ -199,6 +205,11 @@ struct MacCommandActions {
     nonisolated static func steppedTextSize(from step: Int, bigger: Bool) -> Int? {
         let next = min(max(step, 0), ReaderTextSize.steps.count - 1) + (bigger ? 1 : -1)
         return ReaderTextSize.steps.indices.contains(next) ? next : nil
+    }
+
+    /// Rename or the Delete confirmation is up over the Library.
+    var isRootAlertShown: Bool {
+        router.rootPresentation == .rename || router.rootPresentation == .deleteConfirmation
     }
 
     /// The commands that act in the main window: File's adds, Find,
@@ -439,6 +450,8 @@ final class MacCommandState: ObservableObject {
             playback.$rate.map { _ in () }.eraseToAnyPublisher(),
             playback.$undoableJump.map { _ in () }.eraseToAnyPublisher(),
             actions.router.$path.map { _ in () }.eraseToAnyPublisher(),
+            // Rename and the Delete confirmation hold the window's commands.
+            actions.router.$rootPresentation.map { _ in () }.eraseToAnyPublisher(),
             actions.store.$documents.map { _ in () }.eraseToAnyPublisher(),
             actions.sleepTimer.$option.map { _ in () }.eraseToAnyPublisher(),
             actions.sleepTimer.$endsAtChapter.map { _ in () }.eraseToAnyPublisher(),

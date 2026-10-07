@@ -37,6 +37,8 @@ struct MacPlayerBar: View {
 
     /// The bar's own width, measured; seeded at the default window's.
     @State private var barWidth: CGFloat = 1000
+    /// The scrub's press target while it is pressed (`MacScrubPressKey`).
+    @State private var pressTarget: Int?
 
     var body: some View {
         let layout = MacPlayerBarLayout(barWidth: barWidth, scale: chromeScale)
@@ -50,6 +52,9 @@ struct MacPlayerBar: View {
                               onBackFiveMinutes: backFiveMinutes)
             MacScrub(document: document, content: content, navigation: navigation)
                 .padding(.horizontal, Theme.Space.screenGutter)
+                .onPreferenceChange(MacScrubPressKey.self) { target in
+                    if target != pressTarget { pressTarget = target }
+                }
             transport(layout)
                 .padding(.horizontal, Theme.Space.screenGutter)
         }
@@ -62,7 +67,7 @@ struct MacPlayerBar: View {
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Theme.Stroke.hairlineColor)
-                .frame(height: Theme.Stroke.hairlineWidth)
+                .hairlineHeight()
                 .accessibilityHidden(true)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
@@ -82,10 +87,20 @@ struct MacPlayerBar: View {
     }
 
     private var position: ReaderPositionLine {
-        navigation.positionLine(at: playhead,
-                                rate: playback.rate,
-                                documentTitle: document.title,
-                                isFinished: playback.isAtEnd)
+        Self.positionLine(navigation, playhead: playhead, pressTarget: pressTarget,
+                          rate: playback.rate, documentTitle: document.title, isAtEnd: playback.isAtEnd)
+    }
+
+    /// The chapter line at the playhead, or at a scrub press's target while
+    /// pressed: the line previews the target chapter and its time left
+    /// before the release, as the iPhone's follows a drag
+    /// (`PlayerBarView.position`). A hover leaves it alone.
+    static func positionLine(_ navigation: ReaderNavigation, playhead: Int, pressTarget: Int?,
+                             rate: Double, documentTitle: String, isAtEnd: Bool) -> ReaderPositionLine {
+        navigation.positionLine(at: pressTarget ?? playhead,
+                                rate: rate,
+                                documentTitle: documentTitle,
+                                isFinished: pressTarget == nil && isAtEnd)
     }
 
     // MARK: - Transport
@@ -504,5 +519,15 @@ private struct MacChipFace: ViewModifier {
             .overlay(Capsule().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
             // The keyboard focus ring follows the capsule, not its frame.
             .contentShape([.interaction, .focusEffect], Capsule())
+    }
+}
+
+/// The Mac scrub's press target while pressed, nil otherwise: the press is
+/// the scrub's gesture state, and the bar's chapter line follows it.
+struct MacScrubPressKey: PreferenceKey {
+    static let defaultValue: Int? = nil
+
+    static func reduce(value: inout Int?, nextValue: () -> Int?) {
+        value = nextValue() ?? value
     }
 }

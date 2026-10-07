@@ -24,7 +24,7 @@ extension PlatformColor {
 
 enum PlatformScreen {
     /// One physical pixel on the main screen, for code with no view to ask.
-    /// Views read `@Environment(\.displayScale)` instead.
+    /// Views use `hairlineHeight()`, which reads `displayScale`.
     static var hairline: CGFloat {
         1 / max(UIScreen.main.scale, 1)
     }
@@ -67,10 +67,45 @@ extension PlatformColor {
 
 enum PlatformScreen {
     /// One physical pixel on the main screen, for code with no view to ask.
-    /// Views read `@Environment(\.displayScale)` instead (it follows the
+    /// Views use `hairlineHeight()`, which reads `displayScale` (it follows the
     /// window's screen). Retina when no screen is attached.
     static var hairline: CGFloat {
         1 / max(NSScreen.main?.backingScaleFactor ?? 2, 1)
     }
 }
 #endif
+
+extension PlatformScreen {
+    /// One physical pixel at `scale`, a view's `displayScale`.
+    static func hairline(scale: CGFloat) -> CGFloat {
+        1 / max(scale, 1)
+    }
+}
+
+extension View {
+    /// Sizes a rule one physical pixel tall on the screen it is drawn on.
+    /// `displayScale` follows the window's screen and redraws the rule when
+    /// it moves; the main screen's (`PlatformScreen.hairline`) may be the
+    /// other display of a Mac with a Retina and a 1x one.
+    func hairlineHeight() -> some View {
+        modifier(HairlineHeight())
+    }
+}
+
+private struct HairlineHeight: ViewModifier {
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content.frame(height: PlatformScreen.hairline(scale: displayScale))
+    }
+}
+
+/// A capsule's hairline border, one physical pixel on the screen it is
+/// drawn on (`hairlineHeight()`).
+struct HairlineCapsuleBorder: View {
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        Capsule().strokeBorder(Theme.Stroke.hairlineColor, lineWidth: PlatformScreen.hairline(scale: displayScale))
+    }
+}

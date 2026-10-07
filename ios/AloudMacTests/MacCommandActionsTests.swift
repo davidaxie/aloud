@@ -221,6 +221,52 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertEqual(followed, 1)
     }
 
+    /// Under Rename or the Delete confirmation, ⌘O would swap the alert for
+    /// the open panel and SwiftUI would close it without its Save, losing
+    /// the typed title (H025). The commands that act in the main window
+    /// wait for the alert; playback's don't.
+    func testMainWindowCommandsWaitForARootAlert() {
+        let (rig, base) = makeActions()
+        rig.loadDefault()
+        var actions = base
+        var deletes = 0
+        actions.deleteBook = { deletes += 1 }
+        let router = actions.router
+        for alert: LibraryRouter.RootPresentation in [.rename, .deleteConfirmation] {
+            router.rootPresentation = alert
+            for command: MacCommand in [.addFromFiles, .addClassic, .find, .toggleContents, .back, .deleteBook] {
+                XCTAssertFalse(actions.isEnabled(command), "\(command) under \(alert)")
+                XCTAssertFalse(actions.perform(command), "\(command) under \(alert)")
+            }
+            XCTAssertEqual(router.rootPresentation, alert, "the alert stays up")
+            XCTAssertEqual(router.path, [], "nothing pushed under it")
+            XCTAssertTrue(actions.isEnabled(.forward15), "playback plays on")
+            router.dismissRootPresentation(alert)
+        }
+        XCTAssertEqual(deletes, 0)
+        XCTAssertTrue(actions.isEnabled(.addFromFiles))
+        XCTAssertTrue(actions.isEnabled(.deleteBook))
+        router.rootPresentation = .filePicker
+        XCTAssertTrue(actions.isEnabled(.addClassic), "the open panel is no alert")
+    }
+
+    /// The menu snapshot follows an alert opening and closing.
+    func testTheMenuSnapshotFollowsARootAlert() async throws {
+        let (_, actions) = makeActions()
+        let state = MacCommandState(actions: actions)
+        XCTAssertTrue(state.snapshot.isEnabled(.addFromFiles))
+        actions.router.rootPresentation = .rename
+        for _ in 0..<100 where state.snapshot.isEnabled(.addFromFiles) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(state.snapshot.isEnabled(.addFromFiles), "Add from Files… greys out under Rename")
+        actions.router.dismissRootPresentation(.rename)
+        for _ in 0..<100 where !state.snapshot.isEnabled(.addFromFiles) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(state.snapshot.isEnabled(.addFromFiles))
+    }
+
     /// A command that acts in the main window brings it back first, closed
     /// or minimized: Add from Files…'s panel, a pushed Classics or a
     /// focused field never waits in a window no one can see. Playback's

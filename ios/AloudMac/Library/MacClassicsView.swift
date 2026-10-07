@@ -227,7 +227,7 @@ private struct MacClassicsRow: View {
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Theme.Stroke.hairlineColor)
-                .frame(height: Theme.Stroke.hairlineWidth)
+                .hairlineHeight()
                 .padding(.horizontal, Theme.Space.sm)
                 .accessibilityHidden(true)
         }

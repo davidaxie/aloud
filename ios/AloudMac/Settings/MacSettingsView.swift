@@ -144,7 +144,7 @@ private struct MacSettingsHairline: View {
     var body: some View {
         Rectangle()
             .fill(Theme.Stroke.hairlineColor)
-            .frame(height: Theme.Stroke.hairlineWidth)
+            .hairlineHeight()
             .accessibilityHidden(true)
     }
 }

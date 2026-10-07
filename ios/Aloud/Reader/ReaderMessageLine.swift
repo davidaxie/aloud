@@ -25,6 +25,9 @@ struct ReaderMessageLine: View {
     @Environment(\.chromeScale) private var chromeScale
 
     private static let contentsHint = "Opens contents and search"
+    /// What the error line's button does. The Mac's label names no action
+    /// ("Playback stopped", `DeviceCopy.playbackFailed`), so the hint says it.
+    static let retryHint = "Plays from the sentence that failed"
 
     private var slotKey: String { message?.slotKey ?? "position" }
 
@@ -130,6 +133,7 @@ struct ReaderMessageLine: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(StopReason.playbackError.spokenText)
+        .accessibilityHint(Self.retryHint)
         .accessibilityIdentifier("reader.chapterLine")
     }
 

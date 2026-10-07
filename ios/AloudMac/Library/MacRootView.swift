@@ -37,8 +37,12 @@ struct MacRootView: View {
                 }
         }
         .background(Theme.bg)
-        // R10: VoiceOver cannot reach anything under the overlay.
+        // R10: VoiceOver cannot reach anything under the overlay, and
+        // neither can the keyboard: macOS key-view focus ignores
+        // accessibilityHidden, so a focused card would still open on Space
+        // or Return, and offer Delete Book… (⌘⌫), behind the scrim.
         .accessibilityHidden(isImportOverlayShown)
+        .disabled(isImportOverlayShown)
         .overlay {
             if isDropTargeted {
                 MacDropOverlay()

@@ -73,6 +73,8 @@ struct MacScrub: View {
             .gesture(pressGesture(width: width))
         }
         .frame(height: Self.rowHeight)
+        // The bar's chapter line previews the press, as the preview does.
+        .preference(key: MacScrubPressKey.self, value: press?.target)
         .focusable()
         .onKeyPress(keys: MacScrubModel.keys) { keyPress in
             MacScrubModel.Key(keyPress.key).map { perform($0) } ?? .ignored
@@ -144,7 +146,7 @@ struct MacScrub: View {
         .padding(.horizontal, Theme.Space.sm)
         .padding(.vertical, Theme.Space.xxs)
         .background(Theme.surface2, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.Stroke.hairlineColor, lineWidth: Theme.Stroke.hairlineWidth))
+        .overlay(HairlineCapsuleBorder())
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { measured in
             previewWidth = measured
         }

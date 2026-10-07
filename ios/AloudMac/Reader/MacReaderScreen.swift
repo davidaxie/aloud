@@ -236,7 +236,7 @@ struct MacReaderScreen: View {
     private var topEdgeRule: some View {
         Rectangle()
             .fill(Theme.Stroke.hairlineColor)
-            .frame(height: Theme.Stroke.hairlineWidth)
+            .hairlineHeight()
             .opacity(textUnderTopBar ? 1 : 0)
             .animation(.easeOut(duration: Theme.Motion.crossfade), value: textUnderTopBar)
             .allowsHitTesting(false)

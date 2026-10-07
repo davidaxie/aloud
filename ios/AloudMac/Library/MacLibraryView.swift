@@ -27,6 +27,8 @@ struct MacLibraryView: View {
     @State private var renameTarget: LibraryDocument?
     @State private var renameText = ""
     @State private var deleteTarget: LibraryDocument?
+    /// The card Delete acts on had keyboard focus when it was asked for.
+    @State private var deleteHadFocus = false
     /// The grid card with keyboard focus, which the arrows move.
     @FocusState private var focusedCard: UUID?
     /// The shelf's scroll view width, scroller excluded; nil until measured.
@@ -106,7 +108,16 @@ struct MacLibraryView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let target = deleteTarget { model.deleteDocument(target) }
+                if let target = deleteTarget {
+                    // Focus passes to a neighbour, as Finder's selection
+                    // does: lost, the arrows and Space would fall through
+                    // to the loaded book's skips and Play/Pause.
+                    let next = Self.focusAfterRemoving(target.id, hero: shelf.hero?.id,
+                                                       grid: shelf.grid.map(\.id))
+                    let hadFocus = deleteHadFocus
+                    model.deleteDocument(target)
+                    if hadFocus { refocus(next) }
+                }
                 deleteTarget = nil
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
@@ -255,6 +266,25 @@ struct MacLibraryView: View {
         return move == .up ? hero : nil
     }
 
+    /// Where keyboard focus goes when `removed` leaves the shelf: the next
+    /// grid card, else the one before it, else the Continue card; from the
+    /// Continue card, the grid's first. nil: no card is left.
+    static func focusAfterRemoving(_ removed: UUID, hero: UUID?, grid: [UUID]) -> UUID? {
+        if let index = grid.firstIndex(of: removed) {
+            if index + 1 < grid.count { return grid[index + 1] }
+            if index > 0 { return grid[index - 1] }
+            return hero
+        }
+        return removed == hero ? grid.first : nil
+    }
+
+    /// Focuses `card` once the shelf has redrawn and any dialog has gone
+    /// (its dismissal would otherwise put focus back where it was).
+    private func refocus(_ card: UUID?) {
+        guard let card else { return }
+        DispatchQueue.main.async { focusedCard = card }
+    }
+
     // MARK: Playback
 
     /// Opens `document` in the reader. A Continue circle load of another
@@ -292,10 +322,15 @@ struct MacLibraryView: View {
             // The player and any Continue load let go first, so no later
             // progress write or Play undoes it.
             continuePlayback.letGo(of: document.id, playback: model.playback)
+            let hadFocus = focusedCard == document.id
             store.markFinished(id: document.id)
+            // A finished Continue card is redrawn as a grid card: focus
+            // follows the book there.
+            if hadFocus { refocus(document.id) }
             PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
         case .delete:
             deleteTarget = document
+            deleteHadFocus = focusedCard == document.id
             router.rootPresentation = .deleteConfirmation
         }
     }
@@ -552,7 +587,7 @@ struct MacEdgeScrollView<Content: View>: View {
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Theme.Stroke.hairlineColor)
-                .frame(height: Theme.Stroke.hairlineWidth)
+                .hairlineHeight()
                 .opacity(isScrolled ? 1 : 0)
                 .animation(.easeOut(duration: Theme.Motion.press), value: isScrolled)
                 .allowsHitTesting(false)
