@@ -20,6 +20,8 @@ struct MacRootView: View {
     @State private var isDropTargeted = false
     /// The import overlay is up (an add has run past 0.8 s).
     @State private var isImportOverlayShown = false
+    /// A file of a type Aloud can't add, forced in by Open With.
+    @State private var openFailure: ImportFailure?
 
     var body: some View {
         NavigationStack(path: $router.path) {
@@ -72,8 +74,9 @@ struct MacRootView: View {
         // into one batch, so they are all added and none opens.
         .onOpenURL { url in
             guard url.isFileURL else { return }
-            router.clearForOpenIn()
-            intake.admitOpened(url)
+            if let failure = Self.receiveOpened(url, router: router, intake: intake) {
+                openFailure = failure
+            }
         }
         // Fixed copy only: one sentence and its next step (R10). The
         // intake's failure (a file that never reached the importer) first.
@@ -118,7 +121,7 @@ struct MacRootView: View {
     /// panel, Rename or Delete is up).
     private var shownFailure: ImportFailure? {
         guard router.rootPresentation == nil else { return nil }
-        return intake.failure ?? importer.failure
+        return intake.failure ?? openFailure ?? importer.failure
     }
 
     private var failureShown: Binding<Bool> {
@@ -127,10 +130,25 @@ struct MacRootView: View {
                     guard !shown else { return }
                     if intake.failure != nil {
                         intake.dismissFailure()
+                    } else if openFailure != nil {
+                        openFailure = nil
                     } else {
                         importer.dismissFailure()
                     }
                 })
+    }
+
+    /// One file from Open With. A type Aloud can add clears the window to
+    /// the bare Library and goes to the intake. Any other (Open With ▸
+    /// Other… forces one here, past Info.plist's types) leaves the window as
+    /// it is, the reader and any Rename or Delete still up, and returns the
+    /// failure to show: the intake would drop it without a word. Static, so
+    /// the tests take the same steps.
+    static func receiveOpened(_ url: URL, router: LibraryRouter, intake: MacFileIntake) -> ImportFailure? {
+        guard MacFileIntake.isAddable(url) else { return .textNoText }
+        router.clearForOpenIn()
+        intake.admitOpened(url)
+        return nil
     }
 }
 

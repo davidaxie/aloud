@@ -11,7 +11,7 @@ struct DocumentCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            DocumentCoverView(document: document)
+            cover
             details
         }
         .accessibilityElement(children: .combine)
@@ -28,6 +28,23 @@ struct DocumentCardView: View {
         let spoken = document.spokenListeningSubtitle(rate: rate)
         if !spoken.isEmpty { parts.append(spoken) }
         return parts.joined(separator: ", ")
+    }
+
+    // MARK: Cover
+
+    /// At the accessibility sizes the grid is one column, the screen's
+    /// width, and a cover filling it (335x502pt on a 375pt phone) left about
+    /// one book a screen, its title below the fold. There the cover keeps
+    /// the Continue card's fixed size (`CoverGeometry.heroSize`), never
+    /// scaled with Dynamic Type: the text below it is what grows.
+    @ViewBuilder
+    private var cover: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            DocumentCoverView(document: document)
+                .frame(width: CoverGeometry.heroSize.width, height: CoverGeometry.heroSize.height)
+        } else {
+            DocumentCoverView(document: document)
+        }
     }
 
     // MARK: Details

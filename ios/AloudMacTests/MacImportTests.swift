@@ -336,9 +336,10 @@ final class MacImportTests: XCTestCase {
     // MARK: Open With and the Dock
 
     /// What the window's `onOpenURL` does with each file SwiftUI hands it.
-    private func openWith(_ url: URL, router: LibraryRouter, intake: MacFileIntake) {
-        router.clearForOpenIn()
-        intake.admitOpened(url)
+    private func openWith(_ url: URL, router: LibraryRouter, intake: MacFileIntake,
+                          file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertNil(MacRootView.receiveOpened(url, router: router, intake: intake),
+                     "an addable file shows no failure", file: file, line: line)
     }
 
     /// An importer over `library` that opens through `router` and announces
@@ -390,6 +391,33 @@ final class MacImportTests: XCTestCase {
         XCTAssertEqual(router.path, [.reader(id)], "over the bare Library, not Classics")
         XCTAssertEqual(announcements, ["Added one.txt"])
         XCTAssertFalse(intake.holdsOpens)
+    }
+
+    /// A type Aloud can't add, forced in by Open With ▸ Other…: the window
+    /// stays as it was (the reader, Rename still up), nothing is added, and
+    /// the failure says what Aloud reads. Before, the window was cleared
+    /// first and the intake then dropped the file without a word.
+    func testAnUnsupportedFileOpenedKeepsTheWindowAndSaysWhy() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        let reading = UUID()
+        router.path = [.reader(reading)]
+        router.rootPresentation = .rename
+        let (importer, intake) = openWithIntake(library: library, router: router) { _ in }
+        let notes = folder.appendingPathComponent("notes.docx")
+        try Data("PK".utf8).write(to: notes)
+
+        let failure = MacRootView.receiveOpened(notes, router: router, intake: intake)
+
+        XCTAssertEqual(failure, .textNoText)
+        XCTAssertEqual(failure?.nextStep, "Try a PDF or a plain-text file.")
+        XCTAssertEqual(router.path, [.reader(reading)], "the reader stays open")
+        XCTAssertEqual(router.rootPresentation, .rename, "Rename stays up")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(library.importedNames, [], "nothing is added")
+        XCTAssertEqual(importer.phase, .idle)
+        XCTAssertNil(intake.failure)
     }
 
     /// The same file handed over twice in one turn is one file: added once

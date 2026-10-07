@@ -145,8 +145,10 @@ final class AppModel: ObservableObject {
                                       cache: clipCache,
                                       audioSession: audioOutput)
         // A stop that names no book on the shelf (deleted elsewhere, or a
-        // wiped library) has nothing to show it.
-        if let stop = playback.stopped, !store.documents.contains(where: { $0.id == stop.documentID }) {
+        // wiped library) has nothing to show it. Not while library.json is
+        // unreadable: the book may be one of the records it kept.
+        if store.isIndexReadable, let stop = playback.stopped,
+           !store.documents.contains(where: { $0.id == stop.documentID }) {
             playback.discardStop(for: stop.documentID)
         }
 

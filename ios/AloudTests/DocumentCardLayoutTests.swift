@@ -71,6 +71,26 @@ final class DocumentCardLayoutTests: XCTestCase {
                              "fixture: the author should need more than one line at AX3")
     }
 
+    /// At the accessibility sizes the cover keeps the Continue card's fixed
+    /// 64x96 above the text. Filling the one column it was 2:3 of the
+    /// screen's width (353x530pt here), and one card was about a screen.
+    func testTheCoverKeepsItsFixedSizeAtAccessibilitySizes() {
+        let width = Self.oneColumn
+        let document = doc(title: "Emma", author: "Jane Austen")
+        let subtitle = document.listeningSubtitle(rate: 1)
+        XCTAssertFalse(subtitle.isEmpty, "fixture: the card should show its listening line")
+        for size in [DynamicTypeSize.accessibility1, .accessibility3, .accessibility5] {
+            let text = textHeight("Emma", font: Theme.font(.headline), lineLimit: nil, width: width, size: size)
+                + Theme.Space.xxs
+                + textHeight("Jane Austen", font: Theme.font(.footnote), lineLimit: nil, width: width, size: size)
+                + Theme.Space.xxs
+                + textHeight(subtitle, font: Theme.font(.caption), lineLimit: 2, width: width, size: size)
+            XCTAssertEqual(height(of: DocumentCardView(document: document, rate: 1), width: width, size: size),
+                           CoverGeometry.heroSize.height + Theme.Space.sm + text,
+                           accuracy: 2, "\(size): the cover should stay 64x96, not fill the column")
+        }
+    }
+
     func testTheTwoColumnCardKeepsItsLimits() {
         let width = Self.twoColumns
         let title = Theme.font(.headline)

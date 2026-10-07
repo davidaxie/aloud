@@ -26,6 +26,14 @@ final class DocumentStore: ObservableObject {
     /// The launch backfill of sourceHash, while it runs. Imports wait for it,
     /// so an Open-in that launched the app still finds the old record.
     private var sourceHashBackfill: Task<Void, Never>?
+    /// Whether library.json was read, or there is none yet. False for one
+    /// that exists but can't be read (a newer build's record, a damaged
+    /// file): nothing is written over it while this process lives, the
+    /// shelf shows the records that still decode, and a copy is set aside
+    /// (`unreadableIndexURL`). An empty or partial shelf written over it
+    /// would lose every record it couldn't read, and the next launch's
+    /// sweep their books' files.
+    private(set) var isIndexReadable = true
 
     /// `indexURL`, `saveInterval` and `notifications` are for the unit
     /// tests: an index of their own, a short wait, and a private center, so
@@ -39,10 +47,10 @@ final class DocumentStore: ObservableObject {
         self.pipeline = pipeline
         self.indexURL = indexURL ?? Self.libraryDir.appendingPathComponent("library.json")
         self.saveInterval = saveInterval
-        let indexRead = loadIndex()
+        isIndexReadable = loadIndex()
         // The app's own library only, and never in hosted unit tests: their
         // stores keep their records elsewhere but their files here.
-        if indexURL == nil, indexRead, NSClassFromString("XCTestCase") == nil {
+        if indexURL == nil, isIndexReadable, NSClassFromString("XCTestCase") == nil {
             Self.removeOrphanedFiles(in: Self.libraryDir, keeping: documents)
         }
 
@@ -115,7 +123,7 @@ final class DocumentStore: ObservableObject {
                 kind: .pdf,
                 wordCount: content.wordCount,
                 sourceHash: sourceHash)
-            insert(document)
+            try insert(document)
             return document
         } catch {
             try? FileManager.default.removeItem(at: destination)
@@ -165,7 +173,7 @@ final class DocumentStore: ObservableObject {
                 author: author,
                 wordCount: content.wordCount,
                 sourceHash: sourceHash)
-            insert(document)
+            try insert(document)
             return document
         } catch {
             try? FileManager.default.removeItem(at: destination)
@@ -210,7 +218,7 @@ final class DocumentStore: ObservableObject {
         guard document.sourceHash == nil,
               let index = documents.firstIndex(where: { $0.id == document.id }) else { return document }
         documents[index].sourceHash = hash
-        persistIndex()
+        try? persistIndex()
         return documents[index]
     }
 
@@ -249,7 +257,7 @@ final class DocumentStore: ObservableObject {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return nil }
         documents[index].gutenbergID = book.gutenbergID
         if book.words > 0 { documents[index].wordCount = book.words }
-        persistIndex()
+        try? persistIndex()
         return documents[index]
     }
 
@@ -262,7 +270,7 @@ final class DocumentStore: ObservableObject {
         guard schemaVersion < 2, !catalog.isEmpty else { return }
         documents = Self.backfillingGutenbergIDs(in: documents, catalog: catalog)
         schemaVersion = 2
-        persistIndex()
+        try? persistIndex()
     }
 
     /// Links each unlinked text record with an author to the first catalog
@@ -314,7 +322,7 @@ final class DocumentStore: ObservableObject {
             // Re-read after the await: records added, opened or deleted
             // meanwhile are kept as they are now.
             documents = Self.fillingSourceHashes(in: documents, from: hashes)
-            persistIndex()
+            try? persistIndex()
         }
     }
 
@@ -480,7 +488,7 @@ final class DocumentStore: ObservableObject {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
         documents[index].lastOpenedAt = Date()
         sortDocuments()
-        persistIndex()
+        try? persistIndex()
     }
 
     /// Mark as finished (R12g). Written at once, not debounced: it is a
@@ -489,7 +497,7 @@ final class DocumentStore: ObservableObject {
     func markFinished(id: UUID) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
         documents[index] = Self.markingFinished(documents[index])
-        persistIndex()
+        try? persistIndex()
     }
 
     /// The record at its end: progress 1.0 at the last sentence. Pure, for
@@ -504,8 +512,16 @@ final class DocumentStore: ObservableObject {
     // MARK: - Mutation
 
     func delete(_ document: LibraryDocument) {
+        let shelf = documents
         documents.removeAll { $0.id == document.id }
-        persistIndex()
+        // The files go only once library.json no longer lists the book: a
+        // record the write missed would name files that are gone.
+        do {
+            try persistIndex()
+        } catch {
+            documents = shelf
+            return
+        }
 
         let fm = FileManager.default
         try? fm.removeItem(at: Self.libraryDir.appendingPathComponent(document.fileName))
@@ -514,11 +530,18 @@ final class DocumentStore: ObservableObject {
     }
 
     func rename(_ document: LibraryDocument, to newTitle: String) {
-        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty,
+        guard let title = Self.renamedTitle(newTitle),
               let index = documents.firstIndex(where: { $0.id == document.id }) else { return }
         documents[index].title = title
-        persistIndex()
+        try? persistIndex()
+    }
+
+    /// The title a rename saves: the text trimmed, or nil when nothing is
+    /// left, which keeps the old title. Rename's Save is off while it's nil,
+    /// so Save never closes the alert on a change that isn't made.
+    nonisolated static func renamedTitle(_ text: String) -> String? {
+        let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? nil : title
     }
 
     #if DEBUG
@@ -570,10 +593,20 @@ final class DocumentStore: ObservableObject {
         var documents: [LibraryDocument]
     }
 
-    private func insert(_ document: LibraryDocument) {
+    /// Throws, with the shelf as it was, when library.json can't record
+    /// the book (out of space, or an unreadable index kept): an add the
+    /// index missed would be gone next launch, and its files swept, while
+    /// the importer had announced it.
+    private func insert(_ document: LibraryDocument) throws {
+        let shelf = documents
         documents.append(document)
         sortDocuments()
-        persistIndex()
+        do {
+            try persistIndex()
+        } catch {
+            documents = shelf
+            throw error
+        }
     }
 
     private func sortDocuments() {
@@ -590,22 +623,74 @@ final class DocumentStore: ObservableObject {
         documents[index].progressFraction = 0
         documents[index].sentenceCount = content.sentences.count
         documents[index].pageCount = content.pageCount
-        persistIndex()
+        try? persistIndex()
     }
 
     /// Whether the shelf on disk is known: true once library.json is read,
     /// or when there is none yet (nothing was ever added); false for one
-    /// that exists but can't be read (a newer schema, a locked device).
-    @discardableResult
+    /// that exists but can't be read (a record of a kind a newer build
+    /// added, a damaged file). That one stays as it is, with a copy set
+    /// aside, and the shelf shows the records that still decode.
     private func loadIndex() -> Bool {
+        let fm = FileManager.default
         guard let data = try? Data(contentsOf: indexURL) else {
-            return !FileManager.default.fileExists(atPath: indexURL.path)
+            guard fm.fileExists(atPath: indexURL.path) else { return true }
+            if !fm.fileExists(atPath: unreadableIndexURL.path) {
+                try? fm.copyItem(at: indexURL, to: unreadableIndexURL)
+            }
+            return false
         }
-        guard let index = try? Self.decoder.decode(LibraryIndex.self, from: data) else { return false }
-        documents = index.documents
-        schemaVersion = index.version
-        sortDocuments()
-        return true
+        if let index = try? Self.decoder.decode(LibraryIndex.self, from: data) {
+            documents = index.documents
+            schemaVersion = index.version
+            sortDocuments()
+            return true
+        }
+        try? data.write(to: unreadableIndexURL, options: .atomic)
+        if let partial = try? Self.decoder.decode(PartialIndex.self, from: data) {
+            documents = partial.documents
+            schemaVersion = partial.version ?? Self.indexVersion
+            sortDocuments()
+        }
+        return false
+    }
+
+    /// Where an unreadable library.json's copy is set aside, beside it:
+    /// `library.unreadable.json`. No UUID starts the name, so the launch
+    /// sweep keeps it.
+    var unreadableIndexURL: URL {
+        indexURL.deletingLastPathComponent()
+            .appendingPathComponent(indexURL.deletingPathExtension().lastPathComponent + ".unreadable.json")
+    }
+
+    /// What an unreadable library.json still gives: each record that decodes
+    /// on its own. One record a newer build wrote (a kind this one lacks)
+    /// fails the whole index, never its neighbours.
+    private struct PartialIndex: Decodable {
+        var version: Int?
+        var documents: [LibraryDocument]
+
+        private enum CodingKeys: String, CodingKey { case version, documents }
+
+        /// Any value at all: steps past a record that doesn't decode.
+        private struct Skipped: Decodable {
+            init(from decoder: Decoder) {}
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try? container.decodeIfPresent(Int.self, forKey: .version)
+            var records = try container.nestedUnkeyedContainer(forKey: .documents)
+            var documents: [LibraryDocument] = []
+            while !records.isAtEnd {
+                if let document = try? records.decode(LibraryDocument.self) {
+                    documents.append(document)
+                } else {
+                    _ = try records.decode(Skipped.self)
+                }
+            }
+            self.documents = documents
+        }
     }
 
     /// Launch: a book's files (`<UUID>.pdf`, `.txt`, `.content.json`) that
@@ -633,10 +718,15 @@ final class DocumentStore: ObservableObject {
         return removed
     }
 
-    private func persistIndex() {
+    /// Writes the shelf to library.json. Throws, writing nothing, while an
+    /// unreadable one is kept (`isIndexReadable`), and when the write fails
+    /// (out of space): every later write carries the whole shelf, so a
+    /// progress tick or flush that fails is repaired by the next that lands.
+    private func persistIndex() throws {
+        guard isIndexReadable else { throw LibraryIndexError.unreadable }
         let index = LibraryIndex(version: schemaVersion, documents: documents)
-        guard let data = try? Self.encoder.encode(index) else { return }
-        try? data.write(to: indexURL, options: .atomic)
+        let data = try Self.encoder.encode(index)
+        try data.write(to: indexURL, options: .atomic)
     }
 
     /// Throttles the atomic index write behind high-frequency updates
@@ -654,7 +744,7 @@ final class DocumentStore: ObservableObject {
             // newer write armed since): leave that one alone.
             guard !Task.isCancelled, let self else { return }
             self.pendingSave = nil
-            self.persistIndex()
+            try? self.persistIndex()
         }
     }
 
@@ -667,7 +757,7 @@ final class DocumentStore: ObservableObject {
     private func flushIndex() {
         pendingSave?.cancel()
         pendingSave = nil
-        persistIndex()
+        try? persistIndex()
     }
 
     // MARK: - File helpers (off-main)
@@ -761,4 +851,11 @@ struct ShelfLayout {
 /// No user-facing text here: the importer maps it to ImportFailure's copy.
 enum DocumentStoreError: Error {
     case bundledBookMissing(String)
+}
+
+/// library.json exists but couldn't be read at launch, so nothing is
+/// written over it. Not a DocumentStoreError: an add it stops reads as
+/// "couldn't be opened", not as a missing classic.
+enum LibraryIndexError: Error {
+    case unreadable
 }

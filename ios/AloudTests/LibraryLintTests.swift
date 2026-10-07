@@ -40,6 +40,19 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertFalse(text.contains("@EnvironmentObject private var playback"))
     }
 
+    /// Rename's Save is off while the title is empty or only spaces: the
+    /// store keeps the old title then (`DocumentStore.renamedTitle`), and
+    /// Save closed the alert as if it had renamed the book.
+    func testRenameSaveIsOffWithoutATitle() throws {
+        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let save = try XCTUnwrap(text.range(of: "Button(\"Save\")"), "Rename's Save button")
+        let cancel = try XCTUnwrap(text.range(of: "Button(\"Cancel\", role: .cancel) { renameTarget = nil }",
+                                              range: save.upperBound..<text.endIndex), "Rename's Cancel button")
+        XCTAssertTrue(text[save.lowerBound..<cancel.lowerBound]
+                        .contains(".disabled(DocumentStore.renamedTitle(renameText) == nil)"),
+                      "Save should be disabled while the trimmed title is empty")
+    }
+
     /// R20: busy states hold still under Reduce Motion; no system spinner on
     /// the shelf or the Bookshelf.
     func testNoSpinnerOnTheShelves() throws {
