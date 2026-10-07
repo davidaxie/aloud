@@ -30,10 +30,87 @@ export function typicalGap(lines: Line[]): number {
   return median(gaps) || lines[0].height * 1.2
 }
 
-/** Purely a page number / roman numeral (running-foot noise). */
+/**
+ * Purely a page number: up to four digits or a well-formed roman numeral
+ * ("xii"; not "Did" or "vivid", spelled with its letters).
+ */
 export function isPageNumberLine(text: string): boolean {
   const t = text.trim()
-  return /^\d{1,4}$/.test(t) || /^[ivxlcdm]{1,7}$/i.test(t)
+  return /^\d{1,4}$/.test(t) || romanValue(t) !== null
+}
+
+const ROMAN_NUMERAL = /^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/i
+const ROMAN_DIGITS: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 }
+
+/** A well-formed roman numeral's value, either case ("xiv" is 14), else null. */
+export function romanValue(text: string): number | null {
+  const t = text.trim()
+  if (t.length === 0 || t.length > 7 || !ROMAN_NUMERAL.test(t)) return null
+  const digits = [...t.toUpperCase()].map((c) => ROMAN_DIGITS[c])
+  return digits.reduce((total, d, i) => (i + 1 < digits.length && d < digits[i + 1] ? total - d : total + d), 0)
+}
+
+/** A folio may count on from one on a page up to this many pages away. */
+export const FOLIO_REACH = 2
+
+/**
+ * Each page's edge lines that are folios, by index. A bare numeral is a folio
+ * only when it looks like one: it counts on from a numeral on a page up to
+ * two away by the pages between. A roman one must sit at the same height, as
+ * front matter numbers its pages ("vii", "viii"), so a bare "II" opening a
+ * chapter stays (H047). Digits may sit at the head of one page and the foot of
+ * the next; where no page nearby shows a number (a lone page, plates between)
+ * the page's outermost line still is one. And a numeral set larger than the
+ * page's text is a heading ("7", "1984"), never a folio (J040).
+ */
+export function folioLines(pageLines: Line[][]): Set<number>[] {
+  const numerals = pageLines.map((lines) => {
+    const n = lines.length
+    const size = median(lines.map((l) => l.height))
+    return [...new Set([0, 1, n - 2, n - 1])]
+      .filter((index) => index >= 0 && index < n)
+      .flatMap((index) => {
+        const line = lines[index]
+        const t = line.text.trim()
+        const roman = /^\d{1,4}$/.test(t) ? null : romanValue(t)
+        if (roman === null && !/^\d{1,4}$/.test(t)) return []
+        return [
+          {
+            index,
+            line,
+            value: roman ?? Number(t),
+            roman: roman !== null,
+            outermost: index === 0 || index === n - 1,
+            bodySized: line.height <= size * 1.2,
+          },
+        ]
+      })
+  })
+  return numerals.map((own, page) => {
+    const nearby: number[] = []
+    for (let other = page - FOLIO_REACH; other <= page + FOLIO_REACH; other++) {
+      if (other !== page && other >= 0 && other < numerals.length) nearby.push(other)
+    }
+    const folios = new Set<number>()
+    for (const numeral of own) {
+      const countsOn = nearby.some((other) =>
+        numerals[other].some(
+          (o) =>
+            o.roman === numeral.roman &&
+            o.value - numeral.value === other - page &&
+            (!numeral.roman ||
+              Math.abs(o.line.y - numeral.line.y) <= Math.max(2, numeral.line.height * 0.25)),
+        ),
+      )
+      if (numeral.roman) {
+        if (countsOn) folios.add(numeral.index)
+        continue
+      }
+      const lone = nearby.every((other) => numerals[other].every((o) => o.roman))
+      if (numeral.bodySized && (countsOn || (lone && numeral.outermost))) folios.add(numeral.index)
+    }
+    return folios
+  })
 }
 
 /** Normalize a header/footer candidate so "Page 3" and "Page 4" collapse. */
@@ -148,14 +225,15 @@ export function runningHeadersByPage(pageLines: Line[][]): Set<string>[] {
 
 /**
  * Drop noise lines: repeating headers/footers (only near the page edges, so a
- * body line that happens to match isn't nuked) and standalone page numbers.
+ * body line that happens to match isn't nuked) and the page's `folios`
+ * (folioLines), so a bare numeral that heads a chapter stays.
  */
-export function stripNoise(lines: Line[], running: Set<string>): Line[] {
+export function stripNoise(lines: Line[], running: Set<string>, folios: Set<number>): Line[] {
   const n = lines.length
   return lines.filter((line, idx) => {
     const nearEdge = idx <= 1 || idx >= n - 2
     if (nearEdge && running.has(normalizeRunning(line.text))) return false
-    if (nearEdge && isPageNumberLine(line.text)) return false
+    if (nearEdge && folios.has(idx)) return false
     return true
   })
 }

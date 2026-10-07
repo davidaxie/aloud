@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import {
   type Line,
   detectRunningHeaders,
+  folioLines,
   runningHeadersByPage,
   stripNoise,
 } from '../src/lib/pdfHeaders.ts'
@@ -67,8 +68,9 @@ test('F003: alternating left/right running heads miss the half-the-pages bar on 
 test('F003: alternating book and chapter heads are stripped from every page that has one', () => {
   const { pages, heads } = book()
   const running = runningHeadersByPage(pages)
+  const folios = folioLines(pages)
   pages.forEach((lines, idx) => {
-    const kept = stripNoise(lines, running[idx]).map((l) => l.text)
+    const kept = stripNoise(lines, running[idx], folios[idx]).map((l) => l.text)
     const head = heads[idx]
     if (head !== null) {
       assert.ok(!kept.includes(head), `page ${idx + 1} still opens with "${head}"`)
@@ -83,13 +85,14 @@ test('F003: alternating book and chapter heads are stripped from every page that
 test('F003: a chapter title on its opening page, set lower and larger, stays', () => {
   const { pages, heads } = book()
   const running = runningHeadersByPage(pages)
+  const folios = folioLines(pages)
   pages.forEach((lines, idx) => {
     if (heads[idx] !== null || idx < 4) return
-    const kept = stripNoise(lines, running[idx]).map((l) => l.text)
+    const kept = stripNoise(lines, running[idx], folios[idx]).map((l) => l.text)
     assert.ok(CHAPTERS.includes(kept[0]), `page ${idx + 1} lost its chapter title: ${kept[0]}`)
   })
   // The front matter is untouched.
-  assert.deepEqual(stripNoise(pages[0], running[0]).map((l) => l.text), [BOOK, 'Andrew Chen'])
+  assert.deepEqual(stripNoise(pages[0], running[0], folios[0]).map((l) => l.text), [BOOK, 'Andrew Chen'])
 })
 
 test('F003: an edge line that recurs only far apart is body text, not a running head', () => {
@@ -101,7 +104,8 @@ test('F003: an edge line that recurs only far apart is body text, not a running 
     return lines
   })
   const running = runningHeadersByPage(pages)
-  assert.ok(stripNoise(pages[6], running[6]).some((l) => l.text === '* * *'))
+  const folios = folioLines(pages)
+  assert.ok(stripNoise(pages[6], running[6], folios[6]).some((l) => l.text === '* * *'))
   assert.ok(running.every((set) => !set.has('* * *')))
 })
 
@@ -115,8 +119,9 @@ test('G014: numbered headings that open nearby pages are kept', () => {
     return lines
   })
   const running = runningHeadersByPage(pages)
+  const folios = folioLines(pages)
   for (let idx = 1; idx <= 5; idx++) {
-    assert.equal(stripNoise(pages[idx], running[idx])[0].text, `Step ${idx}`, `page ${idx + 1}`)
+    assert.equal(stripNoise(pages[idx], running[idx], folios[idx])[0].text, `Step ${idx}`, `page ${idx + 1}`)
   }
 })
 
@@ -127,7 +132,70 @@ test('G014: a running head that keeps its leading number but carries a folio sti
     return lines
   })
   const running = runningHeadersByPage(pages)
+  const folios = folioLines(pages)
   for (let idx = 8; idx <= 12; idx++) {
-    assert.equal(stripNoise(pages[idx], running[idx])[0].text, body(idx + 1, 700)[0].text)
+    assert.equal(stripNoise(pages[idx], running[idx], folios[idx])[0].text, body(idx + 1, 700)[0].text)
   }
+})
+
+// J040 (web twin of H047): any bare numeral among a page's two outer lines was
+// dropped as a folio, whatever its size or place, so a chapter headed "7",
+// "IV" or "1984" lost its heading on screen and in the audio, and so did an
+// edge line that merely spells with roman letters ("Did", "vivid").
+
+/** Ten pages under a running head with folios at the foot; page 5 opens a chapter. */
+function novel(heading: Line): Line[][] {
+  return Array.from({ length: 10 }, (_, idx) => {
+    const page = idx + 1
+    if (idx === 4) return [heading, ...body(page, 560), folio(page)]
+    return [head('THE NOVEL'), ...body(page, 700), folio(page)]
+  })
+}
+
+function kept(pages: Line[][]): string[][] {
+  const running = runningHeadersByPage(pages)
+  const folios = folioLines(pages)
+  return pages.map((lines, idx) => stripNoise(lines, running[idx], folios[idx]).map((l) => l.text))
+}
+
+test('J040: a bare numeral heading a chapter, set larger than the text, stays', () => {
+  for (const text of ['IV', '7', '1984', 'II']) {
+    const pages = kept(novel({ text, y: 620, height: 24 }))
+    assert.equal(pages[4][0], text, `the chapter heading "${text}" was dropped`)
+    pages.forEach((lines, idx) => {
+      assert.ok(!lines.includes(String(idx + 1)), `page ${idx + 1} still reads its folio`)
+      assert.ok(!lines.includes('THE NOVEL'), `page ${idx + 1} still reads its running head`)
+    })
+  }
+})
+
+test('J040: a roman numeral is a folio only when it counts on with the pages (H047)', () => {
+  // A body-sized "II" heading a chapter has no "i" or "iii" beside it.
+  assert.equal(kept(novel({ text: 'II', y: 620, height: 11 }))[4][0], 'II')
+  // Front matter numbered "v" to "ix" at its foot loses every folio.
+  const roman = ['v', 'vi', 'vii', 'viii', 'ix']
+  const front = roman.map((text, idx) => [...body(idx + 1, 700), { text, y: 40, height: 9 }])
+  kept(front).forEach((lines, idx) => assert.ok(!lines.includes(roman[idx]), roman[idx]))
+})
+
+test('J040: a word spelled with roman letters is not a numeral', () => {
+  const words = ['Did', 'vivid', 'Mid', 'Civic', 'mild']
+  const pages = words.map((text, idx) => [
+    { text, y: 714, height: 11 },
+    ...body(idx + 1, 700),
+    folio(idx + 1),
+  ])
+  kept(pages).forEach((lines, idx) => assert.equal(lines[0], words[idx]))
+})
+
+test('J040: digit folios still go at the head of one page and the foot of the next, or alone', () => {
+  // The chapter's opening page drops its folio to the foot; the others carry it at the head.
+  const pages = Array.from({ length: 6 }, (_, idx) => {
+    const page = idx + 1
+    const number = { text: String(page + 40), y: idx === 2 ? 40 : 760, height: 9 }
+    return idx === 2 ? [...body(page, 560), number] : [number, ...body(page, 700)]
+  })
+  kept(pages).forEach((lines, idx) => assert.ok(!lines.includes(String(idx + 41)), `page ${idx + 1}`))
+  // A one-page document's page number at its foot.
+  assert.deepEqual(kept([[...body(1, 700), folio(3)]])[0], body(1, 700).map((l) => l.text))
 })

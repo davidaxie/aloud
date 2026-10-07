@@ -20,10 +20,12 @@ import {
   type Line,
   appendLine,
   appendPageParagraphs,
+  folioLines,
   runningHeadersByPage,
   stripNoise,
   typicalGap,
 } from './pdfHeaders'
+import { type Piece, pieceOf, readingOrderLines } from './pdfStitch'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -37,19 +39,6 @@ const CMapReaderFactory = bundledCMapReaderFactory(
     exhaustive: true,
   }),
 )
-
-// ── Local geometry types ────────────────────────────────────────────────────
-// pdfjs' TextItem carries a transform matrix [a,b,c,d,e,f]; e,f are the x,y of
-// the text run in the page's default (bottom-left origin) space — so a LARGER y
-// is HIGHER on the page. We only pull the fields we actually need off it.
-interface Piece {
-  str: string
-  x: number // transform[4]
-  y: number // transform[5] (baseline; larger = higher up the page)
-  w: number // width in device space
-  h: number // font height (approx), used as the spacing/leading scale
-  hasEOL: boolean
-}
 
 /** Strip control chars / form-feed artifacts (\f, NUL, etc.) from a run. */
 function sanitize(s: string): string {
@@ -121,80 +110,6 @@ function normalizeText(input: string): string {
   s = s.replace(/([(\[{]) +/g, '$1')
 
   return s.trim()
-}
-
-/**
- * Group a page's pieces into visual lines. Pieces are clustered by baseline y
- * (within half a line's height), then ordered left-to-right within each line.
- * Lines are returned top-to-bottom.
- */
-function buildLines(pieces: Piece[]): Line[] {
-  if (pieces.length === 0) return []
-
-  // Sort top-to-bottom (y descending), then left-to-right for stable clustering.
-  const sorted = [...pieces].sort((a, b) => b.y - a.y || a.x - b.x)
-
-  const clusters: Piece[][] = []
-  let current: Piece[] = []
-  let currentY = sorted[0].y
-  for (const p of sorted) {
-    // Tolerance scales with font height so superscripts/descenders on the same
-    // visual line don't spawn a new line; floor keeps tiny fonts sane.
-    const tol = Math.max(2, (p.h || 8) * 0.5)
-    if (current.length === 0 || Math.abs(p.y - currentY) <= tol) {
-      current.push(p)
-      // Track the top-most baseline as the line's reference y.
-      currentY = Math.max(currentY, p.y)
-    } else {
-      clusters.push(current)
-      current = [p]
-      currentY = p.y
-    }
-  }
-  if (current.length) clusters.push(current)
-
-  return clusters.map((cluster) => {
-    const byX = cluster.sort((a, b) => a.x - b.x)
-    const height = Math.max(...byX.map((p) => p.h || 0)) || 8
-    const y = Math.max(...byX.map((p) => p.y))
-    return { text: joinPiecesOnLine(byX), y, height }
-  })
-}
-
-/**
- * Join left-to-right pieces on one line into text, inserting a space where the
- * horizontal gap between runs is wide enough to be a real word break (and not
- * mere kerning). Respects spaces the PDF already encodes in the runs.
- */
-function joinPiecesOnLine(pieces: Piece[]): string {
-  let out = ''
-  let prevEndX = -Infinity
-  for (let i = 0; i < pieces.length; i++) {
-    const p = pieces[i]
-    const str = p.str
-    if (str === '') continue
-    const scale = p.h || 8
-    if (i > 0) {
-      const gap = p.x - prevEndX
-      const alreadySpaced = /\s$/.test(out) || /^\s/.test(str)
-      // A real word break shows up as a horizontal gap on the order of a space
-      // glyph (~0.25em). We trigger at 0.2em rather than 0.25 so slightly narrow
-      // spaces (thin-space glyphs, tight tracking, or a small width over-estimate
-      // on the previous run) still register as a boundary — glued-together words
-      // are a top cause of garbled speech. Intra-word run splits sit at ~0 gap,
-      // far below 0.2em, so this won't inject spurious spaces inside a word.
-      if (!alreadySpaced && gap > scale * 0.2) out += ' '
-    }
-    out += str
-    // Advance the running x cursor; guard against zero-width runs.
-    prevEndX = p.x + (p.w || scaleWidth(p))
-  }
-  return out.replace(/[ \t]{2,}/g, ' ').trimEnd()
-}
-
-/** Rough width estimate for pieces pdfjs reports with width 0. */
-function scaleWidth(p: Piece): number {
-  return p.str.length * (p.h || 8) * 0.5
 }
 
 /**
@@ -325,18 +240,12 @@ async function parseDocument(
       const str = sanitize(item.str)
       // Keep whitespace-only runs out; geometry handles spacing.
       if (str.trim() === '' && !item.hasEOL) continue
-      const t = item.transform as number[]
-      pieces.push({
-        str,
-        x: t[4],
-        y: t[5],
-        w: item.width,
-        h: item.height,
-        hasEOL: item.hasEOL,
-      })
+      // A vertical font (Japanese tategaki) runs down the page, column by column.
+      const vertical = content.styles[item.fontName]?.vertical === true
+      pieces.push(pieceOf({ ...item, str, transform: item.transform as number[] }, vertical))
     }
 
-    pageLines.push(buildLines(pieces))
+    pageLines.push(readingOrderLines(pieces))
     page.cleanup() // free page resources as we go
     onProgress?.(pageNum / pageCount)
   }
@@ -344,11 +253,13 @@ async function parseDocument(
   // ── Detect repeating headers/footers: across the whole document, and per
   //    page for the ones that run through a chapter or alternate. ──
   const running = runningHeadersByPage(pageLines)
+  // ...and the bare numerals that are page numbers, not chapter headings.
+  const folios = folioLines(pageLines)
 
   // ── Pass 2: strip noise, fold into paragraphs, stitch across pages. ──
   const blocks: Block[] = []
   pageLines.forEach((lines, idx) => {
-    const cleaned = stripNoise(lines, running[idx])
+    const cleaned = stripNoise(lines, running[idx], folios[idx])
     const paras = linesToParagraphs(cleaned)
     appendPageParagraphs(blocks, paras, idx + 1)
   })
