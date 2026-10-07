@@ -641,6 +641,228 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertTrue(coordinator.isFollowing)
     }
 
+    // MARK: - Word ticks and tall sentences (audit loop 2: G002, G003, G006)
+
+    /// G002: a word tick never moves a sentence that fits. A drag that
+    /// leaves the spoken sentence in view but above the band follows again,
+    /// and the page then stays put until the next sentence.
+    func testWordTicksNeverPullBackASentenceThatFitsAfterADrag() throws {
+        let page = try makePage(sentences: 300, active: 150, size: NSSize(width: 800, height: 500),
+                                reduceMotion: true)
+        let coordinator = page.coordinator
+        XCTAssertTrue(page.activeSentenceIsInTheBand())
+
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let sentence = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        // The sentence's top to 3% of the viewport: in view, above the band.
+        drag(page, toY: page.offset + sentence.minY - (viewport.minY + 0.03 * viewport.height))
+        XCTAssertTrue(coordinator.isFollowing, "the voice is in view")
+        XCTAssertFalse(page.activeSentenceIsInTheBand())
+
+        let (scrolls, offset) = (coordinator.programmaticScrollCount, page.offset)
+        for token in 0..<16 {
+            page.update(activeSentence: 150, activeWord: token)
+        }
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "no word tick follows a sentence that fits")
+        XCTAssertEqual(page.offset, offset)
+
+        page.update(activeSentence: 151)
+        XCTAssertGreaterThan(coordinator.programmaticScrollCount, scrolls, "the next sentence follows")
+        XCTAssertTrue(page.activeSentenceIsInTheBand())
+    }
+
+    /// G002 in a tall sentence: after a drag that leaves the spoken word in
+    /// view, the page stays put until the voice moves on to its next line,
+    /// and a drag back to the sentence's start that hides the word doesn't
+    /// follow again: the chip points at the word.
+    func testATallSentenceWaitsForTheNextLineAfterADragAndJudgesTheWord() throws {
+        let page = try makeTallPage()
+        let coordinator = page.coordinator
+        let word = try speakToAFollowedLine(page)
+        XCTAssertTrue(try spokenWordIsInTheBand(page))
+
+        // Drag the text down until the word sits at 80%: in view, below the band.
+        var viewport = try XCTUnwrap(coordinator.viewport())
+        var rect = try XCTUnwrap(coordinator.spokenWordRect())
+        drag(page, toY: page.offset - (viewport.minY + 0.80 * viewport.height - rect.minY))
+        XCTAssertTrue(coordinator.isFollowing, "the spoken word is in view")
+        XCTAssertFalse(try spokenWordIsInTheBand(page))
+
+        // The next word, on the same line: nothing moves.
+        let (scrolls, offset) = (coordinator.programmaticScrollCount, page.offset)
+        page.update(activeSentence: 6, activeWord: 2 * (word + 1))
+        let line = try XCTUnwrap(coordinator.spokenWordRect()).minY
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "a word on the same line stays put")
+        XCTAssertEqual(page.offset, offset)
+
+        // The voice moves on to its next line: following brings it back.
+        var next = word + 2
+        while abs(try XCTUnwrap(coordinator.spokenWordRect()).minY - line) < 0.5 {
+            page.update(activeSentence: 6, activeWord: 2 * next)
+            next += 1
+        }
+        XCTAssertGreaterThan(coordinator.programmaticScrollCount, scrolls, "the next line follows")
+        XCTAssertTrue(try spokenWordIsInTheBand(page))
+
+        // Back toward the sentence's start, which leaves the sentence in
+        // view and puts the spoken word below the page.
+        viewport = try XCTUnwrap(coordinator.viewport())
+        rect = try XCTUnwrap(coordinator.spokenWordRect())
+        drag(page, toY: page.offset - (viewport.maxY - rect.minY + 20))
+        let sentence = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        XCTAssertNil(FollowBand.direction(of: sentence, in: try XCTUnwrap(coordinator.viewport())),
+                     "the sentence is still in view")
+        XCTAssertFalse(coordinator.isFollowing, "the spoken word is not")
+        XCTAssertEqual(coordinator.voiceOffscreen, .down)
+        let held = page.offset
+        page.update(activeSentence: 6, activeWord: 2 * next)
+        XCTAssertEqual(page.offset, held, "the reader keeps the start of the sentence")
+    }
+
+    /// G003: with Word highlight off nothing is underlined, yet following
+    /// still tracks the spoken word (`followWord`) through a sentence taller
+    /// than the band.
+    func testATallSentenceFollowsTheSpokenWordWithTheUnderlineOff() throws {
+        let page = try makeTallPage()
+        let coordinator = page.coordinator
+        let startY = page.offset
+        for word in 0..<220 {
+            page.update(activeSentence: 6, activeWord: -1, followWord: 2 * word)
+            let rect = try XCTUnwrap(coordinator.spokenWordRect())
+            let viewport = try XCTUnwrap(coordinator.viewport())
+            XCTAssertLessThanOrEqual(rect.maxY, viewport.minY + FollowBand.bottom * viewport.height + 1,
+                                     "word \(word) is read below the band")
+            XCTAssertGreaterThanOrEqual(rect.minY, viewport.minY - 1, "word \(word) is read above the page")
+        }
+        XCTAssertGreaterThan(page.offset, startY, "the page moved up with the voice")
+        XCTAssertNil(coordinator.activeWordRect(), "no underline is drawn")
+        XCTAssertTrue(coordinator.isFollowing)
+    }
+
+    /// G003 on the Mac host: the playback's word ticker runs while playing
+    /// with Word highlight off, at the coarse follow rate, so
+    /// `currentWord` still reaches the page's follow; the full rate only
+    /// feeds the tint.
+    func testTheWordTickerRunsForFollowingWithTheHighlightOff() {
+        let rig = PlaybackTestRig(sentences: 4)
+        self.rig = rig
+        let controller = rig.controller
+        controller.wordHighlightEnabled = false
+        controller.wordTimingStatusChanged(.playing)
+        XCTAssertEqual(controller.wordTiming.tickerRate, WordKaraokeState.followFramesPerSecond)
+        controller.wordHighlightEnabled = true
+        controller.wordTimingStatusChanged(.playing)
+        XCTAssertEqual(controller.wordTiming.tickerRate, WordKaraokeState.tintFramesPerSecond)
+        controller.wordTimingStatusChanged(.paused)
+        XCTAssertEqual(controller.wordTiming.tickerRate, 0, "no ticker while paused")
+        controller.wordHighlightEnabled = false
+    }
+
+    /// G006: Play from a pause in the tail of a tall sentence keeps the
+    /// spoken word where following left it: no move up to the sentence's
+    /// top that would put the word below the page.
+    func testPlayFromAPauseInATallSentenceKeepsTheSpokenWordInTheBand() throws {
+        let page = try makeTallPage()
+        let coordinator = page.coordinator
+        let word = try speakToAFollowedLine(page)
+        let (scrolls, offset) = (coordinator.programmaticScrollCount, page.offset)
+        // Play bumps the follow request; the voice is where it paused.
+        page.update(activeSentence: 6, activeWord: 2 * word, followRequest: 1)
+        nextMainTurn()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "the word is already in the band")
+        XCTAssertEqual(page.offset, offset)
+        XCTAssertTrue(try spokenWordIsInTheBand(page))
+    }
+
+    /// G006: Follow the voice (the chip, ⌘J), and a placement without
+    /// motion, mid tall sentence land the spoken word in the band, not the
+    /// sentence's top with the word below the page.
+    func testFollowTheVoiceOrAPlacementMidTallSentenceLandsTheSpokenWord() throws {
+        let page = try makeTallPage()
+        let coordinator = page.coordinator
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let word = try speakToAFollowedLine(page, underline: false, past: 0.5 * viewport.height)
+
+        // Scrolled away to the top of the book: the word is below the page.
+        drag(page, toY: 0)
+        XCTAssertEqual(FollowBand.direction(of: try XCTUnwrap(coordinator.spokenWordRect()),
+                                            in: try XCTUnwrap(coordinator.viewport())), .down)
+        XCTAssertFalse(coordinator.isFollowing)
+        page.update(activeSentence: 6, followWord: 2 * word, followRequest: 1)
+        nextMainTurn()
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertTrue(try spokenWordIsInTheBand(page), "Follow the voice lands the spoken word")
+
+        // Placed again without motion, as a fresh column is.
+        coordinator.placeActiveSentence()
+        nextMainTurn()
+        XCTAssertTrue(try spokenWordIsInTheBand(page), "a placement lands the spoken word")
+    }
+
+    /// G006 for the Mac's re-layout anchor: a new text size mid tall
+    /// sentence keeps the spoken word where following left it, not the
+    /// sentence's top on the landing line with the word below the page.
+    func testATextSizeStepMidTallSentenceKeepsTheSpokenWord() throws {
+        let page = try makeTallPage()
+        let coordinator = page.coordinator
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let word = try speakToAFollowedLine(page, past: 0.5 * viewport.height)
+        XCTAssertTrue(try spokenWordIsInTheBand(page))
+
+        page.update(activeSentence: 6, activeWord: 2 * word,
+                    fontSize: ReaderTextSize.points(forStep: ReaderTextSize.defaultStep + 1))
+        XCTAssertGreaterThan(coordinator.builtFontSize, 19, "rebuilt at the larger size")
+        XCTAssertTrue(try spokenWordIsInTheBand(page), "the anchor is the spoken word")
+        for _ in 0..<(2 * ReaderFollowEngine.placementPassLimit + 2) {
+            page.textView.needsLayout = true
+            page.textView.layoutSubtreeIfNeeded()
+            coordinator.handleLayout()
+        }
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertTrue(try spokenWordIsInTheBand(page), "the spoken word keeps its place")
+        XCTAssertNil(coordinator.voiceOffscreen)
+    }
+
+    /// The tall book's sentence 6 on an 800 × 500 page under Reduce Motion,
+    /// so every follow move lands at once. Its tokens alternate word and
+    /// space: word n is token 2n.
+    private func makeTallPage() throws -> Page {
+        let page = try makePage(content: Self.tallSentenceBook(), active: 6,
+                                size: NSSize(width: 800, height: 500), reduceMotion: true)
+        nextMainTurn()   // the opening placement runs first, as when a book opens
+        let sentence = try XCTUnwrap(page.coordinator.measureActiveSentenceRect())
+        XCTAssertTrue(FollowBand.isTall(sentence, in: try XCTUnwrap(page.coordinator.viewport())))
+        return page
+    }
+
+    /// Speaks sentence 6's words from the first (underlined only with
+    /// `underline`) until following has moved the page more than `past`
+    /// with the voice and the word has just moved onto a new line. Returns
+    /// that word.
+    private func speakToAFollowedLine(_ page: Page, underline: Bool = true, past: CGFloat = 1) throws -> Int {
+        let startY = page.offset
+        var lineY: CGFloat?
+        for word in 0..<220 {
+            page.update(activeSentence: 6, activeWord: underline ? 2 * word : -1, followWord: 2 * word)
+            let rect = try XCTUnwrap(page.coordinator.spokenWordRect())
+            defer { lineY = rect.minY }
+            if let lineY, abs(rect.minY - lineY) > 0.5, page.offset > startY + past { return word }
+        }
+        throw XCTSkip("following never tracked the word that far on this host")
+    }
+
+    private func spokenWordIsInTheBand(_ page: Page) throws -> Bool {
+        let viewport = try XCTUnwrap(page.coordinator.viewport())
+        return FollowBand.contains(try XCTUnwrap(page.coordinator.spokenWordRect()), in: viewport)
+    }
+
+    /// A gesture that moves the page to `y` and lets go.
+    private func drag(_ page: Page, toY y: CGFloat) {
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: page.scrollView)
+        page.scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: page.scrollView)
+    }
+
     /// The next sentence leaves the band within one viewport: under Reduce
     /// Motion the page moves there at once, with no glide; otherwise it
     /// glides. Either way, one follow scroll.
@@ -815,12 +1037,14 @@ final class ReaderColumnViewTests: XCTestCase {
         var offset: CGFloat { scrollView.contentView.bounds.origin.y }
 
         /// The same page with new inputs, handed to the coordinator as
-        /// SwiftUI's update would.
-        func update(activeSentence: Int, activeWord: Int = -1, followRequest: Int? = nil,
-                    fontSize: CGFloat? = nil, colophon: ReaderColophon? = nil) {
+        /// SwiftUI's update would. The spoken word `followWord` is the
+        /// underlined `activeWord` unless given, as with Word highlight on.
+        func update(activeSentence: Int, activeWord: Int = -1, followWord: Int? = nil,
+                    followRequest: Int? = nil, fontSize: CGFloat? = nil, colophon: ReaderColophon? = nil) {
             view = ReaderColumnView(content: view.content, isChapterBook: view.isChapterBook,
                                     fontSize: fontSize ?? view.fontSize, activeSentence: activeSentence,
-                                    activeWord: activeWord, followRequest: followRequest ?? view.followRequest,
+                                    activeWord: activeWord, followWord: followWord ?? activeWord,
+                                    followRequest: followRequest ?? view.followRequest,
                                     colophon: colophon ?? view.colophon, voiceOffscreen: .constant(nil),
                                     onPlaySentence: view.onPlaySentence)
             coordinator.update(to: view)

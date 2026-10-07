@@ -156,6 +156,9 @@ struct MacReaderScreen: View {
                 activeSentence: playback.currentSentence,
                 // The word-highlight pref is gated once, here at the source.
                 activeWord: model.wordHighlight ? playback.currentWord : -1,
+                // Following tracks the spoken word whatever the pref, so a
+                // sentence taller than the band never ends below the page.
+                followWord: playback.currentWord,
                 // Following resumes on a user Play, every jump and Undo, and
                 // Follow the voice: never by itself.
                 followRequest: ReaderColumnView.followRequest(for: playback, followVoiceCount: followVoiceCount),
