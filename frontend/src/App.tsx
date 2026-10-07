@@ -3,7 +3,7 @@
 // keyboard shortcuts, PDF intake, and the three main surfaces (empty / loading /
 // reading) plus the fixed player bar.
 // ─────────────────────────────────────────────────────────────────────────────
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { getHealth, getVoices } from './lib/api'
 import { guardFileDrops, isPdf } from './lib/dropGuard'
 import { watchEngine } from './lib/engineWatch'
@@ -33,6 +33,9 @@ export default function App() {
   const setVoices = useStore((s) => s.setVoices)
   const setVoiceId = useStore((s) => s.setVoiceId)
   const reset = useStore((s) => s.reset)
+  // What a screen reader hears as a PDF opens (J041): the view that had focus
+  // is replaced by the loading view, and only failures are alerts.
+  const [announcement, setAnnouncement] = useState('')
 
   // ── Bootstrap: probe the backend and load the voice roster. ────────────────
   // Re-polls while offline so a backend that starts AFTER the page loads (the
@@ -79,11 +82,15 @@ export default function App() {
 
   // ── PDF intake. ────────────────────────────────────────────────────────────
   // Parses first, so a file that can't be read leaves an open book in place.
-  const handleFile = useCallback((file: File) => openPdf(file, { loadPdf, player }), [])
+  const handleFile = useCallback(
+    (file: File) => openPdf(file, { loadPdf, player, announce: setAnnouncement }),
+    [],
+  )
 
   const handleReset = useCallback(() => {
     // 'New' while a PDF parses abandons it, so it can't open over what comes next.
     cancelPdfIntake()
+    setAnnouncement('')
     try {
       player.stop()
     } catch (err) {
@@ -159,6 +166,9 @@ export default function App() {
 
       {doc && !isLoading && <PlayerBar doc={doc} />}
       <Toast />
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {announcement}
+      </p>
     </div>
   )
 }

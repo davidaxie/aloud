@@ -199,3 +199,46 @@ test('H029: New during a parse with nothing opened after leaves the empty state'
   assert.equal(state().status, 'idle')
   assert.equal(state().loadProgress, 0)
 })
+
+test('J041: opening a PDF says it is being prepared, then that it opened', async () => {
+  const said: string[] = []
+  const parse = deferredParse()
+  const opening = openPdf(file('next.pdf'), {
+    loadPdf: parse.loadPdf,
+    player: stubPlayer(),
+    announce: (message) => said.push(message),
+  })
+  // The control that had focus is gone with the empty state: say what is happening.
+  assert.deepEqual(said, ['Preparing next.pdf…'])
+  parse.resolve({ ...makeDoc('Next', 3), pageCount: 12 })
+  await opening
+  assert.deepEqual(said, ['Preparing next.pdf…', 'Opened Next, 12 pages'])
+})
+
+test('J041: a PDF that cannot be read clears the announcement; the error banner says why', async () => {
+  const said: string[] = []
+  await openPdf(file('scan.pdf'), {
+    loadPdf: async () => {
+      throw new Error(SCANNED)
+    },
+    player: stubPlayer(),
+    announce: (message) => said.push(message),
+  })
+  assert.deepEqual(said, ['Preparing scan.pdf…', ''])
+  assert.match(state().error ?? '', /scanned/)
+})
+
+test('J041: a parse abandoned with New announces nothing more', async () => {
+  const said: string[] = []
+  const parse = deferredParse()
+  const player = stubPlayer()
+  const opening = openPdf(file('slow.pdf'), {
+    loadPdf: parse.loadPdf,
+    player,
+    announce: (message) => said.push(message),
+  })
+  pressNew(player)
+  parse.resolve(makeDoc('Slow', 1))
+  await opening
+  assert.deepEqual(said, ['Preparing slow.pdf…'])
+})

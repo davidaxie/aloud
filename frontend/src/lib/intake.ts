@@ -17,6 +17,16 @@ export interface IntakeDeps {
     signal: AbortSignal,
   ) => Promise<Doc>
   player: { load(doc: Doc): void; pause(): void; stop(): void }
+  /**
+   * Says what is happening to a screen reader (J041): the view that had focus
+   * is swapped for the loading view, so nothing else would. '' clears it.
+   */
+  announce?: (message: string) => void
+}
+
+/** What a screen reader hears once a PDF has opened, like the reader's header. */
+export function openedMessage(doc: Doc): string {
+  return `Opened ${doc.title}, ${doc.pageCount} ${doc.pageCount === 1 ? 'page' : 'pages'}`
 }
 
 /** The parse in progress, if any. */
@@ -41,7 +51,8 @@ export async function openPdf(file: File, deps: IntakeDeps): Promise<void> {
   const store = useStore.getState
   const open = store().doc
   // Hold the open book still while the new one parses; it is closed only once
-  // the new one has parsed.
+  // the new one has parsed. pause() also stands down a sentence still being
+  // synthesized, so it can't put the book back over the loading view (J038).
   if (open && (store().status === 'playing' || store().status === 'buffering')) {
     deps.player.pause()
   }
@@ -51,6 +62,7 @@ export async function openPdf(file: File, deps: IntakeDeps): Promise<void> {
   store().setFileName(file.name)
   store().setStatus('loading')
   store().setLoadProgress(0)
+  deps.announce?.(`Preparing ${file.name}\u2026`)
   try {
     const parsed = await deps.loadPdf(
       file,
@@ -80,9 +92,12 @@ export async function openPdf(file: File, deps: IntakeDeps): Promise<void> {
       console.error('player.load failed', err)
     }
     store().setStatus('ready')
+    deps.announce?.(openedMessage(parsed))
   } catch (err) {
     if (stale()) return
     parsing = null
+    // The error banner is an alert: it says why.
+    deps.announce?.('')
     const message =
       err instanceof Error ? `Could not read that PDF — ${err.message}` : 'Could not read that PDF.'
     if (open) {

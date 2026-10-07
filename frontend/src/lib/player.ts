@@ -154,9 +154,76 @@ class PlayerImpl implements Player {
       // A clip the element can't decode never fires 'ended'; without this the
       // player would sit on 'playing' in silence.
       a.addEventListener('error', () => this.onMediaError())
+      // The browser or the OS can pause or resume the element itself (a call, a
+      // headphone button, the browser's media controls): keep the bar, the
+      // highlight and auto-advance in step with what is actually playing (J036).
+      a.addEventListener('pause', () => this.onElementPaused())
+      a.addEventListener('play', () => this.onElementPlayed())
       this.audio = a
+      this.attachMediaSession()
     }
     return this.audio
+  }
+
+  /**
+   * Route the ⏯ key, the browser's media controls and headphone buttons through
+   * the player, as the in-app controls are (J036). Without handlers the browser
+   * pauses and resumes the element behind the player's back.
+   */
+  private attachMediaSession() {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+    const remote = (run: () => void) => () => {
+      // A dropped PDF is parsing while the open book waits behind the loading
+      // view: the transport keys are off then, as they are on the keyboard.
+      if (!this.doc || store().status === 'loading') return
+      run()
+    }
+    const handlers: Array<[MediaSessionAction, () => void]> = [
+      ['play', remote(() => this.play())],
+      ['pause', remote(() => this.pause())],
+      ['nexttrack', remote(() => this.next())],
+      ['previoustrack', remote(() => this.prev())],
+    ]
+    for (const [action, handler] of handlers) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler)
+      } catch {
+        /* This browser doesn't support the action; the in-app controls still work. */
+      }
+    }
+  }
+
+  /**
+   * The element paused without the player asking. The player's own pauses clear
+   * wantPlaying first or move on to another clip, and a clip that ran out says
+   * 'ended' straight after, so only a pause from outside gets here.
+   */
+  private onElementPaused() {
+    const a = this.audio
+    if (!a || !a.paused || a.ended || !this.wantPlaying || this.loadedIndex !== this.index) return
+    this.pause()
+  }
+
+  /** The element started without the player asking: the browser or the OS resumed it. */
+  private onElementPlayed() {
+    const a = this.audio
+    if (!a || a.paused || this.wantPlaying) return
+    if (!this.doc || store().status === 'loading') {
+      // Nothing to read, or the open book is held while a drop parses.
+      a.pause()
+      return
+    }
+    if (this.loadedIndex !== this.index) {
+      // The element still holds a sentence the reader has moved away from:
+      // play the one the reader shows instead.
+      a.pause()
+      this.play()
+      return
+    }
+    this.wantPlaying = true
+    store().setStatus('playing')
+    this.prefetchAround(this.index)
+    this.startWordLoop()
   }
 
   private setIndex(i: number) {
@@ -664,6 +731,11 @@ class PlayerImpl implements Player {
 
   pause() {
     this.wantPlaying = false
+    // Stand down a sentence still being synthesized (J038): its clip, a skip or
+    // an offline error would otherwise set the status after this, over whatever
+    // the caller set next (the loading view of a dropped PDF). play() asks for
+    // it again from the cache.
+    this.playToken++
     if (this.audio) this.audio.pause()
     // Freeze the highlight loop but keep the last word lit while paused.
     this.stopWordLoop()

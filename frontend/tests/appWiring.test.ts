@@ -20,7 +20,7 @@ test('F063: file drops anywhere on the window are guarded', () => {
 })
 
 test('G015: a dropped PDF is parsed before the open book is closed', () => {
-  assert.match(app, /openPdf\(file, \{ loadPdf, player \}\)/)
+  assert.match(app, /openPdf\(file, \{ loadPdf, player\b/)
   const drop = app.slice(app.indexOf('guardFileDrops(window,'), app.indexOf('[handleFile]'))
   assert.doesNotMatch(drop, /handleReset\(\)/, 'tearing the book down first loses it when the drop is unreadable')
 })
@@ -40,4 +40,34 @@ test('I018: the dev reader dials the backend on 127.0.0.1, the address it binds'
   assert.match(api, /VITE_API_BASE \?\? 'http:\/\/127\.0\.0\.1:8000'/)
   assert.match(env, /^VITE_API_BASE=http:\/\/127\.0\.0\.1:8000$/m)
   assert.doesNotMatch(env, /^VITE_API_BASE=http:\/\/localhost/m, 'localhost can reach another program on ::1')
+})
+
+const reader = readFileSync(new URL('../src/components/Reader.tsx', import.meta.url), 'utf8')
+
+test('J041: opening a PDF is announced from a live region that stays mounted', () => {
+  assert.match(app, /openPdf\(file, \{ loadPdf, player, announce: setAnnouncement \}\)/)
+  const region = app.search(
+    /<p className="visually-hidden" role="status" aria-live="polite">\s*\{announcement\}\s*<\/p>/,
+  )
+  assert.ok(region > 0, 'no polite live region for the announcement')
+  // Mounted with the toast host, outside the views that swap: a region mounted
+  // together with its text is not read out.
+  assert.ok(region > app.indexOf('<Toast />'))
+  const reset = app.slice(app.indexOf('const handleReset'), app.indexOf('}, [reset])'))
+  assert.match(reset, /setAnnouncement\(''\)/, 'New leaves a stale "Preparing" behind')
+})
+
+test('J041: the reader takes the focus the loading view dropped, on its title', () => {
+  assert.match(reader, /<h1 className="reader__title" ref=\{titleRef\} tabIndex=\{-1\}>/)
+  const effect = reader.slice(reader.indexOf('const titleRef'), reader.indexOf('const activePara'))
+  assert.match(effect, /useEffect\(\(\) => \{/)
+  assert.match(effect, /focused !== document\.body\) return/, 'focus moved on purpose is taken away')
+  assert.match(effect, /titleRef\.current\?\.focus\(\{ preventScroll: true \}\)/)
+  assert.match(effect, /\}, \[\]\)/, 'runs once, as the reader mounts')
+})
+
+test('J043: the sentence being read is marked current for assistive technology', () => {
+  const span = reader.slice(reader.indexOf('data-sentence={sid}'), reader.indexOf('role="button"'))
+  assert.match(span, /data-active=\{active \? 'true' : undefined\}/)
+  assert.match(span, /aria-current=\{active \? 'true' : undefined\}/)
 })

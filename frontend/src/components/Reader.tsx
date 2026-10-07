@@ -159,6 +159,7 @@ const ReaderParagraph = memo(function ReaderParagraph({
               className={`reader__sent${active ? ' is-active' : ''}${wasSkipped ? ' is-skipped' : ''}`}
               data-sentence={sid}
               data-active={active ? 'true' : undefined}
+              aria-current={active ? 'true' : undefined}
               role="button"
               tabIndex={sid === tabStopId ? 0 : -1}
               title={wasSkipped ? 'Skipped: this sentence couldn\u2019t be read' : undefined}
@@ -191,6 +192,16 @@ export function Reader({ doc }: ReaderProps) {
   // The keyboard user moved focus off the sentence being read (↑/↓/Home/End);
   // auto-scroll leaves the view alone until they come back to it.
   const browsing = useRef(false)
+  const titleRef = useRef<HTMLHeadingElement>(null)
+
+  // The reader replaces the loading view, and with it the control that had
+  // focus: take focus on the title, so a screen reader lands on the book
+  // instead of nowhere (J041). Focus moved somewhere on purpose stays there.
+  useEffect(() => {
+    const focused = document.activeElement
+    if (focused && focused !== document.body) return
+    titleRef.current?.focus({ preventScroll: true })
+  }, [])
 
   const activePara =
     currentSentence >= 0 ? doc.sentences[currentSentence]?.para ?? -1 : -1
@@ -311,7 +322,9 @@ export function Reader({ doc }: ReaderProps) {
     >
       <article className="reader__col">
         <header className="reader__head">
-          <h1 className="reader__title">{doc.title}</h1>
+          <h1 className="reader__title" ref={titleRef} tabIndex={-1}>
+            {doc.title}
+          </h1>
           <p className="reader__meta">
             {doc.pageCount} {doc.pageCount === 1 ? 'page' : 'pages'} ·{' '}
             {doc.sentences.length} sentences

@@ -20,6 +20,10 @@ let backendDown = false
 let hangSynth = false
 /** Texts of the /synthesize requests the player aborted while in flight. */
 let abortedTexts: string[] = []
+/** While set, each /synthesize answer waits here until the test releases it. */
+let heldSynth: Array<() => void> | null = null
+/** The handlers the player gave the browser's media session (J036). */
+const mediaActions = new Map<string, (() => void) | null>()
 
 class FakeAudio extends EventTarget {
   preload = ''
@@ -60,6 +64,19 @@ class FakeAudio extends EventTarget {
   }
 }
 
+// The ⏯ key, the browser's media controls and headphone buttons reach the page
+// through navigator.mediaSession (J036). Node's own navigator has none.
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: {
+    mediaSession: {
+      setActionHandler: (action: string, handler: (() => void) | null) => {
+        mediaActions.set(action, handler)
+      },
+    },
+  },
+})
+
 Object.assign(globalThis, {
   Audio: FakeAudio,
   requestAnimationFrame: () => 0,
@@ -68,6 +85,7 @@ Object.assign(globalThis, {
     if (String(url).endsWith('/synthesize')) {
       const body = JSON.parse(String(init?.body))
       synthBodies.push(body)
+      if (heldSynth) await new Promise<void>((release) => heldSynth!.push(release))
       if (backendDown) throw new TypeError('Failed to fetch')
       if (hangSynth) {
         return new Promise<Response>((_, reject) => {
@@ -130,6 +148,7 @@ beforeEach(() => {
   backendDown = false
   hangSynth = false
   abortedTexts = []
+  heldSynth = null
   state().reset()
   player.load(doc)
 })
@@ -342,6 +361,220 @@ test('H036: Play at the end listens again from the first sentence, not the last 
     assert.equal(state().status, 'playing')
   } finally {
     audioEl!.ended = false
+    player.stop()
+  }
+})
+
+/** The browser or the OS pauses or resumes the element, not the player (J036). */
+function pauseFromOutside() {
+  audioEl!.paused = true
+  audioEl!.dispatchEvent(new Event('pause'))
+}
+function resumeFromOutside() {
+  audioEl!.paused = false
+  audioEl!.dispatchEvent(new Event('play'))
+}
+
+/** Let the held /synthesize answers through, and stop holding new ones. */
+function releaseSynth() {
+  const held = heldSynth ?? []
+  heldSynth = null
+  for (const release of held) release()
+}
+
+test('J036: the ⏯ key and the browser media controls go through the player', async () => {
+  try {
+    player.play()
+    await settle()
+    for (const action of ['play', 'pause', 'nexttrack', 'previoustrack']) {
+      assert.equal(typeof mediaActions.get(action), 'function', `no ${action} handler`)
+    }
+    mediaActions.get('pause')!()
+    assert.equal(state().status, 'paused')
+    assert.equal(audioEl!.paused, true)
+    mediaActions.get('play')!()
+    await settle()
+    assert.equal(state().status, 'playing')
+    assert.equal(audioEl!.paused, false)
+    mediaActions.get('nexttrack')!()
+    await settle()
+    assert.equal(state().currentSentence, 1)
+    mediaActions.get('previoustrack')!()
+    await settle()
+    assert.equal(state().currentSentence, 0)
+    assert.equal(state().status, 'playing')
+
+    // A dropped PDF parsing behind the loading view: the keys are off, as Space is.
+    mediaActions.get('pause')!()
+    state().setStatus('loading')
+    mediaActions.get('play')!()
+    mediaActions.get('nexttrack')!()
+    await settle()
+    assert.equal(state().status, 'loading')
+    assert.equal(state().currentSentence, 0)
+    assert.equal(audioEl!.paused, true)
+  } finally {
+    player.stop()
+  }
+})
+
+test('J036: a pause from outside the player shows as paused, and one press plays again', async () => {
+  try {
+    player.play()
+    await settle()
+    assert.equal(state().status, 'playing')
+    pauseFromOutside()
+    assert.equal(state().status, 'paused', 'the bar still says playing over silence')
+    player.toggle() // the Play button, Space
+    await settle()
+    assert.equal(state().status, 'playing')
+    assert.equal(audioEl!.paused, false, 'the first press did nothing audible')
+  } finally {
+    player.stop()
+  }
+})
+
+test('J036: a resume from outside the player plays on into the next sentence', async () => {
+  try {
+    player.play()
+    await settle()
+    player.pause()
+    resumeFromOutside()
+    assert.equal(state().status, 'playing', 'the bar says paused over audio')
+    audioEl!.dispatchEvent(new Event('ended'))
+    await settle()
+    assert.equal(state().currentSentence, 1, 'reading stopped after one sentence')
+    assert.equal(state().status, 'playing')
+  } finally {
+    player.stop()
+  }
+})
+
+test('J036: the player’s own pauses and a clip running out are not taken for outside ones', async () => {
+  try {
+    player.play()
+    await settle()
+    // Moving on pauses the element; its pause event can land before the next clip.
+    player.seekTo(2)
+    pauseFromOutside()
+    await settle()
+    assert.equal(state().currentSentence, 2)
+    assert.equal(state().status, 'playing')
+    player.next()
+    pauseFromOutside()
+    await settle()
+    assert.equal(state().currentSentence, 3)
+    assert.equal(state().status, 'playing')
+
+    // A clip that ran out says pause, then ended.
+    player.seekTo(0)
+    await settle()
+    audioEl!.ended = true
+    pauseFromOutside()
+    assert.equal(state().status, 'playing')
+    audioEl!.dispatchEvent(new Event('ended'))
+    audioEl!.ended = false
+    await settle()
+    assert.equal(state().currentSentence, 1)
+    assert.equal(state().status, 'playing')
+  } finally {
+    audioEl!.ended = false
+    player.stop()
+  }
+})
+
+test('J036: an outside resume while a dropped PDF parses keeps the book held', async () => {
+  try {
+    player.play()
+    await settle()
+    player.pause()
+    state().setStatus('loading')
+    resumeFromOutside()
+    assert.equal(state().status, 'loading')
+    assert.equal(audioEl!.paused, true)
+  } finally {
+    player.stop()
+  }
+})
+
+/** Drop b.pdf on the open book (as App does), with a parse that waits for the test. */
+async function dropWhileBuffering() {
+  const { openPdf } = await import('../src/lib/intake.ts')
+  const next = { ...doc, title: 'Next' }
+  let finishParse!: (parsed: typeof doc) => void
+  const opening = openPdf({ name: 'b.pdf', type: 'application/pdf' } as File, {
+    loadPdf: () => new Promise((resolve) => (finishParse = resolve)),
+    player,
+  })
+  assert.equal(state().status, 'loading')
+  return { next, opening, finish: () => finishParse(next) }
+}
+
+test('J038: a sentence still buffering when a PDF is dropped leaves the loading view up', async () => {
+  state().setDoc(doc)
+  heldSynth = []
+  player.play()
+  await settle()
+  assert.equal(state().status, 'buffering')
+  const drop = await dropWhileBuffering()
+  releaseSynth() // the open book's clip lands while the drop parses
+  await settle()
+  assert.equal(state().status, 'loading', 'the old book came back over the loading view')
+  assert.equal(audioEl!.paused, true)
+  drop.finish()
+  await drop.opening
+  assert.equal(state().doc, drop.next)
+  assert.equal(state().status, 'ready')
+  player.stop()
+})
+
+test('J038: an unreadable buffering sentence is not skipped over the loading view', async () => {
+  state().setDoc(doc)
+  unreadable = new Set(['Sentence number 0.'])
+  heldSynth = []
+  player.play()
+  await settle()
+  const drop = await dropWhileBuffering()
+  releaseSynth()
+  await settle()
+  assert.equal(state().status, 'loading')
+  assert.deepEqual(state().skippedSentences, [])
+  drop.finish()
+  await drop.opening
+  player.stop()
+})
+
+test('J038: the engine going down while a sentence buffers does not replace the loading view', async () => {
+  state().setDoc(doc)
+  backendDown = true
+  player.play()
+  await settle()
+  const drop = await dropWhileBuffering()
+  await outlastRetries()
+  await settle()
+  assert.equal(state().status, 'loading')
+  assert.equal(state().error, null)
+  drop.finish()
+  await drop.opening
+  player.stop()
+})
+
+test('J038: Play after a pause while buffering plays the clip that landed, without asking again', async () => {
+  try {
+    heldSynth = []
+    player.play()
+    await settle()
+    assert.equal(state().status, 'buffering')
+    player.pause()
+    releaseSynth()
+    await settle()
+    assert.equal(state().status, 'paused')
+    player.play()
+    await settle()
+    assert.equal(state().status, 'playing')
+    assert.equal(state().currentSentence, 0)
+    assert.equal(synthBodies.filter((b) => b.text === 'Sentence number 0.').length, 1)
+  } finally {
     player.stop()
   }
 })
