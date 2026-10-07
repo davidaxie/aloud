@@ -145,7 +145,9 @@ struct MacCommandActions {
             showClassics()
             ui.searchFocus = .classics
             focusClassicsSearchOn14()
-        case .closeWindow: NSApp.keyWindow?.performClose(nil)
+        case .closeWindow:
+            guard let window = Self.windowToClose(key: NSApp.keyWindow, modal: NSApp.modalWindow) else { return false }
+            window.performClose(nil)
         case .settings, .fullScreen, .minimize, .hide, .quit: return false
         }
         return true
@@ -205,6 +207,18 @@ struct MacCommandActions {
     nonisolated static func steppedTextSize(from step: Int, bigger: Bool) -> Int? {
         let next = min(max(step, 0), ReaderTextSize.steps.count - 1) + (bigger ? 1 : -1)
         return ReaderTextSize.steps.indices.contains(next) ? next : nil
+    }
+
+    /// The window ⌘W closes: the key window, when it has a close button or
+    /// closes itself (a popover's window does). Never an alert (Rename, the
+    /// Delete confirmation, an import failure), a sheet, a window under one,
+    /// or anything behind a modal panel: performClose there finds no close
+    /// button and plays the alert sound (J031). Then ⌘W does nothing.
+    static func windowToClose(key: NSWindow?, modal: NSWindow?) -> NSWindow? {
+        guard modal == nil, let key, !key.isSheet, key.attachedSheet == nil else { return nil }
+        let close = #selector(NSWindow.performClose(_:))
+        let closesItself = type(of: key).instanceMethod(for: close) != NSWindow.instanceMethod(for: close)
+        return key.styleMask.contains(.closable) || closesItself ? key : nil
     }
 
     /// Rename, the Delete confirmation or its failure is up over the Library.
@@ -300,6 +314,18 @@ struct MacCommandActions {
             return current
         }
         return navigation.stepTarget(from: current, forward: forward, rate: playback.rate)
+    }
+
+    /// Seconds until ⌘← would restart the step the playhead opens (the
+    /// 3 s above): nil when it never will from here (not playing, not at a
+    /// step's start, or past the mark already). No published change marks
+    /// that moment, so the menus refresh for it (J034).
+    var secondsUntilChapterRestart: TimeInterval? {
+        guard playback.status == .playing, let navigation, navigation.hasChapterList else { return nil }
+        let current = max(playback.currentSentence, 0)
+        guard navigation.stepStart(containing: current) == current else { return nil }
+        let remaining = PlaybackController.restartThreshold - playback.currentSentenceElapsed
+        return remaining >= 0 ? remaining : nil
     }
 
     /// A chapter step is a jump: it keeps play or pause and offers Undo
@@ -423,6 +449,8 @@ final class MacCommandState: ObservableObject {
     let actions: MacCommandActions
     private var cancellables: Set<AnyCancellable> = []
     private var refreshScheduled = false
+    /// The refresh at the moment ⌘← turns to restarting the step it opens.
+    private var restartRefresh: DispatchWorkItem?
 
     init(actions: MacCommandActions) {
         self.actions = actions
@@ -442,6 +470,22 @@ final class MacCommandState: ObservableObject {
         next.sleepTitles = next.sleepOptions.map(actions.sleepTitle(for:))
         next.sleepSelection = actions.sleepTimer.option
         if next != snapshot { snapshot = next }
+        scheduleRestartRefresh()
+    }
+
+    /// Previous Chapter can restart the first chapter (or page) once 3 s of
+    /// its opening sentence has played, where nothing else would enable it
+    /// (J034): one refresh lands just past that mark. Any refresh before
+    /// then (a pause, a new sentence) replaces it.
+    private func scheduleRestartRefresh() {
+        restartRefresh?.cancel()
+        restartRefresh = nil
+        guard let remaining = actions.secondsUntilChapterRestart else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        restartRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.05, execute: work)
     }
 
     /// `@Published` fires before the value lands, so every change schedules

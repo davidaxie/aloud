@@ -197,4 +197,44 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertTrue(body.contains("announceCursor(currentMode)"))
         XCTAssertTrue(panel.contains("} else if cursorUnheard {"))
     }
+
+    /// The page's own Force Click and Look Up events reach the coordinator,
+    /// which drops the click's play (J022). Neither event can be built in a
+    /// test, so this pins the overrides; the rule is in ReaderColumnViewTests.
+    /// Here because Mac-hosted tests can't read the checkout.
+    func testTheMacPageHearsAForceClickAndLookUp() throws {
+        let path = "Reader/ReaderNSTextView.swift"
+        let page = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [path])[path])
+        let code = codeLines(page).joined(separator: "\n")
+        let pressure = try XCTUnwrap(code.range(of: "override func pressureChange(with event: NSEvent) {"))
+        XCTAssertTrue(code[pressure.upperBound...].prefix(200).contains("if event.stage >= 2 { onLookUpGesture?() }"),
+                      "a Force Click's second stage, never every click's first")
+        let quickLook = try XCTUnwrap(code.range(of: "override func quickLook(with event: NSEvent) {"))
+        XCTAssertTrue(code[quickLook.upperBound...].prefix(120).contains("onLookUpGesture?()"))
+        let column = "Reader/ReaderColumnView.swift"
+        let coordinator = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [column])[column])
+        XCTAssertTrue(coordinator.contains("textView.onLookUpGesture = { [weak self] in self?.lookUpGestureArrived() }"))
+    }
+
+    /// Aloud coming to the front speaks a stop it held while behind another
+    /// app (J026): the app delegate's activation, since a Mac window on
+    /// screen never changes scene phase. The rule is in MacPlatformTests.
+    func testTheMacAppSpeaksAHeldStopWhenItComesForward() throws {
+        let path = "App/MacAppDelegate.swift"
+        let delegate = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [path])[path])
+        let code = codeLines(delegate).joined(separator: "\n")
+        let hook = try XCTUnwrap(code.range(of: "func applicationDidBecomeActive(_ notification: Notification) {"))
+        XCTAssertTrue(code[hook.upperBound...].prefix(120).contains("Self.announceHeldStop(of: AppModel.shared.playback)"))
+    }
+
+    /// The Mac's A− and A+ draw their own glyph style, whose limit reads as
+    /// one (J028); the transport's style rests a tint step from disabled.
+    /// The contrast is measured in MacThemeTests.
+    func testTheMacTextSizeStepperUsesItsOwnGlyphStyle() throws {
+        let path = "Reader/MacTextAppearanceView.swift"
+        let view = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [path])[path])
+        let code = codeLines(view).joined(separator: "\n")
+        XCTAssertTrue(code.contains(".buttonStyle(MacTextStepButtonStyle())"))
+        XCTAssertFalse(code.contains(".buttonStyle(MacGlyphButtonStyle())"))
+    }
 }

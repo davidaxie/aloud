@@ -163,6 +163,36 @@ final class MacPlatformTests: XCTestCase {
         XCTAssertEqual(PlatformApp.isActive, NSApp?.isActive ?? false)
     }
 
+    /// A stop held while Aloud was behind another app is spoken when Aloud
+    /// comes to the front (J026): its window never left the screen, so no
+    /// scene phase change speaks it. The app delegate's activation hands
+    /// it over, on the next turn, once.
+    func testAStopHeldBehindAnotherAppIsSpokenWhenAloudComesForward() async throws {
+        let rig = PlaybackTestRig(sentences: 40, clipDuration: 0.5)
+        rig.loadDefault(at: 0)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        rig.clearRecordings()
+        rig.appActive = false
+        rig.controller.stop(because: .headphonesDisconnected)
+        XCTAssertEqual(rig.announcements, [], "held while Aloud is behind")
+        XCTAssertEqual(rig.controller.stopped?.reason, .headphonesDisconnected)
+
+        rig.appActive = true
+        MacAppDelegate.announceHeldStop(of: rig.controller)
+        XCTAssertEqual(rig.announcements, [], "not before the window is main")
+        let turn = expectation(description: "the next main-queue turn")
+        DispatchQueue.main.async { turn.fulfill() }
+        await fulfillment(of: [turn], timeout: 2)
+        XCTAssertEqual(rig.announcements, [StopReason.headphonesDisconnected.spokenText])
+
+        MacAppDelegate.announceHeldStop(of: rig.controller)
+        let again = expectation(description: "another turn")
+        DispatchQueue.main.async { again.fulfill() }
+        await fulfillment(of: [again], timeout: 2)
+        XCTAssertEqual(rig.announcements.count, 1, "once")
+    }
+
     func testActivityIsHeldAndEnded() {
         let token = PlatformActivity.begin(reason: "Reading aloud")
         XCTAssertNotNil(token, "App Nap would throttle look-ahead")

@@ -212,6 +212,9 @@ struct ReaderColumnView: NSViewRepresentable {
         /// Set when a click lands: a click that began on moving text only
         /// stops it (R15).
         private var clickBeganWhileScrolling = false
+        /// Set when a Force Click or Look Up comes during the click: it
+        /// looked a word up, so it never plays (J022).
+        private var clickLookedUp = false
         /// A single click's play, held for the double-click interval: the
         /// next click landing in time (a double- or triple-click selecting
         /// a word or a paragraph) cancels it, as does any other key or click
@@ -351,6 +354,7 @@ struct ReaderColumnView: NSViewRepresentable {
                 self?.clickEnded(at: point, clickCount: clicks, selectionMade: selectionMade)
             }
             textView.onMouseReleased = { [weak self] in self?.mouseReleased() }
+            textView.onLookUpGesture = { [weak self] in self?.lookUpGestureArrived() }
             textView.sentenceAtPoint = { [weak self] point in self?.sentence(at: point) }
             textView.characterOffsetAtPoint = { [weak self] point in self?.column?.characterOffset(at: point) }
             textView.baselineOrigin = { [weak self] range in
@@ -1587,6 +1591,7 @@ struct ReaderColumnView: NSViewRepresentable {
         func clickLanded() {
             // The second click of a double-click: the first one's play is off.
             cancelClickPlay()
+            clickLookedUp = false
             let gliding = isGliding
             let coasting = scrollView.map(isCoasting) ?? false
             clickBeganWhileScrolling = coasting || gliding
@@ -1619,8 +1624,19 @@ struct ReaderColumnView: NSViewRepresentable {
         func clickEnded(at point: CGPoint, clickCount: Int, selectionMade: Bool) {
             let wasScrolling = clickBeganWhileScrolling
             clickBeganWhileScrolling = false
-            guard clickCount == 1, !selectionMade else { return }
+            let lookedUp = clickLookedUp
+            clickLookedUp = false
+            guard clickCount == 1, !selectionMade, !lookedUp else { return }
             handleClick(at: point, isDecelerating: wasScrolling)
+        }
+
+        /// A Force Click or Look Up's gesture (J022): the definition is for
+        /// reading, so neither the click under way nor one already held
+        /// plays. A Force Click ends as a plain click with nothing
+        /// selected, and its pressure and Look Up events reach no monitor.
+        func lookUpGestureArrived() {
+            clickLookedUp = true
+            cancelClickPlay()
         }
 
         /// A click plays from the clicked sentence in any state, unless it

@@ -258,15 +258,15 @@ final class MacReaderAccessibility {
     }
 
     /// Plays from the cursor's sentence (or, with no cursor, the one the
-    /// label names) through the click's path. False on the colophon, which
-    /// is no sentence: Play reads Listen again there.
+    /// label names) through the click's path. False on the colophon on
+    /// screen, which is no sentence: Play reads Listen again there.
     @discardableResult
     func playFromHere() -> Bool {
         guard let coordinator, let content = builtContent else { return false }
         let id: Int?
         if let offset = cursorOffset() {
             id = cursorSentence(at: offset)
-        } else if coordinator.shownColophon != nil {
+        } else if colophonOnScreen() != nil {
             id = nil
         } else {
             id = restingSentence() ?? coordinator.activeSentence
@@ -286,8 +286,20 @@ final class MacReaderAccessibility {
             if let id = cursorSentence(at: offset) { return content.sentences[id].text }
             if let colophon = coordinator.shownColophon { return colophon.spokenText }
         }
-        if let colophon = coordinator.shownColophon { return colophon.spokenText }
+        if let colophon = colophonOnScreen() { return colophon.spokenText }
         return restingSentence().map { content.sentences[$0].text }
+    }
+
+    /// The colophon while any of it is on screen. A finished book scrolled
+    /// back from its end shows sentences again, and the label and Play
+    /// from here are theirs (J023). Measured from the follow chip's cached
+    /// rect, which is the colophon's while it shows; with nothing measured
+    /// yet, the colophon.
+    private func colophonOnScreen() -> ReaderColophon? {
+        guard let coordinator, let colophon = coordinator.shownColophon else { return nil }
+        guard let viewport = coordinator.viewport(), viewport.height > 0,
+              let rect = coordinator.activeSentenceRect() else { return colophon }
+        return FollowBand.direction(of: rect, in: viewport) == nil ? colophon : nil
     }
 
     /// R12e: the passage on screen, bounded.

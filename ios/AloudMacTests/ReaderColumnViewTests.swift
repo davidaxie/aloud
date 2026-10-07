@@ -198,6 +198,38 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(page.played.ids, [id], "a lone click still plays")
     }
 
+    /// A Force Click looks the word up and never plays (J022). AppKit ends
+    /// it as a plain click with nothing selected, so its Look Up marks the
+    /// click, whether that comes while the button is down or after the
+    /// click ended and its play is held. The next plain click plays.
+    func testAForceClickLooksUpWithoutPlaying() throws {
+        let page = try makePage(sentences: 60, active: 0)
+        let id = try page.singleLineSentence(near: 9)
+        let point = try page.point(inSentence: id)
+        XCTAssertNotNil(page.textView.onLookUpGesture, "the coordinator hears Look Up")
+
+        page.textView.onClickLanded?()
+        page.textView.onLookUpGesture?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertFalse(page.coordinator.isClickPlayPending, "looked up while the button was down")
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [])
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertTrue(page.coordinator.isClickPlayPending)
+        page.textView.onLookUpGesture?()
+        XCTAssertFalse(page.coordinator.isClickPlayPending, "looked up while its play was held")
+        XCTAssertFalse(page.coordinator.isWatchingForOtherInput)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [])
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [id], "the next plain click plays")
+    }
+
     /// The play-from path itself: a click while paused starts the book at
     /// the clicked sentence (`.buffering` or `.playing` at that id).
     func testAClickWhilePausedPlaysFromThatSentence() throws {
@@ -469,6 +501,47 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertFalse(page.textView.validateUserInterfaceItem(speak), "the page never speaks")
         let copy = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
         XCTAssertTrue(page.textView.validateUserInterfaceItem(copy), "the rest validates as AppKit's")
+    }
+
+    /// Look Up takes a phrase, never a passage (J025): past
+    /// `lookUpSelectionLimit` (⌘A) or across a paragraph, the selection
+    /// gives way to the word under the pointer. The panel is placed from
+    /// the first character alone, never by laying out the whole range.
+    func testLookUpTakesAPhraseNeverThePage() throws {
+        let page = try makePage(sentences: 40, active: 0)
+        let id = try page.singleLineSentence(near: 5)
+        let point = try page.point(inFirstWordOf: id)
+        let storage = try XCTUnwrap(page.textView.textStorage)
+        let ranges = page.coordinator.sentenceRanges
+        let sentence = ranges[id]
+
+        page.textView.setSelectedRange(sentence)
+        XCTAssertEqual(page.textView.lookUpRange(at: point), sentence, "a sentence is a phrase")
+
+        page.textView.selectAll(nil)
+        XCTAssertGreaterThan(page.textView.selectedRange().length, ReaderNSTextView.lookUpSelectionLimit)
+        let word = try XCTUnwrap(page.textView.lookUpRange(at: point))
+        XCTAssertEqual(storage.attributedSubstring(from: word).string, "Sentence", "the word under the pointer")
+        let menu = page.textView.contextMenu(at: point).items.filter { !$0.isSeparatorItem }
+        XCTAssertEqual(menu[2].title, "Look Up \u{201C}Sentence\u{201D}")
+
+        // From the paragraph's start into the next one: short, but a passage.
+        let opening = id - id % 4
+        let across = NSUnionRange(ranges[opening], ranges[opening + 4])
+        XCTAssertLessThanOrEqual(across.length, ReaderNSTextView.lookUpSelectionLimit)
+        page.textView.setSelectedRange(across)
+        let inside = try XCTUnwrap(page.textView.lookUpRange(at: point))
+        XCTAssertEqual(storage.attributedSubstring(from: inside).string, "Sentence", "not across a paragraph")
+
+        let measured = RangeLog()
+        page.textView.baselineOrigin = { range in
+            measured.ranges.append(range)
+            return nil   // no panel in a test
+        }
+        let lookUp = NSMenuItem()
+        lookUp.representedObject = NSValue(range: NSRange(location: 0, length: storage.length))
+        page.textView.lookUpFromMenu(lookUp)
+        XCTAssertEqual(measured.ranges, [NSRange(location: 0, length: 1)], "measured from its first character")
     }
 
     // MARK: - Keys and silence (M11, testing §1.2(e))
@@ -1061,6 +1134,11 @@ final class ReaderColumnViewTests: XCTestCase {
     /// The sentences a page played, in order.
     private final class PlayLog {
         var ids: [Int] = []
+    }
+
+    /// The ranges Look Up measured.
+    private final class RangeLog {
+        var ranges: [NSRange] = []
     }
 
     /// Records whatever reaches the responder after the page.

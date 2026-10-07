@@ -37,6 +37,9 @@ final class ReaderNSTextView: NSTextView {
     /// The mouse button came up after a mouse-down on the page: a follow
     /// the held button kept back can run.
     var onMouseReleased: (@MainActor () -> Void)?
+    /// A Force Click or Look Up's own gesture on the page: it reads the
+    /// word, so the click it rides on never plays (J022).
+    var onLookUpGesture: (@MainActor () -> Void)?
     /// The sentence under a point (Play from Here), nil off the text.
     var sentenceAtPoint: (@MainActor (CGPoint) -> Int?)?
     /// The UTF-16 offset under a point (Look Up's word), nil off the text.
@@ -133,6 +136,20 @@ final class ReaderNSTextView: NSTextView {
         if armedClickCount > 0 { finishClick(at: event) }
     }
 
+    /// A Force Click (pressure past its first stage) looks up the word
+    /// under it. Every click on a Force Touch trackpad sends stage 1, so
+    /// only stage 2 counts.
+    override func pressureChange(with event: NSEvent) {
+        super.pressureChange(with: event)
+        if event.stage >= 2 { onLookUpGesture?() }
+    }
+
+    /// Look Up's gesture (a Force Click, or a three-finger tap).
+    override func quickLook(with event: NSEvent) {
+        onLookUpGesture?()
+        super.quickLook(with: event)
+    }
+
     private func finishClick(at event: NSEvent) {
         let clicks = armedClickCount
         armedClickCount = 0
@@ -190,19 +207,29 @@ final class ReaderNSTextView: NSTextView {
     }
 
     @objc func lookUpFromMenu(_ sender: NSMenuItem) {
-        guard let range = (sender.representedObject as? NSValue)?.rangeValue,
+        guard let range = (sender.representedObject as? NSValue)?.rangeValue, range.length > 0,
               let storage = textStorage, NSMaxRange(range) <= storage.length,
-              let origin = baselineOrigin?(range) else { return }
+              // The panel sits at the first character: measuring the whole
+              // range would lay out every line of it (J025).
+              let origin = baselineOrigin?(NSRange(location: range.location, length: 1)) else { return }
         showDefinition(for: storage.attributedSubstring(from: range), at: origin)
     }
 
+    /// The longest selection Look Up takes; past it, or across a paragraph,
+    /// it takes the word under the pointer, as AppKit's own item does. ⌘A
+    /// in a long book would hand the dictionary the whole book (J025).
+    static let lookUpSelectionLimit = 256
+
     /// What Look Up looks up: the selection when the pointer is on it (or
-    /// off the text), else the word under the pointer.
-    private func lookUpRange(at point: CGPoint) -> NSRange? {
+    /// off the text) and it is a phrase, not a passage; else the word under
+    /// the pointer.
+    func lookUpRange(at point: CGPoint) -> NSRange? {
         guard let storage = textStorage, storage.length > 0 else { return nil }
         let offset = characterOffsetAtPoint?(point)
         let selection = selectedRange()
-        if selection.length > 0, offset.map({ NSLocationInRange($0, selection) }) ?? true {
+        if selection.length > 0, offset.map({ NSLocationInRange($0, selection) }) ?? true,
+           selection.length <= Self.lookUpSelectionLimit,
+           !storage.attributedSubstring(from: selection).string.contains(where: \.isNewline) {
             return selection
         }
         guard let offset, offset < storage.length else { return nil }

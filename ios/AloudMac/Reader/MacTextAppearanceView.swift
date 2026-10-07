@@ -80,7 +80,7 @@ struct MacTextAppearanceView: View {
             Image(systemName: bigger ? "textformat.size.larger" : "textformat.size.smaller")
                 .imageScale(.large)
         }
-        .buttonStyle(MacGlyphButtonStyle())
+        .buttonStyle(MacTextStepButtonStyle())
         .disabled(target == nil)
         .help(command.help)
         .accessibilityLabel(bigger ? "Larger text" : "Smaller text")
@@ -117,5 +117,31 @@ struct MacTextAppearanceView: View {
     private var appearance: Binding<AppearancePreference> {
         Binding(get: { AppearancePreference(rawValue: appearanceRaw) ?? .system },
                 set: { appearanceRaw = $0.rawValue })
+    }
+}
+
+/// A− and A+ as the iPhone's stepper draws them: text while a step is left,
+/// textFaint at 16 or 40 pt, about 3:1 apart (J028). The transport's glyph
+/// style rests at textMuted, a tint step from textFaint, so a dead end
+/// there looked live. Pressed, the glyph dims to textMuted.
+struct MacTextStepButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        MacTextStepFace(label: configuration.label, isPressed: configuration.isPressed)
+    }
+}
+
+private struct MacTextStepFace<Label: View>: View {
+    let label: Label
+    let isPressed: Bool
+
+    @Environment(\.chromeScale) private var scale
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        label
+            .font(Theme.font(.body, scale: scale))
+            .foregroundStyle(!isEnabled ? Theme.textFaint : (isPressed ? Theme.textMuted : Theme.text))
+            .frame(width: MacPlayerBarLayout.glyphHit(for: scale), height: MacPlayerBarLayout.glyphHit(for: scale))
+            .contentShape(Rectangle())
     }
 }

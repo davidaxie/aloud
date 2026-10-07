@@ -242,7 +242,51 @@ final class MacThemeTests: XCTestCase {
         }
     }
 
+    /// A− or A+ at the 16 or 40 pt limit reads as dead beside the live one
+    /// (J028): text against textFaint, as on the iPhone, not the
+    /// transport's textMuted, which sits about 1.2:1 from textFaint.
+    @MainActor
+    func testTheTextSizeStepperShowsItsLimit() throws {
+        for scheme: ColorScheme in [.light, .dark] {
+            func glyph(enabled: Bool) throws -> [Double] {
+                let button = Button {} label: { Rectangle() }
+                    .buttonStyle(MacTextStepButtonStyle())
+                    .disabled(!enabled)
+                    .environment(\.colorScheme, scheme)
+                let renderer = ImageRenderer(content: button)
+                renderer.scale = 1
+                return try centerColor(of: XCTUnwrap(renderer.cgImage))
+            }
+            let live = try glyph(enabled: true), dead = try glyph(enabled: false)
+            let ratio = contrast(live, dead)
+            XCTAssertGreaterThanOrEqual(ratio, 2, "\(scheme): the limit shows, \(ratio):1")
+        }
+    }
+
     // MARK: - Helpers
+
+    /// The center pixel's sRGB components, 0 to 1.
+    private func centerColor(of image: CGImage) throws -> [Double] {
+        let width = image.width, height = image.height
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                              bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        let offset = (height / 2) * context.bytesPerRow + (width / 2) * 4
+        XCTAssertEqual(bytes[offset + 3], 255, "an opaque glyph")
+        return (0..<3).map { Double(bytes[offset + $0]) / 255 }
+    }
+
+    /// WCAG's contrast ratio between two sRGB colors.
+    private func contrast(_ a: [Double], _ b: [Double]) -> Double {
+        func luminance(_ c: [Double]) -> Double {
+            let linear = c.map { $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+        }
+        let (high, low) = (max(luminance(a), luminance(b)), min(luminance(a), luminance(b)))
+        return (high + 0.05) / (low + 0.05)
+    }
 
     /// Each pixel row's mean gray (0 black, 255 white), top row first.
     private func grayRows(of image: CGImage) throws -> [Int] {

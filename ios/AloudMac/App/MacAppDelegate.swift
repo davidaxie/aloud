@@ -71,6 +71,20 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { MacMenuPruner.removeSpeech() }
     }
 
+    /// Aloud came to the front. Its window stays on screen behind other
+    /// apps, so SwiftUI's scene phase never changes on the way back: a stop
+    /// held while Aloud was behind (`PlatformApp.isActive`, the test that
+    /// held it) is spoken here (J026).
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Self.announceHeldStop(of: AppModel.shared.playback)
+    }
+
+    /// On the next turn: VoiceOver's announcement goes to the main window,
+    /// which AppKit makes main only after the activation.
+    static func announceHeldStop(of playback: PlaybackController) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { playback.sceneDidBecomeActive() } }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }

@@ -331,6 +331,32 @@ final class MacReaderAccessibilityTests: XCTestCase {
         XCTAssertNotNil(page.textView.accessibilityValue())
     }
 
+    /// A finished book scrolled back from its end (Page Up, ⌘↑), with no
+    /// cursor: the colophon is off screen, so the label names the first
+    /// sentence on screen and Play from here plays it, as before the end
+    /// (J023). Back at the end, the colophon again.
+    func testScrolledBackFromTheColophonThePageIsTheLabelAgain() throws {
+        let book = Self.book(chapters: 1, paragraphs: 75, perParagraph: 4, hash: "a11y-colophon-scrolled")
+        let page = try makePage(content: book, active: 299, size: NSSize(width: 800, height: 500))
+        let colophon = ReaderColophon(title: "Rotors", author: "A. Writer", words: 900, rate: 1)
+        page.update(activeSentence: 299, colophon: colophon)
+        page.coordinator.placeActiveSentence()
+        let action = try XCTUnwrap(page.textView.accessibilityCustomActions()?.first)
+        XCTAssertEqual(page.textView.accessibilityLabel(), colophon.spokenText, "the colophon on screen")
+        XCTAssertEqual(action.handler?(), false, "the colophon is no sentence")
+
+        let bottom = page.offset
+        page.scrollView.contentView.setBoundsOrigin(.zero)
+        XCTAssertEqual(page.textView.accessibilityLabel(), book.sentences[0].text, "the top of the page")
+        XCTAssertEqual(action.handler?(), true)
+        XCTAssertEqual(page.played.ids, [0], "the sentence the label names")
+
+        page.scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom))
+        XCTAssertEqual(page.textView.accessibilityLabel(), colophon.spokenText)
+        XCTAssertEqual(action.handler?(), false)
+        XCTAssertEqual(page.played.ids, [0])
+    }
+
     /// Light/dark or Increase Contrast recolors the column as it draws,
     /// with no edit to the text: VoiceOver's cursor, and a reader's
     /// selection for Copy, stay where they were.

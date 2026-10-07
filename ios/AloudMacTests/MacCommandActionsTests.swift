@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Aloud
 
@@ -268,6 +269,64 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertTrue(actions.isEnabled(.addClassic), "the open panel is no alert")
     }
 
+    /// ⌘← restarts the first chapter once 3 s of its opening sentence has
+    /// played (R14). No published change marks that moment, so the menus
+    /// refresh for it: Previous Chapter comes on while that sentence still
+    /// plays (J034). Before, it stayed grey until the next sentence.
+    func testPreviousChapterComesOnThreeSecondsIntoTheFirstChapter() async throws {
+        let (rig, actions) = makeActions(sentences: 8, clipDuration: 6)
+        var sentences: [Sentence] = []
+        var paragraphs: [Paragraph] = []
+        for id in 0..<8 {
+            let chapter = id / 4
+            sentences.append(Sentence(id: id, text: id % 4 == 0 ? "Chapter \(chapter + 1)." : "Line \(id) reads on.",
+                                      para: id, page: chapter + 1))
+            paragraphs.append(Paragraph(id: id, sentenceIDs: id..<(id + 1), page: chapter + 1))
+        }
+        let content = DocContent(title: "Restart", pageCount: 2, sentences: sentences, paragraphs: paragraphs,
+                                 contentHash: "mac-chapter-restart")
+        rig.controller.load(document: PlaybackTestRig.makeDocument(hash: content.contentHash, sentences: 8),
+                            content: content)
+        let state = MacCommandState(actions: actions)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        XCTAssertEqual(rig.controller.currentSentence, 0)
+        XCTAssertFalse(state.snapshot.isEnabled(.previousChapter), "nothing before chapter 1, under 3 s in")
+
+        for _ in 0..<60 where !state.snapshot.isEnabled(.previousChapter) {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(rig.controller.currentSentence, 0, "still the opening sentence")
+        XCTAssertGreaterThan(rig.controller.currentSentenceElapsed, PlaybackController.restartThreshold)
+        XCTAssertTrue(state.snapshot.isEnabled(.previousChapter), "past 3 s, ⌘← restarts the chapter")
+        rig.controller.pause()
+    }
+
+    /// ⌘W closes a window that can close, a popover's included, and never
+    /// asks an alert, a sheet or a window behind a modal panel: there
+    /// performClose finds no close button and plays the alert sound (J031).
+    /// Nothing here is shown: performClose is never called.
+    func testCloseWindowClosesOnlyAWindowThatCloses() {
+        let frame = NSRect(x: 0, y: 0, width: 40, height: 30)
+        let main = NSWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        let buttonless = NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: true)
+        let sheet = SheetWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        let popover = SelfClosingWindow(contentRect: frame, styleMask: [], backing: .buffered, defer: true)
+        for window in [main, buttonless, sheet, popover] { window.isReleasedWhenClosed = false }
+        let alert = NSAlert()
+        alert.messageText = "Rename"
+        alert.layout()
+
+        XCTAssertTrue(MacCommandActions.windowToClose(key: main, modal: nil) === main)
+        XCTAssertTrue(MacCommandActions.windowToClose(key: popover, modal: nil) === popover,
+                      "a popover's window closes itself")
+        XCTAssertNil(MacCommandActions.windowToClose(key: nil, modal: nil), "no window, nothing")
+        XCTAssertNil(MacCommandActions.windowToClose(key: alert.window, modal: nil), "an alert's panel")
+        XCTAssertNil(MacCommandActions.windowToClose(key: buttonless, modal: nil), "no close button")
+        XCTAssertNil(MacCommandActions.windowToClose(key: sheet, modal: nil), "a sheet")
+        XCTAssertNil(MacCommandActions.windowToClose(key: main, modal: buttonless), "behind a modal panel")
+    }
+
     /// The menu snapshot follows an alert opening and closing.
     func testTheMenuSnapshotFollowsARootAlert() async throws {
         let (_, actions) = makeActions()
@@ -357,9 +416,19 @@ final class MacCommandActionsTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeActions(sentences: Int = 12,
+    /// A window AppKit shows as a sheet.
+    private final class SheetWindow: NSWindow {
+        override var isSheet: Bool { true }
+    }
+
+    /// A window that closes itself, as a popover's does.
+    private final class SelfClosingWindow: NSWindow {
+        override func performClose(_ sender: Any?) { close() }
+    }
+
+    private func makeActions(sentences: Int = 12, clipDuration: TimeInterval = 0.25,
                              failing: (@Sendable (String) -> Bool)? = nil) -> (PlaybackTestRig, MacCommandActions) {
-        let rig = PlaybackTestRig(sentences: sentences, failing: failing)
+        let rig = PlaybackTestRig(sentences: sentences, clipDuration: clipDuration, failing: failing)
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("aloud-commands-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
