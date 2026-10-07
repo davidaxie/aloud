@@ -62,6 +62,9 @@ targets:
           UIColorName: LaunchBackground
         # The thumb owns the loop: iPhone runs in portrait only (PRD principle 3).
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Export compliance, answered once for every upload: HTTPS through URLSession
+        # (the model download) and CryptoKit's SHA256 (integrity, fingerprints) are exempt.
+        ITSAppUsesNonExemptEncryption: false
   AloudTests:
     type: bundle.unit-test
     platform: iOS
@@ -160,6 +163,8 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [public.plain-text]
+        # Export compliance, as the iPhone app's: only exempt HTTPS and SHA256 hashing.
+        ITSAppUsesNonExemptEncryption: false
   AloudMacTests:
     type: bundle.unit-test
     platform: macOS

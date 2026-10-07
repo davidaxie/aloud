@@ -129,6 +129,10 @@ final class SleepTimer: ObservableObject {
     private var chapter: ClosedRange<Int>?
     /// The loaded book's navigation, built once per content hash.
     private var navigation: (hash: String, value: ReaderNavigation)?
+    /// The loaded book as the timer last saw it. A new id is a new load,
+    /// which drops the scheduled stop even when the text (and so the hash)
+    /// is the same: a deleted book added again.
+    private var documentID: UUID?
 
     init(timing: Timing = .standard, defaults: UserDefaults = .standard) {
         self.timing = timing
@@ -265,13 +269,24 @@ final class SleepTimer: ObservableObject {
     // MARK: - Observing the controller
 
     private func documentChanged() {
-        guard let playback, let document = playback.document, let content = playback.content,
-              navigation?.hash != content.contentHash else { return }
-        if option == .endOfChapter {
+        guard let playback else { return }
+        guard let document = playback.document, let content = playback.content else {
+            // Unloaded (the book deleted or let go): its stop went with it,
+            // and so do its chapter and any fade, so whatever loads next is
+            // aimed afresh, the same text included.
+            documentID = nil
+            chapter = nil
+            dropFade()
+            return
+        }
+        let isNewLoad = document.id != documentID
+        documentID = document.id
+        if option == .endOfChapter, isNewLoad || navigation?.hash != content.contentHash {
             // The load dropped the old book's stop: aim at this book's chapter.
             armChapterEnd(at: max(playback.currentSentence, 0))
             return
         }
+        guard navigation?.hash != content.contentHash else { return }
         // Off the main actor: it is a pass over every word, made while the
         // reader opens (and builds its own).
         let hash = content.contentHash

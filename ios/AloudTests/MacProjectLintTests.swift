@@ -242,6 +242,33 @@ final class ReleaseProjectLintTests: XCTestCase {
         }
     }
 
+    /// Both apps answer export compliance in their Info.plist (false), so
+    /// no upload waits at "Missing Compliance". The answer holds while the
+    /// only encryption is exempt: HTTPS through URLSession and CryptoKit's
+    /// hashing. Encrypting anything itself changes the answer, so it fails
+    /// here first.
+    func testBothAppsDeclareNoNonExemptEncryption() throws {
+        let spec = try Self.spec()
+        for app in Self.manifests.keys {
+            XCTAssertEqual(spec.value(["targets", app, "info", "properties", "ITSAppUsesNonExemptEncryption"]),
+                           "false", app)
+        }
+        let sources = try SourceTree.appSources()
+        let encrypting = ["import CommonCrypto", "import CryptoTokenKit", "CCCrypt", "SecKeyCreateEncryptedData",
+                          "SecKeyCreateDecryptedData", "AES.", "ChaChaPoly", "SymmetricKey", "HPKE",
+                          "KeyAgreement", "NWConnection", "NWListener", "NWProtocolTLS"]
+        for needle in encrypting {
+            XCTAssertEqual(SourceTree.files(containing: needle, in: sources), [], needle)
+        }
+        // Simple word boundaries: Unicode's join "Insecure.MD5" into one word.
+        let kits = #/\b(SHA\d+|Insecure|HMAC|AES|ChaChaPoly|Curve25519|P\d{3}|HPKE|SecureEnclave)\b/#
+            .wordBoundaryKind(.simple)
+        for (path, text) in sources where text.contains("import CryptoKit") {
+            let used = Set(text.matches(of: kits).map { String($0.output.1) })
+            XCTAssertTrue(used.isSubset(of: ["SHA256"]), "\(path) uses \(used.sorted()) of CryptoKit")
+        }
+    }
+
     /// Each app's sources take its own manifest and leave the other's out:
     /// two files of one name in a bundle fail the build.
     func testEachAppShipsItsOwnPrivacyManifest() throws {

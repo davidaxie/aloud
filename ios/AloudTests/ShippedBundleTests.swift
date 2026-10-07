@@ -17,6 +17,14 @@ final class ShippedBundleTests: XCTestCase {
                         "CFBundleVersion '\(build)'")
     }
 
+    /// Export compliance answered in the bundle, so no build waits at
+    /// "Missing Compliance": the apps' only encryption is exempt (HTTPS
+    /// through URLSession, CryptoKit's SHA256), which
+    /// ReleaseProjectLintTests holds to.
+    func testTheAppDeclaresNoNonExemptEncryption() {
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption") as? Bool, false)
+    }
+
     func testThePrivacyManifestShips() throws {
         let url = try XCTUnwrap(Bundle.main.url(forResource: "PrivacyInfo", withExtension: "xcprivacy"),
                                 "no PrivacyInfo.xcprivacy in \(Bundle.main.bundleURL.lastPathComponent)")

@@ -507,6 +507,39 @@ final class SleepTimerTests: XCTestCase {
         XCTAssertEqual(timer.chipText, "Chapter end")
     }
 
+    /// The same text under a new id (a book deleted, then added again, or a
+    /// second copy) is a new load: the load drops the stop, and the timer
+    /// aims again, though the hash and the chapter it opens in are the ones
+    /// it saw last. It once stayed on the old chapter with no stop, faded at
+    /// its end, and read on through the next.
+    func testEndOfChapterReaimsWhenTheSameTextLoadsUnderANewID() async throws {
+        let pages = Array(repeating: 0, count: 6) + Array(repeating: 1, count: 6)
+        let (rig, timer) = await harness(pages: pages, cue: 0)
+        let hash = try XCTUnwrap(rig.controller.content?.contentHash)
+        func reload() {
+            rig.controller.load(document: PlaybackTestRig.makeDocument(hash: hash, sentences: pages.count),
+                                content: PlaybackTestRig.makeContent(hash: hash, count: pages.count, pages: pages))
+        }
+        timer.select(.endOfChapter)
+        XCTAssertEqual(rig.controller.scheduledStopSentence, 5)
+
+        reload()
+        await settle()
+        XCTAssertEqual(rig.controller.scheduledStopSentence, 5, "a second copy opening in the chapter")
+
+        rig.controller.unload()
+        await settle()
+        XCTAssertNil(rig.controller.scheduledStopSentence)
+        XCTAssertEqual(timer.option, .endOfChapter, "a delete leaves the timer armed")
+
+        reload()
+        await settle()
+        XCTAssertEqual(rig.controller.currentSentence, 0)
+        XCTAssertEqual(rig.controller.scheduledStopSentence, 5, "deleted and added again")
+        XCTAssertEqual(timer.chipText, "Chapter end")
+        timer.select(.off)
+    }
+
     // MARK: - Dropping a fade mid-restart
 
     /// A tap on an earlier sentence (or skip back on the lock screen) while
