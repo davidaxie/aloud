@@ -5,6 +5,9 @@
 // evaluated at most once per page but must survive being *asked* to inject
 // again: the service worker pings first, and a second Alt+A has to reach the
 // existing reader rather than spawn a rival one. Hence the window-level guard.
+// That guard can't see a reader left over from before an extension reload — it
+// lives on in another isolated world — so a new reader tells it to stand down
+// through the one thing both worlds share, the page's DOM (G019).
 //
 // It owns the wiring, not the logic:
 //   extract.ts     page → sentences + offset index
@@ -17,7 +20,14 @@ import { loadPrefs, savePrefs, watchPrefs } from '../shared/prefs'
 import type { TabAction, TabRequest, TabResponse, TabStateSnapshot } from '../shared/protocol'
 import type { PlayerStatus, Prefs, ReadDoc, ReaderEngineState, Voice } from '../shared/types'
 import { getHealth, getShortcuts, getVoices } from './api'
-import { extractPage, extractSelection, extractText, offsetOf, type Extraction } from './extract'
+import {
+  extractPage,
+  extractSelection,
+  extractText,
+  offsetOf,
+  spanDetached,
+  type Extraction,
+} from './extract'
 import { Highlighter } from './highlight'
 import { watchNavigation } from './navigation'
 import { AloudPlayer } from './player'
@@ -27,6 +37,11 @@ import { PlayerBar, showToast } from './ui'
 const HEALTH_POLL_BUSY_MS = 4_000
 /** …and once everything is working. Cheap enough to leave running while reading. */
 const HEALTH_POLL_IDLE_MS = 30_000
+/**
+ * Dispatched on the document by a newly injected reader. A reader from before
+ * an extension reload hears it and tears down, so two voices never overlap.
+ */
+const TAKEOVER_EVENT = 'aloud:takeover'
 
 // A second injection would create a second player over the same page. Bail out
 // early; the already-running instance keeps serving messages.
@@ -40,6 +55,8 @@ if (window.__aloudReaderInjected) {
   console.debug('[Aloud] reader already present')
 } else {
   window.__aloudReaderInjected = true
+  // Before this reader listens itself, so it never hears its own announcement.
+  document.dispatchEvent(new Event(TAKEOVER_EVENT))
   void main(listenNow())
 }
 
@@ -101,10 +118,18 @@ async function main(onReady: (respond: Responder) => void) {
       sentenceIndex = index
       paintSentence()
       paintBar()
-      // An app can swap the article out with no history entry at all. Deferred:
+      // An app can swap the article out with no history entry at all — the whole
+      // root, or just the text inside a container it keeps (G020). Deferred:
       // this runs inside the player's own move, which teardown must not cut.
       setTimeout(() => {
-        if (extraction && !extraction.root.isConnected) teardown()
+        if (!extraction) return
+        const sentence = extraction.sentences[sentenceIndex]
+        if (
+          !extraction.root.isConnected ||
+          (sentence && spanDetached(extraction.slices, sentence.start, sentence.end))
+        ) {
+          teardown()
+        }
       })
     },
     onWord: (tokenIndex) => paintWord(tokenIndex),
@@ -220,7 +245,7 @@ async function main(onReady: (respond: Responder) => void) {
         mode === 'selection'
           ? 'Nothing selected to read.'
           : document.contentType === 'application/pdf'
-            ? 'Chrome renders PDFs in a plugin Aloud can’t reach — open it in the Aloud app instead.'
+            ? 'Chrome renders PDFs in a plugin Aloud can’t reach — select text and right-click › Read selection aloud, or open it in the Aloud app.'
             : 'No readable text found on this page.',
       )
       return false
@@ -310,7 +335,9 @@ async function main(onReady: (respond: Responder) => void) {
         start('selection', text)
         break
       case 'toggle':
+        // `text` is a selection the worker found in a subframe (G034).
         if (isActive()) player.toggle()
+        else if (text) start('selection', text)
         else if (!window.getSelection()?.isCollapsed) start('selection')
         else start('page')
         break
@@ -447,4 +474,6 @@ async function main(onReady: (respond: Responder) => void) {
     if (isActive()) teardown()
   })
   window.addEventListener('pagehide', () => teardown())
+  // A reader injected after an extension reload is taking over this page.
+  document.addEventListener(TAKEOVER_EVENT, () => teardown())
 }

@@ -33,6 +33,21 @@ export interface Slice {
   end: number
 }
 
+/**
+ * Whether the page has thrown away any text node the flat span `[start, end)`
+ * was read from. An app that swaps an article in by `innerHTML` keeps the
+ * container — so the extraction root stays connected — but not one of the old
+ * text nodes (G020).
+ */
+export function spanDetached(slices: Slice[], start: number, end: number): boolean {
+  for (const s of slices) {
+    if (s.end <= start) continue
+    if (s.start >= end) break
+    if (!s.node.isConnected) return true
+  }
+  return false
+}
+
 /** A point in the DOM: the node and character offset a flat offset maps to. */
 export interface DomPoint {
   node: Text

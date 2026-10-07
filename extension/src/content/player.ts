@@ -32,9 +32,14 @@
 // playback advances, the sentence is reported to the UI, and status stays
 // `playing`. Only a run of MAX_CONSECUTIVE_SKIPS failures — which is an engine
 // that has gone away, not a sentence that won't read — stops anything, and it
-// stops on the FIRST sentence of the run so resuming loses nothing. A request
-// that never reached an engine at all (backend down, extension reloaded) says
-// nothing about its sentence, so it is not skipped: playback stops right there.
+// stops on the FIRST of the engine's failures in the run so resuming loses
+// nothing. A sentence the engine refused (400) refuses every time, so the stop
+// never rewinds over one: resuming carries on past it instead of stopping on it
+// again. A sentence with nothing to say (a bracketed aside with skipping on) is
+// never sent at all — it plays as silence. A request that never reached an
+// engine (backend down, extension reloaded) says nothing about its sentence, so
+// it is not skipped: playback stops right there. Once the extension is gone
+// from the page, cached audio does not play on either (G019).
 //
 // ── Cache invalidation ───────────────────────────────────────────────────────
 // The key embeds voice + skip-mode, so changing either routes future lookups to
@@ -57,7 +62,7 @@ import { spokenText } from '../shared/chunker'
 import type { SynthPriority } from '../shared/protocol'
 import type { PlayerStatus, Prefs, ReadDoc, WordToken } from '../shared/types'
 import { wavDuration, WAV_HEADER_BYTES } from '../shared/wav'
-import { isAbortError, SynthesisError, synthesize } from './api'
+import { extensionAlive, isAbortError, RELOADED_MESSAGE, SynthesisError, synthesize } from './api'
 
 /**
  * Entry cap. Sized so it can never be what stops the buffer reaching its target:
@@ -94,6 +99,15 @@ const SEED_CHARS_PER_SECOND = 15
  * whole page skipping every sentence helps nobody.
  */
 const MAX_CONSECUTIVE_SKIPS = 3
+
+/**
+ * Stands in for an object URL when a sentence has nothing to say — skipping
+ * left only brackets and punctuation. The backend answers 400 for empty text,
+ * so such a sentence is never sent: it is stepped over as silence (G017).
+ */
+const SILENT = 'silent:'
+/** Spoken text without a letter or digit has nothing for the voice to read. */
+const HAS_SPEAKABLE = /[\p{L}\p{N}]/u
 
 /**
  * Chrome's autoplay policy refused to start audio. The keyboard shortcut and the
@@ -195,8 +209,13 @@ export class AloudPlayer {
   // ── failure tracking ──────────────────────────────────────────────────────
   /** Sentences that failed every retry and were skipped. */
   private skipped = new Set<number>()
-  /** Sentences skipped since the last success. At MAX_CONSECUTIVE_SKIPS we stop. */
-  private streak: number[] = []
+  /**
+   * Sentences skipped in a row since the last success or the last move the user
+   * made. At MAX_CONSECUTIVE_SKIPS we stop. `rewind` is false for a sentence the
+   * engine refused (400): it would fail the same way again, so the stop must
+   * never land on it.
+   */
+  private streak: Array<{ index: number; rewind: boolean }> = []
 
   // Snapshot of the prefs that current audio was produced under, so applyPrefs()
   // knows what actually changed.
@@ -404,7 +423,15 @@ export class AloudPlayer {
     }
     // Always synthesize at speed 1.0 — playback rate lives on the element.
     const text = spokenText(sentence.text, skipSkippable)
-    entry.promise = this.synth(entry, text, voiceId, priority)
+    if (!HAS_SPEAKABLE.test(text)) {
+      // Nothing to say: never ask the backend, which answers 400 for empty text
+      // (G017). playIndex steps past it.
+      entry.url = SILENT
+      entry.duration = 0
+      entry.promise = Promise.resolve(SILENT)
+    } else {
+      entry.promise = this.synth(entry, text, voiceId, priority)
+    }
     this.cache.set(key, entry)
     this.evict()
     return entry
@@ -509,6 +536,7 @@ export class AloudPlayer {
 
   /** Free an entry: abort if in-flight, revoke its URL if resolved. */
   private dropResources(entry: CacheEntry) {
+    if (entry.url === SILENT) return
     if (entry.url) URL.revokeObjectURL(entry.url)
     else entry.controller.abort()
   }
@@ -572,7 +600,7 @@ export class AloudPlayer {
         // A no-op catch keeps a prefetch failure from becoming an unhandled
         // rejection; the real error surfaces when we actually reach `j`.
         entry.promise.catch(() => {})
-        inFlight++
+        if (!entry.url) inFlight++
       }
 
       const seconds = this.durationOf(j)
@@ -620,6 +648,13 @@ export class AloudPlayer {
     if (n === 0) return
     i = Math.min(n - 1, Math.max(0, i))
 
+    // The extension was reloaded under the page: everything still cached would
+    // play on for up to a minute, under a second reader the next Alt+A starts.
+    if (!extensionAlive()) {
+      this.halt(i, RELOADED_MESSAGE)
+      return
+    }
+
     this.wantPlaying = true
     // Halt the old sentence's highlight and drop its now-stale timing before we
     // move; the new windows are rebuilt on loadedmetadata.
@@ -646,6 +681,13 @@ export class AloudPlayer {
 
     // A newer play/seek/stop happened while we were synthesizing → abandon.
     if (token !== this.playToken) return
+
+    if (url === SILENT) {
+      // Nothing to say: step past it as if it had played. Neither a failure nor
+      // a success, so the streak stands either way.
+      if (this.wantPlaying) this.advanceFrom(i)
+      return
+    }
 
     const audio = this.ensureAudio()
     // Adopt the tokens now so the 'loadedmetadata' fired by the next line has
@@ -728,15 +770,23 @@ export class AloudPlayer {
     }
 
     this.skipped.add(i)
-    this.streak.push(i)
+    // A 400 is this sentence's fault, not the engine's (see describeFailure).
+    this.streak.push({ index: i, rewind: !(err instanceof SynthesisError && err.status === 400) })
     this.hooks.onSkip(i, message)
 
     if (this.streak.length >= MAX_CONSECUTIVE_SKIPS) {
-      // Stop where the run began: those sentences were the engine's failure,
-      // not theirs, and resuming must read them rather than start past them.
-      for (const j of this.streak) this.skipped.delete(j)
-      this.halt(this.streak[0], message)
-      return
+      // Stop where the engine's failures began: those sentences weren't at
+      // fault, and resuming must read them rather than start past them. A
+      // sentence the engine refused stays skipped — stopping on it would only
+      // stop on it again at every resume (G017) — so a run of nothing else
+      // stops just past it.
+      const retry = this.streak.filter((s) => s.rewind).map((s) => s.index)
+      for (const j of retry) this.skipped.delete(j)
+      if (retry.length > 0 || i + 1 < this.total) {
+        this.halt(retry.length > 0 ? retry[0] : i + 1, message)
+        return
+      }
+      this.streak = []
     }
     if (!this.wantPlaying) {
       this.setStatus('paused')
@@ -767,7 +817,12 @@ export class AloudPlayer {
   /** Fired when a sentence finishes: auto-advance, or end the document. */
   private onEnded() {
     if (!this.wantPlaying) return
-    if (this.index + 1 >= this.total) {
+    this.advanceFrom(this.index)
+  }
+
+  /** Sentence `i` is done: play the next one, or end the document. */
+  private advanceFrom(i: number) {
+    if (i + 1 >= this.total) {
       // Leave the final word lit as a natural resting state.
       this.wantPlaying = false
       this.playToken++
@@ -776,7 +831,7 @@ export class AloudPlayer {
       this.setStatus('ended')
       return
     }
-    void this.playIndex(this.index + 1)
+    void this.playIndex(i + 1)
   }
 
   // ── public API ────────────────────────────────────────────────────────────
@@ -795,6 +850,10 @@ export class AloudPlayer {
   /** Begin/resume playback from the current sentence. */
   play() {
     if (!this.doc) return
+    if (!extensionAlive()) {
+      this.halt(Math.max(0, this.index), RELOADED_MESSAGE)
+      return
+    }
     const audio = this.ensureAudio()
 
     // Resume-in-place: if we're merely paused mid-sentence and that sentence's
@@ -848,6 +907,9 @@ export class AloudPlayer {
   private jump(target: number) {
     if (!this.doc) return
     const i = Math.min(this.total - 1, Math.max(0, target))
+    // The user moved: failures behind them say nothing about where they went,
+    // and a stop must never send them back there (G018).
+    this.streak = []
     const wasPlaying =
       this.wantPlaying || this.currentStatus === 'playing' || this.currentStatus === 'buffering'
 
@@ -871,6 +933,7 @@ export class AloudPlayer {
   /** Jump to a specific sentence and play from there. */
   seekTo(index: number) {
     if (!this.doc) return
+    this.streak = [] // a fresh start, as in jump() (G018)
     this.audio?.pause()
     void this.playIndex(index)
   }
@@ -912,6 +975,8 @@ export class AloudPlayer {
     this.audio?.pause() // stop old-param audio before revoking its URL
     this.stopWordLoop()
     this.invalidateStaleParams()
+    // New params are a new engine request for every sentence (G018).
+    this.streak = []
     this.loadedIndex = -1
     this.reportedBuffer = -1
     this.reportedThrough = -2

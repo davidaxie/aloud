@@ -105,6 +105,18 @@ function isContextInvalidated(err: unknown): boolean {
   return err instanceof Error && /context invalidated|receiving end does not exist/i.test(err.message)
 }
 
+/**
+ * False once the extension was reloaded or updated under this page: Chrome
+ * clears the runtime's id, so this is known before any message bounces (G019).
+ */
+export function extensionAlive(): boolean {
+  try {
+    return !!chrome.runtime?.id
+  } catch {
+    return false
+  }
+}
+
 function reloadedError(attempts: number): SynthesisError {
   return new SynthesisError(RELOADED_MESSAGE, { status: 0, retryable: false, attempts, reloaded: true })
 }

@@ -1,5 +1,6 @@
-// The service worker's activation paths: a selection made inside a subframe
-// (F070), and keyboard shortcuts that are real rather than assumed (F012).
+// The service worker's activation paths: a selection made inside a subframe,
+// from the context menu (F070) or the shortcut (G034), and keyboard shortcuts
+// that are real rather than assumed (F012).
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -94,4 +95,57 @@ test('F012: no surface hard-codes a shortcut', async () => {
     const source = await readFile(join(SRC, file), 'utf8')
     assert.doesNotMatch(source, /Alt\+[←→A]|<kbd>Alt<\/kbd>/, `${file} names a binding Chrome may not have made`)
   }
+})
+
+/** Script the frames' answers to the shortcut's selection lookup. */
+function frames(results) {
+  const calls = []
+  mock.chrome.scripting.executeScript = (opts) => {
+    calls.push(opts)
+    if (!opts.func) return Promise.resolve([])
+    return results instanceof Error ? Promise.reject(results) : Promise.resolve(results)
+  }
+  return calls
+}
+
+test('G034: the shortcut reads a selection made in the focused subframe', async () => {
+  mock.sent.length = 0
+  const calls = frames([
+    // The top frame counts as focused whenever a frame inside it is.
+    { frameId: 0, result: { text: 'A stale selection up top.', focused: true } },
+    { frameId: 3, result: { text: 'Left behind in another frame.', focused: false } },
+    { frameId: 4, result: { text: '  A paragraph selected in the frame. ', focused: true } },
+  ])
+  mock.on.command('toggle-read')
+  await settle()
+  assert.equal(calls[0]?.target.allFrames, true)
+  const command = mock.sent.find((s) => s.msg.kind === 'command')
+  assert.equal(command.msg.action, 'toggle')
+  assert.equal(command.msg.text, 'A paragraph selected in the frame.')
+})
+
+test('G034: with nothing selected in a subframe the shortcut leaves it to the page', async () => {
+  for (const results of [
+    [{ frameId: 0, result: { text: 'Selected in the page.', focused: true } }],
+    [{ frameId: 2, result: { text: '', focused: true } }],
+    new Error('Cannot access contents of the page.'),
+  ]) {
+    mock.sent.length = 0
+    frames(results)
+    mock.on.command('toggle-read')
+    await settle()
+    const command = mock.sent.find((s) => s.msg.kind === 'command')
+    assert.ok(command, 'the shortcut did nothing')
+    assert.equal(command.msg.action, 'toggle')
+    assert.equal(command.msg.text, undefined)
+  }
+})
+
+test('G034: next and previous never go looking for a selection', async () => {
+  mock.sent.length = 0
+  const calls = frames([{ frameId: 4, result: { text: 'Selected.', focused: true } }])
+  mock.on.command('next-sentence')
+  await settle()
+  assert.equal(calls.length, 0)
+  assert.equal(mock.sent.find((s) => s.msg.kind === 'command').msg.action, 'next')
 })

@@ -85,10 +85,41 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.commands.onCommand.addListener((command) => {
   const action: TabAction =
     command === 'next-sentence' ? 'next' : command === 'prev-sentence' ? 'prev' : 'toggle'
-  void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-    if (tab?.id !== undefined) dispatchQuietly(tab.id, action)
+  void chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
+    if (tab?.id === undefined) return
+    const text = action === 'toggle' ? await subframeSelection(tab.id) : undefined
+    dispatchQuietly(tab.id, action, text)
   })
 })
+
+/**
+ * Text selected in the focused subframe, for the shortcut to read (G034).
+ *
+ * The context menu is told what was selected; a keyboard command is not, and
+ * the reader in the top frame sees only its own selection — empty, or stale
+ * from before the user clicked into the frame. So ask every frame activeTab
+ * lets us into. Chrome's PDF viewer and cross-origin embeds are not among
+ * them: there the PDF toast points to the context menu instead. Undefined
+ * means "let the top frame decide", which is also the answer on any failure.
+ */
+async function subframeSelection(tabId: number): Promise<string | undefined> {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => ({ text: getSelection()?.toString() ?? '', focused: document.hasFocus() }),
+    })
+    for (const { frameId, result } of results) {
+      // The top frame reports focus whenever a frame inside it has it, so only a
+      // subframe's focus says where the user selected last.
+      if (frameId === 0 || !result?.focused) continue
+      const text = result.text.trim()
+      if (text) return text
+    }
+  } catch {
+    // A page no script may enter: dispatch reports it.
+  }
+  return undefined
+}
 
 // ── injection + dispatch ────────────────────────────────────────────────────
 
