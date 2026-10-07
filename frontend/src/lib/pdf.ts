@@ -14,7 +14,15 @@ import type { Doc, Paragraph, Sentence } from '../types'
 import { chunkParagraph } from './chunker'
 import { dropStrayJoiners } from './joiners'
 import { bundledCMapReaderFactory } from './pdfCMaps'
-import { type Line, runningHeadersByPage, stripNoise, typicalGap } from './pdfHeaders'
+import {
+  type Block,
+  type Line,
+  appendLine,
+  appendPageParagraphs,
+  runningHeadersByPage,
+  stripNoise,
+  typicalGap,
+} from './pdfHeaders'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -40,12 +48,6 @@ interface Piece {
   w: number // width in device space
   h: number // font height (approx), used as the spacing/leading scale
   hasEOL: boolean
-}
-
-// A reconstructed paragraph plus the 1-based page it starts on.
-interface Block {
-  text: string
-  page: number
 }
 
 /** Strip control chars / form-feed artifacts (\f, NUL, etc.) from a run. */
@@ -225,57 +227,11 @@ function linesToParagraphs(lines: Line[]): string[] {
   // Normalize each folded paragraph (ligatures, invisible chars, exotic spaces,
   // smart punctuation, whitespace) up front, so BOTH the displayed reader text
   // and the chunked TTS tokens are clean, and so the cross-page stitching
-  // heuristics below (looksFinished / lowercase-continuation) see plain ASCII
+  // heuristics (looksFinished / continuation, in ./pdfHeaders) see plain ASCII
   // punctuation. normalizeText also trims, and drops paragraphs that normalize
   // to empty. De-hyphenation already ran during the appendLine join above, so
   // trailing hyphens needed for cross-page joins are preserved here.
   return paragraphs.map(normalizeText).filter(Boolean)
-}
-
-/**
- * Append a wrapped line to the running paragraph buffer, de-hyphenating words
- * broken across the line break: "inter-" + "national" → "international".
- * Only removes the hyphen when a letter precedes it and the next line starts
- * lowercase — the safe, common word-wrap case (leaves "well-Being" alone).
- *
- * The trailing hyphen may be a normal hyphen-minus (U+002D) OR a soft hyphen
- * (U+00AD) that some PDFs emit at the wrap point; both are handled here so the
- * word rejoins WITHOUT a stray space. (Any soft hyphens that survive elsewhere
- * are stripped later by normalizeText.)
- */
-function appendLine(buf: string, next: string): string {
-  const nextTrim = next.replace(/^\s+/, '')
-  if (/[A-Za-z][-\u00AD]$/.test(buf) && /^[a-z]/.test(nextTrim)) {
-    return buf.replace(/[-\u00AD]$/, '') + nextTrim
-  }
-  return buf.replace(/\s+$/, '') + ' ' + nextTrim
-}
-
-/** True if text ends a sentence (terminal punctuation, ignoring closers). */
-function looksFinished(text: string): boolean {
-  return /[.!?…]["')\]]?\s*$/.test(text)
-}
-
-/**
- * Stitch this page's paragraphs onto the growing block list, merging the page's
- * first paragraph onto the previous block when the previous block clearly runs
- * on (no terminal punctuation) and this one continues it (starts lowercase or
- * the previous ended mid-hyphenation). Keeps a block's page = where it started.
- */
-function appendPageParagraphs(blocks: Block[], paras: string[], page: number): void {
-  paras.forEach((para, idx) => {
-    const prev = blocks[blocks.length - 1]
-    const continues =
-      idx === 0 &&
-      prev !== undefined &&
-      !looksFinished(prev.text) &&
-      (/^[a-z0-9]/.test(para) || /[A-Za-z]-$/.test(prev.text))
-    if (continues) {
-      prev.text = appendLine(prev.text, para) // reuse de-hyphenation logic
-    } else {
-      blocks.push({ text: para, page })
-    }
-  })
 }
 
 /** Best-effort title from PDF metadata `info.Title`, else the filename stem. */

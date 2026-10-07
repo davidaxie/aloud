@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Running headers/footers and page numbers in PDF text — the noise pass of the
-// PDF pipeline (./pdf), kept free of pdf.js so it can be tested on plain lines.
+// PDF pipeline (./pdf) — plus its line joins and cross-page stitching, kept
+// free of pdf.js so they can be tested on plain lines and paragraphs.
 // Mirrors PDFTextExtractor.swift in the iOS/Mac app.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -156,5 +157,86 @@ export function stripNoise(lines: Line[], running: Set<string>): Line[] {
     if (nearEdge && running.has(normalizeRunning(line.text))) return false
     if (nearEdge && isPageNumberLine(line.text)) return false
     return true
+  })
+}
+
+// ── Line joins and cross-page stitching ─────────────────────────────────────
+
+/** A reconstructed paragraph plus the 1-based page it starts on. */
+export interface Block {
+  text: string
+  page: number
+}
+
+// Han, kana, and the CJK and fullwidth punctuation set between them.
+const UNSPACED_CJK =
+  '\\u3000-\\u30FF\\u31F0-\\u31FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF' +
+  '\\uFF01-\\uFF60\\uFF65-\\uFF9F\\u{20000}-\\u{2FA1F}'
+const ENDS_UNSPACED_CJK = new RegExp(`[${UNSPACED_CJK}]$`, 'u')
+const STARTS_UNSPACED_CJK = new RegExp(`^[${UNSPACED_CJK}]`, 'u')
+
+/**
+ * Chinese or Japanese on both sides of a break: Han and kana have no case, so
+ * the lowercase test can't see a sentence go on, and no space belongs there.
+ */
+export function continuesUnspacedCJK(previous: string, next: string): boolean {
+  return ENDS_UNSPACED_CJK.test(previous.replace(/\s+$/, '')) && STARTS_UNSPACED_CJK.test(next)
+}
+
+/**
+ * Append a wrapped line to the running paragraph buffer, de-hyphenating words
+ * broken across the line break: "inter-" + "national" → "international".
+ * Only removes the hyphen when a letter precedes it and the next line starts
+ * lowercase — the safe, common word-wrap case (leaves "well-Being" alone).
+ *
+ * The trailing hyphen may be a normal hyphen-minus (U+002D) OR a soft hyphen
+ * (U+00AD) that some PDFs emit at the wrap point; both are handled here so the
+ * word rejoins WITHOUT a stray space. (Any soft hyphens that survive elsewhere
+ * are stripped later by normalizeText.)
+ */
+export function appendLine(buf: string, next: string): string {
+  const nextTrim = next.replace(/^\s+/, '')
+  if (/[A-Za-z][-­]$/.test(buf) && /^[a-z]/.test(nextTrim)) {
+    return buf.replace(/[-­]$/, '') + nextTrim
+  }
+  const head = buf.replace(/\s+$/, '')
+  // Chinese and Japanese put no space between words: a wrap there is no word
+  // break. (Korean does space its words.)
+  if (continuesUnspacedCJK(head, nextTrim)) return head + nextTrim
+  return head + ' ' + nextTrim
+}
+
+/**
+ * True if text ends a sentence (terminal punctuation, ignoring closers),
+ * Chinese and Japanese "。" and "」" "』" included (NFKC has already made
+ * "！" and "？" plain).
+ */
+export function looksFinished(text: string): boolean {
+  return /[.!?…。]["')\]」』]?\s*$/.test(text)
+}
+
+/**
+ * Stitch this page's paragraphs onto the growing block list, merging the page's
+ * first paragraph onto the previous block when the previous block clearly runs
+ * on (no terminal punctuation) and this one continues it (starts lowercase or
+ * with a digit, in any script, goes on in Chinese or Japanese from Chinese or
+ * Japanese, or the previous ended mid-hyphenation). Keeps a block's page =
+ * where it started.
+ */
+export function appendPageParagraphs(blocks: Block[], paras: string[], page: number): void {
+  paras.forEach((para, idx) => {
+    const prev = blocks[blocks.length - 1]
+    const continues =
+      idx === 0 &&
+      prev !== undefined &&
+      !looksFinished(prev.text) &&
+      (/^[\p{Ll}\p{N}]/u.test(para) ||
+        continuesUnspacedCJK(prev.text, para) ||
+        /[A-Za-z]-$/.test(prev.text))
+    if (continues) {
+      prev.text = appendLine(prev.text, para) // reuse de-hyphenation logic
+    } else {
+      blocks.push({ text: para, page })
+    }
   })
 }
