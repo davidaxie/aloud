@@ -26,7 +26,17 @@ extension AppModel {
         if let recovered = playback.takeRecoveredPlaceStop() {
             Self.record(recovered, in: history, shelf: store.documents)
         }
-        history.shelfObservation = store.$documents
+        history.shelfObservation = Self.observeShelf(of: store, in: history)
+    }
+
+    /// Sweeps `history` of the books that leave `store`'s shelf, now and as
+    /// it changes. None while library.json can't be read: the shelf then
+    /// holds only the records that still decode, and the records it skipped
+    /// (a newer build's, a damaged file's) keep their places, as library.json
+    /// keeps them, for the launch that reads them again.
+    static func observeShelf(of store: DocumentStore, in history: PlaceHistoryStore) -> AnyCancellable? {
+        guard store.isIndexReadable else { return nil }
+        return store.$documents
             .map { Set($0.map(\.id)) }
             .removeDuplicates()
             .sink { [weak history] ids in history?.shelfChanged(to: ids) }

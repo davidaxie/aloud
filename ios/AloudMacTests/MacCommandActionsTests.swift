@@ -250,7 +250,7 @@ final class MacCommandActionsTests: XCTestCase {
         var deletes = 0
         actions.deleteBook = { deletes += 1 }
         let router = actions.router
-        for alert: LibraryRouter.RootPresentation in [.rename, .deleteConfirmation] {
+        for alert: LibraryRouter.RootPresentation in [.rename, .deleteConfirmation, .deleteFailed] {
             router.rootPresentation = alert
             for command: MacCommand in [.addFromFiles, .addClassic, .find, .toggleContents, .back, .deleteBook] {
                 XCTAssertFalse(actions.isEnabled(command), "\(command) under \(alert)")

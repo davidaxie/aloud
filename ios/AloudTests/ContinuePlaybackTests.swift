@@ -226,11 +226,14 @@ final class ContinuePlaybackTests: XCTestCase {
         XCTAssertEqual(h.loadedIDs, [h.rig.document.id])
     }
 
-    /// The shelf's Mark as finished and Delete both go through `letGo`,
-    /// before the store changes: a site that only unloaded the player is how
-    /// a pending load outlived the mark. A source lint, since neither site
-    /// runs without the app.
-    func testMarkAsFinishedAndDeleteLetGoFirst() throws {
+    /// The shelf's Mark as finished goes through `letGo` before the store
+    /// changes: a site that only unloaded the player is how a pending load
+    /// outlived the mark. Delete lets go too, but only once the store has
+    /// removed the book: one library.json can't record (a full disk) keeps
+    /// the book, so it must not stop it playing, drop its stop or close its
+    /// reader, and returns before all three. A source lint, since neither
+    /// site runs without the app.
+    func testMarkAsFinishedLetsGoFirstAndDeleteOnceItHappened() throws {
         let sources = try SourceTree.sources(only: ["Library/LibraryView.swift", "App/AppModel.swift"])
         let library = try XCTUnwrap(sources["Library/LibraryView.swift"])
         let app = try XCTUnwrap(sources["App/AppModel.swift"])
@@ -238,13 +241,19 @@ final class ContinuePlaybackTests: XCTestCase {
                                                to: "\n    }\n"))
         let markFinished = try XCTUnwrap(Self.slice(of: String(perform), from: "case .markFinished:",
                                                     to: "case .delete:"))
+        let letGo = try XCTUnwrap(markFinished.range(of: "continuePlayback.letGo(of: document.id"),
+                                  "Mark as finished never lets go")
+        let mark = try XCTUnwrap(markFinished.range(of: "store.markFinished("), "Mark as finished not found")
+        XCTAssertLessThan(letGo.lowerBound, mark.lowerBound, "Mark as finished lets go before the store changes")
+
         let delete = try XCTUnwrap(Self.slice(of: app, from: "func deleteDocument(", to: "\n    }\n"))
-        for (name, body, change) in [("Mark as finished", markFinished, "store.markFinished("),
-                                     ("Delete", delete, "documentStore.delete(")] {
-            let letGo = try XCTUnwrap(body.range(of: "continuePlayback.letGo(of: document.id"),
-                                      "\(name) never lets go")
-            let mutation = try XCTUnwrap(body.range(of: change), "\(name) not found")
-            XCTAssertLessThan(letGo.lowerBound, mutation.lowerBound, "\(name) lets go before the store changes")
+        let removal = try XCTUnwrap(delete.range(of: "try documentStore.delete("), "Delete not found")
+        let failed = try XCTUnwrap(delete.range(of: "return DeleteFailure("), "a failed delete never says why")
+        for effect in ["continuePlayback.letGo(of: document.id", "playback.discardStop(for: document.id",
+                       "router.path.removeAll"] {
+            let range = try XCTUnwrap(delete.range(of: effect), "Delete never runs \(effect)")
+            XCTAssertLessThan(removal.lowerBound, range.lowerBound, "\(effect) waits for the store's delete")
+            XCTAssertLessThan(failed.lowerBound, range.lowerBound, "a failed delete returns before \(effect)")
         }
     }
 

@@ -36,6 +36,8 @@ struct LibraryView: View {
     @State private var renameTarget: LibraryDocument?
     @State private var renameText = ""
     @State private var deleteTarget: LibraryDocument?
+    /// Why the last confirmed Delete didn't happen, for its alert.
+    @State private var deleteFailure: DeleteFailure?
 
     /// Two columns; one at the accessibility text sizes (AX1+), where a
     /// half-width card can't hold a legible title.
@@ -128,12 +130,24 @@ struct LibraryView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let target = deleteTarget { model.deleteDocument(target) }
+                // A delete the library can't record keeps the book, and says
+                // why: the dialog's own close leaves this alert up.
+                if let target = deleteTarget, let failure = model.deleteDocument(target) {
+                    deleteFailure = failure
+                    router.rootPresentation = .deleteFailed
+                }
                 deleteTarget = nil
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
             Text("This removes the document and its listening progress.")
+        }
+        // Fixed copy only, as an add's failure (R10).
+        .alert(deleteFailure?.title ?? "", isPresented: presented(.deleteFailed),
+               presenting: deleteFailure) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { failure in
+            Text(failure.nextStep)
         }
     }
 

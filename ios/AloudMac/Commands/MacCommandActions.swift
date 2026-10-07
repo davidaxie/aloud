@@ -207,9 +207,10 @@ struct MacCommandActions {
         return ReaderTextSize.steps.indices.contains(next) ? next : nil
     }
 
-    /// Rename or the Delete confirmation is up over the Library.
+    /// Rename, the Delete confirmation or its failure is up over the Library.
     var isRootAlertShown: Bool {
         router.rootPresentation == .rename || router.rootPresentation == .deleteConfirmation
+            || router.rootPresentation == .deleteFailed
     }
 
     /// The commands that act in the main window: File's adds, Find,

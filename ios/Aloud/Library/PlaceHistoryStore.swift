@@ -34,8 +34,9 @@ final class PlaceHistoryStore {
     /// The shelf observation `AppModel.observePlaceHistory()` sets up.
     @ObservationIgnored var shelfObservation: AnyCancellable?
     /// Whether the shelf has been seen with a book on it this launch; an
-    /// empty shelf before that (a library that failed to load) sweeps
-    /// nothing.
+    /// empty shelf before that sweeps nothing. A library.json that can't be
+    /// read, whose shelf is partial, is never swept from at all
+    /// (`AppModel.observeShelf`).
     @ObservationIgnored private var hasSeenShelf = false
 
     /// Nil `fileURL` is Library/places.json, beside library.json.

@@ -37,6 +37,36 @@ final class LaunchRestoreTests: XCTestCase {
         XCTAssertNil(store.load(), "back on the Library: nothing to reopen")
     }
 
+    /// While library.json can't be read the slot is left as it is: it may
+    /// name a book the partial shelf skipped, which no reader could show,
+    /// and the launch that reads the whole shelf reopens it. Before, this
+    /// launch's bare Library wrote nil over it. A readable library keeps
+    /// the slot in step.
+    func testTheSlotWaitsWhileTheLibraryCantBeRead() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-slot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let damaged = folder.appendingPathComponent("library.json")
+        try Data("{\"version\":2,\"documents\":[{\"id\":".utf8).write(to: damaged)
+        let unreadable = DocumentStore(indexURL: damaged, saveInterval: 60, notifications: NotificationCenter())
+        XCTAssertFalse(unreadable.isIndexReadable, "fixture: library.json can't be read")
+        let slot = LastReaderStore(defaults: freshDefaults())
+        let skipped = UUID()
+        slot.save(skipped)
+        let router = LibraryRouter()
+
+        XCTAssertNil(AppModel.keepLastReader(slot, in: router, store: unreadable))
+        XCTAssertEqual(slot.load(), skipped, "the slot is as it was")
+
+        let readable = DocumentStore(indexURL: folder.appendingPathComponent("fresh.json"), saveInterval: 60,
+                                     notifications: NotificationCenter())
+        let keeping = AppModel.keepLastReader(slot, in: router, store: readable)
+        XCTAssertNotNil(keeping)
+        XCTAssertNil(slot.load(), "the Library shows: nothing to reopen")
+        keeping?.cancel()
+    }
+
     func testTheReaderOnTopIsTheOneRecorded() {
         let id = UUID()
         XCTAssertEqual(LaunchRestore.readerID(in: [.reader(id)]), id)

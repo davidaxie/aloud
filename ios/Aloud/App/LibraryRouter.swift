@@ -21,6 +21,8 @@ final class LibraryRouter: ObservableObject {
         case filePicker
         case rename
         case deleteConfirmation
+        /// Why a confirmed Delete didn't happen (`DeleteFailure`).
+        case deleteFailed
     }
 
     @Published var path: [Route] = [] {

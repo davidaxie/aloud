@@ -274,15 +274,24 @@ final class AppModel: ObservableObject {
         importer.importFile(at: url)
     }
 
-    /// Deletes a book everywhere it is live: playback and any Continue load
-    /// let go of it (so no later progress write can resurrect it, and the
-    /// card's arc stops at once), its reader leaves the stack, then the
-    /// store removes the record and its files.
-    func deleteDocument(_ document: LibraryDocument) {
+    /// Deletes a book: the store removes its record and files first, and
+    /// only then does everything that holds it let go: playback and any
+    /// Continue load (the card's arc stops at once; a later progress write
+    /// finds no record to bring back), its stop, and its reader on the
+    /// stack. A delete the store can't record changes none of them: the
+    /// book stays, playing if it was, and the reason comes back for the
+    /// Library's alert.
+    @discardableResult
+    func deleteDocument(_ document: LibraryDocument) -> DeleteFailure? {
+        do {
+            try documentStore.delete(document)
+        } catch {
+            return DeleteFailure(error)
+        }
         continuePlayback.letGo(of: document.id, playback: playback)
         playback.discardStop(for: document.id)
         router.path.removeAll { $0 == .reader(document.id) }
-        documentStore.delete(document)
+        return nil
     }
 
     /// Scene-phase hook (from RootView): a backgrounded, non-playing app
@@ -359,11 +368,20 @@ final class AppModel: ObservableObject {
                                                  stop: playback.stopped, enabled: enabled) {
             router.restoreReader(id)
         }
-        router.$path
+        Self.keepLastReader(lastReader, in: router, store: documentStore)?.store(in: &cancellables)
+    }
+
+    /// Keeps the last-reader slot in step with the stack. Not while
+    /// library.json can't be read: the slot may name a book the partial
+    /// shelf skipped, which no reader could show this launch, and it waits
+    /// as it is for the launch that reads the whole shelf again.
+    static func keepLastReader(_ lastReader: LastReaderStore, in router: LibraryRouter,
+                               store: DocumentStore) -> AnyCancellable? {
+        guard store.isIndexReadable else { return nil }
+        return router.$path
             .map(LaunchRestore.readerID(in:))
             .removeDuplicates()
             .sink { lastReader.save($0) }
-            .store(in: &cancellables)
     }
 
     /// Every pause and stop writes the place to disk at once, not within the
@@ -562,5 +580,46 @@ final class AppModel: ObservableObject {
             .removeDuplicates()
             .sink { defaults.set($0, forKey: PrefKey.skipBrackets) }
             .store(in: &cancellables)
+    }
+}
+
+/// Why a Delete didn't happen, as the one fixed sentence the Library's alert
+/// shows plus what to do next. The book stays, whole. A closed table, as
+/// ImportFailure's: an error's own text never reaches the screen.
+enum DeleteFailure: Equatable, CaseIterable {
+    /// library.json couldn't be written without the book, even after its
+    /// caches went.
+    case outOfSpace
+    /// library.json couldn't be read at launch (a newer Aloud's record, a
+    /// damaged file), so nothing is written over it.
+    case libraryUnreadable
+    /// Any other write that failed.
+    case notSaved
+
+    /// By type and code only, out of space as an add classifies it.
+    init(_ error: any Error) {
+        if error is LibraryIndexError {
+            self = .libraryUnreadable
+        } else if ImportFailure(error, isPDF: false) == .outOfSpace {
+            self = .outOfSpace
+        } else {
+            self = .notSaved
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .outOfSpace: return "\(DeviceNoun.Subject) is out of space."
+        case .libraryUnreadable, .notSaved: return "This book couldn't be deleted."
+        }
+    }
+
+    var nextStep: String {
+        switch self {
+        case .outOfSpace: return "Free up some space, then delete it again."
+        case .libraryUnreadable:
+            return "Aloud couldn't read your library, so it leaves it as it is. Update Aloud, then try again."
+        case .notSaved: return "Try again."
+        }
     }
 }

@@ -155,4 +155,52 @@ final class PlaceHistoryStoreTests: XCTestCase {
         AppModel.record(stop(UUID(), 50), in: store, shelf: [document])
         XCTAssertEqual(Set(store.books.keys), [document.id])
     }
+
+    /// library.json in the temp directory, listing `documents`; the one at
+    /// `unknownKindAt` is of a kind this build lacks ("epub", as a newer
+    /// build might write), which fails the whole index.
+    private func writeIndex(_ documents: [LibraryDocument], unknownKindAt unknown: Int? = nil,
+                            named name: String = "library.json") throws -> URL {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let records = try documents.enumerated().map { offset, document -> [String: Any] in
+            let json = try JSONSerialization.jsonObject(with: encoder.encode(document))
+            var record = try XCTUnwrap(json as? [String: Any])
+            if offset == unknown { record["kind"] = "epub" }
+            return record
+        }
+        let index: [String: Any] = ["version": 2, "documents": records]
+        let url = directory.appendingPathComponent(name)
+        try JSONSerialization.data(withJSONObject: index).write(to: url)
+        return url
+    }
+
+    /// A library.json this build can't read shows a partial shelf: only the
+    /// records that still decode. A skipped record's places stay, and
+    /// places.json is not rewritten, so they are there when a build that
+    /// reads the whole shelf opens it again. Before, the partial shelf swept
+    /// them. A readable shelf still sweeps.
+    func testAPartialShelfSweepsNothing() throws {
+        let kept = PlaybackTestRig.makeDocument(hash: "kept", sentences: 100)
+        let newer = PlaybackTestRig.makeDocument(hash: "newer", sentences: 100)
+        let history = PlaceHistoryStore(fileURL: fileURL)
+        history.record(stop(kept.id, 40), contentHash: "hash")
+        history.record(stop(newer.id, 60), contentHash: "hash")
+        XCTAssertEqual(Set(history.books.keys), [kept.id, newer.id], "fixture: both books have places")
+        let bytes = try Data(contentsOf: fileURL)
+
+        let partial = DocumentStore(indexURL: try writeIndex([kept, newer], unknownKindAt: 1),
+                                    saveInterval: 60, notifications: NotificationCenter())
+        XCTAssertFalse(partial.isIndexReadable, "fixture: the index fails as a whole")
+        XCTAssertEqual(partial.documents.map(\.id), [kept.id], "fixture: the shelf is partial")
+        history.shelfObservation = AppModel.observeShelf(of: partial, in: history)
+        XCTAssertEqual(Set(history.books.keys), [kept.id, newer.id], "the skipped book keeps its places")
+        XCTAssertEqual(try Data(contentsOf: fileURL), bytes, "places.json is as it was")
+
+        let readable = DocumentStore(indexURL: try writeIndex([kept], named: "readable.json"),
+                                     saveInterval: 60, notifications: NotificationCenter())
+        XCTAssertTrue(readable.isIndexReadable)
+        history.shelfObservation = AppModel.observeShelf(of: readable, in: history)
+        XCTAssertEqual(Set(history.books.keys), [kept.id], "a readable shelf sweeps the book not on it")
+    }
 }

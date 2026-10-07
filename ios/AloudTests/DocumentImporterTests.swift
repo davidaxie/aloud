@@ -702,7 +702,8 @@ final class DocumentImporterTests: XCTestCase {
     /// Open-in with the picker, Rename alert or Delete dialog left up: it
     /// closes first, so the overlay shows and the reader opens uncovered.
     func testOpenInClosesARootModalBeforeImporting() async {
-        let presentations: [LibraryRouter.RootPresentation] = [.filePicker, .rename, .deleteConfirmation]
+        let presentations: [LibraryRouter.RootPresentation] = [.filePicker, .rename, .deleteConfirmation,
+                                                               .deleteFailed]
         for presentation in presentations {
             let fixture = Self.document(title: "Fixture")
             let library = FakeLibrary(result: .success(fixture))

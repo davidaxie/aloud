@@ -287,8 +287,115 @@ final class ProgressIndexTests: XCTestCase {
         XCTAssertEqual(try libraryFiles(), before, "the copy and its cache are removed")
         XCTAssertEqual(try Data(contentsOf: index), original)
 
-        store.delete(book)
+        XCTAssertThrowsError(try store.delete(book), "a delete the index can't record fails")
         XCTAssertEqual(store.documents.map(\.id), [book.id], "a delete the index can't record keeps the book")
+    }
+
+    // MARK: A delete the index can't record
+
+    /// A store over an index of one book whose file, content cache and
+    /// thumbnail are on disk, uniquely named and removed after the test.
+    private func makeStoreWithBookFiles() throws
+        -> (store: DocumentStore, book: LibraryDocument, index: URL, files: [URL]) {
+        let index = try makeFolder().appendingPathComponent("library.json")
+        let book = PlaybackTestRig.makeDocument(hash: "delete-\(UUID().uuidString)", sentences: 400)
+        try Self.encoder.encode(Index(version: 2, documents: [book])).write(to: index)
+        let files = [DocumentStore.fileURL(for: book), DocumentStore.contentCacheURL(for: book.id),
+                     DocumentStore.thumbnailURL(for: book.id)]
+        for file in files {
+            try Data("x".utf8).write(to: file)
+            addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+        }
+        let store = DocumentStore(indexURL: index, saveInterval: 60, notifications: NotificationCenter())
+        XCTAssertEqual(store.documents.map(\.id), [book.id], "the store reads its own index")
+        return (store, book, index, files)
+    }
+
+    /// The books library.json lists now.
+    private func idsOnDisk(_ index: URL) throws -> [UUID] {
+        try Self.decoder.decode(Index.self, from: Data(contentsOf: index)).documents.map(\.id)
+    }
+
+    /// A delete library.json can't record for lack of space (the disk a
+    /// Delete is meant to clear) frees the book's caches and tries again;
+    /// once the record is gone, so is the book's file. Before, the failed
+    /// write kept everything, freed nothing and said nothing.
+    func testADeleteOutOfSpaceFreesTheCachesAndTriesAgain() throws {
+        let (store, book, index, files) = try makeStoreWithBookFiles()
+        let file = files[0], cache = files[1]
+        var writes = 0
+        store.writeIndexData = { data, url in
+            writes += 1
+            if writes == 1 { throw CocoaError(.fileWriteOutOfSpace) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path), "the caches go first")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the book's file waits for the record")
+            try data.write(to: url, options: .atomic)
+        }
+
+        XCTAssertNoThrow(try store.delete(book))
+
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(store.documents.map(\.id), [])
+        XCTAssertEqual(try idsOnDisk(index), [])
+        for file in files {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "\(file.lastPathComponent) is gone")
+        }
+    }
+
+    /// A delete library.json still can't record fails, saying why, with the
+    /// book and its file as they were, and the shelf never publishes itself
+    /// without the book: the place history's sweep would take its places.
+    func testADeleteTheIndexStillCantRecordKeepsTheBook() throws {
+        let (store, book, index, files) = try makeStoreWithBookFiles()
+        store.writeIndexData = { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        var shelves: [[UUID]] = []
+        let watching = store.$documents.dropFirst().sink { shelves.append($0.map(\.id)) }
+
+        XCTAssertThrowsError(try store.delete(book)) { error in
+            XCTAssertEqual(DeleteFailure(error), .outOfSpace)
+        }
+
+        XCTAssertEqual(store.documents.map(\.id), [book.id], "the book stays")
+        XCTAssertEqual(shelves, [], "no shelf without it was published")
+        XCTAssertEqual(try idsOnDisk(index), [book.id])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[0].path), "the book's file stays")
+        watching.cancel()
+    }
+
+    /// A delete while an unreadable index is kept fails too, and frees
+    /// nothing: no write is tried.
+    func testADeleteWhileTheIndexIsUnreadableFails() throws {
+        let (index, bytes, book) = try writeNewerIndex()
+        let store = DocumentStore(indexURL: index, saveInterval: 60, notifications: NotificationCenter())
+        let cache = DocumentStore.contentCacheURL(for: book.id)
+        try Data("x".utf8).write(to: cache)
+        addTeardownBlock { try? FileManager.default.removeItem(at: cache) }
+
+        XCTAssertThrowsError(try store.delete(book)) { error in
+            XCTAssertEqual(DeleteFailure(error), .libraryUnreadable)
+        }
+
+        XCTAssertEqual(store.documents.map(\.id), [book.id])
+        XCTAssertEqual(try Data(contentsOf: index), bytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    /// A failed Delete's alert is fixed copy, the device named as each
+    /// platform names it.
+    func testADeleteFailureSaysWhyInFixedCopy() {
+        #if os(iOS)
+        XCTAssertEqual(DeleteFailure.outOfSpace.title, "iPhone is out of space.")
+        #else
+        XCTAssertEqual(DeleteFailure.outOfSpace.title, "Your Mac is out of space.")
+        #endif
+        XCTAssertEqual(DeleteFailure.outOfSpace.nextStep, "Free up some space, then delete it again.")
+        XCTAssertEqual(DeleteFailure(POSIXError(.ENOSPC)), .outOfSpace)
+        XCTAssertEqual(DeleteFailure(CocoaError(.fileWriteNoPermission)), .notSaved)
+        XCTAssertEqual(DeleteFailure(LibraryIndexError.unreadable), .libraryUnreadable)
+        for failure in DeleteFailure.allCases {
+            XCTAssertFalse(failure.title.isEmpty)
+            XCTAssertFalse(failure.nextStep.isEmpty)
+        }
     }
 
     // MARK: Rename

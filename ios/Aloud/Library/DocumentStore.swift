@@ -34,6 +34,11 @@ final class DocumentStore: ObservableObject {
     /// would lose every record it couldn't read, and the next launch's
     /// sweep their books' files.
     private(set) var isIndexReadable = true
+    /// How library.json is written: atomically, in place. The unit tests
+    /// swap in a write that fails as a full disk's does.
+    var writeIndexData: (Data, URL) throws -> Void = { data, url in
+        try data.write(to: url, options: .atomic)
+    }
 
     /// `indexURL`, `saveInterval` and `notifications` are for the unit
     /// tests: an index of their own, a short wait, and a private center, so
@@ -511,22 +516,37 @@ final class DocumentStore: ObservableObject {
 
     // MARK: - Mutation
 
-    func delete(_ document: LibraryDocument) {
-        let shelf = documents
-        documents.removeAll { $0.id == document.id }
-        // The files go only once library.json no longer lists the book: a
-        // record the write missed would name files that are gone.
+    /// Removes the book: its record from library.json, then its files. The
+    /// files go only once library.json no longer lists the book: a record
+    /// the write missed would name files that are gone. A write that fails
+    /// (out of space, most likely: the disk a Delete is meant to clear) is
+    /// tried once more after the book's caches go, which frees room and is
+    /// rebuilt if the book stays. Throws, the book and its file as they
+    /// were, when the index still can't record it, and while an unreadable
+    /// one is kept. The shelf publishes only the outcome, so nothing
+    /// watching it (the place history's sweep) acts on a delete that didn't
+    /// happen.
+    func delete(_ document: LibraryDocument) throws {
+        let remaining = documents.filter { $0.id != document.id }
         do {
-            try persistIndex()
+            try persistIndex(remaining)
+        } catch let unreadable as LibraryIndexError {
+            throw unreadable
         } catch {
-            documents = shelf
-            return
+            removeCaches(of: document.id)
+            try persistIndex(remaining)
         }
+        documents = remaining
 
+        try? FileManager.default.removeItem(at: Self.libraryDir.appendingPathComponent(document.fileName))
+        removeCaches(of: document.id)
+    }
+
+    /// The book's extracted content and thumbnail, both rebuilt from its file.
+    private func removeCaches(of id: UUID) {
         let fm = FileManager.default
-        try? fm.removeItem(at: Self.libraryDir.appendingPathComponent(document.fileName))
-        try? fm.removeItem(at: Self.contentCacheURL(for: document.id))
-        try? fm.removeItem(at: Self.thumbnailURL(for: document.id))
+        try? fm.removeItem(at: Self.contentCacheURL(for: id))
+        try? fm.removeItem(at: Self.thumbnailURL(for: id))
     }
 
     func rename(_ document: LibraryDocument, to newTitle: String) {
@@ -582,7 +602,7 @@ final class DocumentStore: ObservableObject {
         thumbnailsDir.appendingPathComponent("\(id.uuidString).png")
     }
 
-    private static func contentCacheURL(for id: UUID) -> URL {
+    static func contentCacheURL(for id: UUID) -> URL {
         libraryDir.appendingPathComponent("\(id.uuidString).content.json")
     }
 
@@ -718,15 +738,16 @@ final class DocumentStore: ObservableObject {
         return removed
     }
 
-    /// Writes the shelf to library.json. Throws, writing nothing, while an
-    /// unreadable one is kept (`isIndexReadable`), and when the write fails
-    /// (out of space): every later write carries the whole shelf, so a
-    /// progress tick or flush that fails is repaired by the next that lands.
-    private func persistIndex() throws {
+    /// Writes the shelf (`shelf`, or `documents` when nil) to library.json.
+    /// Throws, writing nothing, while an unreadable one is kept
+    /// (`isIndexReadable`), and when the write fails (out of space): every
+    /// later write carries the whole shelf, so a progress tick or flush that
+    /// fails is repaired by the next that lands.
+    private func persistIndex(_ shelf: [LibraryDocument]? = nil) throws {
         guard isIndexReadable else { throw LibraryIndexError.unreadable }
-        let index = LibraryIndex(version: schemaVersion, documents: documents)
+        let index = LibraryIndex(version: schemaVersion, documents: shelf ?? documents)
         let data = try Self.encoder.encode(index)
-        try data.write(to: indexURL, options: .atomic)
+        try writeIndexData(data, indexURL)
     }
 
     /// Throttles the atomic index write behind high-frequency updates

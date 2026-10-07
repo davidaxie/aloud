@@ -29,6 +29,8 @@ struct MacLibraryView: View {
     @State private var deleteTarget: LibraryDocument?
     /// The card Delete acts on had keyboard focus when it was asked for.
     @State private var deleteHadFocus = false
+    /// Why the last confirmed Delete didn't happen, for its alert.
+    @State private var deleteFailure: DeleteFailure?
     /// The grid card with keyboard focus, which the arrows move.
     @FocusState private var focusedCard: UUID?
     /// The shelf's scroll view width, scroller excluded; nil until measured.
@@ -118,14 +120,28 @@ struct MacLibraryView: View {
                     let next = Self.focusAfterRemoving(target.id, hero: shelf.hero?.id,
                                                        grid: shelf.grid.map(\.id))
                     let hadFocus = deleteHadFocus
-                    model.deleteDocument(target)
-                    if hadFocus { refocus(next) }
+                    if let failure = model.deleteDocument(target) {
+                        // The book stays, and so does focus on its card;
+                        // the alert says why. The dialog's own close leaves
+                        // it up.
+                        deleteFailure = failure
+                        router.rootPresentation = .deleteFailed
+                    } else if hadFocus {
+                        refocus(next)
+                    }
                 }
                 deleteTarget = nil
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
             Text("This removes the document and its listening progress.")
+        }
+        // Fixed copy only, as an add's failure (R10).
+        .alert(deleteFailure?.title ?? "", isPresented: presented(.deleteFailed),
+               presenting: deleteFailure) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { failure in
+            Text(failure.nextStep)
         }
     }
 
