@@ -146,7 +146,12 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
                         throw TtsError.voiceUnavailable
                     }
                     let start = Date()
-                    let audio = tts.generate(text: spoken, sid: sid, speed: Float(speed))
+                    // The language rides every call: without it sherpa
+                    // phonemizes every speaker in the model's own en-us.
+                    let config = SherpaOnnxGenerationConfigSwift(
+                        speed: Float(speed), sid: sid,
+                        extra: ["lang": Self.phonemeLanguage(for: voice.lang)])
+                    let audio = tts.generateWithConfig(text: spoken, config: config, callback: nil, arg: nil)
                     // sherpa-onnx returns a NULL audio pointer when it produces
                     // nothing (e.g. text its English frontend can't tokenize,
                     // like a CJK-only line); reading `.samples` would trap.
@@ -193,6 +198,13 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     static func speakingVoiceID(for voiceID: String, blendsLoaded: Bool) -> String {
         guard !blendsLoaded, let blend = KokoroVoiceBlends.blend(forVoiceID: voiceID) else { return voiceID }
         return KokoroVoiceCatalog.voiceIDPrefix + blend.fallbackSpeaker
+    }
+
+    /// The espeak-ng language a voice is phonemized in: British for an
+    /// en-GB speaker ("tomato" with the long a), American for the rest,
+    /// the blends included.
+    static func phonemeLanguage(for lang: String) -> String {
+        lang == "en-GB" ? "en-gb" : "en-us"
     }
 
     /// The exact string Kokoro is given: the display text normalized, with

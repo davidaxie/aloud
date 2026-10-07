@@ -259,7 +259,7 @@ struct ListeningView: View {
     /// once resolved; the iPhone keeps "Built-in fallback".
     private func resolveSystemVoiceName() {
         guard PlatformVoiceSetup.namesResolvedSystemVoice else { return }
-        let name = AVSpeechEngine.resolvedVoiceDisplayName()
+        let name = AVSpeechEngine.resolvedVoiceDisplayName(reading: playback.systemVoiceLanguage)
         if name != systemVoiceName { systemVoiceName = name }
     }
 

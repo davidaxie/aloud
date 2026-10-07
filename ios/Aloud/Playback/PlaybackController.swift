@@ -318,6 +318,9 @@ final class PlaybackController: ObservableObject {
     }
 
     private(set) var content: DocContent?
+    /// The language the System voice reads `content` in, nil for English
+    /// (`AVSpeechEngine.readingLanguage`). Found once per book.
+    private(set) var systemVoiceLanguage: String?
     /// Words before each sentence of `content`, the same sums the reader's
     /// time left counts (`NavigationIndex.wordsBefore`): one entry more than
     /// there are sentences, the last the book's total. Built once per load,
@@ -690,6 +693,7 @@ final class PlaybackController: ObservableObject {
         cache.removeAll()   // clips from the previous document can never replay
         self.document = document
         self.content = content
+        systemVoiceLanguage = AVSpeechEngine.readingLanguage(of: content.sentences.lazy.map(\.text))
         wordsBefore = content.navigationIndex().wordsBefore   // before the cue's progress write
         skippedSentences = []
         consecutiveFailures = 0
@@ -760,6 +764,7 @@ final class PlaybackController: ObservableObject {
         invalidateSchedule()
         document = nil
         content = nil
+        systemVoiceLanguage = nil
         wordsBefore = []
         skippedSentences = []
         sleepStopAfter = nil
@@ -1661,6 +1666,8 @@ final class PlaybackController: ObservableObject {
                                      priority: SynthesisPriority,
                                      token: UInt64) async throws -> SynthesizedAudio {
         var lastError: Error = TtsError.emptyAudio
+        // The System voice reads a book in another language in that language's voice.
+        let voice = AVSpeechEngine.voice(voice, reading: systemVoiceLanguage)
         for _ in 0..<Self.synthesisAttempts {
             guard token == playToken else { throw CancellationError() }
             do {
@@ -2205,9 +2212,10 @@ final class PlaybackController: ObservableObject {
                                                                   nativeSpeed: pace, sentenceID: index)))
         }
         guard !warmUps.isEmpty || replacingWarmUps else { return }
+        let readingVoice = AVSpeechEngine.voice(voice, reading: systemVoiceLanguage)
         // One call: the drop never lands between the new cue's warm-ups.
         Task { [scheduler, warmUps] in
-            await scheduler.prefetch(warmUps, voice: voice, speed: pace, replacingWarmUps: replacingWarmUps)
+            await scheduler.prefetch(warmUps, voice: readingVoice, speed: pace, replacingWarmUps: replacingWarmUps)
         }
     }
 

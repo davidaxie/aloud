@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import NaturalLanguage
 
 /// System-voice engine. Synthesizes with `AVSpeechSynthesizer.write` into mono
 /// Float32 PCM so system and neural voices share one playback path.
@@ -101,12 +102,130 @@ final class AVSpeechEngine: TtsEngine {
 
     private static let bestVoiceCache = BestVoiceCache()
 
-    /// The best voice's identifier and the English default it was ranked
-    /// with, forgotten when a voice is added or removed (System Settings ›
-    /// Spoken Content). A pick ranked across such a change is never kept.
+    // MARK: - A book in another language (L003)
+
+    /// The language the System voice reads a book in, as NLLanguageRecognizer
+    /// names it ("fr", "zh-Hans"): the book's dominant language when that
+    /// isn't English, nil for English or when unsure, which keeps the
+    /// English pick. Sentences are sampled across the whole book, so front
+    /// matter or a quoted line never decides alone.
+    static func readingLanguage<Sentences: RandomAccessCollection>(of sentences: Sentences) -> String?
+    where Sentences.Element == String {
+        guard !sentences.isEmpty else { return nil }
+        let picks = min(sentences.count, 64)
+        let sample = (0..<picks).map { k in
+            String(sentences[sentences.index(sentences.startIndex, offsetBy: k * sentences.count / picks)].prefix(240))
+        }
+        // One look at the whole sample: an English book ends here.
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(sample.joined(separator: "\n"))
+        guard let guess = recognizer.dominantLanguage, guess != .english, guess != .undetermined else { return nil }
+        // Names can sway that look (an English translation full of French
+        // ones reads as French), so each sampled sentence then votes by its
+        // letters, and the language must carry three quarters of them.
+        // Either script of Chinese votes for the other.
+        func base(_ language: NLLanguage?) -> Substring? { language?.rawValue.prefix { $0 != "-" } }
+        var votes = 0, letters = 0
+        for sentence in sample {
+            let weight = sentence.reduce(0) { $0 + ($1.isLetter ? 1 : 0) }
+            guard weight > 0 else { continue }
+            recognizer.reset()
+            recognizer.processString(sentence)
+            letters += weight
+            if base(recognizer.dominantLanguage) == base(guess) { votes += weight }
+        }
+        return Double(votes) >= 0.75 * Double(letters) ? guess.rawValue : nil
+    }
+
+    /// `voice` as playback hands it to synthesis for a book in `language`:
+    /// the System voice carries the book's language, which synthesis
+    /// resolves to that language's best installed voice. Any other voice,
+    /// or no language (an English book), is returned as it is.
+    static func voice(_ voice: TtsVoice, reading language: String?) -> TtsVoice {
+        guard voice.id == systemVoiceID, let language else { return voice }
+        return TtsVoice(id: voice.id, name: voice.name, lang: language, gender: voice.gender,
+                        engine: voice.engine, quality: voice.quality, subtitle: voice.subtitle)
+    }
+
+    /// The dialect a reading language most likely means, by the locale
+    /// data's likely region: "fr" France's, "pt" Brazil's, "zh-Hans"
+    /// mainland Mandarin, "zh-Hant" Taiwan's. The language itself when
+    /// the data names no region.
+    static func preferredDialect(for language: String) -> String {
+        let likely = Locale.Language(identifier: Locale.Language(identifier: language).maximalIdentifier)
+        guard let code = likely.languageCode?.identifier, let region = likely.region?.identifier else {
+            return language
+        }
+        return code + "-" + region
+    }
+
+    /// How well a voice in `voiceLanguage` ("fr-CA") reads `language`
+    /// ("fr"): 2 in its preferred dialect, 1 in the same language, 0 not.
+    static func fluency(_ voiceLanguage: String, reading language: String) -> Int {
+        func base(_ tag: String) -> Substring { tag.lowercased().prefix { $0 != "-" && $0 != "_" } }
+        if voiceLanguage.caseInsensitiveCompare(preferredDialect(for: language)) == .orderedSame { return 2 }
+        return base(voiceLanguage) == base(language) ? 1 : 0
+    }
+
+    /// `ranks(_:above:)` for a book in `language`: its own dialect first,
+    /// then its language, then the usual order.
+    static func ranks(_ lhs: VoiceCandidate, above rhs: VoiceCandidate, reading language: String) -> Bool {
+        let lhsFluency = fluency(lhs.language, reading: language)
+        let rhsFluency = fluency(rhs.language, reading: language)
+        if lhsFluency != rhsFluency { return lhsFluency > rhsFluency }
+        return ranks(lhs, above: rhs)
+    }
+
+    /// The best of `voices` to read `language`; nil when none speaks it,
+    /// and the English pick reads on.
+    static func best<Voice>(_ voices: [Voice], reading language: String,
+                            as candidate: (Voice) -> VoiceCandidate) -> Voice? {
+        voices.filter { fluency(candidate($0).language, reading: language) > 0 }
+            .min { ranks(candidate($0), above: candidate($1), reading: language) }
+    }
+
+    /// The best installed voice for a book in `language`, nil when none
+    /// speaks it.
+    static func bestSystemVoice(reading language: String) -> AVSpeechSynthesisVoice? {
+        let localeDefaultID = AVSpeechSynthesisVoice(language: preferredDialect(for: language))?.identifier
+        return best(AVSpeechSynthesisVoice.speechVoices(), reading: language) {
+            VoiceCandidate($0, localeDefaultID: localeDefaultID)
+        }
+    }
+
+    /// The voice the System voice reads `language` in, ranked once per
+    /// language like the English pick: that language's best installed
+    /// voice, or the English pick when none is installed. Nil, or any
+    /// English, is the English pick itself.
+    static func cachedBestSystemVoice(reading language: String?) -> AVSpeechSynthesisVoice? {
+        guard let language, !language.lowercased().hasPrefix("en") else { return cachedBestSystemVoice() }
+        let defaultID = AVSpeechSynthesisVoice(language: preferredDialect(for: language))?.identifier
+        switch bestVoiceCache.pick(reading: language, rankedWith: defaultID) {
+        case .some(.some(let id)):
+            if let voice = AVSpeechSynthesisVoice(identifier: id) { return voice }
+        case .some(.none):
+            return cachedBestSystemVoice()
+        case .none:
+            break
+        }
+        let generation = bestVoiceCache.generation
+        let best = bestSystemVoice(reading: language)
+        bestVoiceCache.store(best?.identifier, reading: language, rankedWith: defaultID, ifStill: generation)
+        return best ?? cachedBestSystemVoice()
+    }
+
+    /// Each language's best voice ("" the English pick) and the default it
+    /// was ranked with, forgotten when a voice is added or removed (System
+    /// Settings › Spoken Content). A pick ranked across such a change is
+    /// never kept.
     final class BestVoiceCache: @unchecked Sendable {
+        /// A ranking's result: nil when no installed voice reads the language.
+        private struct Entry {
+            let identifier: String?
+            let defaultID: String?
+        }
         private let lock = NSLock()
-        private var stored: (identifier: String, defaultID: String?)?
+        private var stored: [String: Entry] = [:]
         private var changes = 0
         private let center: NotificationCenter
         private var observer: NSObjectProtocol?
@@ -126,24 +245,43 @@ final class AVSpeechEngine: TtsEngine {
         /// Bumped by every change of the installed voices.
         var generation: Int { lock.withLock { changes } }
 
-        /// The kept pick, if it was ranked with `defaultID`.
+        /// The kept English pick, if it was ranked with `defaultID`.
         func identifier(rankedWith defaultID: String?) -> String? {
-            lock.withLock { stored.flatMap { $0.defaultID == defaultID ? $0.identifier : nil } }
+            pick(reading: "", rankedWith: defaultID) ?? nil
         }
 
-        /// Keeps `identifier` unless the voices changed since `generation`
-        /// was read, when the ranking may describe a list that's gone.
+        /// Keeps the English pick unless the voices changed since
+        /// `generation` was read, when the ranking may describe a list
+        /// that's gone. No pick (no voice at all) keeps nothing.
         func store(_ identifier: String?, rankedWith defaultID: String?, ifStill generation: Int) {
             lock.withLock {
                 guard changes == generation else { return }
-                stored = identifier.map { ($0, defaultID) }
+                stored[""] = identifier.map { Entry(identifier: $0, defaultID: defaultID) }
+            }
+        }
+
+        /// The kept pick for `language`, if it was ranked with `defaultID`:
+        /// `.some(nil)` when no installed voice reads it.
+        func pick(reading language: String, rankedWith defaultID: String?) -> String?? {
+            lock.withLock {
+                guard let entry = stored[language], entry.defaultID == defaultID else { return nil }
+                return .some(entry.identifier)
+            }
+        }
+
+        /// Keeps `language`'s pick, none included, as `store` keeps English's.
+        func store(_ identifier: String?, reading language: String, rankedWith defaultID: String?,
+                   ifStill generation: Int) {
+            lock.withLock {
+                guard changes == generation else { return }
+                stored[language] = Entry(identifier: identifier, defaultID: defaultID)
             }
         }
 
         func forget() {
             lock.withLock {
                 changes += 1
-                stored = nil
+                stored = [:]
             }
         }
     }
@@ -153,10 +291,11 @@ final class AVSpeechEngine: TtsEngine {
     /// The voice the System row speaks in right now, as the Mac's row names
     /// it: "Ava (Premium)". Resolved by `bestSystemVoice`, as synthesis
     /// resolves it, so it never names a voice other than the one heard. Nil
-    /// with no installed voice.
-    static func resolvedVoiceDisplayName() -> String? {
+    /// with no installed voice. `language` is the open book's
+    /// (`readingLanguage`), nil for an English one.
+    static func resolvedVoiceDisplayName(reading language: String? = nil) -> String? {
         // The same pick synthesis speaks with, cached or ranked now.
-        cachedBestSystemVoice().map { displayName(of: VoiceCandidate($0, localeDefaultID: nil)) }
+        cachedBestSystemVoice(reading: language).map { displayName(of: VoiceCandidate($0, localeDefaultID: nil)) }
     }
 
     /// A voice's name with its tier, as System Settings lists it: "Ava
@@ -188,13 +327,14 @@ final class AVSpeechEngine: TtsEngine {
         // never reaches a speaker; the PlaybackController mixer is the guarantee.
         utterance.volume = mutesOutput ? 0 : 1
         // The stable "system" id resolves to the best installed voice at
-        // synthesis time; a concrete identifier (legacy pref) still resolves
-        // directly while that voice remains installed.
+        // synthesis time, for the book's language when playback names one
+        // (`voice(_:reading:)`); a concrete identifier (legacy pref) still
+        // resolves directly while that voice remains installed.
         let concrete = voice.id == Self.systemVoiceID
             ? nil : AVSpeechSynthesisVoice(identifier: voice.id)
         utterance.voice = concrete
-            ?? Self.cachedBestSystemVoice()
-            ?? AVSpeechSynthesisVoice(language: voice.lang)
+            ?? Self.cachedBestSystemVoice(reading: voice.lang)
+            ?? AVSpeechSynthesisVoice(language: Self.preferredDialect(for: voice.lang))
 
         let session = WriteSession()
         return try await withTaskCancellationHandler {

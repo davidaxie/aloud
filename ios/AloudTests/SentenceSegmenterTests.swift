@@ -146,6 +146,39 @@ final class SentenceSegmenterTests: XCTestCase {
         XCTAssertEqual(SentenceSegmenter.estimatedSyllables(""), 0)
     }
 
+    /// L013: accented Latin vowels count with the accent off, a diaeresis
+    /// vowel is its own syllable, and only a plain lone final "e" is silent.
+    func testAccentedLatinVowelsCount() {
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("été"), 2)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("café"), 2)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("résumé"), 3)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("naïve"), 2)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("Zoë"), 2)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("fiancée"), 2)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("señor"), 2)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("degree"), 2)   // "-ee" is said
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("tongue"), 1)   // "-gue" is not
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("vague."), 1)
+
+        let tokens = SentenceSegmenter.tokenizeSentence("The résumé lay on the table.")
+        let resume = tokens.first { $0.text == "résumé" }
+        let the = tokens.first { $0.text == "The" }
+        XCTAssertGreaterThan(resume?.weight ?? 0, 2 * (the?.weight ?? 1))
+    }
+
+    /// L013: other scripts weigh what they say, not 1 a word: vowel letters
+    /// in Cyrillic and Greek, one a character in Han, a virama's silenced
+    /// vowel uncounted in Devanagari.
+    func testOtherScriptsCountTheirSyllables() {
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("Здравствуйте"), 3)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("и"), 1)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("Χαίρετε"), 3)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("संयुक्तराष्ट्र"), 5)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("नमस्ते"), 3)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("床前明月光"), 5)
+        XCTAssertEqual(SentenceSegmenter.estimatedSyllables("שלום"), 2)
+    }
+
     /// H040: a number weighs what the voice says for it, so the word
     /// highlight doesn't run ahead of a sentence full of years.
     func testNumberTokensWeighTheirSpokenLength() throws {

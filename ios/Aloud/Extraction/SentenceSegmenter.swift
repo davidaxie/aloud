@@ -415,7 +415,6 @@ enum SentenceSegmenter {
     // Hot-path regexes, built once. Regex literals construct a fresh Regex
     // program on every evaluation, and these run per token (or per sentence)
     // on the playback schedule chain.
-    private static let vowelRunRegex = #/[aeiouy]+/#
     private static let trailingPunctRegex = #/[.,;:!?…—–-]+$/#
     /// Standalone daggers are unspoken footnote markers. Asterisks are
     /// deliberately NOT here: a free-standing "*" is ambiguous — it can be
@@ -427,14 +426,86 @@ enum SentenceSegmenter {
     private static let spaceBeforePunctRegex = #/\s+([,.;:!?…)\]}])/#
 
     /// Rough syllable estimate used to weight relative spoken duration.
+    /// Latin letters count by vowel runs with their accents folded off, a
+    /// diaeresis starting a run of its own; Cyrillic and Greek by their
+    /// vowel runs; Han, kana and Hangul one a character; an Indic letter
+    /// one unless a virama silences its vowel; any other script's letters
+    /// one for every two.
     static func estimatedSyllables(_ word: String) -> Int {
-        let s = word.lowercased().filter { ("a"..."z").contains($0) }
-        guard !s.isEmpty else { return 0 }
-        var count = s.matches(of: vowelRunRegex).count
-        // Discount a silent final "e" but keep "-le" endings; never drop the
-        // only vowel.
-        if count > 1 && s.hasSuffix("e") && !s.hasSuffix("le") { count -= 1 }
+        var latin = ""                 // a-z, accents folded off
+        var latinRuns = 0, alphabetRuns = 0, syllabic = 0, indic = 0, otherLetters = 0
+        var inLatinVowels = false, inAlphabetVowels = false
+        var plainFinalE = false        // the last Latin letter an unaccented "e"
+        var finalEStartsRun = false    // after a consonant, not "-ee", "-ie", "-ue"
+        var letters = 0
+        for ch in word.lowercased() {
+            if let ascii = ch.asciiValue {
+                guard ascii >= 0x61 && ascii <= 0x7A else { continue }   // a-z only
+                let vowel = latinVowels.contains(ch)
+                if vowel && !inLatinVowels { latinRuns += 1 }
+                plainFinalE = ch == "e"
+                finalEStartsRun = !inLatinVowels
+                inLatinVowels = vowel
+                latin.append(ch)
+                letters += 1
+                continue
+            }
+            guard ch.isLetter, let first = ch.unicodeScalars.first else { continue }
+            letters += 1
+            let folded = String(ch).folding(options: .diacriticInsensitive, locale: nil)
+            let diaeresis = String(ch).decomposedStringWithCanonicalMapping.unicodeScalars
+                .contains { $0.value == 0x308 }
+            if (0x00C0...0x024F).contains(first.value) || (0x1E00...0x1EFF).contains(first.value) {
+                // "été", "café": the accent off. "naïve", "Zoë": the
+                // diaeresis vowel is a syllable of its own. A letter no
+                // fold makes a-z ("ß", "æ") stays itself.
+                let base = folded.count == 1 && folded.first?.isASCII == true ? folded.first ?? ch : ch
+                let vowel = latinVowels.contains(base) || "æœø".contains(base)
+                if vowel && (!inLatinVowels || diaeresis) { latinRuns += 1 }
+                plainFinalE = false
+                inLatinVowels = vowel
+                latin.append(base)
+            } else if (0x0370...0x052F).contains(first.value) || (0x1F00...0x1FFF).contains(first.value) {
+                // Greek and Cyrillic. Folding would make "й" a vowel.
+                let key = "йў".contains(ch) ? ch : (folded.first ?? ch)
+                let vowel = alphabetVowels.contains(key)
+                if vowel && (!inAlphabetVowels || diaeresis) { alphabetRuns += 1 }
+                inAlphabetVowels = vowel
+            } else if first.properties.isIdeographic || (0x3040...0x30FF).contains(first.value)
+                        || (0xAC00...0xD7A3).contains(first.value) {
+                syllabic += 1
+            } else if (0x0900...0x0DFF).contains(first.value) {
+                indic += indicSyllables(ch)
+            } else {
+                otherLetters += 1
+            }
+        }
+        guard letters > 0 else { return 0 }
+        // Discount a silent final "e" ("-gue" and "-que" too) but keep "-le"
+        // endings, an accented "é" and an "e" in a longer vowel run
+        // ("degree"); never drop the only vowel.
+        let silentFinalE = plainFinalE && (finalEStartsRun || latin.hasSuffix("gue") || latin.hasSuffix("que"))
+        if latinRuns > 1 && silentFinalE && !latin.hasSuffix("le") { latinRuns -= 1 }
+        let count = latinRuns + alphabetRuns + syllabic + indic + (otherLetters + 1) / 2
         return max(1, count)
+    }
+
+    private static let latinVowels: Set<Character> = ["a", "e", "i", "o", "u", "y"]
+    /// Lowercase Greek (accents folded off) and Cyrillic vowel letters.
+    private static let alphabetVowels: Set<Character> = Set("αεηιουωаеёиоуыэюяіїє")
+
+    /// An Indic grapheme's syllables: each letter carries a vowel unless a
+    /// virama (past any nukta) follows it; vowel signs ride their letter.
+    private static func indicSyllables(_ cluster: Character) -> Int {
+        let scalars = Array(cluster.unicodeScalars)
+        var count = 0
+        for (k, scalar) in scalars.enumerated() where scalar.properties.generalCategory == .otherLetter {
+            var next = k + 1
+            while next < scalars.count, scalars[next].properties.canonicalCombiningClass == .nukta { next += 1 }
+            let silenced = next < scalars.count && scalars[next].properties.canonicalCombiningClass == .virama
+            if !silenced { count += 1 }
+        }
+        return count
     }
 
     /// Extra pause weight from trailing punctuation; multiple marks accumulate.

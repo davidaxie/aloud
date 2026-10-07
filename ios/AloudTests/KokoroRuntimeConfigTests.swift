@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Aloud
 
@@ -172,6 +173,44 @@ final class SystemVoiceCacheTests: XCTestCase {
         XCTAssertNil(cache.identifier(rankedWith: "default"))
     }
 
+    /// L003: each language keeps its own pick beside the English one,
+    /// "none installed" included, and a change of voices forgets them all.
+    func testEachLanguageKeepsItsOwnPick() {
+        let center = NotificationCenter()
+        let cache = AVSpeechEngine.BestVoiceCache(center: center)
+        let thomas = "com.apple.voice.compact.fr-FR.Thomas"
+        cache.store(samantha, rankedWith: "default", ifStill: cache.generation)
+        cache.store(thomas, reading: "fr", rankedWith: "fr default", ifStill: cache.generation)
+        cache.store(nil, reading: "de", rankedWith: nil, ifStill: cache.generation)
+        XCTAssertEqual(cache.identifier(rankedWith: "default"), samantha)
+        XCTAssertEqual(cache.pick(reading: "fr", rankedWith: "fr default"), .some(thomas))
+        XCTAssertEqual(cache.pick(reading: "de", rankedWith: nil), .some(nil), "ranked: no German voice")
+        XCTAssertNil(cache.pick(reading: "fr", rankedWith: "new default"))
+        center.post(name: AVSpeechEngine.installedVoicesDidChange, object: nil)
+        XCTAssertNil(cache.pick(reading: "fr", rankedWith: "fr default"))
+        XCTAssertNil(cache.pick(reading: "de", rankedWith: nil))
+    }
+
+    /// A book in a language no installed voice speaks reads in the English
+    /// pick, exactly as an English book does.
+    func testALanguageWithNoInstalledVoiceReadsInTheEnglishPick() {
+        XCTAssertEqual(AVSpeechEngine.cachedBestSystemVoice(reading: "x-none")?.identifier,
+                       AVSpeechEngine.cachedBestSystemVoice()?.identifier)
+        XCTAssertEqual(AVSpeechEngine.cachedBestSystemVoice(reading: "en-US")?.identifier,
+                       AVSpeechEngine.cachedBestSystemVoice()?.identifier)
+    }
+
+    /// With a voice installed for a book's language, synthesis resolves the
+    /// System voice to it (only listed, never spoken).
+    func testAnInstalledLanguageVoiceReadsItsBook() throws {
+        guard let other = AVSpeechSynthesisVoice.speechVoices().first(where: { !$0.language.hasPrefix("en") }) else {
+            throw XCTSkip("no voice for a language other than English is installed")
+        }
+        let language = String(other.language.prefix { $0 != "-" })
+        let pick = try XCTUnwrap(AVSpeechEngine.cachedBestSystemVoice(reading: language))
+        XCTAssertTrue(pick.language.hasPrefix(language), "\(pick.language) for \(language)")
+    }
+
     /// The System row names the voice synthesis speaks with.
     func testTheRowNamesTheCachedPick() {
         let pick = AVSpeechEngine.cachedBestSystemVoice()
@@ -183,5 +222,43 @@ final class SystemVoiceCacheTests: XCTestCase {
                        AVSpeechEngine.bestSystemVoice()?.identifier)
         XCTAssertEqual(AVSpeechEngine.cachedBestSystemVoice()?.identifier,
                        AVSpeechEngine.bestSystemVoice()?.identifier, "the same from the cache")
+    }
+}
+
+/// L000: every Kokoro sentence names its voice's language, so Emma, the one
+/// British speaker, is phonemized as British English. Kokoro needs the model
+/// to speak, so the choice is tested as a value and the call by its source.
+final class KokoroPhonemeLanguageTests: XCTestCase {
+
+    func testEmmaIsPhonemizedAsBritish() throws {
+        let emma = try XCTUnwrap(KokoroVoiceCatalog.curatedVoices.first { $0.id == "kokoro:bf_emma" })
+        XCTAssertEqual(KokoroSherpaEngine.phonemeLanguage(for: emma.lang), "en-gb")
+    }
+
+    /// The American speakers and the blends (American too) keep en-us,
+    /// what sherpa used for every voice before.
+    func testEveryOtherVoiceIsPhonemizedAsAmerican() {
+        for voice in KokoroVoiceCatalog.curatedVoices where voice.id != "kokoro:bf_emma" {
+            XCTAssertEqual(KokoroSherpaEngine.phonemeLanguage(for: voice.lang), "en-us", voice.id)
+        }
+        for blend in KokoroVoiceBlends.all {
+            let voice = KokoroVoiceCatalog.curatedVoices.first { $0.id == blend.voiceID }
+            XCTAssertEqual(voice.map { KokoroSherpaEngine.phonemeLanguage(for: $0.lang) }, "en-us", blend.voiceID)
+        }
+    }
+
+    /// The sentence call passes the language in its generation config; the
+    /// plain generate(text:sid:speed:) carries none, and sherpa then falls
+    /// back to the model's en-us for every speaker.
+    func testEverySentenceCallNamesTheLanguage() throws {
+        let path = "TTS/KokoroSherpaEngine.swift"
+        let code = try SourceTree.sources(only: [path]).mapValues(SwiftLiterals.code(in:))
+        let source = try XCTUnwrap(code[path])
+        let synthesize = try XCTUnwrap(source.range(of: "speed requested: Double)"))
+        let release = try XCTUnwrap(source.range(of: "func release()"))
+        let body = String(source[synthesize.upperBound..<release.lowerBound])
+        XCTAssertTrue(body.contains("tts.generateWithConfig(text: spoken, config: config"))
+        XCTAssertTrue(body.contains("Self.phonemeLanguage(for: voice.lang)"))
+        XCTAssertFalse(body.contains("tts.generate(text:"), "the plain call drops the language")
     }
 }
