@@ -265,8 +265,11 @@ struct SentenceMatch: Identifiable, Equatable {
 
 extension DocContent {
 
-    /// Case- and diacritic-insensitive comparison used by Contents search.
-    static let searchOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+    /// Case-, diacritic- and width-insensitive comparison used by Contents
+    /// search. The normalizer stores NFKC text, so a fullwidth "，" or "１"
+    /// typed by a Chinese or Japanese keyboard is "," or "1" in the book;
+    /// width folding leaves "½" and "²", which the normalizer keeps, alone.
+    static let searchOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
 
     /// Linear scan over all sentences, in reading order. At most one match per
     /// sentence — the first occurrence. Whitespace-only queries match nothing;

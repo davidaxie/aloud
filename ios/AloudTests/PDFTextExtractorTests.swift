@@ -1,5 +1,7 @@
 import XCTest
 import PDFKit
+import CoreText
+import NaturalLanguage
 @testable import Aloud
 
 final class PDFTextExtractorTests: XCTestCase {
@@ -297,6 +299,195 @@ final class PDFTextExtractorTests: XCTestCase {
         XCTAssertEqual(stitched("「行きましょう。」", "2時に出発した。").count, 2)
         XCTAssertEqual(stitched("我们在公园散步。", "第二天下雨了。").count, 2)
         XCTAssertEqual(stitched("那是在", "1949年的秋天。"), ["那是在 1949年的秋天。"])
+    }
+
+    /// H044: Korean, Arabic, Hebrew, Hindi and Thai sentences that a page
+    /// break cuts are whole again, with a space; one that ends in a full
+    /// stop, "।", "؟" or "۔" stays its own paragraph.
+    func testCaselessScriptSentencesRejoinAcrossPages() {
+        func stitched(_ previous: String, _ next: String) -> [String] {
+            var blocks = [TextBlock(text: previous, page: 1)]
+            PDFTextExtractor.appendPageParagraphs(&blocks, [next], page: 2)
+            return blocks.map(\.text)
+        }
+        XCTAssertEqual(stitched("우리는 오늘", "공원에 갔다."), ["우리는 오늘 공원에 갔다."])
+        XCTAssertEqual(stitched("ذهبنا اليوم إلى", "الحديقة العامة."), ["ذهبنا اليوم إلى الحديقة العامة."])
+        XCTAssertEqual(stitched("הלכנו היום אל", "הפארק הגדול."), ["הלכנו היום אל הפארק הגדול."])
+        XCTAssertEqual(stitched("हम आज", "पार्क गए।"), ["हम आज पार्क गए।"])
+        XCTAssertEqual(stitched("वह बहुत खुश थी", "क्योंकि बारिश हुई।").count, 1, "a trailing vowel sign is looked past")
+        XCTAssertEqual(stitched("เราไปที่", "สวนสาธารณะวันนี้").count, 1)
+
+        XCTAssertEqual(stitched("그는 갔다.", "다음 날 비가 왔다.").count, 2)
+        XCTAssertEqual(stitched("वह घर गया।", "फिर बारिश हुई।").count, 2)
+        XCTAssertEqual(stitched("هل ذهبت؟", "نعم ذهبت.").count, 2)
+        XCTAssertEqual(stitched("یہ کتاب ہے۔", "وہ قلم ہے۔").count, 2)
+        XCTAssertEqual(stitched("He walked home", "공원에 갔다.").count, 2, "a caseless page after a cased one")
+    }
+
+    /// H010: a compound that wraps at its own hyphen keeps it, within a
+    /// page and across a page break; a syllable split is still re-joined.
+    func testCompoundsWrappedAtTheirHyphenKeepIt() throws {
+        if NLEmbedding.wordEmbedding(for: .english) == nil {
+            throw XCTSkip("No built-in English word embedding on this system")
+        }
+        typealias Line = PDFTextExtractor.Line
+        let page = [Line(text: "It was a well-", y: 500, height: 14),
+                    Line(text: "known fact that the self-", y: 482, height: 14),
+                    Line(text: "evident truth was plain to the inter-", y: 464, height: 14),
+                    Line(text: "national council.", y: 446, height: 14)]
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: page),
+                       ["It was a well-known fact that the self-evident truth was plain to the international council."])
+
+        var blocks: [TextBlock] = []
+        PDFTextExtractor.appendPageParagraphs(&blocks, PDFTextExtractor.paragraphs(from: [
+            Line(text: "Then the twenty-", y: 500, height: 14)]), page: 1)
+        PDFTextExtractor.appendPageParagraphs(&blocks, PDFTextExtractor.paragraphs(from: [
+            Line(text: "five men and her mother-in-", y: 700, height: 14),
+            Line(text: "law came to the sitting-", y: 682, height: 14),
+            Line(text: "room.", y: 664, height: 14)]), page: 2)
+        XCTAssertEqual(blocks.map { TextNormalizer.normalize($0.text) },
+                       ["Then the twenty-five men and her mother-in-law came to the sitting-room."])
+    }
+
+    /// H007: a typeset book marks its paragraphs with a first-line indent
+    /// and even leading. Each indent after a finished sentence, or after a
+    /// line that stops short of the justified edge, opens a paragraph; a
+    /// block quote's lines, set in alike and running on, stay together.
+    func testFirstLineIndentsOpenParagraphs() {
+        typealias Line = PDFTextExtractor.Line
+        var y: CGFloat = 600
+        func line(_ text: String, _ minX: CGFloat, _ maxX: CGFloat) -> Line {
+            defer { y -= 12 }
+            return Line(text: text, y: y, height: 12, minX: minX, maxX: maxX)
+        }
+        let page = [
+            line("The rain had stopped by the time Mara reached", 72, 378),
+            line("the station, but the platform was still slick and", 54, 378),
+            line("shining under the lamps, and the rails ran off into", 54, 378),
+            line("the dark.", 54, 110),
+            line("She read the timetable twice, though she knew", 72, 378),
+            line("the last train had gone an hour before, and still", 54, 378),
+            line("she waited. The porter said only this:", 54, 300),
+            line("Nobody waits here for long, and nobody waits", 72, 360),
+            line("for nothing, he told her over his shoulder.", 72, 340),
+            line("\"Yes,\" she said.", 72, 160),
+            line("A dog barked three times somewhere beyond the", 72, 378),
+            line("yard and then thought better of it, and the night", 54, 378),
+            line("went quiet again over the empty platform and", 54, 378),
+            line("the dark line of the rails.", 54, 200),
+        ]
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: page), [
+            "The rain had stopped by the time Mara reached the station, but the platform was still slick and shining under the lamps, and the rails ran off into the dark.",
+            "She read the timetable twice, though she knew the last train had gone an hour before, and still she waited. The porter said only this:",
+            "Nobody waits here for long, and nobody waits for nothing, he told her over his shoulder.",
+            "\"Yes,\" she said.",
+            "A dog barked three times somewhere beyond the yard and then thought better of it, and the night went quiet again over the empty platform and the dark line of the rails.",
+        ])
+        // Lines all at one margin, as before, fold by gaps alone.
+        y = 600
+        let flush = [line("One line of a paragraph that wraps on", 54, 378),
+                     line("to a second line and ends here.", 54, 200),
+                     line("A sentence that starts at the margin.", 54, 220)]
+        XCTAssertEqual(PDFTextExtractor.paragraphs(from: flush).count, 1)
+    }
+
+    /// H007 end to end: a CoreText-typeset trade page (first-line indents,
+    /// justified, no space between paragraphs) reads back with each of its
+    /// paragraphs opening a block, not one block per page.
+    func testIndentedTypesetPDFKeepsItsParagraphs() throws {
+        let openings = ["Amber", "Birch", "Cedar", "Delta", "Ember", "Fjord", "Grove", "Heath", "Inlet", "Juniper"]
+        let sentences = [
+            "the rain had stopped by the time Mara reached the station, but the platform was still slick and shining under the lamps.",
+            "She stood near the timetable and read it twice, though she already knew the last train had gone an hour before.",
+            "A porter wheeled an empty cart past her and nodded without slowing, as if strangers waiting for nothing were common here.",
+            "Somewhere beyond the yard a dog barked three times and then thought better of it.",
+        ]
+        let body = openings.enumerated().map { index, word in
+            "\(word) said that " + (0..<4).map { sentences[($0 + index) % 4] }.joined(separator: " ")
+        }.joined(separator: "\n")
+
+        // An 18 pt first-line indent, no space between paragraphs, justified.
+        let indent: CGFloat = 18, spacing: CGFloat = 0, alignment = CTTextAlignment.justified
+        let style = withUnsafeBytes(of: indent) { indent in
+            withUnsafeBytes(of: spacing) { spacing in
+                withUnsafeBytes(of: alignment) { alignment in
+                    let settings = [
+                        CTParagraphStyleSetting(spec: .firstLineHeadIndent, valueSize: indent.count, value: indent.baseAddress!),
+                        CTParagraphStyleSetting(spec: .paragraphSpacing, valueSize: spacing.count, value: spacing.baseAddress!),
+                        CTParagraphStyleSetting(spec: .alignment, valueSize: alignment.count, value: alignment.baseAddress!),
+                    ]
+                    return CTParagraphStyleCreate(settings, settings.count)
+                }
+            }
+        }
+        let attributed = NSAttributedString(string: body, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Times New Roman" as CFString, 11, nil),
+            NSAttributedString.Key(kCTParagraphStyleAttributeName as String): style,
+        ])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("aloud-test-\(UUID().uuidString).pdf")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        var mediaBox = CGRect(x: 0, y: 0, width: 432, height: 648)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &mediaBox, nil))
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        var start = 0
+        while start < attributed.length {
+            context.beginPDFPage(nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: start, length: 0),
+                                                 CGPath(rect: CGRect(x: 54, y: 54, width: 324, height: 540), transform: nil), nil)
+            CTFrameDraw(frame, context)
+            start += max(1, CTFrameGetVisibleStringRange(frame).length)
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let output = try PDFTextExtractor().extract(url: url)
+        XCTAssertGreaterThan(output.pageCount, 1)
+        let starts = output.blocks.map { $0.text.split(separator: " ").first.map(String.init) ?? "" }
+        for word in openings {
+            XCTAssertTrue(starts.contains(word), "\(word)'s paragraph opens a block; got \(starts)")
+        }
+        XCTAssertLessThanOrEqual(output.blocks.count, openings.count + output.pageCount - 1)
+    }
+
+    /// H047: roman folios counting on at the foot of the front matter go;
+    /// a bare "II" opening a chapter and one-word lines spelled with
+    /// numeral letters ("vivid", "Did", "civil") stay.
+    func testRomanFoliosGoButRomanHeadingsAndWordsStay() {
+        typealias Line = PDFTextExtractor.Line
+        func body(_ text: String, top: CGFloat) -> [Line] {
+            (0..<3).map { Line(text: "\(text) line \(["one", "two", "three"][$0]).", y: top - CGFloat($0) * 18, height: 14) }
+        }
+        let pages: [[Line]] = [
+            body("Preface", top: 700) + [Line(text: "vii", y: 40, height: 14)],
+            body("Preface", top: 700) + [Line(text: "viii", y: 40, height: 14)],
+            body("Preface", top: 700) + [Line(text: "ix", y: 40, height: 14)],
+            [Line(text: "II", y: 640, height: 20)] + body("The river was high that spring", top: 560)
+                + [Line(text: "41", y: 40, height: 14)],
+            [Line(text: "42", y: 760, height: 14),
+             Line(text: "And all the colours of that morning were so", y: 700, height: 14),
+             Line(text: "bright, so sharp, so impossibly", y: 682, height: 14),
+             Line(text: "vivid", y: 664, height: 14)],
+            [Line(text: "Did", y: 700, height: 14),
+             Line(text: "the night remember us at all,", y: 682, height: 14),
+             Line(text: "or only the long road home?", y: 664, height: 14),
+             Line(text: "civil", y: 646, height: 14),
+             Line(text: "44", y: 40, height: 14)],
+        ]
+        let folios = PDFTextExtractor.romanFolioLines(pages)
+        let kept = pages.indices.flatMap {
+            PDFTextExtractor.stripNoise(pages[$0], running: [], romanFolios: folios[$0]).map(\.text)
+        }
+        for noise in ["vii", "viii", "ix", "41", "42", "44"] {
+            XCTAssertFalse(kept.contains(noise), "\(noise) is a folio")
+        }
+        for word in ["II", "vivid", "Did", "civil"] {
+            XCTAssertTrue(kept.contains(word), "\(word) stays")
+        }
+        XCTAssertEqual(PDFTextExtractor.romanValue("xiv"), 14)
+        XCTAssertEqual(PDFTextExtractor.romanValue("MCMXCIX"), 1999)
+        XCTAssertNil(PDFTextExtractor.romanValue("Did"))
+        XCTAssertFalse(PDFTextExtractor.isPageNumberLine("mild"))
+        XCTAssertTrue(PDFTextExtractor.isPageNumberLine("xii"))
     }
 
     // MARK: - Helpers

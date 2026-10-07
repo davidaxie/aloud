@@ -63,6 +63,7 @@ struct PDFTextExtractor {
         // Detect repeating headers/footers: across the whole document, and
         // per page for the ones that run through a chapter or alternate.
         let running = Self.runningHeadersByPage(pageLines)
+        let romanFolios = Self.romanFolioLines(pageLines)
 
         // Pass 2: strip noise, fold into paragraphs, stitch across pages.
         var blocks: [TextBlock] = []
@@ -72,7 +73,7 @@ struct PDFTextExtractor {
             if let header = Self.topHeader(lines, running: running[index]) {
                 pageHeaders[index + 1] = header
             }
-            let cleaned = Self.stripNoise(lines, running: running[index])
+            let cleaned = Self.stripNoise(lines, running: running[index], romanFolios: romanFolios[index])
             let paragraphs = Self.paragraphs(from: cleaned)
             if !paragraphs.isEmpty { pagesWithText += 1 }
             Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1)
@@ -114,6 +115,8 @@ struct PDFTextExtractor {
         let text: String
         let y: CGFloat      // top edge in page space — a LARGER y is HIGHER
         let height: CGFloat // line box height (≈ font size + leading)
+        var minX: CGFloat = 0 // left edge of the first glyph, for first-line indents
+        var maxX: CGFloat = 0 // right edge of the last glyph, for short last lines
     }
 
     // MARK: - Selections → lines
@@ -135,7 +138,9 @@ struct PDFTextExtractor {
             let bounds = lineSelection.bounds(for: page)
             lines.append(Line(text: text,
                               y: bounds.maxY,
-                              height: bounds.height > 0 ? bounds.height : 8))
+                              height: bounds.height > 0 ? bounds.height : 8,
+                              minX: bounds.minX,
+                              maxX: bounds.maxX))
         }
         // Top-to-bottom reading order (multi-column layouts remain a known
         // limitation, as on the web).
@@ -145,19 +150,21 @@ struct PDFTextExtractor {
     // MARK: - Lines → paragraphs
 
     /// Fold a page's lines into paragraphs: a break is a vertical gap
-    /// noticeably (> 1.6x) larger than the page's typical leading. Wrapped
-    /// lines are joined with conservative de-hyphenation, and every folded
-    /// paragraph is normalized so the stitching heuristics see plain ASCII.
+    /// noticeably (> 1.6x) larger than the page's typical leading, or a
+    /// first-line indent (`indentBreaks`). Wrapped lines are joined with
+    /// conservative de-hyphenation, and every folded paragraph is
+    /// normalized so the stitching heuristics see plain ASCII.
     static func paragraphs(from lines: [Line]) -> [String] {
         guard !lines.isEmpty else { return [] }
 
         let typical = typicalGap(lines)
+        let indented = indentBreaks(lines)
 
         var paragraphs: [String] = []
         var buffer = ""
         for (i, line) in lines.enumerated() {
             let gapBefore = i == 0 ? 0 : lines[i - 1].y - line.y
-            let isNewParagraph = i > 0 && gapBefore > typical * 1.6
+            let isNewParagraph = i > 0 && (gapBefore > typical * 1.6 || indented.contains(i))
             if isNewParagraph && !buffer.isEmpty {
                 paragraphs.append(buffer)
                 buffer = ""
@@ -188,18 +195,48 @@ struct PDFTextExtractor {
         return medianGap != 0 ? medianGap : first.height * 1.2
     }
 
-    /// Append a wrapped line, de-hyphenating words broken across the break:
-    /// "inter-" + "national" → "international". Only when a letter precedes the
-    /// hyphen and the next line starts lowercase — ASCII for a normal hyphen
-    /// (as before), any script for a soft hyphen, which only ever marks a
-    /// break inside a word ("Schwarzwäl\u{AD}" + "der").
+    /// The lines that open a paragraph by a first-line indent alone, as a
+    /// typeset book sets them, with even leading and no space between. Only
+    /// on a page where at least half the lines start at one margin: a line
+    /// set in by the page's usual indent (half a line to four lines high)
+    /// after one that ended a sentence or, in justified text, stopped short
+    /// of the right edge. Lines that share the inset and run on (a block
+    /// quote) stay together; a centred heading sits further in.
+    static func indentBreaks(_ lines: [Line]) -> Set<Int> {
+        guard lines.count >= 3 else { return [] }
+        let height = median(lines.map(\.height))
+        let tolerance = max(1.5, height * 0.15)
+        guard let margin = mostCommon(lines.map(\.minX)) else { return [] }
+        let atMargin = lines.filter { abs($0.minX - margin) <= tolerance }.count
+        let insets = lines.map(\.minX).filter { $0 - margin > height * 0.5 && $0 - margin < height * 4 }
+        guard atMargin * 2 >= lines.count, let indent = mostCommon(insets),
+              let right = mostCommon(lines.map(\.maxX)) else { return [] }
+        let justified = lines.filter { abs($0.maxX - right) <= tolerance }.count * 2 >= lines.count
+        func isIndented(_ line: Line) -> Bool { abs(line.minX - indent) <= tolerance }
+
+        var breaks = Set<Int>()
+        for i in lines.indices.dropFirst() where isIndented(lines[i]) {
+            let previous = lines[i - 1]
+            let stopsShort = justified && previous.maxX < right - height && !isIndented(previous)
+            if looksFinished(previous.text) || stopsShort { breaks.insert(i) }
+        }
+        return breaks
+    }
+
+    /// Append a wrapped line, de-hyphenating words broken across the break.
+    /// A soft hyphen only ever marks a break inside a word, so any script's
+    /// "Schwarzwäl\u{AD}" + "der" is joined here. A normal hyphen after an
+    /// ASCII letter, before a lowercase one, is kept with a line break
+    /// ("inter-⏎national"): `TextNormalizer.normalize`, which runs on every
+    /// folded paragraph and stitched block, re-joins a syllable split and
+    /// keeps a compound wrapped at its own hyphen ("well-⏎known").
     static func appendLine(_ buffer: String, _ next: String) -> String {
         let nextTrim = next.replacing(#/^\s+/#, with: "")
-        let hyphenated = buffer.firstMatch(of: #/[A-Za-z]-$/#) != nil
-            && nextTrim.firstMatch(of: #/^[a-z]/#) != nil
-        let softHyphenated = endsInSoftHyphen(buffer) && nextTrim.firstMatch(of: #/^\p{Ll}/#) != nil
-        if hyphenated || softHyphenated {
-            return buffer.replacing(#/[-\u{00AD}]$/#, with: "") + nextTrim
+        if buffer.firstMatch(of: #/[A-Za-z]-$/#) != nil && nextTrim.firstMatch(of: #/^[a-z]/#) != nil {
+            return buffer + "\n" + nextTrim
+        }
+        if endsInSoftHyphen(buffer) && nextTrim.firstMatch(of: #/^\p{Ll}/#) != nil {
+            return buffer.replacing(#/\u{00AD}$/#, with: "") + nextTrim
         }
         let head = buffer.replacing(#/\s+$/#, with: "")
         // Chinese and Japanese put no space between words: a wrap there
@@ -243,13 +280,56 @@ struct PDFTextExtractor {
         return sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
     }
 
+    /// The most frequent value to the nearest point (the smaller on a tie).
+    private static func mostCommon(_ values: [CGFloat]) -> CGFloat? {
+        let counts = Dictionary(values.map { ($0.rounded(), 1) }, uniquingKeysWith: +)
+        return counts.max { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }?.key
+    }
+
     // MARK: - Header / footer / page-number stripping
 
-    /// Purely a page number or roman numeral (running-foot noise).
+    /// Purely a page number: up to four digits or a well-formed roman
+    /// numeral ("xii"; not "Did" or "vivid", spelled with its letters).
     static func isPageNumberLine(_ text: String) -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.wholeMatch(of: #/\d{1,4}/#) != nil
-            || t.wholeMatch(of: #/(?i)[ivxlcdm]{1,7}/#) != nil
+        return t.wholeMatch(of: #/\d{1,4}/#) != nil || ChapterText.isRomanNumeral(t)
+    }
+
+    /// A well-formed roman numeral's value ("xiv" is 14), else nil.
+    static func romanValue(_ text: String) -> Int? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ChapterText.isRomanNumeral(t) else { return nil }
+        let digits = t.uppercased().compactMap { romanDigits[$0] }
+        return digits.indices.reduce(0) { total, i in
+            i + 1 < digits.count && digits[i] < digits[i + 1] ? total - digits[i] : total + digits[i]
+        }
+    }
+
+    private static let romanDigits: [Character: Int] =
+        ["I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000]
+
+    /// Each page's edge lines that are roman folios: a roman numeral with
+    /// another on a page up to two away, at about the same height, that
+    /// counts on by the pages between, as front matter numbers its pages
+    /// ("vii", "viii"). A bare "II" opening a chapter has none, so it stays.
+    static func romanFolioLines(_ pageLines: [[Line]]) -> [Set<Int>] {
+        let numerals = pageLines.map { lines in
+            let n = lines.count
+            return Set([0, 1, n - 2, n - 1]).filter { $0 >= 0 && $0 < n }.compactMap { index in
+                romanValue(lines[index].text).map { (index: index, line: lines[index], value: $0) }
+            }
+        }
+        return numerals.indices.map { page in
+            let nearby = max(0, page - 2)...min(numerals.count - 1, page + 2)
+            return Set(numerals[page].filter { numeral in
+                nearby.contains { other in
+                    other != page && numerals[other].contains {
+                        abs($0.line.y - numeral.line.y) <= max(2, numeral.line.height * 0.25)
+                            && $0.value - numeral.value == other - page
+                    }
+                }
+            }.map(\.index))
+        }
     }
 
     /// Normalize a header/footer candidate so "Page 3" and "Page 4" collapse.
@@ -367,13 +447,16 @@ struct PDFTextExtractor {
     }
 
     /// Drop noise lines near the page edges: repeating headers/footers and
-    /// standalone page numbers. Body lines that merely resemble them survive.
-    static func stripNoise(_ lines: [Line], running: Set<String>) -> [Line] {
+    /// standalone page numbers. Body lines that merely resemble them survive:
+    /// a roman numeral goes only when it is one of the page's
+    /// `romanFolios` (`romanFolioLines`).
+    static func stripNoise(_ lines: [Line], running: Set<String>, romanFolios: Set<Int> = []) -> [Line] {
         let n = lines.count
         return lines.enumerated().compactMap { index, line in
             let nearEdge = index <= 1 || index >= n - 2
             if nearEdge && running.contains(normalizeRunning(line.text)) { return nil }
-            if nearEdge && isPageNumberLine(line.text) { return nil }
+            if nearEdge && isPageNumberLine(line.text)
+                && (romanValue(line.text) == nil || romanFolios.contains(index)) { return nil }
             return line
         }
     }
@@ -382,17 +465,35 @@ struct PDFTextExtractor {
 
     /// True if text ends a sentence (terminal punctuation, ignoring closers),
     /// Chinese and Japanese "。" and "」" included (NFKC has already made
-    /// "！" and "？" plain).
+    /// "！" and "？" plain), and the Devanagari danda "।" and "॥", the
+    /// Arabic "؟" and the Urdu "۔".
     static func looksFinished(_ text: String) -> Bool {
-        text.firstMatch(of: #/[.!?…。]["')\]」』]?\s*$/#) != nil
+        text.firstMatch(of: #/[.!?…。।॥؟۔]["')\]」』]?\s*$/#) != nil
+    }
+
+    /// Korean, Arabic, Hebrew, Devanagari, Thai: a letter of a script with
+    /// no case (Chinese and Japanese aside) on both sides of a page break,
+    /// where the lowercase test can't see a sentence go on either. The
+    /// previous page's trailing vowel signs and marks are looked past.
+    static func continuesCaseless(_ previous: String, _ next: String) -> Bool {
+        let marks: Set<Unicode.GeneralCategory> = [.nonspacingMark, .spacingMark, .enclosingMark]
+        guard let last = previous.unicodeScalars.reversed().first(where: {
+                  !$0.properties.isWhitespace && !marks.contains($0.properties.generalCategory)
+              }),
+              let first = next.unicodeScalars.first else { return false }
+        return isCaselessLetter(last) && isCaselessLetter(first)
+    }
+
+    private static func isCaselessLetter(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.generalCategory == .otherLetter && !isUnspacedCJK(scalar)
     }
 
     /// Stitch a page's paragraphs onto the growing block list, merging the
     /// page's first paragraph onto the previous block when that block clearly
     /// runs on (no terminal punctuation) and this one continues it (starts
     /// lowercase or with a digit, in any script, goes on in Chinese or
-    /// Japanese from Chinese or Japanese, or the previous ended
-    /// mid-hyphenation, normal or soft).
+    /// Japanese from Chinese or Japanese, or in another caseless script from
+    /// the same kind, or the previous ended mid-hyphenation, normal or soft).
     static func appendPageParagraphs(_ blocks: inout [TextBlock],
                                      _ paragraphs: [String],
                                      page: Int) {
@@ -402,6 +503,7 @@ struct PDFTextExtractor {
                !looksFinished(previous.text),
                paragraph.firstMatch(of: #/^[\p{Ll}\p{N}]/#) != nil
                    || continuesUnspacedCJK(previous.text, paragraph)
+                   || continuesCaseless(previous.text, paragraph)
                    || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil
                    || endsInSoftHyphen(previous.text) {
                 blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph),

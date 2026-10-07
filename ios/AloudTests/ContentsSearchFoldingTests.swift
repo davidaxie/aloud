@@ -101,6 +101,36 @@ final class ContentsSearchFoldingTests: XCTestCase {
         XCTAssertEqual(DocContent.searchNeedles(for: "af\u{200C}fair"), ["affair"])
     }
 
+    /// H008: the normalizer stores NFKC text, so a fullwidth comma, colon,
+    /// bracket, digit, letter or halfwidth kana typed by a Chinese or
+    /// Japanese keyboard finds the folded form the reader shows.
+    func testFullwidthQueryMatchesFoldedStoredText() {
+        let cjk = DocContent(
+            title: "Fixture", pageCount: 1,
+            sentences: [
+                Sentence(id: 0, text: "\u{4F60}\u{597D},\u{4E16}\u{754C}", para: 0, page: 1),
+                Sentence(id: 1, text: "\u{4ED6}\u{8BF4}:\"\u{597D}\u{7684}\u{3002}\"", para: 1, page: 1),
+                Sentence(id: 2, text: "(\u{6CE8})\u{8FD9}\u{662F}\u{4E00}\u{672C}\u{4E66}", para: 2, page: 1),
+                Sentence(id: 3, text: "1945\u{5E74}\u{306B}ABC\u{793E}\u{30C6}\u{30B9}\u{30C8}", para: 3, page: 1),
+                Sentence(id: 4, text: "It took 4\u{00BD} days.", para: 4, page: 1),
+            ],
+            paragraphs: [], contentHash: "width")
+        let cases: [(String, Int)] = [
+            ("\u{4F60}\u{597D}\u{FF0C}\u{4E16}\u{754C}", 0),   // 你好，世界
+            ("\u{4ED6}\u{8BF4}\u{FF1A}", 1),                     // 他说：
+            ("\u{FF08}\u{6CE8}\u{FF09}", 2),                     // （注）
+            ("\u{FF11}\u{FF19}\u{FF14}\u{FF15}\u{5E74}", 3),   // １９４５年
+            ("\u{FF21}\u{FF22}\u{FF23}", 3),                     // ＡＢＣ
+            ("\u{FF83}\u{FF7D}\u{FF84}", 3),                     // ﾃｽﾄ
+        ]
+        for (query, id) in cases {
+            XCTAssertEqual(cjk.matches(of: query).map(\.sentenceID), [id], query.debugDescription)
+        }
+        XCTAssertEqual(cjk.matches(of: "\u{FF0C}").first?.matchedText, ",")
+        // The fraction the normalizer keeps is still found as written.
+        XCTAssertEqual(cjk.matches(of: "4\u{00BD}").map(\.sentenceID), [4])
+    }
+
     func testNeedlesForPlainAndDashedQueries() {
         XCTAssertEqual(DocContent.searchNeedles(for: "  whale  "), ["whale"])
         XCTAssertEqual(DocContent.searchNeedles(for: " \u{2019} "), ["'"])
