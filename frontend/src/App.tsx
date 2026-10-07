@@ -7,7 +7,7 @@ import { useCallback, useEffect } from 'react'
 import { getHealth, getVoices } from './lib/api'
 import { guardFileDrops, isPdf } from './lib/dropGuard'
 import { watchEngine } from './lib/engineWatch'
-import { openPdf } from './lib/intake'
+import { cancelPdfIntake, openPdf } from './lib/intake'
 import { loadPdf } from './lib/pdf'
 import { player } from './lib/player'
 import { useStore } from './store'
@@ -82,6 +82,8 @@ export default function App() {
   const handleFile = useCallback((file: File) => openPdf(file, { loadPdf, player }), [])
 
   const handleReset = useCallback(() => {
+    // 'New' while a PDF parses abandons it, so it can't open over what comes next.
+    cancelPdfIntake()
     try {
       player.stop()
     } catch (err) {

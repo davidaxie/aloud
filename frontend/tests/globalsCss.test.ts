@@ -28,3 +28,12 @@ test('F058: skipped sentences and toasts have styles', () => {
   assert.ok(ruleBody('.toast-region'), 'the toast host is placed')
   assert.ok(ruleBody('.toast'), 'the toast is styled')
 })
+
+test('H067: the voice search row shows focus, since the field drops its outline', () => {
+  const field = ruleBody('.popover__search-input')
+  const row = ruleBody('.popover__search:focus-within')
+  assert.ok(field, '.popover__search-input rule exists')
+  assert.match(field.body, /outline:\s*none/)
+  assert.ok(row, '.popover__search:focus-within rule exists')
+  assert.match(row.body, /box-shadow:[^;]*var\(--accent\)/)
+})

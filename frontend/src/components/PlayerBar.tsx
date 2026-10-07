@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
+import { playButtonLabel, positionKeyTarget, positionValueText } from '../lib/controlKeys'
 import { player } from '../lib/player'
 import { useStore } from '../store'
 import type { Doc } from '../types'
@@ -28,6 +29,8 @@ export function PlayerBar({ doc }: PlayerBarProps) {
 
   const isPlaying = status === 'playing'
   const isBuffering = status === 'buffering'
+  // Buffering pauses on a press, so the button is named Pause then (H034).
+  const playButton = playButtonLabel(status)
 
   // Local drag preview so we don't spam the synthesizer while scrubbing.
   const trackRef = useRef<HTMLDivElement>(null)
@@ -70,19 +73,20 @@ export function PlayerBar({ doc }: PlayerBarProps) {
         aria-label="Playback position"
         aria-valuemin={1}
         aria-valuemax={total}
-        aria-valuenow={pos}
+        aria-valuenow={Math.max(1, pos)}
+        aria-valuetext={positionValueText(pos, total, page)}
         tabIndex={0}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowRight') {
-            e.preventDefault()
-            player.next()
-          } else if (e.key === 'ArrowLeft') {
-            e.preventDefault()
-            player.prev()
-          }
+          if (e.metaKey || e.ctrlKey || e.altKey) return
+          // Arrows step a sentence, Page keys a twentieth of the book, Home/End
+          // the ends (H037); playing or paused stays as it was.
+          const target = positionKeyTarget(e.key, currentSentence, total)
+          if (target === null) return
+          e.preventDefault()
+          player.moveTo(target)
         }}
       >
         <div className="player__track-fill" style={{ width: `${fraction * 100}%` }} />
@@ -115,8 +119,9 @@ export function PlayerBar({ doc }: PlayerBarProps) {
             type="button"
             className="play-btn"
             onClick={() => player.toggle()}
-            aria-label={isPlaying ? 'Pause' : 'Play'}
-            title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+            aria-label={playButton.label}
+            aria-busy={playButton.busy}
+            title={playButton.title}
             data-state={status}
           >
             {isBuffering ? (
@@ -127,6 +132,10 @@ export function PlayerBar({ doc }: PlayerBarProps) {
               <PlayIcon size={22} />
             )}
           </button>
+
+          <span className="visually-hidden" role="status" aria-live="polite">
+            {isBuffering ? 'Loading audio' : ''}
+          </span>
 
           <button
             type="button"

@@ -70,3 +70,47 @@ export function tabStopSentence(focused: number | null, current: number, count: 
   const id = focused ?? current
   return id >= 0 && id < count ? id : 0
 }
+
+/** How long auto-scroll holds off after the user scrolls the reader themselves. */
+export const USER_SCROLL_HOLD_MS = 1800
+
+/** Keys the browser scrolls the reader with when no sentence takes them. */
+export function isScrollKey(key: string): boolean {
+  return key === 'PageUp' || key === 'PageDown' || key === 'Home' || key === 'End'
+}
+
+/**
+ * Whether the keyboard user is browsing after `action` on a focused sentence:
+ * ↑/↓, Home and End move focus away from the sentence being read and start
+ * it; Enter and ←/→ bring focus and playback together again and end it.
+ */
+export function browsingAfter(action: SentenceKeyAction | null, browsing: boolean): boolean {
+  switch (action) {
+    case 'next':
+    case 'prev':
+    case 'first':
+    case 'last':
+      return true
+    case 'seek':
+    case 'step-next':
+    case 'step-prev':
+      return false
+    default:
+      return browsing
+  }
+}
+
+/**
+ * Whether a sentence change may scroll the reader to the sentence being read
+ * (H035): not with the option off, not just after the user scrolled (wheel,
+ * touch, scrollbar, Page keys), and not while the keyboard user is browsing,
+ * which would carry the sentence they moved to out of sight.
+ */
+export function autoScrollAllowed(o: {
+  autoScroll: boolean
+  current: number
+  msSinceUserScroll: number
+  browsing: boolean
+}): boolean {
+  return o.autoScroll && o.current >= 0 && !o.browsing && o.msSinceUserScroll >= USER_SCROLL_HOLD_MS
+}

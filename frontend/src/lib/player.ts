@@ -48,6 +48,8 @@ export interface Player {
   prev(): void
   /** Jump to a specific sentence index and play from there. */
   seekTo(index: number): void
+  /** Move to a sentence index, keeping whether playback was running. */
+  moveTo(index: number): void
   /** Change playback rate (0.5–3.0); applied live via playbackRate, no re-synth. */
   setRate(rate: number): void
   /** Change voice by id; re-synthesizes upcoming audio with the new voice. */
@@ -365,6 +367,23 @@ class PlayerImpl implements Player {
     }
   }
 
+  /**
+   * Abort every request still in flight for a sentence outside the window
+   * [i, i + LOOKAHEAD] (H031). The backend serves each lane in order and runs a
+   * job until its client hangs up, so after quick skips or clicks the sentence
+   * landed on would otherwise wait behind every sentence passed over. Finished
+   * clips stay cached for going back.
+   */
+  private dropOutsideWindow(i: number) {
+    for (const [key, entry] of [...this.cache]) {
+      if (entry.url !== null) continue
+      const id = Number(key.slice(key.lastIndexOf('|') + 1))
+      if (id >= i && id <= i + LOOKAHEAD) continue
+      this.cache.delete(key)
+      this.dropResources(entry)
+    }
+  }
+
   /** Prefetch the next LOOKAHEAD sentences so their audio is ready on advance. */
   private prefetchAround(i: number) {
     const n = this.doc?.sentences.length ?? 0
@@ -395,6 +414,7 @@ class PlayerImpl implements Player {
     this.setIndex(i)
     const token = ++this.playToken
 
+    this.dropOutsideWindow(i)
     const entry = this.ensure(i)
     this.prefetchAround(i)
 
@@ -677,10 +697,15 @@ class PlayerImpl implements Player {
       this.windows = []
       this.loadedIndex = -1
       this.setIndex(i) // clears currentWord in the store on sentence change
+      this.dropOutsideWindow(i)
       this.ensure(i).promise.catch(() => {})
       this.prefetchAround(i)
       if (store().status !== 'ready') store().setStatus('paused')
     }
+  }
+
+  moveTo(index: number) {
+    this.jump(index)
   }
 
   seekTo(index: number) {

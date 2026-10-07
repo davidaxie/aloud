@@ -14,6 +14,7 @@ import type { Doc, Paragraph, Sentence } from '../types'
 import { chunkParagraph } from './chunker'
 import { dropStrayJoiners } from './joiners'
 import { bundledCMapReaderFactory } from './pdfCMaps'
+import { withPdfDocument } from './pdfTask'
 import {
   type Block,
   type Line,
@@ -246,10 +247,12 @@ function resolveTitle(infoTitle: unknown, file: File): string {
  *
  * @param file       the user-dropped PDF
  * @param onProgress optional 0..1 progress callback (per page parsed)
+ * @param signal     abandons the parse (rejects with an AbortError)
  */
 export async function loadPdf(
   file: File,
   onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
 ): Promise<Doc> {
   // Copy into a fresh Uint8Array: pdfjs may transfer/detach the buffer.
   let data: Uint8Array
@@ -260,22 +263,37 @@ export async function loadPdf(
   }
   if (data.byteLength === 0) throw new Error('The PDF file is empty.')
 
-  let pdf: pdfjs.PDFDocumentProxy
-  try {
-    pdf = await pdfjs.getDocument({ data, CMapReaderFactory }).promise
-  } catch (err) {
-    // pdfjs throws PasswordException (name) for encrypted files.
-    const name = (err as { name?: string })?.name
-    if (name === 'PasswordException') {
-      throw new Error('This PDF is password-protected. Please remove the password and try again.')
-    }
-    if (name === 'InvalidPDFException') {
-      throw new Error('This file is not a valid PDF or is corrupted.')
-    }
-    const msg = err instanceof Error ? err.message : String(err)
-    throw new Error(`Failed to open the PDF: ${msg}`)
-  }
+  // The task owns a worker holding the file; it is destroyed however the
+  // parse ends, not only when it succeeds (H065).
+  return withPdfDocument(
+    pdfjs.getDocument({ data, CMapReaderFactory }),
+    openError,
+    (pdf) => parseDocument(pdf, file, onProgress, signal),
+    signal,
+  )
+}
 
+/** What the user is told when pdf.js cannot open the file. */
+function openError(err: unknown): Error {
+  // pdfjs throws PasswordException (name) for encrypted files.
+  const name = (err as { name?: string })?.name
+  if (name === 'PasswordException') {
+    return new Error('This PDF is password-protected. Please remove the password and try again.')
+  }
+  if (name === 'InvalidPDFException') {
+    return new Error('This file is not a valid PDF or is corrupted.')
+  }
+  const msg = err instanceof Error ? err.message : String(err)
+  return new Error(`Failed to open the PDF: ${msg}`)
+}
+
+/** Extract, clean and chunk an opened document. The caller destroys it. */
+async function parseDocument(
+  pdf: pdfjs.PDFDocumentProxy,
+  file: File,
+  onProgress: ((progress: number) => void) | undefined,
+  signal: AbortSignal | undefined,
+): Promise<Doc> {
   const pageCount = pdf.numPages
   if (pageCount === 0) throw new Error('The PDF has no pages.')
 
@@ -296,6 +314,7 @@ export async function loadPdf(
   // ── Pass 1: extract lines per page (needed before header detection). ──
   const pageLines: Line[][] = []
   for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+    if (signal?.aborted) throw new DOMException('The PDF parse was abandoned.', 'AbortError')
     const page = await pdf.getPage(pageNum)
     const content = await page.getTextContent()
 
@@ -349,8 +368,6 @@ export async function loadPdf(
     }
     paragraphs.push({ id: paraId, sentenceIds, page: block.page })
   }
-
-  await pdf.destroy() // release the worker document
 
   if (sentences.length === 0) {
     throw new Error(

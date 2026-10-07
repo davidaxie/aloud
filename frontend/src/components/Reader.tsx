@@ -19,7 +19,14 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { player } from '../lib/player'
 import { tokenizeSentence } from '../lib/chunker'
-import { sentenceFocusTarget, sentenceKeyAction, tabStopSentence } from '../lib/readerNav'
+import {
+  autoScrollAllowed,
+  browsingAfter,
+  isScrollKey,
+  sentenceFocusTarget,
+  sentenceKeyAction,
+  tabStopSentence,
+} from '../lib/readerNav'
 import { useStore } from '../store'
 import type { Doc, Paragraph, Sentence } from '../types'
 
@@ -181,6 +188,9 @@ export function Reader({ doc }: ReaderProps) {
   // Timestamp of the last deliberate user scroll — we back off auto-scroll for a
   // short window after it so we never fight someone reading ahead.
   const userScrolledAt = useRef(0)
+  // The keyboard user moved focus off the sentence being read (↑/↓/Home/End);
+  // auto-scroll leaves the view alone until they come back to it.
+  const browsing = useRef(false)
 
   const activePara =
     currentSentence >= 0 ? doc.sentences[currentSentence]?.para ?? -1 : -1
@@ -199,14 +209,19 @@ export function Reader({ doc }: ReaderProps) {
     return byPara
   }, [skippedSentences, doc])
 
-  // Auto-scroll the active sentence to center, unless the user just scrolled or the
-  // auto-scroll option is off (then we never programmatically move the view).
+  // Auto-scroll the active sentence to center, unless the user just scrolled, the
+  // keyboard user is browsing, or the auto-scroll option is off (then we never
+  // programmatically move the view).
   useEffect(() => {
-    if (!autoScroll) return
-    if (currentSentence < 0) return
     const container = scrollRef.current
     if (!container) return
-    if (Date.now() - userScrolledAt.current < 1800) return
+    const allowed = autoScrollAllowed({
+      autoScroll,
+      current: currentSentence,
+      msSinceUserScroll: Date.now() - userScrolledAt.current,
+      browsing: browsing.current,
+    })
+    if (!allowed) return
 
     const el = container.querySelector<HTMLElement>('[data-active="true"]')
     if (!el) return
@@ -220,18 +235,48 @@ export function Reader({ doc }: ReaderProps) {
     })
   }, [currentSentence, autoScroll])
 
-  // Unambiguous user-intent signals (wheel / touch) mark a manual scroll.
+  // Unambiguous user-intent signals mark a manual scroll: wheel, touch, and a
+  // drag on the scrollbar (H035). A press on the reader itself, not its text,
+  // is on its scrollbar; a drag there sends no wheel event, so every scroll
+  // while it is held is the user's.
   useEffect(() => {
     const container = scrollRef.current
     if (!container) return
+    let held = false
     const mark = () => {
       userScrolledAt.current = Date.now()
     }
+    const onDown = (e: PointerEvent) => {
+      if (e.target !== container) return
+      held = true
+      mark()
+    }
+    const onUp = () => {
+      if (!held) return
+      held = false
+      mark()
+    }
+    const onMove = (e: PointerEvent) => {
+      if (held && e.buttons === 0) onUp()
+    }
+    const onScroll = () => {
+      if (held) mark()
+    }
     container.addEventListener('wheel', mark, { passive: true })
     container.addEventListener('touchmove', mark, { passive: true })
+    container.addEventListener('pointerdown', onDown)
+    container.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    window.addEventListener('pointermove', onMove, { passive: true })
     return () => {
       container.removeEventListener('wheel', mark)
       container.removeEventListener('touchmove', mark)
+      container.removeEventListener('pointerdown', onDown)
+      container.removeEventListener('scroll', onScroll)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('pointermove', onMove)
     }
   }, [])
 
@@ -244,8 +289,24 @@ export function Reader({ doc }: ReaderProps) {
         if (sid !== undefined) setFocusedId(Number(sid))
       }}
       onBlur={(e) => {
-        // Leaving the reader hands the Tab stop back to the sentence being read.
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusedId(null)
+        // Leaving the reader hands the Tab stop back to the sentence being read,
+        // and auto-scroll back to following it.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setFocusedId(null)
+          browsing.current = false
+        }
+      }}
+      onKeyDown={(e) => {
+        // Keys a focused sentence took (or let the browser scroll with) decide
+        // whether auto-scroll may move the view next (H035).
+        if (e.metaKey || e.ctrlKey || e.altKey) return
+        if ((e.target as HTMLElement).dataset.sentence === undefined) return
+        browsing.current = browsingAfter(sentenceKeyAction(e.key), browsing.current)
+        if (isScrollKey(e.key)) userScrolledAt.current = Date.now()
+      }}
+      onClick={() => {
+        // A click plays from the sentence clicked: follow playback again.
+        browsing.current = false
       }}
     >
       <article className="reader__col">

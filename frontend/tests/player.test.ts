@@ -16,6 +16,10 @@ let unreadable = new Set<string>()
 let busyPrefetch = false
 /** The fake backend is not running: every /synthesize fails in transport. */
 let backendDown = false
+/** The fake backend never answers: requests stay in flight until aborted. */
+let hangSynth = false
+/** Texts of the /synthesize requests the player aborted while in flight. */
+let abortedTexts: string[] = []
 
 class FakeAudio extends EventTarget {
   preload = ''
@@ -65,6 +69,18 @@ Object.assign(globalThis, {
       const body = JSON.parse(String(init?.body))
       synthBodies.push(body)
       if (backendDown) throw new TypeError('Failed to fetch')
+      if (hangSynth) {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              abortedTexts.push(body.text)
+              reject(new DOMException('aborted', 'AbortError'))
+            },
+            { once: true },
+          )
+        })
+      }
       if (busyPrefetch && body.priority === 'prefetch') {
         return new Response(JSON.stringify({ detail: 'busy', retryable: true }), {
           status: 429,
@@ -112,6 +128,8 @@ beforeEach(() => {
   unreadable = new Set()
   busyPrefetch = false
   backendDown = false
+  hangSynth = false
+  abortedTexts = []
   state().reset()
   player.load(doc)
 })
@@ -255,4 +273,50 @@ test('G016: a healthy probe leaves other errors alone', () => {
   player.engineRecovered()
   assert.match(state().error ?? '', /Could not read/)
   assert.equal(state().status, 'error')
+})
+
+test('H031: a seek drops the requests for the position it leaves', async () => {
+  const ids = Array.from({ length: 40 }, (_, id) => id)
+  player.load({
+    title: 'Long',
+    pageCount: 1,
+    sentences: ids.map((id) => ({ id, text: `Line ${id}.`, para: 0, page: 1 })),
+    paragraphs: [{ id: 0, sentenceIds: ids, page: 1 }],
+  })
+  hangSynth = true
+  try {
+    player.play()
+    await settle()
+    player.seekTo(30)
+    await settle()
+    // Sentence 30 must not wait behind 0 and its look-ahead in the backend queue.
+    assert.deepEqual([...abortedTexts].sort(), ['Line 0.', 'Line 1.', 'Line 2.'])
+
+    abortedTexts = []
+    for (let k = 0; k < 8; k++) player.next()
+    await settle()
+    assert.equal(state().currentSentence, 38)
+    // Every sentence stepped over is dropped; the landing one and its look-ahead stay.
+    assert.deepEqual(
+      [...abortedTexts].sort((a, b) => parseInt(a.slice(5)) - parseInt(b.slice(5))),
+      ['Line 30.', 'Line 31.', 'Line 32.', 'Line 33.', 'Line 34.', 'Line 35.', 'Line 36.', 'Line 37.'],
+    )
+  } finally {
+    player.stop()
+  }
+})
+
+test('H031: a step while paused drops the requests for the sentence it leaves', async () => {
+  hangSynth = true
+  try {
+    player.next() // paused: cues sentence 1 and warms 2 and 3
+    await settle()
+    player.next()
+    player.next()
+    await settle()
+    assert.equal(state().currentSentence, 3)
+    assert.deepEqual([...abortedTexts].sort(), ['Sentence number 1.', 'Sentence number 2.'])
+  } finally {
+    player.stop()
+  }
 })

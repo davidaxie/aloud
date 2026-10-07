@@ -70,15 +70,20 @@ export function OptionsMenu() {
 
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
 
-  // Close on outside click / Escape (mirrors VoicePicker / RateControl).
+  // Close on outside click / Escape (mirrors VoicePicker / RateControl). Escape
+  // from a switch hands focus back to the chip (H066).
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
       if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      const hadFocus = wrapRef.current?.contains(document.activeElement) ?? false
+      setOpen(false)
+      if (hadFocus) triggerRef.current?.focus()
     }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -91,6 +96,7 @@ export function OptionsMenu() {
   return (
     <div className="options-menu" ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="control-chip control-chip--icon"
         onClick={() => setOpen((o) => !o)}

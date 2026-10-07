@@ -25,6 +25,11 @@ test('G015: a dropped PDF is parsed before the open book is closed', () => {
   assert.doesNotMatch(drop, /handleReset\(\)/, 'tearing the book down first loses it when the drop is unreadable')
 })
 
+test('H029: New abandons a PDF that is still parsing', () => {
+  const reset = app.slice(app.indexOf('const handleReset'), app.indexOf('}, [reset])'))
+  assert.match(reset, /cancelPdfIntake\(\)/)
+})
+
 test('G016: a healthy /health answer clears a stale engine-offline banner', () => {
   assert.match(app, /onHealthy: async \(\) => \{[^}]*player\.engineRecovered\(\)/)
 })

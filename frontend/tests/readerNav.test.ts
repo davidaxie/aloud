@@ -1,9 +1,57 @@
 // F066 / F067: the reader's sentences are one roving-tabindex group, and Enter
 // activates a focused sentence. G013: Space and ←/→ stay the transport keys.
+// H035: auto-scroll leaves the view to a keyboard user browsing the sentences
+// and to scrollbar drags and Page keys.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { sentenceFocusTarget, sentenceKeyAction, tabStopSentence } from '../src/lib/readerNav.ts'
+import {
+  autoScrollAllowed,
+  browsingAfter,
+  isScrollKey,
+  sentenceFocusTarget,
+  sentenceKeyAction,
+  tabStopSentence,
+  USER_SCROLL_HOLD_MS,
+} from '../src/lib/readerNav.ts'
+
+test('H035: moving focus with ↑/↓/Home/End starts browsing; Enter and ←/→ end it', () => {
+  for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) {
+    assert.equal(browsingAfter(sentenceKeyAction(key), false), true, key)
+  }
+  for (const key of ['Enter', 'ArrowRight', 'ArrowLeft']) {
+    assert.equal(browsingAfter(sentenceKeyAction(key), true), false, key)
+  }
+  // Space plays or pauses; the sentence the user moved to is still the one in view.
+  assert.equal(browsingAfter(sentenceKeyAction(' '), true), true)
+  assert.equal(browsingAfter(sentenceKeyAction('PageDown'), true), true)
+})
+
+test('H035: no auto-scroll while browsing, however long ago the last scroll was', () => {
+  const base = { autoScroll: true, current: 11, msSinceUserScroll: 60_000, browsing: false }
+  assert.equal(autoScrollAllowed(base), true)
+  assert.equal(autoScrollAllowed({ ...base, browsing: true }), false)
+  assert.equal(autoScrollAllowed({ ...base, msSinceUserScroll: USER_SCROLL_HOLD_MS - 1 }), false)
+  assert.equal(autoScrollAllowed({ ...base, autoScroll: false }), false)
+  assert.equal(autoScrollAllowed({ ...base, current: -1 }), false)
+})
+
+test('H035: Page keys count as the user scrolling', () => {
+  assert.equal(isScrollKey('PageDown'), true)
+  assert.equal(isScrollKey('PageUp'), true)
+  assert.equal(isScrollKey('End'), true)
+  assert.equal(isScrollKey('ArrowRight'), false)
+})
+
+test('H035: the reader tracks browsing and marks scrollbar drags and Page keys', () => {
+  const src = readFileSync(new URL('../src/components/Reader.tsx', import.meta.url), 'utf8')
+  assert.match(src, /browsing: browsing\.current/)
+  assert.match(src, /browsing\.current = browsingAfter\(sentenceKeyAction\(e\.key\)/)
+  assert.match(src, /if \(isScrollKey\(e\.key\)\) userScrolledAt\.current = Date\.now\(\)/)
+  assert.match(src, /addEventListener\('pointerdown', onDown\)/)
+  assert.match(src, /addEventListener\('scroll', onScroll/)
+  assert.doesNotMatch(src, /userScrolledAt\.current < 1800/)
+})
 
 test('F066: Enter activates a focused sentence', () => {
   assert.equal(sentenceKeyAction('Enter'), 'seek')

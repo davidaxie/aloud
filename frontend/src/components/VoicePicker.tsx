@@ -4,6 +4,7 @@
 // and persists via the store.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { listKeyTarget } from '../lib/controlKeys'
 import { player } from '../lib/player'
 import { useStore } from '../store'
 import type { Voice } from '../types'
@@ -73,6 +74,8 @@ export function VoicePicker() {
   const [query, setQuery] = useState('')
   const wrapRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
 
   const selected = useMemo(
     () => voices.find((v) => v.id === voiceId) ?? null,
@@ -110,14 +113,18 @@ export function VoicePicker() {
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [voices, query])
 
-  // Close on outside click / Escape; focus search on open.
+  // Close on outside click / Escape; focus search on open. Escape hands focus
+  // back to the chip, so it is not lost with the popover (H066).
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
       if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      const hadFocus = wrapRef.current?.contains(document.activeElement) ?? false
+      setOpen(false)
+      if (hadFocus) triggerRef.current?.focus()
     }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -133,6 +140,18 @@ export function VoicePicker() {
     player.setVoice(id)
     setOpen(false)
     setQuery('')
+    triggerRef.current?.focus()
+  }
+
+  /** ↓/↑, Home and End move between the voices; ↓ in the search field enters the list. */
+  function onListKey(e: React.KeyboardEvent) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    const options = [...(listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])]
+    const index = options.indexOf(document.activeElement as HTMLElement)
+    const target = listKeyTarget(e.key, index, options.length)
+    if (target === null) return
+    e.preventDefault()
+    options[target]?.focus()
   }
 
   const disabled = voices.length === 0
@@ -140,11 +159,12 @@ export function VoicePicker() {
   return (
     <div className="voice-picker" ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="control-chip"
         onClick={() => !disabled && setOpen((o) => !o)}
         disabled={disabled}
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title="Choose a voice"
       >
@@ -170,10 +190,17 @@ export function VoicePicker() {
               placeholder="Search voices…"
               className="popover__search-input"
               aria-label="Search voices"
+              onKeyDown={(e) => e.key === 'ArrowDown' && onListKey(e)}
             />
           </div>
 
-          <div className="popover__list" role="listbox" aria-label="Available voices">
+          <div
+            ref={listRef}
+            className="popover__list"
+            role="listbox"
+            aria-label="Available voices"
+            onKeyDown={onListKey}
+          >
             {groups.length === 0 && (
               <div className="popover__empty">No voices match “{query}”.</div>
             )}
