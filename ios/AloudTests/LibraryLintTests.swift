@@ -6,6 +6,8 @@ final class LibraryLintTests: XCTestCase {
 
     private static let coverFile = "Library/BookCover.swift"
     private static let libraryFile = "Library/LibraryView.swift"
+    /// Under ios/AloudMac.
+    private static let macLibraryFile = "Library/MacLibraryView.swift"
 
     /// The text of `struct <name>` up to the next top-level declaration.
     private func body(ofStruct name: String, in text: String,
@@ -42,15 +44,21 @@ final class LibraryLintTests: XCTestCase {
 
     /// Rename's Save is off while the title is empty or only spaces: the
     /// store keeps the old title then (`DocumentStore.renamedTitle`), and
-    /// Save closed the alert as if it had renamed the book.
+    /// Save closed the alert as if it had renamed the book. The Mac's Rename
+    /// alert too (H048).
     func testRenameSaveIsOffWithoutATitle() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
-        let save = try XCTUnwrap(text.range(of: "Button(\"Save\")"), "Rename's Save button")
-        let cancel = try XCTUnwrap(text.range(of: "Button(\"Cancel\", role: .cancel) { renameTarget = nil }",
-                                              range: save.upperBound..<text.endIndex), "Rename's Cancel button")
-        XCTAssertTrue(text[save.lowerBound..<cancel.lowerBound]
-                        .contains(".disabled(DocumentStore.renamedTitle(renameText) == nil)"),
-                      "Save should be disabled while the trimmed title is empty")
+        let ios = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let mac = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot,
+                                                       only: [Self.macLibraryFile])[Self.macLibraryFile])
+        for (name, text) in [(Self.libraryFile, ios), (Self.macLibraryFile, mac)] {
+            let save = try XCTUnwrap(text.range(of: "Button(\"Save\")"), "\(name): Rename's Save button")
+            let cancel = try XCTUnwrap(text.range(of: "Button(\"Cancel\", role: .cancel) { renameTarget = nil }",
+                                                  range: save.upperBound..<text.endIndex),
+                                       "\(name): Rename's Cancel button")
+            XCTAssertTrue(text[save.lowerBound..<cancel.lowerBound]
+                            .contains(".disabled(DocumentStore.renamedTitle(renameText) == nil)"),
+                          "\(name): Save should be disabled while the trimmed title is empty")
+        }
     }
 
     /// R20: busy states hold still under Reduce Motion; no system spinner on

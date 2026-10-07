@@ -16,6 +16,22 @@ final class PlayerBarLintTests: XCTestCase {
         }
     }
 
+    /// Both sleep chips speak the time left in words through the one shared
+    /// label (`SleepTimer.chipSpokenLabel`, pinned by SleepTimerTests), never
+    /// the m:ss countdown VoiceOver reads as numbers. The Mac's sleep menu
+    /// still read "28:14, sleep timer" (H051).
+    func testBothSleepChipsSpeakTheSharedLabel() throws {
+        let chip = try XCTUnwrap(try SourceTree.sources(only: ["Reader/SleepChip.swift"])["Reader/SleepChip.swift"])
+        let menu = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot,
+                                                        only: ["Reader/MacSleepMenu.swift"])["Reader/MacSleepMenu.swift"])
+        for (name, text) in [("SleepChip.swift", chip), ("MacSleepMenu.swift", menu)] {
+            XCTAssertTrue(text.contains(".accessibilityLabel(sleepTimer.chipSpokenLabel)"),
+                          "\(name) should label the chip with chipSpokenLabel")
+            XCTAssertFalse(text.contains("\\(sleepTimer.chipText), sleep timer"),
+                           "\(name) should not speak the countdown")
+        }
+    }
+
     /// SwiftUI resets @GestureState before onEnded runs, so a scrub release
     /// that reads `drag` there always falls back to the playhead's chapter:
     /// when the voice crossed a chapter mid-drag, the jump missed the

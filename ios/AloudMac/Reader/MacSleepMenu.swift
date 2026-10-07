@@ -58,7 +58,10 @@ struct MacSleepMenu: View {
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: Theme.Motion.press), value: isHovered)
         .help(MacCommand.sleepTimer.help)
-        .accessibilityLabel(sleepTimer.isArmed ? "\(sleepTimer.chipText), sleep timer" : SleepTimer.Copy.section)
+        // The time left in words ("29 minutes left, sleep timer"), never
+        // the m:ss countdown VoiceOver reads as numbers; one label with the
+        // iPhone chip.
+        .accessibilityLabel(sleepTimer.chipSpokenLabel)
         .accessibilityValue(sleepTimer.isArmed ? "" : "Off")
         .accessibilityInputLabels([Text(SleepTimer.Copy.section)])
         .accessibilityIdentifier("player.sleep")

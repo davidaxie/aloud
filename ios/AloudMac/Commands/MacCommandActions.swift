@@ -239,10 +239,13 @@ struct MacCommandActions {
                                                  stop: playback.stopped)
     }
 
-    /// What Play/Pause would act on: the loaded book, else the Continue
-    /// book as its card shows it.
+    /// What Play/Pause would act on: the loaded book as the bar's circle
+    /// shows it (Try Again while its playback error's stop shows), else the
+    /// Continue book as its card shows it.
     private var toggleStatus: PlayerStatus {
-        if playback.document != nil { return playback.status }
+        if let document = playback.document {
+            return MacPlayerBar.circleStatus(playback.status, stop: playback.stopReason(for: document.id))
+        }
         guard let book = continueBook else { return .idle }
         return ContinuePlayback.effectiveStatus(documentID: book.id, loadedID: playback.document?.id,
                                                 status: playback.status,

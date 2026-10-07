@@ -137,10 +137,9 @@ struct MacClassicsView: View {
     private func row(_ book: BookshelfBook) -> some View {
         let inLibrary = libraryIDs.contains(book.id)
         let adding = importer.addingClassicID == book.id
-        let label = "\(book.title), by \(book.author), "
-            + ListeningEstimate.aboutPhrase(minutes: book.estimatedListeningMinutes)
+        let label = Self.rowLabel(for: book, rate: model.globalRate)
         return Button { listen(to: book) } label: {
-            MacClassicsRow(book: book, inLibrary: inLibrary, adding: adding)
+            MacClassicsRow(book: book, rate: model.globalRate, inLibrary: inLibrary, adding: adding)
         }
         .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
         .focused($focusedRow, equals: book.id)
@@ -152,6 +151,31 @@ struct MacClassicsView: View {
         .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
         .accessibilityHint("Opens and starts reading aloud")
         .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
+    }
+
+    // MARK: Row copy
+
+    /// A book's length at the app-wide speed, as the featured card and
+    /// every Library card show it (R7). The shelves still group at 1×
+    /// (`BookshelfSection`), so a book never changes shelf with the speed.
+    nonisolated static func rowMinutes(of book: BookshelfBook, rate: Double) -> Int {
+        ListeningEstimate.minutes(words: book.words,
+                                  wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate)
+    }
+
+    /// "The Cask of Amontillado, by Edgar Allan Poe, about 7 minutes" at 2×.
+    nonisolated static func rowLabel(for book: BookshelfBook, rate: Double) -> String {
+        "\(book.title), by \(book.author), "
+            + ListeningEstimate.aboutPhrase(minutes: rowMinutes(of: book, rate: rate))
+    }
+
+    /// The row's trailing column: "Adding…", "In library", else the length
+    /// at the app-wide speed ("7 min" at 2×).
+    nonisolated static func rowStatus(for book: BookshelfBook, rate: Double,
+                                      inLibrary: Bool, adding: Bool) -> String {
+        if adding { return "Adding\u{2026}" }
+        if inLibrary { return "In library" }
+        return ListeningEstimate.phrase(minutes: rowMinutes(of: book, rate: rate))
     }
 
     /// The only add path. The importer adds the book if needed (or finds the
@@ -198,6 +222,8 @@ struct MacClassicsView: View {
 /// adds. Words, not a spinner, so it holds still under Reduce Motion.
 private struct MacClassicsRow: View {
     let book: BookshelfBook
+    /// The app-wide speed the length is shown at.
+    let rate: Double
     let inLibrary: Bool
     let adding: Bool
 
@@ -234,9 +260,7 @@ private struct MacClassicsRow: View {
     }
 
     private var status: String {
-        if adding { return "Adding\u{2026}" }
-        if inLibrary { return "In library" }
-        return ListeningEstimate.phrase(minutes: book.estimatedListeningMinutes)
+        MacClassicsView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding)
     }
 }
 

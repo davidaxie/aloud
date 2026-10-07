@@ -132,10 +132,19 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             entry.application?(NSApp, open: urls)
             return
         }
-        let files = urls.filter(\.isFileURL)
+        admitWithoutEntry(urls, router: AppModel.shared.router, intake: MacFileIntake.shared)
+    }
+
+    /// `open`'s fallback. Only files Aloud can add clear the window, as
+    /// `MacRootView.receiveOpened` does: with none, the reader and any
+    /// Rename or Delete stay as they were, rather than the window clearing
+    /// for files the intake then drops. Static, so the tests take the same
+    /// steps.
+    static func admitWithoutEntry(_ urls: [URL], router: LibraryRouter, intake: MacFileIntake) {
+        let files = urls.filter { $0.isFileURL && MacFileIntake.isAddable($0) }
         guard !files.isEmpty else { return }
-        AppModel.shared.router.clearForOpenIn()
-        MacFileIntake.shared.admit(files)
+        router.clearForOpenIn()
+        intake.admit(files)
     }
 }
 

@@ -420,6 +420,36 @@ final class MacImportTests: XCTestCase {
         XCTAssertNil(intake.failure)
     }
 
+    /// The app delegate's fallback (no Open With entry; the UI tests' replay)
+    /// takes the same care: a type Aloud can't add leaves the reader and
+    /// Rename up, where it cleared the window first and the intake then
+    /// dropped the file (H045). An addable file beside it still clears and
+    /// adds.
+    func testTheDelegatesFallbackKeepsTheWindowForAnUnsupportedFile() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let router = LibraryRouter()
+        let reading = UUID()
+        router.path = [.reader(reading)]
+        router.rootPresentation = .rename
+        let (_, intake) = openWithIntake(library: library, router: router) { _ in }
+        let notes = folder.appendingPathComponent("notes.docx")
+        try Data("PK".utf8).write(to: notes)
+
+        MacAppDelegate.admitWithoutEntry([notes], router: router, intake: intake)
+
+        XCTAssertEqual(router.path, [.reader(reading)], "the reader stays open")
+        XCTAssertEqual(router.rootPresentation, .rename, "Rename stays up")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(library.importedNames, [], "nothing is added")
+
+        MacAppDelegate.admitWithoutEntry([notes, try writeText("one.txt", in: folder)],
+                                         router: router, intake: intake)
+        XCTAssertNil(router.rootPresentation, "an addable file clears the window")
+        let added = await waitUntil { library.importedNames == ["one.txt"] }
+        XCTAssertTrue(added, "only the addable file is added")
+    }
+
     /// The same file handed over twice in one turn is one file: added once
     /// and opened, not a batch of two that opens none.
     func testOneFileHandedOverTwiceStillOpens() async throws {

@@ -198,8 +198,23 @@ struct MacPlayerBar: View {
         .accessibilityIdentifier(identifier)
     }
 
+    /// The status the Play circle shows: a playback error's stop keeps the
+    /// retry face for as long as the chapter line offers "tap to try
+    /// again", so a skip or scrub after a failure (which leaves the status
+    /// paused) never pairs that line with a plain "Play, paused" circle.
+    /// The Playback menu's Play/Pause title reads it too. As the iPhone's
+    /// `PlayerBarView.circleStatus`.
+    static func circleStatus(_ status: PlayerStatus, stop: StopReason?) -> PlayerStatus {
+        guard stop == .playbackError else { return status }
+        switch status {
+        case .idle, .paused: return .error
+        case .playing, .buffering, .ended, .error: return status
+        }
+    }
+
     private var playButton: some View {
-        let state = PlayButtonState(status: playback.status,
+        let state = PlayButtonState(status: Self.circleStatus(playback.status,
+                                                              stop: playback.stopReason(for: document.id)),
                                     isPreparingVoice: playback.isPreparingVoice,
                                     reduceMotion: reduceMotion)
         let diameter = chromeScale.playCircleDiameter

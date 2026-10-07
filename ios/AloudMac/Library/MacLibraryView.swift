@@ -100,6 +100,9 @@ struct MacLibraryView: View {
                 if let target = renameTarget { store.rename(target, to: renameText) }
                 renameTarget = nil
             }
+            // An empty title is no rename: Save would close the alert on a
+            // change the store never makes.
+            .disabled(DocumentStore.renamedTitle(renameText) == nil)
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
         .confirmationDialog(

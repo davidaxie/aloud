@@ -55,6 +55,24 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertTrue(paused, "Space paused")
     }
 
+    /// After a playback error, a skip leaves the status paused while the
+    /// chapter line still offers "tap to try again". The menu's Play/Pause
+    /// turned back to Play beside it; it keeps Try Again, as the bar's
+    /// circle does, until the stop clears (H050).
+    func testAPlaybackErrorKeepsTryAgainAfterASkip() async {
+        let (rig, actions) = makeActions(sentences: 40, failing: { _ in true })
+        rig.loadDefault()
+        rig.controller.play()
+        let errored = await rig.waitUntil(5) { rig.controller.status == .error }
+        XCTAssertTrue(errored)
+        XCTAssertEqual(actions.title(for: .playPause), MacMenuCopy.tryAgain)
+
+        XCTAssertTrue(actions.perform(.forward15))
+        XCTAssertEqual(rig.controller.status, .paused, "the skip leaves the status paused")
+        XCTAssertEqual(rig.controller.stopReason(for: rig.document.id), .playbackError, "the error stop stays")
+        XCTAssertEqual(actions.title(for: .playPause), MacMenuCopy.tryAgain)
+    }
+
     func testNothingToPlayDisablesTheTransport() {
         let (_, actions) = makeActions()
         for command: MacCommand in [.playPause, .back15, .forward15, .previousChapter, .nextChapter, .sleepTimer] {
@@ -339,8 +357,9 @@ final class MacCommandActionsTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeActions(sentences: Int = 12) -> (PlaybackTestRig, MacCommandActions) {
-        let rig = PlaybackTestRig(sentences: sentences)
+    private func makeActions(sentences: Int = 12,
+                             failing: (@Sendable (String) -> Bool)? = nil) -> (PlaybackTestRig, MacCommandActions) {
+        let rig = PlaybackTestRig(sentences: sentences, failing: failing)
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("aloud-commands-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
