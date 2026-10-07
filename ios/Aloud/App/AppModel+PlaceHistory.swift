@@ -27,6 +27,16 @@ extension AppModel {
             Self.record(recovered, in: history, shelf: store.documents)
         }
         history.shelfObservation = Self.observeShelf(of: store, in: history)
+        Self.carryPlaces(of: store, in: history)
+    }
+
+    /// A book added again and given a newer extractor's text takes its
+    /// places with it, as it takes its place (`PlaceHistoryStore.carry`),
+    /// before its reader opens.
+    static func carryPlaces(of store: DocumentStore, in history: PlaceHistoryStore) {
+        store.didReplaceContent = { [weak history] id, old, new in
+            await history?.carry(id, from: old, to: new)
+        }
     }
 
     /// Sweeps `history` of the books that leave `store`'s shelf, now and as

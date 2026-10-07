@@ -250,25 +250,37 @@ final class ContinuePlaybackTests: XCTestCase {
         XCTAssertEqual(h.loadedIDs, [h.rig.document.id])
     }
 
-    /// The shelf's Mark as finished goes through `letGo` before the store
-    /// changes: a site that only unloaded the player is how a pending load
-    /// outlived the mark. Delete lets go too, but only once the store has
-    /// removed the book: one library.json can't record (a full disk) keeps
-    /// the book, so it must not stop it playing, drop its stop or close its
-    /// reader, and returns before all three. A source lint, since neither
-    /// site runs without the app.
-    func testMarkAsFinishedLetsGoFirstAndDeleteOnceItHappened() throws {
+    /// The shelf's Mark as finished goes through `letGo`: a site that only
+    /// unloaded the player is how a pending load outlived the mark. It lets
+    /// go only once the store has recorded the mark, as Delete does once the
+    /// store has removed the book: one library.json can't record (a full
+    /// disk, a newer build's file) keeps the book as it was, so it must not
+    /// stop it playing, drop its stop or close its reader, and returns
+    /// before them. Before, Mark as finished let go first, and a failed mark
+    /// left the book unfinished and stopped (K024), on the iPhone and the
+    /// Mac. A source lint, since no site runs without the app.
+    func testMarkAsFinishedAndDeleteLetGoOnceTheStoreChanged() throws {
         let sources = try SourceTree.sources(only: ["Library/LibraryView.swift", "App/AppModel.swift"])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: ["Library/MacLibraryView.swift"])
         let library = try XCTUnwrap(sources["Library/LibraryView.swift"])
+        let macLibrary = try XCTUnwrap(macSources["Library/MacLibraryView.swift"])
         let app = try XCTUnwrap(sources["App/AppModel.swift"])
-        let perform = try XCTUnwrap(Self.slice(of: library, from: "func perform(_ action: DocumentAction",
-                                               to: "\n    }\n"))
-        let markFinished = try XCTUnwrap(Self.slice(of: String(perform), from: "case .markFinished:",
-                                                    to: "case .delete:"))
-        let letGo = try XCTUnwrap(markFinished.range(of: "continuePlayback.letGo(of: document.id"),
-                                  "Mark as finished never lets go")
-        let mark = try XCTUnwrap(markFinished.range(of: "store.markFinished("), "Mark as finished not found")
-        XCTAssertLessThan(letGo.lowerBound, mark.lowerBound, "Mark as finished lets go before the store changes")
+        for (name, view) in [("iPhone", library), ("Mac", macLibrary)] {
+            let perform = try XCTUnwrap(Self.slice(of: view, from: "func perform(_ action: DocumentAction",
+                                                   to: "\n    }\n"), "\(name): no perform")
+            let markFinished = try XCTUnwrap(Self.slice(of: String(perform), from: "case .markFinished:",
+                                                        to: "case .delete:"), "\(name): no Mark as finished")
+            let letGo = try XCTUnwrap(markFinished.range(of: "continuePlayback.letGo(of: document.id"),
+                                      "\(name): Mark as finished never lets go")
+            let mark = try XCTUnwrap(markFinished.range(of: "try store.markFinished("),
+                                     "\(name): Mark as finished not found")
+            let failed = try XCTUnwrap(markFinished.range(of: "showFailure(EditFailure(.markFinished, error))"),
+                                       "\(name): a failed mark never says why")
+            let returned = try XCTUnwrap(markFinished[failed.upperBound...].range(of: "return"),
+                                         "\(name): a failed mark goes on")
+            XCTAssertLessThan(mark.lowerBound, letGo.lowerBound, "\(name): lets go once the mark is written")
+            XCTAssertLessThan(returned.lowerBound, letGo.lowerBound, "\(name): a failed mark returns before letting go")
+        }
 
         let delete = try XCTUnwrap(Self.slice(of: app, from: "func deleteDocument(", to: "\n    }\n"))
         let removal = try XCTUnwrap(delete.range(of: "try documentStore.delete("), "Delete not found")

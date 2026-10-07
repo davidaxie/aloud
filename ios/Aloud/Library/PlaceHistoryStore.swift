@@ -10,8 +10,10 @@ import SwiftUI
 ///
 /// Places belong to the content they index: a book re-extracted under a new
 /// content hash shows none (its saved progress resets to the start the same
-/// way), and its next stop replaces the old list. Books that leave the shelf
-/// are swept (`retain(only:)`).
+/// way), and its next stop replaces the old list. A book added again and
+/// given a newer extractor's text, whose place is carried across, has its
+/// places carried with it (`carry`). Books that leave the shelf are swept
+/// (`retain(only:)`).
 ///
 /// Writes are synchronous and atomic, at each recorded stop: a few an hour,
 /// a few KB, and one may come from willTerminate, where a deferred write
@@ -60,6 +62,39 @@ final class PlaceHistoryStore {
         let places = PlaceHistory.recording(stop, into: existing)
         guard places != existing else { return }
         books[stop.documentID] = BookPlaces(documentID: stop.documentID, contentHash: contentHash, places: places)
+        write()
+    }
+
+    /// A book given a new extraction with its place carried across
+    /// (`DocumentStore.didReplaceContent`): its places in `old` move to the
+    /// sentences their text starts in `new` (`DocumentStore.carriedSentences`,
+    /// off the main actor), under the new hash, in the same order; only one
+    /// whose text isn't found there is dropped. A list for another extraction
+    /// is left as it is; a stop recorded meanwhile under the new hash stays
+    /// on top.
+    func carry(_ documentID: UUID, from old: DocContent, to new: DocContent) async {
+        guard old.contentHash != new.contentHash, let book = books[documentID],
+              book.contentHash == old.contentHash, !book.places.isEmpty else { return }
+        let places = book.places.map { (sentence: $0.sentence, excerpt: $0.excerpt) }
+        let sentences = await Task.detached(priority: .userInitiated) {
+            DocumentStore.carriedSentences(of: places, from: old, to: new)
+        }.value
+        var carried: [PlaceHistoryEntry] = []
+        for (entry, sentence) in zip(book.places, sentences) {
+            guard let sentence else { continue }
+            carried.append(PlaceHistoryEntry(sentence: sentence, stoppedAt: entry.stoppedAt,
+                                             excerpt: PlaceHistory.excerpt(of: new.sentences[sentence].text)))
+        }
+        // As the list is now: forgotten, or recorded to, meanwhile.
+        guard let now = books[documentID] else { return }
+        let newer: [PlaceHistoryEntry]
+        switch now.contentHash {
+        case new.contentHash: newer = now.places
+        case old.contentHash: newer = []
+        default: return
+        }
+        books[documentID] = BookPlaces(documentID: documentID, contentHash: new.contentHash,
+                                       places: Array((newer + carried).prefix(PlaceHistory.limit)))
         write()
     }
 

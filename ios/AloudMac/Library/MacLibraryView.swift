@@ -350,9 +350,10 @@ struct MacLibraryView: View {
             renameText = document.title
             router.rootPresentation = .rename
         case .markFinished:
-            // The player and any Continue load let go first, so no later
-            // progress write or Play undoes it.
-            continuePlayback.letGo(of: document.id, playback: model.playback)
+            // Written first: a mark the store can't record leaves the book
+            // as it was, playing if it was. Then the player and any Continue
+            // load let go, at once, so no later progress write or Play
+            // undoes it.
             let hadFocus = focusedCard == document.id
             do {
                 try store.markFinished(id: document.id)
@@ -361,6 +362,7 @@ struct MacLibraryView: View {
                 showFailure(EditFailure(.markFinished, error))
                 return
             }
+            continuePlayback.letGo(of: document.id, playback: model.playback)
             // A finished Continue card is redrawn as a grid card: focus
             // follows the book there.
             if hadFocus { refocus(document.id) }

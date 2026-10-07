@@ -321,6 +321,157 @@ final class SourceHashDedupeTests: XCTestCase {
         XCTAssertEqual(kept.contentHash, "mojibake", "the old cache is kept")
     }
 
+    // MARK: - Loop 4 re-review (K014, K020, K022, K023)
+
+    /// A store over an index holding `documents`, removed after the test.
+    private func makeStore(holding documents: [LibraryDocument]) throws -> DocumentStore {
+        let index = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-refresh-\(UUID().uuidString).json")
+        let records = try documents.map { try JSONSerialization.jsonObject(with: Self.encoder.encode($0)) }
+        try JSONSerialization.data(withJSONObject: ["version": 2, "documents": records]).write(to: index)
+        addTeardownBlock { try? FileManager.default.removeItem(at: index) }
+        return DocumentStore(indexURL: index, saveInterval: 60, notifications: NotificationCenter())
+    }
+
+    private func cache(of id: UUID) throws -> DocContent {
+        try Self.decoder.decode(DocContent.self, from: Data(contentsOf: DocumentStore.contentCacheURL(for: id)))
+    }
+
+    /// K014: a classic an older build shelved, tapped again on the
+    /// Bookshelf, came back through its gutenbergID link before any refresh,
+    /// so this build's extraction never reached it. Now it gets it from its
+    /// library copy (no bundled file needed), its place carried across, as
+    /// the same file added again does.
+    func testAClassicTappedAgainGetsTheNewExtraction() async throws {
+        let id = UUID()
+        let classic = LibraryDocument(id: id, title: "Nineteen", fileName: "\(id.uuidString).txt",
+                                      addedAt: Date(timeIntervalSince1970: 0), pageCount: 1,
+                                      sentenceCount: olderSentences.count, progressSentence: 2,
+                                      progressFraction: 0.5, contentHash: "older-extractor", kind: .text,
+                                      gutenbergID: 1063)
+        try Data(novel.utf8).write(to: DocumentStore.fileURL(for: classic))
+        try Self.encoder.encode(content(olderSentences, hash: "older-extractor"))
+            .write(to: DocumentStore.contentCacheURL(for: id))
+        let store = try makeStore(holding: [classic])
+        addTeardownBlock { @MainActor in try? store.delete(classic) }
+        let book = BookshelfBook(gutenbergID: 1063, title: "Nineteen", author: "George Orwell", year: nil,
+                                 file: "not-bundled-on-purpose.txt", words: 0)
+
+        let tapped = try await store.addClassic(book)
+
+        XCTAssertEqual(tapped.id, id, "still one book")
+        let live = try XCTUnwrap(store.documents.first { $0.id == id })
+        let cached = try cache(of: id)
+        XCTAssertNotEqual(live.contentHash, "older-extractor", "this build's extraction")
+        XCTAssertEqual(live.contentHash, cached.contentHash)
+        XCTAssertEqual(cached.extractorVersion, DocContent.currentExtractorVersion)
+        let winston = try XCTUnwrap(cached.sentences.firstIndex { $0.text.hasPrefix("Winston") })
+        XCTAssertEqual(live.progressSentence, winston, "the place, carried by its text")
+    }
+
+    /// K020: the refresh gave the book a new content hash, and its place
+    /// history, kept under the old one, vanished from Contents; the next
+    /// stop then wrote over it. Now AppModel's wiring carries the places
+    /// across before the add returns, each to where its text starts now.
+    func testTheSameFileAddedAgainKeepsItsPlaceHistory() async throws {
+        let store = makeStore()
+        let picked = try file(Data(novel.utf8), name: "\(UUID().uuidString)-novel.txt")
+        let added = try await store.importText(title: "Nineteen", from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        try Self.encoder.encode(content(olderSentences, hash: "older-extractor"))
+            .write(to: DocumentStore.contentCacheURL(for: added.id))
+        _ = try await store.content(for: added)
+        store.saveProgress(id: added.id, sentence: 2, fraction: 0.5)
+        let placesURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-refresh-places-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: placesURL) }
+        let stopped = Date(timeIntervalSince1970: 1_790_000_000)
+        let kept = BookPlaces(documentID: added.id, contentHash: "older-extractor", places: [
+            PlaceHistoryEntry(sentence: 2, stoppedAt: stopped, excerpt: olderSentences[2]),
+            PlaceHistoryEntry(sentence: 0, stoppedAt: stopped.addingTimeInterval(-3600), excerpt: olderSentences[0]),
+        ])
+        let records = [try JSONSerialization.jsonObject(with: Self.encoder.encode(kept))]
+        try JSONSerialization.data(withJSONObject: ["version": 1, "books": records]).write(to: placesURL)
+        let history = PlaceHistoryStore(fileURL: placesURL)
+        AppModel.carryPlaces(of: store, in: history)
+
+        _ = try await store.importText(title: "Nineteen", from: picked)
+
+        let live = try XCTUnwrap(store.documents.first { $0.id == added.id })
+        XCTAssertNotEqual(live.contentHash, "older-extractor", "fixture: the book was refreshed")
+        let winston = try XCTUnwrap(try cache(of: added.id).sentences.firstIndex { $0.text.hasPrefix("Winston") })
+        let carried = history.places(for: added.id, contentHash: live.contentHash)
+        XCTAssertEqual(carried.map(\.sentence), [winston, 0], "each where its text starts now")
+        XCTAssertEqual(carried.map(\.stoppedAt), kept.places.map(\.stoppedAt))
+        XCTAssertEqual(PlaceHistoryStore(fileURL: placesURL).places(for: added.id, contentHash: live.contentHash)
+                           .map(\.sentence), [winston, 0], "on disk")
+    }
+
+    /// K022: a chapter backfill that began on a PDF's old cache wrote it
+    /// back over the new one a refresh committed meanwhile, and the
+    /// reconcile after reset the book to the old text, at its start. Now
+    /// the refresh's newer cache stays, and the open gets it.
+    func testAChapterBackfillNeverWritesOverANewerCache() async throws {
+        let store = makeStore()
+        let picked = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-refresh-\(UUID().uuidString).pdf")
+        try FixturePDF.write(pages: [novel], to: picked)
+        addTeardownBlock { try? FileManager.default.removeItem(at: picked) }
+        let added = try await store.importPDF(from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        let current = try await store.content(for: added)
+        XCTAssertGreaterThan(current.sentences.count, 1, "fixture: a place past the start")
+        // As an older build cached it: no chapter map, unstamped. The open
+        // after gives the record its hash (and the cache a chapter map,
+        // taken away again).
+        let older = try Self.encoder.encode(content(current.sentences.map(\.text), hash: "older-extractor"))
+        let cacheURL = DocumentStore.contentCacheURL(for: added.id)
+        try older.write(to: cacheURL)
+        _ = try await store.content(for: added)
+        try older.write(to: cacheURL)
+        store.saveProgress(id: added.id, sentence: 1, fraction: 0.5)
+        // The same file added again, committing while the backfill is out.
+        store.willWriteBackfill = { [store] in
+            store.willWriteBackfill = {}
+            _ = try? await store.importPDF(from: picked)
+        }
+
+        let opened = try await store.content(for: try XCTUnwrap(store.documents.first { $0.id == added.id }))
+
+        let live = try XCTUnwrap(store.documents.first { $0.id == added.id })
+        XCTAssertEqual(live.contentHash, current.contentHash, "the refresh stands")
+        XCTAssertEqual(live.progressSentence, 1, "its carried place too")
+        XCTAssertEqual(opened.contentHash, current.contentHash, "the open gets the newer cache")
+        let cached = try cache(of: added.id)
+        XCTAssertEqual(cached.contentHash, current.contentHash)
+        XCTAssertEqual(cached.extractorVersion, DocContent.currentExtractorVersion)
+    }
+
+    /// K023: a refresh declined because the place isn't in the new text
+    /// left the cache unstamped, so every later add of the same file
+    /// extracted the whole book again only to keep the old one. Now the old
+    /// cache is stamped as it is, and the next add returns at once.
+    func testARefreshDeclinedForGoodIsNotTriedAgain() async throws {
+        let store = makeStore()
+        let picked = try file(Data(novel.utf8), name: "\(UUID().uuidString)-novel.txt")
+        let added = try await store.importText(title: "Nineteen", from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        let old = content(["Ã¤Ã¶Ã¼ ÃŸÃ¤Ã¶ Ã¼Ã¤Ã¶Ã¼.", "Ã¶Ã¼Ã¤ Ã¶Ã¼Ã¤Ã¶ Ã¼Ã¤Ã¶Ã¼Ã¤Ã¶Ã¼ Ã¤Ã¶Ã¼."], hash: "mojibake")
+        try Self.encoder.encode(old).write(to: DocumentStore.contentCacheURL(for: added.id))
+        _ = try await store.content(for: added)
+        store.saveProgress(id: added.id, sentence: 1, fraction: 0.4)
+
+        _ = try await store.importText(title: "Nineteen", from: picked)
+
+        let cached = try cache(of: added.id)
+        XCTAssertEqual(cached.contentHash, "mojibake", "the old text is kept")
+        XCTAssertEqual(cached.sentences.map(\.text), old.sentences.map(\.text))
+        XCTAssertEqual(cached.extractorVersion, DocContent.currentExtractorVersion, "and not tried again")
+        let live = try XCTUnwrap(store.documents.first { $0.id == added.id })
+        XCTAssertEqual(live.contentHash, "mojibake")
+        XCTAssertEqual(live.progressSentence, 1)
+    }
+
     /// F038: a file handed over as a symlink lands in the library as a copy
     /// of the book, a regular file, never a link that points outside the
     /// library (or nowhere, once a relative one is moved).

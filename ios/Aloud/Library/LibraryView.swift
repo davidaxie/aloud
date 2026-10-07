@@ -335,15 +335,18 @@ struct LibraryView: View {
             renameText = document.title
             router.rootPresentation = .rename
         case .markFinished:
-            // The player and any Continue load let go first, so no later
-            // progress write or Play undoes it.
-            continuePlayback.letGo(of: document.id, playback: model.playback)
+            // Written first: a mark the store can't record leaves the book
+            // as it was, playing if it was. Then the player and any Continue
+            // load let go, at once, so no later progress write or Play
+            // undoes it.
             do {
                 try store.markFinished(id: document.id)
-                PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
             } catch {
                 showFailure(EditFailure(.markFinished, error))
+                return
             }
+            continuePlayback.letGo(of: document.id, playback: model.playback)
+            PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
         case .delete:
             deleteTarget = document
             router.rootPresentation = .deleteConfirmation

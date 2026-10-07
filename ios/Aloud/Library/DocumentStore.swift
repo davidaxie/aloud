@@ -44,6 +44,17 @@ final class DocumentStore: ObservableObject {
     /// in a reader, which shows the old text. The app lets the player go of
     /// the book here, so no progress the old text indexes lands after.
     var mayReplaceContent: (UUID) -> Bool = { _ in true }
+    /// Told once a book added again has its new extraction, with the content
+    /// it had and the one it has now, before the add returns: what else
+    /// indexes the old text (its place history) is carried across here, so
+    /// the reader opens on it (`AppModel.carryPlaces`).
+    var didReplaceContent: @MainActor (_ id: UUID, _ old: DocContent, _ new: DocContent) async -> Void = { _, _, _ in }
+    /// Awaited just before a chapter backfill writes its cache
+    /// (`backfillChapters`): the unit tests land a refresh there.
+    var willWriteBackfill: @MainActor () async -> Void = {}
+    /// Bumped by each cache write a chapter backfill under way must not
+    /// undo: a refresh's, or a declined one's stamp.
+    private var cacheWrites: [UUID: Int] = [:]
 
     /// `indexURL`, `saveInterval` and `notifications` are for the unit
     /// tests: an index of their own, a short wait, and a private center, so
@@ -238,12 +249,14 @@ final class DocumentStore: ObservableObject {
 
     /// Adds a bundled classic to the library. Offline; never adds a second
     /// copy. The record already linked by gutenbergID wins (so a renamed
-    /// classic still opens); otherwise the bundled text is imported, and a
-    /// duplicate already on the shelf (same bytes or same text) is linked
-    /// instead of added.
+    /// classic still opens), given this build's extraction when an older
+    /// extractor cached it, as the same file added again is
+    /// (`refreshingExtraction`, from its library copy); otherwise the
+    /// bundled text is imported, and a duplicate already on the shelf (same
+    /// bytes or same text) is linked instead of added.
     func addClassic(_ book: BookshelfBook) async throws -> LibraryDocument {
         if let existing = document(forGutenbergID: book.gutenbergID) {
-            return existing
+            return try await refreshingExtraction(of: existing, progress: nil)
         }
         guard let url = BookshelfCatalog.bundledURL(for: book) else {
             throw DocumentStoreError.bundledBookMissing(book.file)
@@ -408,26 +421,28 @@ final class DocumentStore: ObservableObject {
     /// outline from the stored PDF, the detectors on the cached text) and
     /// saves it into the cache. The text and its hash don't change, so the
     /// reconcile after keeps progress. A book deleted meanwhile keeps no
-    /// cache; two loads at once write the same result. Off the extraction
-    /// pipeline, so opening a book never waits behind an import.
+    /// cache; two loads at once write the same result. A refresh that wrote
+    /// the cache meanwhile (`cacheWrites`) keeps its newer one, which is
+    /// returned instead: the old text written over it would undo the
+    /// refresh, and the reconcile reset its place. Encoded off the main
+    /// actor, written on it, where neither check can go stale before the
+    /// write. Off the extraction pipeline, so opening a book never waits
+    /// behind an import.
     private func backfillChapters(_ cached: DocContent, for document: LibraryDocument) async -> DocContent {
+        let writes = cacheWrites[document.id, default: 0]
         let pdfURL = Self.fileURL(for: document)
-        let content = await Task.detached(priority: .userInitiated) {
-            ExtractionPipeline.addingChapters(to: cached, pdfURL: pdfURL)
-        }.value
-        guard documents.contains(where: { $0.id == document.id }) else { return content }
-        let url = Self.contentCacheURL(for: document.id)
-        await Task.detached(priority: .utility) {
+        let (content, data) = await Task.detached(priority: .userInitiated) { () -> (DocContent, Data?) in
+            let content = ExtractionPipeline.addingChapters(to: cached, pdfURL: pdfURL)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            guard let data = try? encoder.encode(content) else { return }
-            try? data.write(to: url, options: .atomic)
+            return (content, try? encoder.encode(content))
         }.value
-        // Deleted while the cache was written: the write must not bring
-        // the file back (back on the main actor, as delete is).
-        if !documents.contains(where: { $0.id == document.id }) {
-            try? FileManager.default.removeItem(at: url)
+        await willWriteBackfill()
+        guard cacheWrites[document.id, default: 0] == writes else {
+            return Self.readContentCache(for: document.id) ?? content
         }
+        guard let data, documents.contains(where: { $0.id == document.id }) else { return content }
+        try? data.write(to: Self.contentCacheURL(for: document.id), options: .atomic)
         return content
     }
 
@@ -439,9 +454,11 @@ final class DocumentStore: ObservableObject {
     /// place is carried across by its text (`carriedPlace`). A place that
     /// can't be found in the new text, an extraction that fails, or an index
     /// that can't record it keeps the old content and the place as they
-    /// were. Only here, where the user asked for the file again, never on an
-    /// open. The index is written before the cache, and put back if the
-    /// cache can't be: a record and a cache that disagree reset progress.
+    /// were; the first two for good (`keepingOldExtraction`). Only here,
+    /// where the user asked for the file again, never on an open. The index
+    /// is written before the cache, and put back if the cache can't be: a
+    /// record and a cache that disagree reset progress. The book's place
+    /// history is then carried across (`didReplaceContent`).
     private func refreshingExtraction(of document: LibraryDocument,
                                       progress: (@Sendable (Double) -> Void)?) async throws -> LibraryDocument {
         guard isIndexReadable,
@@ -459,6 +476,7 @@ final class DocumentStore: ObservableObject {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            keepingOldExtraction(cached, of: document.id)
             return documents.first { $0.id == document.id } ?? document
         }
         try Task.checkCancellation()
@@ -466,12 +484,17 @@ final class DocumentStore: ObservableObject {
         guard var live = documents.first(where: { $0.id == document.id }) else { return document }
         if fresh.contentHash == cached.contentHash, live.contentHash == cached.contentHash {
             // The fixes didn't change this book's text: stamped, as it is.
+            cacheWrites[document.id, default: 0] += 1
             try? Self.writeContentCache(fresh, for: document.id)
             return live
         }
         // Off the main actor: the whole text of both, for a long book.
         var place = await Self.carriedPlaceOffMain(of: live, from: cached, to: fresh)
-        guard place != nil, mayReplaceContent(document.id),
+        guard place != nil else {
+            keepingOldExtraction(cached, of: document.id)
+            return live
+        }
+        guard mayReplaceContent(document.id),
               let current = documents.first(where: { $0.id == document.id }) else { return live }
         if current.progressSentence != live.progressSentence || current.progressFraction != live.progressFraction {
             // Played on while the place was found (the player has let go now).
@@ -495,13 +518,30 @@ final class DocumentStore: ObservableObject {
         documents[index] = refreshed
         do {
             try persistIndex()
+            cacheWrites[document.id, default: 0] += 1
             try Self.writeContentCache(fresh, for: document.id)
         } catch {
             if let index = documents.firstIndex(where: { $0.id == document.id }) { documents[index] = before }
             try? persistIndex()
             return before
         }
+        await didReplaceContent(document.id, cached, fresh)
         return refreshed
+    }
+
+    /// A refresh declined for a reason the same file added again won't
+    /// change (its new extraction failed, or its place isn't in the new
+    /// text): the old cache is stamped as it is, so later adds don't extract
+    /// the whole book again only to keep it. Read again, so a chapter map a
+    /// backfill gave it meanwhile stays; one deleted or refreshed meanwhile
+    /// is left alone.
+    private func keepingOldExtraction(_ cached: DocContent, of id: UUID) {
+        guard documents.contains(where: { $0.id == id }),
+              let current = Self.readContentCache(for: id),
+              current.contentHash == cached.contentHash,
+              (current.extractorVersion ?? 0) < DocContent.currentExtractorVersion else { return }
+        cacheWrites[id, default: 0] += 1
+        try? Self.writeContentCache(current, for: id)
     }
 
     /// Where `document`'s place in `old` falls in `new`, by text: its
@@ -517,47 +557,73 @@ final class DocumentStore: ObservableObject {
         guard !new.sentences.isEmpty else { return nil }
         if document.progressFraction >= 1 { return (new.sentences.count - 1, 1) }
         if document.progressSentence <= 0 && document.progressFraction <= 0 { return (0, 0) }
-        guard !old.sentences.isEmpty else { return nil }
-        let start = min(document.progressSentence, old.sentences.count - 1)
+        guard let carried = carriedSentences(of: [(document.progressSentence, nil)], from: old, to: new)[0] else {
+            return nil
+        }
+        var wordsBefore = [0]
+        for sentence in new.sentences { wordsBefore.append(wordsBefore[wordsBefore.count - 1] + sentence.wordCount) }
+        let fraction = PlaybackController.positionFraction(of: carried, wordsBefore: wordsBefore,
+                                                           sentenceCount: new.sentences.count)
+        return (carried, fraction)
+    }
 
+    /// Where each of `places` (a sentence of `old`, and the start of its
+    /// text as it was kept, if it was) falls in `new`: the sentence its text
+    /// starts in, found as `carriedPlace` finds a book's place, or else by
+    /// the kept start of its text alone, at the match nearest the same share
+    /// of the way in; nil where neither is found. Both texts' letters are
+    /// worked out once, for every place.
+    nonisolated static func carriedSentences(of places: [(sentence: Int, excerpt: String?)],
+                                             from old: DocContent, to new: DocContent) -> [Int?] {
+        guard !new.sentences.isEmpty else { return places.map { _ in nil } }
         let oldLetters = old.sentences.map { placeLetters($0.text) }
-        let newLetters = new.sentences.map { placeLetters($0.text) }
+        var oldStarts = [0]
+        for letters in oldLetters { oldStarts.append(oldStarts[oldStarts.count - 1] + letters.count) }
+        let oldTotal = oldStarts[oldStarts.count - 1]
         var newText: [UInt16] = []
         var newStarts: [Int] = []
-        for letters in newLetters {
+        for sentence in new.sentences {
             newStarts.append(newText.count)
-            newText += letters
+            newText += placeLetters(sentence.text)
         }
-        let oldTotal = oldLetters.reduce(0) { $0 + $1.count }
-        let oldOffset = oldLetters[..<start].reduce(0) { $0 + $1.count }
-        let expected = oldTotal > 0 ? Double(oldOffset) / Double(oldTotal) * Double(newText.count) : 0
-
-        // The place's sentence first, then the next two, which step past a
-        // running header or page number left in it by an older extractor.
-        for anchor in start..<min(start + 3, old.sentences.count) {
-            var key: [UInt16] = []
-            var next = anchor
-            while key.count < 40, next < old.sentences.count {
-                key += oldLetters[next]
-                next += 1
-            }
-            guard key.count >= 8 || (next == old.sentences.count && !key.isEmpty) else { continue }
-            let skipped = oldLetters[start..<anchor].reduce(0) { $0 + $1.count }
-            guard let match = nearestMatch(of: key, in: newText, to: expected + Double(skipped)) else { continue }
-            let offset = max(match - skipped, 0)
-            // The sentence the place's text starts in.
+        // The sentence the letter at `offset` falls in.
+        func sentence(at offset: Int) -> Int {
             var low = 0, high = newStarts.count - 1
             while low < high {
                 let mid = (low + high + 1) / 2
                 if newStarts[mid] <= offset { low = mid } else { high = mid - 1 }
             }
-            var wordsBefore = [0]
-            for sentence in new.sentences { wordsBefore.append(wordsBefore[wordsBefore.count - 1] + sentence.wordCount) }
-            let fraction = PlaybackController.positionFraction(of: low, wordsBefore: wordsBefore,
-                                                               sentenceCount: new.sentences.count)
-            return (low, fraction)
+            return low
         }
-        return nil
+
+        return places.map { place -> Int? in
+            if !oldLetters.isEmpty {
+                let start = min(max(place.sentence, 0), oldLetters.count - 1)
+                let expected = oldTotal > 0 ? Double(oldStarts[start]) / Double(oldTotal) * Double(newText.count) : 0
+                // The place's sentence first, then the next two, which step
+                // past a running header or page number left in it by an
+                // older extractor.
+                for anchor in start..<min(start + 3, oldLetters.count) {
+                    var key: [UInt16] = []
+                    var next = anchor
+                    while key.count < 40, next < oldLetters.count {
+                        key += oldLetters[next]
+                        next += 1
+                    }
+                    guard key.count >= 8 || (next == oldLetters.count && !key.isEmpty) else { continue }
+                    let skipped = oldStarts[anchor] - oldStarts[start]
+                    guard let match = nearestMatch(of: key, in: newText, to: expected + Double(skipped)) else {
+                        continue
+                    }
+                    return sentence(at: max(match - skipped, 0))
+                }
+            }
+            guard let excerpt = place.excerpt else { return nil }
+            let key = placeLetters(excerpt)
+            guard key.count >= 8 else { return nil }
+            let share = old.sentences.isEmpty ? 0 : Double(max(place.sentence, 0)) / Double(old.sentences.count)
+            return nearestMatch(of: key, in: newText, to: share * Double(newText.count)).map { sentence(at: $0) }
+        }
     }
 
     private nonisolated static func carriedPlaceOffMain(of document: LibraryDocument, from old: DocContent,
@@ -1010,7 +1076,8 @@ final class DocumentStore: ObservableObject {
     }
 
     /// Stamped with this build's extractor (`DocContent.extractorVersion`):
-    /// every cache written here was just extracted.
+    /// every cache written here was just extracted, or kept by a refresh
+    /// that declined it for good (`keepingOldExtraction`).
     private static func writeContentCache(_ content: DocContent, for id: UUID) throws {
         var stamped = content
         stamped.extractorVersion = DocContent.currentExtractorVersion

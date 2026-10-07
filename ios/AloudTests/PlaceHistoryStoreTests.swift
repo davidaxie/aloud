@@ -98,6 +98,60 @@ final class PlaceHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.places(for: book, contentHash: "old"), [], "the old list is gone")
     }
 
+    private func content(_ texts: [String], hash: String) -> DocContent {
+        DocContent(title: "Book", pageCount: 1,
+                   sentences: texts.enumerated().map { Sentence(id: $0.offset, text: $0.element, para: 0, page: 0) },
+                   paragraphs: [Paragraph(id: 0, sentenceIDs: 0..<texts.count, page: 0)],
+                   contentHash: hash)
+    }
+
+    /// K020: a book given a newer extractor's text (its place carried
+    /// across) kept its places under the old hash, so Contents showed none
+    /// and the next stop wrote over them. `carry` moves each to the sentence
+    /// its text starts in now, by its sentence's text or else by its kept
+    /// start, in the same order, under the new hash and on disk. Only one
+    /// found neither way is dropped; another book is left alone.
+    func testCarryMovesThePlacesToTheNewExtraction() async throws {
+        let book = UUID()
+        let other = UUID()
+        let mojibake = "Ã¤Ã¶Ã¼ ÃŸÃ¤Ã¶ Ã¼Ã¤Ã¶Ã¼."
+        let old = content(["It was a bright cold day in April, and the clocks were",
+                           "striking thir- teen.",
+                           "Winston Smith slipped quickly through the glass doors of Victory Man-",
+                           "sions; a swirl of gritty dust entered along with him.",
+                           mojibake], hash: "old")
+        let new = content(["It was a bright cold day in April, and the clocks were striking thirteen.",
+                           "Winston Smith slipped quickly through the glass doors of Victory Mansions.",
+                           "A swirl of gritty dust entered along with him."], hash: "new")
+        let places = [
+            PlaceHistoryEntry(sentence: 2, stoppedAt: stoppedAt, excerpt: nil),
+            // Its sentence's text isn't in the new text; its kept start is.
+            PlaceHistoryEntry(sentence: 4, stoppedAt: stoppedAt.addingTimeInterval(-60),
+                              excerpt: "A swirl of gritty dust entered"),
+            PlaceHistoryEntry(sentence: 4, stoppedAt: stoppedAt.addingTimeInterval(-120), excerpt: mojibake),
+            PlaceHistoryEntry(sentence: 0, stoppedAt: stoppedAt.addingTimeInterval(-180), excerpt: nil),
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let books = [BookPlaces(documentID: book, contentHash: "old", places: places),
+                     BookPlaces(documentID: other, contentHash: "old", places: [places[0]])]
+        let records = try books.map { try JSONSerialization.jsonObject(with: encoder.encode($0)) }
+        try JSONSerialization.data(withJSONObject: ["version": 1, "books": records]).write(to: fileURL)
+        let store = PlaceHistoryStore(fileURL: fileURL)
+
+        await store.carry(book, from: old, to: new)
+
+        let carried = store.places(for: book, contentHash: "new")
+        XCTAssertEqual(carried.map(\.sentence), [1, 2, 0])
+        XCTAssertEqual(carried.map(\.stoppedAt), [places[0], places[1], places[3]].map(\.stoppedAt))
+        XCTAssertEqual(carried.first?.excerpt, PlaceHistory.excerpt(of: new.sentences[1].text),
+                       "kept by the new text, for the next carry")
+        XCTAssertEqual(store.places(for: book, contentHash: "old"), [])
+        XCTAssertEqual(PlaceHistoryStore(fileURL: fileURL).places(for: book, contentHash: "new").map(\.sentence),
+                       [1, 2, 0], "on disk")
+        XCTAssertEqual(store.places(for: other, contentHash: "old"), [places[0]], "another book is left alone")
+    }
+
     func testForgetRemovesTheBook() {
         let kept = UUID(), gone = UUID()
         let store = PlaceHistoryStore(fileURL: fileURL)
