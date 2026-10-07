@@ -52,6 +52,42 @@ final class VoiceHandoffTests: XCTestCase {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
+    /// A natural voice whose every clip waits until `failAll()`, then fails,
+    /// as does every clip asked of it after: a removed model's engine,
+    /// freed while its clip synthesized. Records each text asked.
+    private final class HeldNeuralEngine: TtsEngine, @unchecked Sendable {
+        let voices: [TtsVoice] = [KokoroVoiceCatalog.defaultVoice]
+        private let lock = NSLock()
+        private var held: [CheckedContinuation<Void, Never>] = []
+        private var failing = false
+        private var log: [String] = []
+
+        func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let goesOn: Bool = lock.withLock {
+                    log.append(text)
+                    if failing { return true }
+                    held.append(continuation)
+                    return false
+                }
+                if goesOn { continuation.resume() }
+            }
+            throw TtsError.voiceUnavailable
+        }
+
+        var requestedTexts: [String] { lock.withLock { log } }
+
+        func failAll() {
+            let parked: [CheckedContinuation<Void, Never>] = lock.withLock {
+                failing = true
+                let parked = held
+                held = []
+                return parked
+            }
+            for continuation in parked { continuation.resume() }
+        }
+    }
+
     // MARK: - The splice
 
     func testInstallSwitchNeverBuffersAndLandsOnASentenceStart() async throws {
@@ -302,6 +338,134 @@ final class VoiceHandoffTests: XCTestCase {
         XCTAssertFalse(after.isEmpty, "reading went on")
         XCTAssertTrue(after.allSatisfy { $0.voiceID == PlaybackTestRig.voiceA.id }, "no Michael after the cancel: \(after)")
         XCTAssertEqual(selections, [])
+        rig.controller.pause(rampsOut: false)
+    }
+
+    /// Cancelled with the splice fixed but still ahead of the queue (the
+    /// same turn it was primed): only System clips are on the node, so the
+    /// sentence reading goes on, never cut off and read again.
+    func testCancellingBeforeTheSpliceIsQueuedNeverRestarts() async throws {
+        let neural = FakeNeuralEngine(warm: true)
+        let rig = makeRig(neural)
+        try await startPlaying(rig)
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        XCTAssertEqual(rig.controller.incomingVoice, Self.michael, "primed")
+        rig.clearRecordings()
+        rig.controller.cancelVoiceHandoff()
+
+        XCTAssertNil(rig.controller.incomingVoice)
+        XCTAssertFalse(rig.events.contains(.stopped), "nothing in Michael on the node: no restart")
+        await elapse(1)
+        XCTAssertFalse(rig.events.contains(.stopped), "the sentence reading is never read again from its start")
+        XCTAssertFalse(rig.statuses.contains(.buffering))
+        XCTAssertEqual(rig.controller.status, .playing)
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
+        let queued = Self.scheduled(rig.events)
+        XCTAssertFalse(queued.isEmpty, "reading went on")
+        XCTAssertTrue(queued.allSatisfy { $0.voiceID == Self.systemID }, "the splice is read in System: \(queued)")
+        XCTAssertFalse(rig.announcements.contains("Now reading in Michael"))
+        XCTAssertEqual(selections, [])
+        rig.controller.pause(rampsOut: false)
+    }
+
+    /// The splice fell past the end (the System voice had queued every
+    /// sentence left): cancelling leaves those clips to play out, with no
+    /// restart of the sentence reading, and the end commits nothing.
+    func testCancellingASpliceFixedPastTheEndNeverRestarts() async throws {
+        let neural = FakeNeuralEngine(warm: true)
+        // Three 1 s sentences: the look-ahead queues all of them at once.
+        let rig = makeRig(neural, sentences: 3, clipDuration: 1)
+        rig.loadDefault()
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        let allQueued = await rig.waitUntil(2) {
+            Self.scheduled(rig.events).contains { $0.sentence == 2 }
+        }
+        XCTAssertTrue(allQueued)
+        rig.clearRecordings()
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        XCTAssertEqual(rig.controller.incomingVoice, Self.michael, "fixed past the end")
+
+        rig.controller.cancelVoiceHandoff()
+
+        XCTAssertFalse(rig.events.contains(.stopped), "every clip on the node is System: no restart")
+        let ended = await rig.waitUntil(6) { rig.controller.status == .ended }
+        XCTAssertTrue(ended)
+        XCTAssertFalse(rig.events.contains(.stopped))
+        XCTAssertTrue(Self.scheduled(rig.events).isEmpty, "no sentence is read again: \(Self.scheduled(rig.events))")
+        XCTAssertFalse(rig.statuses.contains(.buffering))
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA, "the end commits nothing")
+        XCTAssertFalse(rig.announcements.contains("Now reading in Michael"))
+        XCTAssertEqual(selections, [])
+    }
+
+    /// Cancelled once a clip in Michael is on the node, past the splice:
+    /// the current sentence reloads in System, so that clip never plays
+    /// under the System chip.
+    func testCancellingAfterTheSpliceIsQueuedRestartsInTheSpeakingVoice() async throws {
+        let neural = FakeNeuralEngine(warm: true)
+        let rig = makeRig(neural)
+        try await startPlaying(rig)
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        let queuedInMichael = await rig.waitUntil(3) {
+            Self.scheduled(rig.events).contains { $0.voiceID == Self.michael.id }
+        }
+        XCTAssertTrue(queuedInMichael)
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA, "queued, not yet playing")
+        let mark = rig.events.count
+        rig.controller.cancelVoiceHandoff()
+
+        let stop = try XCTUnwrap(rig.events[mark...].firstIndex(of: .stopped), "the current sentence reloads")
+        await elapse(1)
+        let after = Self.scheduled(rig.events[(stop + 1)...])
+        XCTAssertFalse(after.isEmpty, "reading went on")
+        XCTAssertTrue(after.allSatisfy { $0.voiceID == Self.systemID }, "no Michael after the cancel: \(after)")
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
+        XCTAssertFalse(rig.announcements.contains("Now reading in Michael"))
+        XCTAssertEqual(selections, [])
+        rig.controller.pause(rampsOut: false)
+    }
+
+    /// The model removed while the top-up waits on the splice's clip in
+    /// Michael (AppModel cancels the switch, then frees the engine, so the
+    /// clip fails): nothing in Michael was on the node, so nothing restarts,
+    /// and that failure is no bad sentence. The System voice reads it, with
+    /// no skip and no notice.
+    func testASwitchDroppedWhileItsClipSynthesizesSkipsNothing() async throws {
+        let held = HeldNeuralEngine()
+        defer { held.failAll() }   // a failed assertion never leaves a clip parked
+        let rig = PlaybackTestRig(sentences: 40, kokoro: FakeNeuralEngine(warm: true),
+                                  extraRoutes: [Self.michael.id: held])
+        try await startPlaying(rig)
+        await elapse(0.1)   // the look-ahead fills: the splice lies past the cue's System warm-ups
+
+        rig.controller.switchVoiceAtSentenceBoundary(to: Self.michael)
+        let asked = await rig.waitUntil(2) { !held.requestedTexts.isEmpty }
+        XCTAssertTrue(asked, "the splice is warmed in Michael")
+        // The first Michael request is the splice (`cuePrefetch(from: splice)`).
+        let splice = try XCTUnwrap(held.requestedTexts.first.flatMap(PlaybackTestRig.sentenceIndex(ofRequest:)))
+        // The last System clip before the splice is reading: the top-up now
+        // waits on the splice's held clip.
+        let reached = await rig.waitUntil(5) { rig.controller.currentSentence >= splice - 1 }
+        XCTAssertTrue(reached)
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
+        let mark = rig.events.count
+
+        rig.controller.cancelVoiceHandoff()   // as AppModel does for a removed model
+        XCTAssertFalse(rig.events[mark...].contains(.stopped), "nothing in Michael on the node: no restart")
+        held.failAll()   // the freed engine can't load the removed model
+
+        let read = await rig.waitUntil(3) {
+            Self.scheduled(rig.events[mark...]).contains { $0.sentence == splice }
+        }
+        XCTAssertTrue(read, "reading went on past the splice")
+        XCTAssertTrue(rig.requestedSentences(rig.engineA).contains(splice),
+                      "the System voice reads the splice sentence, never a beat of silence")
+        XCTAssertNil(rig.controller.notice, "no skipped-sentence notice")
+        XCTAssertFalse(rig.events[mark...].contains(.stopped))
+        XCTAssertEqual(rig.controller.voice, PlaybackTestRig.voiceA)
         rig.controller.pause(rampsOut: false)
     }
 

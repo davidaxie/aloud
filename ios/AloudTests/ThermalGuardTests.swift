@@ -344,8 +344,9 @@ final class ThermalGuardTests: XCTestCase {
 
     /// .serious again while the cool-down's switch back to the natural
     /// voice waits for its splice: heat drops that switch, so no natural
-    /// clip is queued and the System voice reads on. The next cool-down
-    /// tries again.
+    /// clip is queued and the System voice reads on, the sentence it was
+    /// reading never cut off and started again (only System clips were on
+    /// the node). The next cool-down tries again.
     func testReheatingBeforeTheSwitchBackLandsKeepsTheSystemVoice() async throws {
         let neural = FakeNeuralEngine(warm: true)
         let rig = makeRig(neural)
@@ -361,9 +362,12 @@ final class ThermalGuardTests: XCTestCase {
         thermal.thermalStateChanged(.serious)   // same turn: the splice hasn't played
 
         XCTAssertNil(rig.controller.incomingVoice, "heat drops the switch back")
+        XCTAssertFalse(rig.events.contains(.stopped), "nothing in Michael was queued: no restart")
         let landed = await rig.waitUntil(1.5) { rig.controller.voice == Self.michael }
         XCTAssertFalse(landed, "the natural voice never takes over while hot")
         XCTAssertEqual(rig.controller.status, .playing)
+        XCTAssertFalse(rig.events.contains(.stopped), "the sentence reading is never read again from its start")
+        XCTAssertFalse(rig.statuses.contains(.buffering), "the System voice reads on with no gap")
         let queued = Self.scheduled(rig.events)
         XCTAssertFalse(queued.isEmpty)
         XCTAssertTrue(queued.allSatisfy { $0.voiceID == Self.system.id },

@@ -108,8 +108,9 @@ final class ThermalGuard {
     /// cool-down's switch back, an install switch) is the heaviest work of
     /// all, its engine loading or its first clips synthesizing: heating up
     /// drops it, the System voice reads on, and the cool-down brings it back.
-    /// Clips already queued past its splice go too (the current sentence
-    /// reloads in System), so none plays under the System chip.
+    /// Clips already queued past its splice go too (only then does the
+    /// current sentence reload, in System), so none plays under the System
+    /// chip; with none queued yet, the sentence reading goes on uncut.
     private func dropIncomingNaturalVoice() {
         guard playback.voice.engine != .kokoro, playback.incomingVoice?.engine == .kokoro else { return }
         isCooling = true

@@ -1569,6 +1569,10 @@ final class PlaybackController: ObservableObject {
                     continue
                 } catch {
                     guard token == playToken else { return }
+                    // Asked of a switch dropped while it synthesized (a
+                    // removed model's clip): no failure of the voice that
+                    // reads this sentence now, so it asks that voice.
+                    guard clipVoice == voiceForSentence(next) else { continue }
                     // The incoming voice can't read: drop the handoff, and the
                     // current voice reads this sentence and keeps going.
                     if let pending = handoff, clipVoice == pending.voice {
@@ -1928,13 +1932,17 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Drops a pending switch and keeps the voice speaking: a pick of that
-    /// voice, or the incoming voice's model removed (a removal always wins
-    /// over the install switch). Clips already fixed past the splice in the
-    /// incoming voice go too: the current sentence reloads in this one.
+    /// voice, the incoming voice's model removed (a removal always wins
+    /// over the install switch), or heat (R11). Only a clip in the incoming
+    /// voice already on the node makes the current sentence reload in this
+    /// one, so none plays under its chip. With none there yet (the splice
+    /// still ahead of the queue, or past the end of the book) the sentence
+    /// reading goes on: the top-up reads the splice in this voice, since
+    /// `voiceForSentence` no longer names the incoming one.
     func cancelVoiceHandoff() {
         guard let pending = handoff else { return }
         handoff = nil   // first: an invalidate would commit a primed splice
-        if pending.spliceAt != nil, hasActiveSchedule { reloadCurrent() }
+        if let splice = pending.spliceAt, hasActiveSchedule, lastScheduled >= splice { reloadCurrent() }
     }
 
     /// R5 install switch (and R11's thermal fallback): moves to `newVoice`
