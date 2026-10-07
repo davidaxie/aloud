@@ -37,9 +37,18 @@ struct DocContent: Codable {
     /// for content extracted before headers were taken off (they are still
     /// in its text). Not part of `contentHash`.
     var pageHeaders: [Int: String]? = nil
+    /// The extractor that wrote this content, stamped by the library when it
+    /// caches it (`currentExtractorVersion`). nil for a cache written before
+    /// the stamp, which counts as older than any. Not part of `contentHash`.
+    var extractorVersion: Int? = nil
+
+    /// Bump whenever an extractor change alters a book's text: a book added
+    /// again from the same file is then extracted again, its place carried
+    /// across by its text (`DocumentStore`). Never on an open.
+    static let currentExtractorVersion = 1
 
     private enum CodingKeys: String, CodingKey {
-        case title, pageCount, sentences, paragraphs, contentHash, chapterMap, pageHeaders
+        case title, pageCount, sentences, paragraphs, contentHash, chapterMap, pageHeaders, extractorVersion
     }
 }
 
@@ -58,6 +67,7 @@ extension DocContent {
         contentHash = try container.decode(String.self, forKey: .contentHash)
         chapterMap = (try? container.decodeIfPresent(ChapterMap.self, forKey: .chapterMap)) ?? nil
         pageHeaders = (try? container.decodeIfPresent([Int: String].self, forKey: .pageHeaders)) ?? nil
+        extractorVersion = (try? container.decodeIfPresent(Int.self, forKey: .extractorVersion)) ?? nil
     }
 }
 

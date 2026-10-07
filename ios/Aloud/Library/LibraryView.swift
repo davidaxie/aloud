@@ -36,8 +36,9 @@ struct LibraryView: View {
     @State private var renameTarget: LibraryDocument?
     @State private var renameText = ""
     @State private var deleteTarget: LibraryDocument?
-    /// Why the last confirmed Delete didn't happen, for its alert.
-    @State private var deleteFailure: DeleteFailure?
+    /// Why the last Delete, Rename or Mark as finished didn't happen, for
+    /// the failure alert.
+    @State private var shelfFailure: (any ShelfFailure)?
 
     /// Two columns; one at the accessibility text sizes (AX1+), where a
     /// half-width card can't hold a legible title.
@@ -116,7 +117,15 @@ struct LibraryView: View {
         .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)
             Button("Save") {
-                if let target = renameTarget { store.rename(target, to: renameText) }
+                // A title the library can't record stays as it was, and the
+                // failure alert says why: the alert's own close leaves it up.
+                if let target = renameTarget {
+                    do {
+                        try store.rename(target, to: renameText)
+                    } catch {
+                        showFailure(EditFailure(.rename, error))
+                    }
+                }
                 renameTarget = nil
             }
             // An empty title is no rename: Save would close the alert on a
@@ -133,8 +142,7 @@ struct LibraryView: View {
                 // A delete the library can't record keeps the book, and says
                 // why: the dialog's own close leaves this alert up.
                 if let target = deleteTarget, let failure = model.deleteDocument(target) {
-                    deleteFailure = failure
-                    router.rootPresentation = .deleteFailed
+                    showFailure(failure)
                 }
                 deleteTarget = nil
             }
@@ -142,9 +150,10 @@ struct LibraryView: View {
         } message: {
             Text("This removes the document and its listening progress.")
         }
-        // Fixed copy only, as an add's failure (R10).
-        .alert(deleteFailure?.title ?? "", isPresented: presented(.deleteFailed),
-               presenting: deleteFailure) { _ in
+        // Fixed copy only, as an add's failure (R10). A failed Rename or
+        // Mark as finished shows here too, on the Delete failure's slot.
+        .alert(shelfFailure?.title ?? "", isPresented: presented(.deleteFailed),
+               presenting: shelfFailure) { _ in
             Button("OK", role: .cancel) {}
         } message: { failure in
             Text(failure.nextStep)
@@ -325,12 +334,23 @@ struct LibraryView: View {
             // The player and any Continue load let go first, so no later
             // progress write or Play undoes it.
             continuePlayback.letGo(of: document.id, playback: model.playback)
-            store.markFinished(id: document.id)
-            PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
+            do {
+                try store.markFinished(id: document.id)
+                PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
+            } catch {
+                showFailure(EditFailure(.markFinished, error))
+            }
         case .delete:
             deleteTarget = document
             router.rootPresentation = .deleteConfirmation
         }
+    }
+
+    /// The failure alert, for a Delete, Rename or Mark as finished the
+    /// library couldn't record.
+    private func showFailure(_ failure: any ShelfFailure) {
+        shelfFailure = failure
+        router.rootPresentation = .deleteFailed
     }
 }
 

@@ -29,8 +29,9 @@ struct MacLibraryView: View {
     @State private var deleteTarget: LibraryDocument?
     /// The card Delete acts on had keyboard focus when it was asked for.
     @State private var deleteHadFocus = false
-    /// Why the last confirmed Delete didn't happen, for its alert.
-    @State private var deleteFailure: DeleteFailure?
+    /// Why the last Delete, Rename or Mark as Finished didn't happen, for
+    /// the failure alert.
+    @State private var shelfFailure: (any ShelfFailure)?
     /// The grid card with keyboard focus, which the arrows move.
     @FocusState private var focusedCard: UUID?
     /// The shelf's scroll view width, scroller excluded; nil until measured.
@@ -99,7 +100,15 @@ struct MacLibraryView: View {
         .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)
             Button("Save") {
-                if let target = renameTarget { store.rename(target, to: renameText) }
+                // A title the library can't record stays as it was, and the
+                // failure alert says why: the alert's own close leaves it up.
+                if let target = renameTarget {
+                    do {
+                        try store.rename(target, to: renameText)
+                    } catch {
+                        showFailure(EditFailure(.rename, error))
+                    }
+                }
                 renameTarget = nil
             }
             // An empty title is no rename: Save would close the alert on a
@@ -124,8 +133,7 @@ struct MacLibraryView: View {
                         // The book stays, and so does focus on its card;
                         // the alert says why. The dialog's own close leaves
                         // it up.
-                        deleteFailure = failure
-                        router.rootPresentation = .deleteFailed
+                        showFailure(failure)
                     } else if hadFocus {
                         refocus(next)
                     }
@@ -136,9 +144,10 @@ struct MacLibraryView: View {
         } message: {
             Text("This removes the document and its listening progress.")
         }
-        // Fixed copy only, as an add's failure (R10).
-        .alert(deleteFailure?.title ?? "", isPresented: presented(.deleteFailed),
-               presenting: deleteFailure) { _ in
+        // Fixed copy only, as an add's failure (R10). A failed Rename or
+        // Mark as Finished shows here too, on the Delete failure's slot.
+        .alert(shelfFailure?.title ?? "", isPresented: presented(.deleteFailed),
+               presenting: shelfFailure) { _ in
             Button("OK", role: .cancel) {}
         } message: { failure in
             Text(failure.nextStep)
@@ -342,7 +351,13 @@ struct MacLibraryView: View {
             // progress write or Play undoes it.
             continuePlayback.letGo(of: document.id, playback: model.playback)
             let hadFocus = focusedCard == document.id
-            store.markFinished(id: document.id)
+            do {
+                try store.markFinished(id: document.id)
+            } catch {
+                // The book stays where it was, focus with it.
+                showFailure(EditFailure(.markFinished, error))
+                return
+            }
             // A finished Continue card is redrawn as a grid card: focus
             // follows the book there.
             if hadFocus { refocus(document.id) }
@@ -352,6 +367,13 @@ struct MacLibraryView: View {
             deleteHadFocus = focusedCard == document.id
             router.rootPresentation = .deleteConfirmation
         }
+    }
+
+    /// The failure alert, for a Delete, Rename or Mark as Finished the
+    /// library couldn't record.
+    private func showFailure(_ failure: any ShelfFailure) {
+        shelfFailure = failure
+        router.rootPresentation = .deleteFailed
     }
 }
 

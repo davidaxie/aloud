@@ -185,8 +185,13 @@ final class ProgressIndexTests: XCTestCase {
         XCTAssertEqual(store.documents.map(\.id), [book.id], "the record that decodes still shows")
 
         store.saveProgress(id: book.id, sentence: 120, fraction: 0.3)
-        store.rename(book, to: "Renamed")
-        store.markFinished(id: book.id)
+        // J012: neither shows a change the index never records.
+        XCTAssertThrowsError(try store.rename(book, to: "Renamed")) { error in
+            XCTAssertEqual(EditFailure(.rename, error).cause, .libraryUnreadable)
+        }
+        XCTAssertThrowsError(try store.markFinished(id: book.id))
+        XCTAssertEqual(store.documents.first?.title, book.title, "the rename is rolled back")
+        XCTAssertEqual(store.documents.first?.progressFraction, 0.3, "Mark as finished is rolled back")
         store.noteOpened(id: book.id)
         PlatformLifecycle.post(.didEnterBackground, to: center)
         PlatformLifecycle.post(.willTerminate, to: center)
@@ -233,9 +238,11 @@ final class ProgressIndexTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.unreadableIndexURL.path))
     }
 
-    /// An add while an unreadable index is kept fails, as "couldn't be
-    /// opened", and leaves no copy behind: shelved for this session only,
-    /// it would be gone next launch after the importer announced it.
+    /// An add while an unreadable index is kept fails, saying the library
+    /// couldn't be read (J011: before, "This file couldn't be opened", a
+    /// retry that could never work), and leaves no copy behind: shelved for
+    /// this session only, it would be gone next launch after the importer
+    /// announced it. Refused before the copy and the extraction.
     func testAnAddWhileTheIndexIsUnreadableFails() async throws {
         let (index, bytes, book) = try writeNewerIndex()
         let store = DocumentStore(indexURL: index, saveInterval: 60, notifications: NotificationCenter())
@@ -248,7 +255,18 @@ final class ProgressIndexTests: XCTestCase {
             XCTFail("the add should fail")
         } catch {
             XCTAssertEqual(error as? LibraryIndexError, .unreadable)
-            XCTAssertEqual(ImportFailure(error, isPDF: false), .couldNotOpen)
+            XCTAssertEqual(ImportFailure(error, isPDF: false), .libraryUnreadable)
+            XCTAssertEqual(ImportFailure(error, isPDF: true), .libraryUnreadable)
+        }
+        // A file with no text fails its extraction: refused before that, it
+        // says why the library can't take it, not that the file is empty.
+        let empty = index.deletingLastPathComponent().appendingPathComponent("empty.txt")
+        try "   ".write(to: empty, atomically: true, encoding: .utf8)
+        do {
+            _ = try await store.importText(title: "Empty", from: empty)
+            XCTFail("the add should fail")
+        } catch {
+            XCTAssertEqual(error as? LibraryIndexError, .unreadable, "refused before the extraction")
         }
 
         XCTAssertEqual(store.documents.map(\.id), [book.id])
@@ -359,7 +377,68 @@ final class ProgressIndexTests: XCTestCase {
         XCTAssertEqual(shelves, [], "no shelf without it was published")
         XCTAssertEqual(try idsOnDisk(index), [book.id])
         XCTAssertTrue(FileManager.default.fileExists(atPath: files[0].path), "the book's file stays")
+        // J010: and so does its content cache, put back after the retry.
+        XCTAssertEqual(try? Data(contentsOf: files[1]), Data("x".utf8), "the content cache stays")
         watching.cancel()
+    }
+
+    /// J010: a book whose content cache can't be written (here a folder
+    /// stands where it goes, as a full disk refuses it) still opens: the
+    /// write after an extraction is best-effort. Before, the open failed.
+    func testABookOpensWhenItsCacheCantBeWritten() async throws {
+        let index = try makeFolder().appendingPathComponent("library.json")
+        var book = PlaybackTestRig.makeDocument(hash: "cacheless-\(UUID().uuidString)", sentences: 2)
+        book = LibraryDocument(id: book.id, title: book.title, fileName: "\(book.id.uuidString).txt",
+                               addedAt: book.addedAt, pageCount: 1, sentenceCount: 2,
+                               contentHash: book.contentHash, kind: .text)
+        let file = DocumentStore.fileURL(for: book)
+        let cache = DocumentStore.contentCacheURL(for: book.id)
+        try "A short book. It has two sentences.".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: file)
+            try? FileManager.default.removeItem(at: cache)
+        }
+        try Self.encoder.encode(Index(version: 2, documents: [book])).write(to: index)
+        let store = DocumentStore(indexURL: index, saveInterval: 60, notifications: NotificationCenter())
+
+        let content = try await store.content(for: book)
+
+        XCTAssertFalse(content.sentences.isEmpty, "the book opens")
+    }
+
+    // MARK: Rename and Mark as finished the index can't record (J012)
+
+    /// Out of space: the change is rolled back and thrown, so the Library
+    /// can say why. Before, the shelf showed it and the next launch lost it.
+    func testARenameOrMarkTheIndexCantRecordIsRolledBack() throws {
+        let (store, book, index) = try makeStore(saveInterval: 60)
+        store.writeIndexData = { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+
+        XCTAssertThrowsError(try store.rename(book, to: "Emma (book club)")) { error in
+            XCTAssertEqual(EditFailure(.rename, error).cause, .outOfSpace)
+        }
+        XCTAssertThrowsError(try store.markFinished(id: book.id)) { error in
+            XCTAssertEqual(EditFailure(.markFinished, error).cause, .outOfSpace)
+        }
+
+        XCTAssertEqual(store.documents.first?.title, book.title)
+        XCTAssertEqual(store.documents.first?.progressFraction, 0)
+        XCTAssertEqual(try sentenceOnDisk(index, book.id), 0)
+    }
+
+    /// The failure alert says which change didn't happen, and what to do,
+    /// in Delete's words.
+    func testARenameOrMarkFailureSaysWhyInFixedCopy() {
+        let full = CocoaError(.fileWriteOutOfSpace)
+        XCTAssertEqual(EditFailure(.rename, full).title, DeleteFailure.outOfSpace.title)
+        XCTAssertEqual(EditFailure(.markFinished, full).nextStep, "Free up some space, then try again.")
+        let unreadable = EditFailure(.rename, LibraryIndexError.unreadable)
+        XCTAssertEqual(unreadable.title, "This book couldn't be renamed.")
+        XCTAssertEqual(unreadable.nextStep, DeleteFailure.libraryUnreadable.nextStep)
+        XCTAssertEqual(EditFailure(.markFinished, CocoaError(.fileWriteNoPermission)).title,
+                       "This book couldn't be marked as finished.")
+        XCTAssertEqual(EditFailure(.markFinished, CocoaError(.fileWriteNoPermission)).nextStep, "Try again.")
     }
 
     /// A delete while an unreadable index is kept fails too, and frees
@@ -408,9 +487,9 @@ final class ProgressIndexTests: XCTestCase {
         XCTAssertEqual(DocumentStore.renamedTitle("  Emma "), "Emma")
 
         let (store, book, _) = try makeStore(saveInterval: 60)
-        store.rename(book, to: "   ")
+        try store.rename(book, to: "   ")
         XCTAssertEqual(store.documents.first?.title, book.title)
-        store.rename(book, to: " Emma ")
+        try store.rename(book, to: " Emma ")
         XCTAssertEqual(store.documents.first?.title, "Emma")
     }
 }

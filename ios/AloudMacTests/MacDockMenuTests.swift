@@ -89,7 +89,7 @@ final class MacDockMenuTests: XCTestCase {
         let (rig, dock, actions) = makeDock(shelved: true)
         rig.loadDefault()
         let shelved = try XCTUnwrap(actions.store.documents.first { $0.id == rig.document.id })
-        actions.store.rename(shelved, to: "A Better Title")
+        try actions.store.rename(shelved, to: "A Better Title")
 
         XCTAssertEqual(actions.playback.document?.title, rig.document.title, "the controller's copy is the old one")
         XCTAssertEqual(try XCTUnwrap(dock.menu()).items[0].title, "A Better Title")

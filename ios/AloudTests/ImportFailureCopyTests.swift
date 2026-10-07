@@ -33,6 +33,8 @@ final class ImportFailureCopyTests: XCTestCase {
             .couldNotOpen: ("This file couldn't be opened.", addAgain),
             .classicMissing: ("This classic is missing from Aloud.", "Try another one from Classics."),
             .notDownloaded: ("This file isn't downloaded yet.", "Connect, then add it again."),
+            .libraryUnreadable: ("This book couldn't be added.",
+                                 "Aloud couldn't read your library, so it leaves it as it is. Update Aloud, then try again."),
         ]
         XCTAssertEqual(Set(table.keys), Set(ImportFailure.allCases), "every row is pinned")
         for (failure, copy) in table {
@@ -111,6 +113,15 @@ final class ImportFailureCopyTests: XCTestCase {
             XCTAssertEqual(ImportFailure(error, isPDF: true), pdf, "\(error) as PDF")
             XCTAssertEqual(ImportFailure(error, isPDF: false), text, "\(error) as text")
         }
+    }
+
+    /// J011: an add the library can't record because library.json couldn't
+    /// be read says so, in Delete's words, for files and classics alike.
+    /// Before, it blamed the file and asked for a retry that never works.
+    func testAnUnreadableLibraryIsNeverTheFilesFault() {
+        XCTAssertEqual(ImportFailure(LibraryIndexError.unreadable, isPDF: true), .libraryUnreadable)
+        XCTAssertEqual(ImportFailure(LibraryIndexError.unreadable, isPDF: false), .libraryUnreadable)
+        XCTAssertEqual(ImportFailure.libraryUnreadable.nextStep, DeleteFailure.libraryUnreadable.nextStep)
     }
 
     func testMissingClassicMapsToClassicMissing() {

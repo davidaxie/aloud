@@ -204,6 +204,123 @@ final class SourceHashDedupeTests: XCTestCase {
                                                   kind: .text, in: shelf)?.id, text.id)
     }
 
+    // MARK: - Extraction fixes for books on the shelf (J008)
+
+    /// A store over an index of its own, none yet, removed after the test.
+    private func makeStore() -> DocumentStore {
+        let index = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-refresh-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: index) }
+        return DocumentStore(indexURL: index, saveInterval: 60, notifications: NotificationCenter())
+    }
+
+    private func content(_ texts: [String], hash: String) -> DocContent {
+        DocContent(title: "Book", pageCount: 1,
+                   sentences: texts.enumerated().map { Sentence(id: $0.offset, text: $0.element, para: 0, page: 0) },
+                   paragraphs: [Paragraph(id: 0, sentenceIDs: 0..<texts.count, page: 0)],
+                   contentHash: hash)
+    }
+
+    private let novel = """
+        It was a bright cold day in April, and the clocks were striking thirteen. \
+        Winston Smith slipped quickly through the glass doors of Victory Mansions. \
+        A swirl of gritty dust entered along with him.
+        """
+
+    /// What an older extractor made of `novel`: hard-wrapped lines split
+    /// mid-sentence, a hyphenated word, other punctuation.
+    private var olderSentences: [String] {
+        ["It was a bright cold day in April, and the clocks were",
+         "striking thir- teen.",
+         "Winston Smith slipped quickly through the glass doors of Victory Man-",
+         "sions; a swirl of gritty dust entered along with him."]
+    }
+
+    /// The place is found by its letters, wherever the new extraction
+    /// splits, spaces or hyphenates them; the start stays the start, the
+    /// end the end, and text that isn't there (a fixed decoding) is nil.
+    func testThePlaceIsCarriedAcrossByItsText() {
+        let old = content(olderSentences, hash: "old")
+        let new = content(["It was a bright cold day in April, and the clocks were striking thirteen.",
+                           "Winston Smith slipped quickly through the glass doors of Victory Mansions.",
+                           "A swirl of gritty dust entered along with him."], hash: "new")
+        var book = record(kind: .text, contentHash: "old")
+        book.progressSentence = 2
+        book.progressFraction = 0.5
+
+        let place = DocumentStore.carriedPlace(of: book, from: old, to: new)
+        XCTAssertEqual(place?.sentence, 1, "Winston's sentence")
+        XCTAssertEqual(place?.fraction ?? -1, Double(new.sentences[0].wordCount) /
+                       Double(new.sentences.reduce(0) { $0 + $1.wordCount }), accuracy: 1e-9)
+
+        book.progressSentence = 0
+        book.progressFraction = 0
+        XCTAssertEqual(DocumentStore.carriedPlace(of: book, from: old, to: new)?.sentence, 0)
+        book.progressSentence = 3
+        book.progressFraction = 1
+        XCTAssertEqual(DocumentStore.carriedPlace(of: book, from: old, to: new)?.sentence, 2)
+        XCTAssertEqual(DocumentStore.carriedPlace(of: book, from: old, to: new)?.fraction, 1)
+
+        let mojibake = content(["Ã¤Ã¶Ã¼ ÃŸÃ¤Ã¶ Ã¼Ã¤Ã¶Ã¼.", "Ã¶Ã¼Ã¤ Ã¶Ã¼Ã¤Ã¶ Ã¼Ã¤Ã¶Ã¼Ã¤Ã¶Ã¼ Ã¤Ã¶Ã¼."], hash: "mojibake")
+        book.progressSentence = 1
+        book.progressFraction = 0.4
+        XCTAssertNil(DocumentStore.carriedPlace(of: book, from: mojibake, to: new))
+    }
+
+    /// The bug: the same file added again returned the record an older
+    /// extractor shelved, its old text and all, and Delete then add was the
+    /// only way out, losing the place. Now it is extracted again, its place
+    /// carried by text and the new cache stamped; opening it never
+    /// re-extracts on its own.
+    func testTheSameFileAddedAgainGetsTheNewExtractionAndKeepsItsPlace() async throws {
+        let store = makeStore()
+        let picked = try file(Data(novel.utf8), name: "\(UUID().uuidString)-novel.txt")
+        let added = try await store.importText(title: "Nineteen", from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        let current = try await store.content(for: added)
+
+        // As an older build shelved it: its cache unstamped, its place in
+        // the older text.
+        try Self.encoder.encode(content(olderSentences, hash: "older-extractor"))
+            .write(to: DocumentStore.contentCacheURL(for: added.id))
+        let opened = try await store.content(for: added)
+        XCTAssertEqual(opened.contentHash, "older-extractor", "an open never re-extracts")
+        store.saveProgress(id: added.id, sentence: 2, fraction: 0.5)
+
+        let again = try await store.importText(title: "Nineteen", from: picked)
+
+        XCTAssertEqual(again.id, added.id, "still one book")
+        let live = try XCTUnwrap(store.documents.first { $0.id == added.id })
+        XCTAssertEqual(live.contentHash, current.contentHash, "the new extraction")
+        let winston = try XCTUnwrap(current.sentences.firstIndex { $0.text.hasPrefix("Winston") })
+        XCTAssertEqual(live.progressSentence, winston, "the place, carried by its text")
+        let cached = try Self.decoder.decode(DocContent.self,
+                                             from: Data(contentsOf: DocumentStore.contentCacheURL(for: added.id)))
+        XCTAssertEqual(cached.contentHash, current.contentHash)
+        XCTAssertEqual(cached.extractorVersion, DocContent.currentExtractorVersion)
+    }
+
+    /// A place that can't be found in the new text keeps the old content
+    /// and the place as they were.
+    func testAPlaceThatCantBeCarriedKeepsTheOldContent() async throws {
+        let store = makeStore()
+        let picked = try file(Data(novel.utf8), name: "\(UUID().uuidString)-novel.txt")
+        let added = try await store.importText(title: "Nineteen", from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        let old = content(["Ã¤Ã¶Ã¼ ÃŸÃ¤Ã¶ Ã¼Ã¤Ã¶Ã¼.", "Ã¶Ã¼Ã¤ Ã¶Ã¼Ã¤Ã¶ Ã¼Ã¤Ã¶Ã¼Ã¤Ã¶Ã¼ Ã¤Ã¶Ã¼."], hash: "mojibake")
+        try Self.encoder.encode(old).write(to: DocumentStore.contentCacheURL(for: added.id))
+        _ = try await store.content(for: added)
+        store.saveProgress(id: added.id, sentence: 1, fraction: 0.4)
+
+        _ = try await store.importText(title: "Nineteen", from: picked)
+
+        let live = try XCTUnwrap(store.documents.first { $0.id == added.id })
+        XCTAssertEqual(live.contentHash, "mojibake")
+        XCTAssertEqual(live.progressSentence, 1)
+        let kept = try await store.content(for: live)
+        XCTAssertEqual(kept.contentHash, "mojibake", "the old cache is kept")
+    }
+
     /// F038: a file handed over as a symlink lands in the library as a copy
     /// of the book, a regular file, never a link that points outside the
     /// library (or nowhere, once a relative one is moved).

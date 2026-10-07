@@ -213,6 +213,7 @@ final class AppModel: ObservableObject {
         observeTermination()
         restoreLastReader(LastReaderStore(defaults: defaults), enabled: LaunchRestore.isEnabled)
         flushProgressWhenListeningStops()
+        notePlayedBooks()
         // Play from the lock screen, headphones or media keys with no book
         // open continues the Continue card's book, as the shortcut does; a
         // Pause or second Play/Pause while it loads stops the load.
@@ -234,6 +235,16 @@ final class AppModel: ObservableObject {
         importer.navigation = router
         importer.onAdded = { [weak self] document in
             self?.router.open(document)
+        }
+        // A book added again from the same file is extracted again, under a
+        // newer extractor: not while a reader shows its old text, and the
+        // player lets go of it first, so no progress the old text indexes
+        // lands after its place is carried across.
+        store.mayReplaceContent = { [weak self] id in
+            guard let self else { return false }
+            if self.router.path.contains(.reader(id)) { return false }
+            self.continuePlayback.letGo(of: id, playback: self.playback)
+            return true
         }
         let systemVoice = engine.defaultVoice
         thermalGuard.preferredVoice = { [weak self] in self?.engagedVoicePreference() ?? systemVoice }
@@ -396,6 +407,20 @@ final class AppModel: ObservableObject {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak documentStore] _ in documentStore?.flushPendingProgress() }
+            .store(in: &cancellables)
+    }
+
+    /// A book heard counts as started (`LibraryDocument.firstPlayedAt`):
+    /// one paused or ended by iOS inside its first sentence, where its
+    /// progress is still 0, stays the Continue book after a relaunch.
+    private func notePlayedBooks() {
+        playback.$status
+            .filter { $0 == .playing }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, let id = self.playback.document?.id else { return }
+                self.documentStore.notePlayed(id: id)
+            }
             .store(in: &cancellables)
     }
 
@@ -623,3 +648,45 @@ enum DeleteFailure: Equatable, CaseIterable {
         }
     }
 }
+
+/// Why a Rename or Mark as finished didn't happen, by Delete's causes and in
+/// its words: the book is as it was. Before, the change showed on the shelf
+/// and was gone at the next launch, unsaid.
+struct EditFailure: Equatable {
+    enum Edit: Equatable, CaseIterable {
+        case rename, markFinished
+    }
+
+    let edit: Edit
+    let cause: DeleteFailure
+
+    init(_ edit: Edit, _ error: any Error) {
+        self.edit = edit
+        cause = DeleteFailure(error)
+    }
+
+    var title: String {
+        switch (cause, edit) {
+        case (.outOfSpace, _): return DeleteFailure.outOfSpace.title
+        case (_, .rename): return "This book couldn't be renamed."
+        case (_, .markFinished): return "This book couldn't be marked as finished."
+        }
+    }
+
+    var nextStep: String {
+        switch cause {
+        case .outOfSpace: return "Free up some space, then try again."
+        case .libraryUnreadable, .notSaved: return cause.nextStep
+        }
+    }
+}
+
+/// What the Library's one failure alert shows: a Delete, Rename or Mark as
+/// finished that didn't happen, as fixed copy.
+protocol ShelfFailure {
+    var title: String { get }
+    var nextStep: String { get }
+}
+
+extension DeleteFailure: ShelfFailure {}
+extension EditFailure: ShelfFailure {}

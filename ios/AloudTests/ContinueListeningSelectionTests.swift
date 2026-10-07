@@ -61,6 +61,75 @@ final class ContinueListeningSelectionTests: XCTestCase {
         XCTAssertNil(DocumentStore.continueListeningCandidate(in: [opened]))
     }
 
+    /// J024: a book heard only inside its first sentence (progress 0 there)
+    /// is started, and after a relaunch beats an older book. Before, the
+    /// older book was the Continue card, remote Play and Siri's pick.
+    func testABookHeardInsideItsFirstSentenceIsStarted() {
+        let older = doc(title: "Older", progress: 0.3, lastOpened: date(0))
+        var heard = doc(title: "Heard", progress: 0, lastOpened: date(100))
+        heard.progressSentence = 0
+        heard.firstPlayedAt = date(90)
+
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [older, heard])?.id, heard.id)
+    }
+
+    /// The minimum, for a record from before `firstPlayedAt`: iOS ended it
+    /// mid-speech in its first sentence, and the stop names it.
+    func testABookTheStopNamesIsStartedAtZero() {
+        let older = doc(title: "Older", progress: 0.3, lastOpened: date(0))
+        var closed = doc(title: "Closed", progress: 0, lastOpened: date(100))
+        closed.progressSentence = 0
+        let stop = PlaybackStop(reason: .closedByIOS, documentID: closed.id)
+
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [older, closed], stop: stop)?.id, closed.id)
+        XCTAssertEqual(DocumentStore.continueListeningCandidate(in: [older, closed])?.id, older.id,
+                       "opened and never heard is still not started")
+    }
+
+    /// The app stamps a book heard when playback runs for it, and the
+    /// Library on both apps says why a Rename or Mark as finished didn't
+    /// happen (J012), as Delete does. A source lint, since neither site
+    /// runs without the app.
+    func testTheAppStampsAPlayAndTheShelfSaysWhyAnEditFailed() throws {
+        let app = try XCTUnwrap(try SourceTree.sources(only: ["App/AppModel.swift"])["App/AppModel.swift"])
+        let stamp = try XCTUnwrap(app.range(of: "func notePlayedBooks()"), "no play stamp")
+        let wiring = app[stamp.lowerBound...].prefix(400)
+        XCTAssertNotNil(wiring.range(of: "playback.$status"))
+        XCTAssertNotNil(wiring.range(of: "documentStore.notePlayed(id:"))
+        XCTAssertNotNil(app.range(of: "notePlayedBooks()\n"), "wired at launch")
+
+        let phone = try XCTUnwrap(try SourceTree.sources(only: ["Library/LibraryView.swift"])["Library/LibraryView.swift"])
+        let mac = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: ["Library/MacLibraryView.swift"])[
+            "Library/MacLibraryView.swift"])
+        for (name, view) in [("iPhone", phone), ("Mac", mac)] {
+            XCTAssertNotNil(view.range(of: "showFailure(EditFailure(.rename, error))"), "\(name): Rename says why")
+            XCTAssertNotNil(view.range(of: "showFailure(EditFailure(.markFinished, error))"),
+                            "\(name): Mark as finished says why")
+            XCTAssertNil(view.range(of: "store.markFinished(id: document.id)\n"), "\(name): no unchecked mark")
+        }
+    }
+
+    /// Heard once, the store keeps it: the first play is stamped, never moved.
+    @MainActor
+    func testTheFirstPlayIsStampedOnce() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-played-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let store = DocumentStore(indexURL: folder.appendingPathComponent("library.json"),
+                                  saveInterval: 60, notifications: NotificationCenter())
+        let text = folder.appendingPathComponent("book.txt")
+        try "A first sentence. A second one.".write(to: text, atomically: true, encoding: .utf8)
+        let book = try await store.importText(title: "Book", from: text)
+        addTeardownBlock { @MainActor in try? store.delete(book) }
+        XCTAssertNil(store.documents.first?.firstPlayedAt)
+
+        store.notePlayed(id: book.id)
+        let first = try XCTUnwrap(store.documents.first?.firstPlayedAt)
+        store.notePlayed(id: book.id)
+        XCTAssertEqual(store.documents.first?.firstPlayedAt, first)
+    }
+
     func testFinishedDocumentsAreExcluded() {
         // The shelf's one Finished rule: 0.99 of an hour-long book (9,900
         // words) leaves 36 s, so it and 1.0 are both out.

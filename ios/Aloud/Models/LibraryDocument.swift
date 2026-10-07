@@ -36,6 +36,11 @@ struct LibraryDocument: Codable, Identifiable {
     /// ebook number); nil for Files and Open-in. Survives Rename. The
     /// Bookshelf matches on it, never on the title.
     var gutenbergID: Int?
+    /// When the book was first heard: playback ran for it. A book stopped
+    /// inside its first sentence has progress 0 but still counts as started
+    /// for Continue listening (`DocumentStore.continueListeningCandidate`).
+    /// nil until then, and on records from before it existed.
+    var firstPlayedAt: Date?
 
     init(id: UUID,
          title: String,
@@ -53,7 +58,8 @@ struct LibraryDocument: Codable, Identifiable {
          preferredRate: Double? = nil,
          preferredVoiceID: String? = nil,
          gutenbergID: Int? = nil,
-         sourceHash: String? = nil) {
+         sourceHash: String? = nil,
+         firstPlayedAt: Date? = nil) {
         self.id = id
         self.title = title
         self.fileName = fileName
@@ -71,12 +77,13 @@ struct LibraryDocument: Codable, Identifiable {
         self.preferredVoiceID = preferredVoiceID
         self.gutenbergID = gutenbergID
         self.sourceHash = sourceHash
+        self.firstPlayedAt = firstPlayedAt
     }
 
     // Forward-compatible decoding: kind/author/wordCount, the legacy per-book
-    // playback preferences, gutenbergID (library.json v2) and sourceHash are
-    // late additions. The synthesized encoder skips nil optionals, so a
-    // record with no gutenbergID or sourceHash writes no key.
+    // playback preferences, gutenbergID (library.json v2), sourceHash and
+    // firstPlayedAt are late additions. The synthesized encoder skips nil
+    // optionals, so a record with none of them writes no key.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -96,6 +103,7 @@ struct LibraryDocument: Codable, Identifiable {
         preferredVoiceID = try c.decodeIfPresent(String.self, forKey: .preferredVoiceID)
         gutenbergID = try c.decodeIfPresent(Int.self, forKey: .gutenbergID)
         sourceHash = try c.decodeIfPresent(String.self, forKey: .sourceHash)
+        firstPlayedAt = try c.decodeIfPresent(Date.self, forKey: .firstPlayedAt)
     }
 }
 

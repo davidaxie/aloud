@@ -17,6 +17,10 @@ enum ImportFailure: Equatable, CaseIterable {
     /// fetched, offline. Raised only by the Mac's coordinated copy; the
     /// iPhone's Files picker downloads before it hands a file over.
     case notDownloaded
+    /// library.json couldn't be read at launch (a newer Aloud's record, a
+    /// damaged file), so no book can be added to it: Delete's words
+    /// (`DeleteFailure.libraryUnreadable`), never the file's fault.
+    case libraryUnreadable
 
     var title: String {
         switch self {
@@ -30,6 +34,7 @@ enum ImportFailure: Equatable, CaseIterable {
         case .couldNotOpen: return "This file couldn't be opened."
         case .classicMissing: return "This classic is missing from Aloud."
         case .notDownloaded: return "This file isn't downloaded yet."
+        case .libraryUnreadable: return "This book couldn't be added."
         }
     }
 
@@ -45,6 +50,8 @@ enum ImportFailure: Equatable, CaseIterable {
         case .couldNotOpen: return DeviceCopy.addAgain
         case .classicMissing: return "Try another one from Classics."
         case .notDownloaded: return "Connect, then add it again."
+        case .libraryUnreadable:
+            return "Aloud couldn't read your library, so it leaves it as it is. Update Aloud, then try again."
         }
     }
 
@@ -62,6 +69,8 @@ enum ImportFailure: Equatable, CaseIterable {
             }
         case is DocumentStoreError:
             self = .classicMissing
+        case is LibraryIndexError:
+            self = .libraryUnreadable
         default:
             self = Self.isOutOfSpace(error) ? .outOfSpace : .couldNotOpen
         }
