@@ -164,6 +164,44 @@ test('H030: a whole WordPress comment reads its author line and its text', () =>
   assert.deepEqual(got.sentences.map((s) => s.text), ['Ann says:', 'Great post, thanks for writing it.'])
 })
 
+test('I023: a selection leaves out screen-reader-only text, which was never on screen', () => {
+  for (const cls of ['sr-only', 'screen-reader-text', 'visually-hidden']) {
+    const first = new FakeText('We tested the new parser on real pages.')
+    const last = new FakeText('It held up well.')
+    const div = h(
+      'div',
+      {},
+      h('p', {}, first),
+      h('p', {}, h('a', { href: '#' }, 'Read more', h('span', { class: cls }, ' about the parser test'))),
+      h('p', {}, last),
+    )
+    installDocument(new FakeDocument({ body: h('body', {}, div) }), dragSelection(div, first, last))
+    const got = extract.extractSelection(null)
+    assert.ok(got, '"Nothing selected to read."')
+    assert.deepEqual(
+      got.sentences.map((s) => s.text),
+      ['We tested the new parser on real pages.', 'Read more', 'It held up well.'],
+      cls,
+    )
+  }
+})
+
+test('I023: a selection leaves out a role="button" control, as it does a <button>', () => {
+  const first = new FakeText('Great point about parsers.')
+  const last = new FakeText('Agreed, thanks.')
+  const thread = h(
+    'div',
+    { class: 'comments' },
+    h('p', {}, first),
+    h('div', { class: 'actions' }, h('span', { role: 'button' }, 'Reply'), ' ', h('button', {}, 'Share')),
+    h('p', {}, last),
+  )
+  installDocument(new FakeDocument({ body: h('body', {}, thread) }), dragSelection(thread, first, last))
+  const got = extract.extractSelection(null)
+  assert.ok(got, '"Nothing selected to read."')
+  assert.deepEqual(got.sentences.map((s) => s.text), ['Great point about parsers.', 'Agreed, thanks.'])
+})
+
 test('H032: text selected in a text field is read, though Chrome reports it collapsed', () => {
   installDocument(new FakeDocument({ body: h('body', {}, h('form', {}, h('textarea', {}, 'Draft'))) }), {
     isCollapsed: true,
@@ -175,6 +213,32 @@ test('H032: text selected in a text field is read, though Chrome reports it coll
   assert.ok(got, '"Nothing selected to read."')
   assert.deepEqual(got.sentences.map((s) => s.text), ['Please proofread this sentence for me.'])
   assert.equal(got.title, 'Selection')
+})
+
+test('I025: text selected in the player bar or a toast is never read back', () => {
+  const bar = h('div', { id: 'aloud-player-root', 'data-aloud': 'ui' })
+  const toast = h('div', { 'data-aloud': 'toast' })
+  const doc = new FakeDocument({ body: h('body', {}, h('p', {}, 'The article.')) })
+  doc.documentElement.append(bar, toast)
+  // Chrome: a selection inside a shadow tree is collapsed at its host.
+  const inside = (host, words) => ({
+    isCollapsed: true,
+    rangeCount: 1,
+    anchorNode: doc.documentElement,
+    anchorOffset: doc.documentElement.childNodes.indexOf(host),
+    getRangeAt: () => ({ toString: () => '' }),
+    toString: () => words,
+  })
+  installDocument(doc, inside(bar, 'Finished'))
+  assert.equal(extract.extractSelection(bar), null)
+  assert.equal(extract.selectionInUi(window.getSelection(), bar), true)
+  installDocument(doc, inside(toast, 'Nothing selected to read.'))
+  assert.equal(extract.extractSelection(bar), null)
+  // A text field's selection is collapsed at the field, which is the page's.
+  const field = h('textarea', {}, 'Draft')
+  doc.body.append(field)
+  installDocument(doc, { ...inside(field, 'Please proofread this sentence for me.') })
+  assert.ok(extract.extractSelection(bar), 'a text field is not our UI')
 })
 
 test('H032: an empty selection is still nothing to read', () => {

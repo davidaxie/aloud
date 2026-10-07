@@ -88,7 +88,9 @@ const SKIP_TAGS = new Set([
  * at all — scripts, styles, media, embeds and form controls. The rest of
  * SKIP_TAGS, and SKIP_ROLES, JUNK_RE and the link-density rule, guess at what
  * a reader wants from a whole page. A selection says it outright: a comment, a
- * sidebar or a footer the user selected is read like any paragraph.
+ * sidebar or a footer the user selected is read like any paragraph. What the
+ * user cannot see is still left out (I023): VISUALLY_HIDDEN_RE, and role
+ * "button" as well as <button>.
  */
 const SELECTION_SKIP_TAGS = new Set([
   'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'IFRAME', 'FRAME', 'OBJECT', 'EMBED',
@@ -122,6 +124,13 @@ const BLOCK_TAGS = new Set([
  */
 const JUNK_RE =
   /(^|[-_\s])(ads?|advert|advertisement|promo|sponsor|banner|share|sharing|social|comment|comments|disqus|related|recirc|recommend|newsletter|subscribe|signup|paywall|cookie|consent|gdpr|popup|modal|overlay|lightbox|breadcrumbs?|pagination|pager|sidebar|widget|masthead|toolbar|skip-link|screen-reader|visually-hidden|sr-only|byline|caption-credit|copyright|tag-list|meta-data|references|reflist|footnotes?|bibliography|navbox|infobox|catlinks|editsection|noprint|hatnote|shortdescription|toc)([-_\s]|$)/i
+
+/**
+ * Text kept off screen for screen readers (Bootstrap sr-only, WordPress
+ * screen-reader-text, skip links). The user never saw it, so not even a
+ * selection reads it (I023). The CSS that hides it leaves checkVisibility true.
+ */
+const VISUALLY_HIDDEN_RE = /(^|[-_\s])(skip-link|screen-reader|visually-hidden|sr-only)([-_\s]|$)/i
 
 /** Positive/negative class-name signals for the Readability-style scorer. */
 const POSITIVE_RE = /(article|body|content|entry|main|page|post|story|text|blog|column|prose|markdown)/i
@@ -328,12 +337,13 @@ function shouldSkip(el: Element, state: WalkState): boolean {
   if ((selecting ? SELECTION_SKIP_TAGS : SKIP_TAGS).has(el.tagName)) return true
 
   const role = el.getAttribute('role')
-  if (!selecting && role && SKIP_ROLES.has(role)) return true
+  // In a selection a role="button" is left out like a <button> (I023).
+  if (role && (selecting ? role === 'button' : SKIP_ROLES.has(role))) return true
 
   // Footnote/reference markers: "1", "[2]" read aloud mid-sentence is noise.
   if (el.tagName === 'SUP' && (el.textContent?.trim().length ?? 0) <= 4) return true
 
-  if (!selecting && JUNK_RE.test(classId(el))) return true
+  if ((selecting ? VISUALLY_HIDDEN_RE : JUNK_RE).test(classId(el))) return true
   if (isHidden(el)) return true
   if (selecting) return false
 
@@ -511,13 +521,26 @@ export function extractText(text: string): Extraction | null {
 }
 
 /**
+ * Whether the selection lies in our own UI: the player bar's title or status
+ * line, or a toast (I025). Chrome reports a selection inside a shadow tree as
+ * collapsed at the tree's host, its words only in toString(), so without this
+ * the fallback below would read the bar aloud.
+ */
+export function selectionInUi(sel: Selection, uiHost: Element | null): boolean {
+  if (!sel.isCollapsed) return false
+  const at = sel.anchorNode?.childNodes?.[sel.anchorOffset]
+  if (!at || at.nodeType !== Node.ELEMENT_NODE) return false
+  return at === uiHost || (at as Element).hasAttribute('data-aloud')
+}
+
+/**
  * Extract just the user's selection. The walk starts at the selection's common
  * ancestor and clips to the range, so mid-paragraph selections read exactly the
  * highlighted characters — no more, no less.
  */
 export function extractSelection(uiHost: Element | null): Extraction | null {
   const sel = window.getSelection()
-  if (!sel) return null
+  if (!sel || selectionInUi(sel, uiHost)) return null
   const range = !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
   if (range && range.toString().trim()) {
     const ancestor = range.commonAncestorContainer

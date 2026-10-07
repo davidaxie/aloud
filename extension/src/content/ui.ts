@@ -67,6 +67,19 @@ export function withShortcut(label: string, shortcut: string | undefined): strin
   return shortcut ? `${label} (${shortcut})` : label
 }
 
+/**
+ * The play button's name. While a sentence is buffering the button pauses, so
+ * it is named Pause, as in the web app and on iPhone and Mac (H034, I022);
+ * `busy` marks the wait.
+ */
+export function playButtonLabel(status: PlayerStatus): { label: 'Play' | 'Pause'; busy: boolean } {
+  const pauses = status === 'playing' || status === 'buffering'
+  return { label: pauses ? 'Pause' : 'Play', busy: status === 'buffering' }
+}
+
+/** What the polite live region says while the play button waits on audio. */
+export const LOADING_ANNOUNCEMENT = 'Loading audio'
+
 /** The status line when the last sentence ends a page the reader cut short. */
 export const TRUNCATED_MESSAGE = 'Reached Aloud’s length limit — select later text to go on.'
 
@@ -236,6 +249,18 @@ button:focus-visible, select:focus-visible {
 .sub.is-error { color: var(--danger); }
 /* Warming is a working engine, not a broken one — it gets the accent, not red. */
 .sub.is-pending { color: var(--accent-strong); }
+/* Heard, not seen: the play button's loading announcement. */
+.live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .controls { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 
@@ -325,6 +350,10 @@ export class PlayerBar {
   private fillEl!: HTMLDivElement
   private bufferEl!: HTMLDivElement
   private playEl!: HTMLButtonElement
+  private liveEl!: HTMLSpanElement
+  /** The play button's current name and the toggle shortcut its tooltip names. */
+  private playLabel: 'Play' | 'Pause' = 'Play'
+  private toggleKey: string | undefined
   private titleEl!: HTMLDivElement
   private subEl!: HTMLDivElement
   private voiceEl!: HTMLSelectElement
@@ -358,7 +387,8 @@ export class PlayerBar {
       <div class="row">
         <div class="transport">
           <button class="icon" data-act="prev" title="Previous sentence" aria-label="Previous sentence">${ICONS.prev}</button>
-          <button class="play" data-act="toggle" title="Play / pause" aria-label="Play or pause">${ICONS.play}</button>
+          <button class="play" data-act="toggle" title="Play" aria-label="Play" aria-busy="false">${ICONS.play}</button>
+          <span class="live" role="status" aria-live="polite"></span>
           <button class="icon" data-act="next" title="Next sentence" aria-label="Next sentence">${ICONS.next}</button>
         </div>
         <div class="meta">
@@ -378,6 +408,7 @@ export class PlayerBar {
     this.fillEl = bar.querySelector('.fill')!
     this.bufferEl = bar.querySelector('.buffer')!
     this.playEl = bar.querySelector('.play')!
+    this.liveEl = bar.querySelector('.live')!
     this.titleEl = bar.querySelector('.title')!
     this.subEl = bar.querySelector('.sub')!
     this.voiceEl = bar.querySelector('.chip.voice select')!
@@ -443,18 +474,29 @@ export class PlayerBar {
 
   /** Name the real keyboard shortcuts in the transport tooltips. */
   setShortcuts(keys: Shortcuts) {
-    const label = { prev: 'Previous sentence', toggle: 'Play / pause', next: 'Next sentence' }
-    for (const act of ['prev', 'toggle', 'next'] as const) {
+    const label = { prev: 'Previous sentence', next: 'Next sentence' }
+    for (const act of ['prev', 'next'] as const) {
       const button = this.root.querySelector(`[data-act="${act}"]`)
       button?.setAttribute('title', withShortcut(label[act], keys[act]))
     }
+    // The play button's tooltip says what a press does now, as its name does.
+    this.toggleKey = keys.toggle
+    this.playEl.setAttribute('title', withShortcut(this.playLabel, this.toggleKey))
   }
 
   update(view: BarView) {
     const playing = view.status === 'playing'
     const buffering = view.status === 'buffering'
     this.playEl.innerHTML = buffering ? ICONS.spinner : playing ? ICONS.pause : ICONS.play
-    this.playEl.setAttribute('aria-label', playing ? 'Pause' : 'Play')
+    // A press while buffering pauses, so the button is named Pause then (I022).
+    const { label, busy } = playButtonLabel(view.status)
+    this.playLabel = label
+    this.playEl.setAttribute('aria-label', label)
+    this.playEl.setAttribute('title', withShortcut(label, this.toggleKey))
+    this.playEl.setAttribute('aria-busy', String(busy))
+    const announcement = busy ? LOADING_ANNOUNCEMENT : ''
+    // Rewritten only on a change, so each paint does not announce it again.
+    if (this.liveEl.textContent !== announcement) this.liveEl.textContent = announcement
 
     this.titleEl.textContent = view.title
     this.titleEl.title = view.title

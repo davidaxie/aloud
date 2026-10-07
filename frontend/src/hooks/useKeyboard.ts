@@ -6,7 +6,7 @@
 // its Space (see ../lib/controlKeys).
 // ─────────────────────────────────────────────────────────────────────────────
 import { useEffect } from 'react'
-import { globalShortcut, type KeyTargetKind } from '../lib/controlKeys'
+import { FocusOrigin, globalShortcut, type KeyTargetKind } from '../lib/controlKeys'
 import { player } from '../lib/player'
 import { useStore } from '../store'
 
@@ -29,18 +29,26 @@ function keyTargetKind(el: EventTarget | null): KeyTargetKind {
   return 'other'
 }
 
-/** Whether the element shows keyboard focus (it was reached with Tab, not clicked). */
-function showsKeyboardFocus(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) return false
-  try {
-    return el.matches(':focus-visible')
-  } catch {
-    return true // no :focus-visible support: leave the control its own keys
-  }
-}
+/**
+ * How focus reached each element, saved as it arrives: Chromium already marks
+ * a clicked button :focus-visible by the time a keydown listener runs (I021).
+ */
+const focusOrigin = new FocusOrigin()
 
 export function useKeyboard(): void {
   const hasDoc = useStore((s) => s.doc !== null)
+
+  // Listens from the start, so the control focused before a book opens is known.
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => focusOrigin.focused(e.target)
+    const onPointerDown = (e: PointerEvent) => focusOrigin.pressed(e.target, document.activeElement)
+    window.addEventListener('focusin', onFocusIn, true)
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => {
+      window.removeEventListener('focusin', onFocusIn, true)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+    }
+  }, [])
 
   useEffect(() => {
     if (!hasDoc) return
@@ -51,11 +59,12 @@ export function useKeyboard(): void {
       if (useStore.getState().status === 'loading') return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       // Fields, sliders and lists keep the keys they use; a button the mouse
-      // left focused does not keep Space or the arrows (H027).
+      // left focused does not keep Space or the arrows (H027). How it got focus
+      // is read from focusin, not :focus-visible here (I021).
       const action = globalShortcut(
         e.key,
         keyTargetKind(e.target),
-        showsKeyboardFocus(e.target),
+        focusOrigin.reachedByKeyboard(e.target),
       )
       if (!action) return
       // Also stops a focused button from being pressed by the same Space.

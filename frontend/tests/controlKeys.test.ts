@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
+  FocusOrigin,
   globalShortcut,
   listKeyTarget,
   playButtonLabel,
@@ -41,11 +42,73 @@ test('H027: fields and lists keep their keys; elsewhere the transport keys work'
   assert.equal(globalShortcut('Enter', 'other', false), null)
 })
 
-test('H027: the global handler asks controlKeys, with the target’s keyboard focus', () => {
+test('H027: the global handler asks controlKeys, with how the target got focus', () => {
   const src = source('hooks/useKeyboard.ts')
   assert.match(src, /globalShortcut\(/)
-  assert.match(src, /:focus-visible/)
+  assert.match(src, /focusOrigin\.reachedByKeyboard\(e\.target\)/)
   assert.doesNotMatch(src, /isSelfHandlingControl/, 'every key on a button was dropped')
+})
+
+/** A stand-in element whose :focus-visible answer the test changes, as Chromium does. */
+function fakeButton(children: object[] = []) {
+  const el = {
+    focusVisible: false,
+    matches(selector: string) {
+      assert.equal(selector, ':focus-visible')
+      return el.focusVisible
+    },
+    contains(other: unknown) {
+      return other === el || children.includes(other as object)
+    },
+  }
+  return el
+}
+
+test('I021: a clicked button stays clicked though Chromium marks it focus-visible on keydown', () => {
+  const origin = new FocusOrigin()
+  const next = fakeButton()
+  // The mouse focuses Next: no ring at focusin.
+  next.focusVisible = false
+  origin.focused(next as unknown as EventTarget)
+  // Chromium flips :focus-visible on while it handles the Space keydown.
+  next.focusVisible = true
+  const reached = origin.reachedByKeyboard(next as unknown as EventTarget)
+  assert.equal(reached, false)
+  assert.equal(globalShortcut(' ', 'button', reached), 'toggle', 'Space pauses, not Next again')
+})
+
+test('I021: a button reached with Tab keeps Space; a later click on it gives Space back', () => {
+  const origin = new FocusOrigin()
+  const icon = {}
+  const theme = fakeButton([icon])
+  theme.focusVisible = true
+  origin.focused(theme as unknown as EventTarget)
+  assert.equal(origin.reachedByKeyboard(theme as unknown as EventTarget), true)
+  assert.equal(globalShortcut(' ', 'button', true), null)
+  // A click on its icon: it stays focused, so there is no new focusin.
+  origin.pressed(icon as unknown as EventTarget, theme as unknown as Element)
+  theme.focusVisible = true
+  assert.equal(origin.reachedByKeyboard(theme as unknown as EventTarget), false)
+  // A click somewhere else leaves the focused button as it was.
+  const other = fakeButton()
+  other.focusVisible = true
+  origin.focused(other as unknown as EventTarget)
+  origin.pressed({} as EventTarget, other as unknown as Element)
+  assert.equal(origin.reachedByKeyboard(other as unknown as EventTarget), true)
+})
+
+test('I021: focus the tracker never saw counts as keyboard focus; the page is not a control', () => {
+  const origin = new FocusOrigin()
+  assert.equal(origin.reachedByKeyboard(fakeButton() as unknown as EventTarget), true)
+  assert.equal(origin.reachedByKeyboard(null), false)
+  origin.focused({} as EventTarget) // window or document: ignored
+})
+
+test('I021: useKeyboard saves focus origin at focusin and pointerdown, not inside keydown', () => {
+  const src = source('hooks/useKeyboard.ts')
+  assert.doesNotMatch(src, /matches\(['"]:focus-visible['"]\)/, 'read too late in Chromium')
+  assert.match(src, /addEventListener\('focusin', onFocusIn, true\)/)
+  assert.match(src, /addEventListener\('pointerdown', onPointerDown, true\)/)
 })
 
 test('H034: while buffering the play button is named Pause, since a press pauses', () => {

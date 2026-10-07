@@ -25,6 +25,7 @@ import {
   extractSelection,
   extractText,
   offsetOf,
+  selectionInUi,
   spanDetached,
   type Extraction,
 } from './extract'
@@ -291,10 +292,12 @@ async function main(onReady: (respond: Responder) => void) {
   /**
    * Whether the page holds a selection to read. Text selected in a text field
    * or a shadow tree comes back collapsed, its words only in toString() (H032).
+   * Only words count: a drag over blank space or an image selects nothing to
+   * read (I024), and the bar's own text is not the page's (I025).
    */
   function hasSelection(): boolean {
     const sel = window.getSelection()
-    return !!sel && (!sel.isCollapsed || sel.toString().trim() !== '')
+    return !!sel && sel.toString().trim() !== '' && !selectionInUi(sel, bar?.host ?? null)
   }
 
   // ── engine health ─────────────────────────────────────────────────────────

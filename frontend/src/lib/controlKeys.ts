@@ -44,6 +44,57 @@ export function globalShortcut(
   }
 }
 
+/** The part of an element the focus tracker reads; a real Element has both. */
+interface FocusTarget {
+  matches(selector: string): boolean
+  contains?(other: unknown): boolean
+}
+
+function asFocusTarget(target: unknown): FocusTarget | null {
+  return target && typeof (target as FocusTarget).matches === 'function'
+    ? (target as FocusTarget)
+    : null
+}
+
+/**
+ * Remembers whether each element got focus from the keyboard, as it gets it
+ * (I021). Chromium marks the focused element :focus-visible while it handles a
+ * keydown, before the event is dispatched, so a keydown listener asking
+ * :focus-visible always hears yes, even for a button the mouse just clicked.
+ * At focusin the answer is still true to how focus arrived, so it is saved then;
+ * a pointer press on the focused element marks it as clicked.
+ */
+export class FocusOrigin {
+  private readonly keyboard = new WeakMap<object, boolean>()
+
+  /** Capture-phase focusin: save whether focus arrived from the keyboard. */
+  focused(target: EventTarget | null): void {
+    const el = asFocusTarget(target)
+    if (!el) return
+    let visible: boolean
+    try {
+      visible = el.matches(':focus-visible')
+    } catch {
+      visible = true // no :focus-visible support: leave the control its own keys
+    }
+    this.keyboard.set(el, visible)
+  }
+
+  /** Capture-phase pointerdown: a click on the focused element, which stays focused. */
+  pressed(target: EventTarget | null, active: Element | null): void {
+    const el = asFocusTarget(active)
+    if (!el) return
+    if ((el as unknown) === target || el.contains?.(target)) this.keyboard.set(el, false)
+  }
+
+  /** Whether `target` was reached with the keyboard; unknown targets count as yes. */
+  reachedByKeyboard(target: EventTarget | null): boolean {
+    const el = asFocusTarget(target)
+    if (!el) return false
+    return this.keyboard.get(el) ?? true
+  }
+}
+
 /** Share of the book PageUp/PageDown move on the position slider. */
 const PAGE_STEP_FRACTION = 0.05
 

@@ -370,6 +370,52 @@ test('H036: after "Finished", the shortcut reads text selected further on', asyn
   }
 })
 
+/** Finish a two-sentence selection, then press the shortcut with `selection` on the page. */
+async function toggleAtFinished(selection) {
+  const written = []
+  const p = page(anyDocument(written))
+  const reader = await p.boot()
+  try {
+    await reader({ kind: 'command', action: 'start-selection', text: 'The first sentence. The last sentence.' })
+    for (let i = 0; i < 2; i++) {
+      await untilState(reader, (s) => s.index === i && s.status === 'playing', `playing ${i}`)
+      FakeAudio.last.ended = true
+      FakeAudio.last.dispatchEvent(new Event('ended'))
+    }
+    await untilState(reader, (s) => s.status === 'ended', 'finished')
+    p.win.getSelection = () => selection
+    await reader({ kind: 'command', action: 'toggle' })
+    assert.ok(!written.includes('Nothing selected to read.'), 'a toast instead of listening again')
+    // Listening again from the first sentence of the same two.
+    await untilState(reader, (s) => s.index === 0 && s.total === 2 && s.status !== 'ended', 'listening again')
+  } finally {
+    await reader({ kind: 'command', action: 'stop' })
+  }
+}
+
+test('I024: at "Finished", a selection of blank space or an image does not stop the shortcut listening again', async () => {
+  // A drag across the gap between two paragraphs: not collapsed, no words.
+  await toggleAtFinished({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => ({ toString: () => '\n' }),
+    toString: () => '\n',
+  })
+})
+
+test('I025: at "Finished", text selected in the bar itself is not read in place of the page', async () => {
+  // Chrome: a selection in the bar's closed shadow root is collapsed at its host.
+  const host = { nodeType: 1, hasAttribute: (name) => name === 'data-aloud' }
+  await toggleAtFinished({
+    isCollapsed: true,
+    rangeCount: 1,
+    anchorNode: { nodeType: 1, childNodes: [{ nodeType: 3 }, host] },
+    anchorOffset: 1,
+    getRangeAt: () => ({ toString: () => '' }),
+    toString: () => 'Finished',
+  })
+})
+
 // ── the bar belongs to the user, not the page (H033) ─────────────────────────
 
 /** Just enough DOM for PlayerBar and showToast; records listeners and shadow modes. */
@@ -384,8 +430,11 @@ function stubDom() {
       style: {},
       listeners: {},
       value: '',
+      attrs: {},
       classList: { add() {}, remove() {}, toggle() {} },
-      setAttribute() {},
+      setAttribute(name, value) {
+        this.attrs[name] = String(value)
+      },
       addEventListener(type, fn) {
         ;(this.listeners[type] ??= []).push(fn)
       },
@@ -443,6 +492,47 @@ test('H033: the page can neither reach into the bar nor work it with events it d
   assert.deepEqual(calls, [], 'a page script worked the bar')
   fire(true) // the user
   assert.deepEqual(calls, ['toggle', 'seek 0.5', `voice ${planted}`, 'rate 3'])
+})
+
+test('I022: while buffering the play button is named Pause, is busy, and the wait is announced', async () => {
+  const dom = stubDom()
+  globalThis.document = dom.document
+  const { PlayerBar, playButtonLabel } = await load('content/ui.ts')
+  const noop = () => {}
+  const bar = new PlayerBar({
+    onToggle: noop, onNext: noop, onPrev: noop, onClose: noop,
+    onSeekFraction: noop, onVoice: noop, onRate: noop,
+  })
+  bar.setShortcuts({ prev: undefined, toggle: 'Alt+A', next: undefined })
+  const play = dom.found.get('.play')
+  const live = dom.found.get('.live')
+  const view = (status) => ({
+    status, index: 0, total: 10, title: 'Page', error: null, voices: [], voiceId: 'af_heart',
+    rate: 1, engine: 'ok', truncated: false, bufferAhead: 0, readyThrough: -1,
+  })
+
+  // A press while buffering pauses (player.toggle), so the name must say so.
+  bar.update(view('buffering'))
+  assert.equal(play.attrs['aria-label'], 'Pause')
+  assert.equal(play.attrs.title, 'Pause (Alt+A)')
+  assert.equal(play.attrs['aria-busy'], 'true')
+  assert.equal(live.textContent, 'Loading audio')
+
+  bar.update(view('playing'))
+  assert.equal(play.attrs['aria-label'], 'Pause')
+  assert.equal(play.attrs['aria-busy'], 'false')
+  assert.equal(live.textContent, '')
+
+  for (const status of ['ready', 'paused', 'ended', 'error', 'idle']) {
+    bar.update(view(status))
+    assert.equal(play.attrs['aria-label'], 'Play', status)
+    assert.equal(play.attrs.title, 'Play (Alt+A)', status)
+  }
+  assert.deepEqual(playButtonLabel('buffering'), { label: 'Pause', busy: true })
+
+  // The live region is polite and in the bar's markup.
+  const barEl = dom.created.find((e) => e.className === 'bar')
+  assert.match(barEl.innerHTML, /class="live" role="status" aria-live="polite"/)
 })
 
 test('H033: a voice id past the backend limit is never kept, so it cannot stop every reader', async () => {
