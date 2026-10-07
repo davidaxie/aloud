@@ -337,11 +337,14 @@ enum HeadingChapters {
                   let id = paragraph.sentenceIDs.first, id >= 0, id < sentences.count else { continue }
             let text = ChapterText.collapsed(sentences[id].text)
             let words = text.split(whereSeparator: \.isWhitespace)
-            guard !words.isEmpty, words.count <= 12,
-                  !ChapterText.hasLeader(text), !ChapterText.endsWithPageNumber(text) else { continue }
+            let localized = text.wholeMatch(of: localizedHeading)
+            // "Глава 1" on its own is a heading, not a contents line's page number.
+            guard !words.isEmpty, words.count <= 12, !ChapterText.hasLeader(text),
+                  !ChapterText.endsWithPageNumber(text) || localized != nil && words.count == 2 else { continue }
 
-            if let match = text.wholeMatch(of: numberedHeading) {
-                let rest = String(match.1).trimmingCharacters(in: .whitespaces)
+            if let match = localized.map({ $0.output.1 ?? $0.output.2 ?? "" })
+                ?? text.wholeMatch(of: numberedHeading)?.output.1 {
+                let rest = String(match).trimmingCharacters(in: .whitespaces)
                 // "Chapter 5 shows how." is a sentence about a chapter.
                 guard rest.isEmpty || !text.hasSuffix(".") else { continue }
                 var title = ChapterText.droppingTrailingPeriod(text)
@@ -420,13 +423,20 @@ enum HeadingChapters {
     private static let frontNames: Set<String> = ["PREFACE", "FOREWORD", "INTRODUCTION", "PROLOGUE"]
 
     /// The number after "Chapter": digits, a roman numeral or a number
-    /// word ("twenty-one"), so "CHAPTER THREE" and "Chapter 3" agree.
+    /// word ("twenty-one"), so "CHAPTER THREE" and "Chapter 3" agree. The
+    /// localized markers' too: "第十二章", "제3장", "Глава первая", "Erstes Kapitel".
     static func chapterNumber(_ heading: String) -> Int? {
+        if let first = heading.first, first == "第" || first == "제" {
+            return cjkNumber(heading.dropFirst().drop(while: \.isWhitespace)
+                .prefix(while: { !$0.isWhitespace && !"章回話话장화".contains($0) }))
+        }
         let words = heading.split(whereSeparator: { $0.isWhitespace || ".:".contains($0) })
         guard words.count >= 2 else { return nil }
         let token = words[1].lowercased()
+        if token == "kapitel" { return ordinalWords[words[0].lowercased()] }
         if let value = Int(token) { return value }
         if let value = romanValue(token) { return value }
+        if let value = ordinalWords[token] { return value }
         let parts = token.split(separator: "-").map(String.init)
         guard let head = numberWords[parts[0]] else { return nil }
         guard parts.count == 2 else { return parts.count == 1 ? head : nil }
@@ -451,8 +461,54 @@ enum HeadingChapters {
         "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
     ]
 
+    /// The localized markers' ordinals: Russian, German, French, Spanish, Italian.
+    private static let ordinalWords: [String: Int] = [
+        "первая": 1, "вторая": 2, "третья": 3, "четвертая": 4, "четвёртая": 4, "пятая": 5,
+        "шестая": 6, "седьмая": 7, "восьмая": 8, "девятая": 9, "десятая": 10,
+        "erstes": 1, "zweites": 2, "drittes": 3, "viertes": 4, "fünftes": 5, "sechstes": 6,
+        "siebentes": 7, "siebtes": 7, "achtes": 8, "neuntes": 9, "zehntes": 10, "elftes": 11,
+        "zwölftes": 12, "premier": 1, "première": 1, "primero": 1, "primo": 1,
+    ]
+
+    /// "12", "１２", "十二", "一百零五", "一二〇": a CJK chapter numeral.
+    private static func cjkNumber(_ numeral: Substring) -> Int? {
+        guard !numeral.isEmpty else { return nil }
+        var total = 0
+        var current = 0
+        for character in numeral {
+            if "0123456789０１２３４５６７８９".contains(character), let digit = character.wholeNumberValue {
+                current = current * 10 + digit
+            } else if let digit = cjkDigits[character] {
+                current = current * 10 + digit
+            } else if let unit = cjkUnits[character] {
+                total += max(current, 1) * unit
+                current = 0
+            } else {
+                return nil
+            }
+        }
+        return total + current
+    }
+
+    private static let cjkDigits: [Character: Int] = [
+        "〇": 0, "零": 0, "一": 1, "二": 2, "两": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+        "七": 7, "八": 8, "九": 9,
+    ]
+
+    private static let cjkUnits: [Character: Int] = ["十": 10, "百": 100, "千": 1000]
+
     private static let numberedHeading =
         #/(?:CHAPTER|Chapter)\s+(?i:\d{1,3}|[ivxlc]{1,7}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)(?:-(?i:one|two|three|four|five|six|seven|eight|nine))?\b[.:]?\s*(.*)/#
+
+    /// The chapter markers TextExtractor knows in other languages: "第一章
+    /// 山村少年", "第十二回", "第3話", "제1장", "Глава 1", "ГЛАВА ПЕРВАЯ",
+    /// "Kapitel 3", "Erstes Kapitel", "Chapitre premier", "Capítulo I",
+    /// "Capitolo 3". Chapters only: 卷, 部, 篇, 節, 편, Часть are Parts or
+    /// sections. A title may follow, starting with a capital or an
+    /// ideograph and with no sentence break in it, so "第一章就讲完了。" and
+    /// "Глава семьи сказал" (the head of the family) stay prose.
+    private static let localizedHeading =
+        #/(?:(?:第[0-9０-９〇零一二三四五六七八九十百千两兩]{1,6}[章回話话]|제\s?[0-9]{1,3}\s?[장화])(?:[\s:：.．、·—–-]+([^。！？.!?]{0,30}))?|(?:(?:ГЛАВА|Глава)\s+(?:[IVXLCDM]{1,7}|[0-9]{1,3}|(?i:первая|вторая|третья|четвертая|четвёртая|пятая|шестая|седьмая|восьмая|девятая|десятая|последняя))|(?:KAPITEL|Kapitel)\s+(?:[IVXLCDM]{1,7}|[0-9]{1,3})|(?i:erstes|zweites|drittes|viertes|fünftes|sechstes|siebentes|siebtes|achtes|neuntes|zehntes|elftes|zwölftes|letztes)\s+(?:KAPITEL|Kapitel)|(?:CHAPITRE|Chapitre)\s+(?:[IVXLCDM]{1,7}|[0-9]{1,3}|(?i:premier|première|dernier))|(?:CAPÍTULO|Capítulo|CAPITULO|Capitulo|CAPITOLO|Capitolo)\s+(?:[IVXLCDM]{1,7}|[0-9]{1,3}|(?i:primero|primo|único|unico)))(?!\w)[.:]?(?:[\s.:—–-]+(?=[\p{Lu}\p{Lt}\p{Lo}0-9"«„“(])([^.!?…]*[.!?…]?))?)/#
 
     private static let namedHeading =
         #/(?i)(preface|foreword|introduction|prologue|conclusion|epilogue|afterword|acknowledge?ments?|appendix(?:\s+[a-z0-9]+)?|notes|endnotes|index|bibliography|references|glossary|about the authors?)\b[.:]?\s*(.*)/#

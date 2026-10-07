@@ -414,6 +414,42 @@ final class PDFChapterTiersTests: XCTestCase {
                                                  "CHAPTER THREE: Ship"])
     }
 
+    /// H012: the chapter markers of the languages the importer decodes on
+    /// purpose are headings too, with their title lines and running heads
+    /// counted once; a marker inside a sentence, or a sentence after one,
+    /// stays prose.
+    func testLocalizedChapterHeadingsAreFound() throws {
+        func titles(_ chapters: [[String]]) throws -> [String] {
+            var pages: [(page: Int, paragraphs: [[String]])] = [(1, [[ChapterFixtures.copyright]])]
+            for (index, lines) in chapters.enumerated() {
+                pages.append((index + 2, lines.map { [$0] } + [ChapterFixtures.body(index + 2)]))
+            }
+            return try XCTUnwrap(HeadingChapters.entries(in: ChapterFixtures.book(pages)), "\(chapters)").map(\.title)
+        }
+        XCTAssertEqual(try titles([["第一章 山村少年"], ["第一章 山村少年"], ["第二章", "镇上"], ["第十二章：归来"]]),
+                       ["第一章 山村少年", "第二章: 镇上", "第十二章：归来"])
+        XCTAssertEqual(try titles([["제1장 시작"], ["제2장"], ["第3話 出会い"]]), ["제1장 시작", "제2장", "第3話 出会い"])
+        let russian = [["Глава 1", "Начало"], ["Глава вторая"], ["ГЛАВА ТРЕТЬЯ. Дорога"]]
+        let found = ["Глава 1: Начало", "Глава вторая", "ГЛАВА ТРЕТЬЯ. Дорога"]
+        XCTAssertEqual(try titles(russian), found)
+        XCTAssertEqual(try titles([["Kapitel 1"], ["Zweites Kapitel"], ["Kapitel 3: Die Heimkehr"]]),
+                       ["Kapitel 1", "Zweites Kapitel", "Kapitel 3: Die Heimkehr"])
+        XCTAssertEqual(try titles([["Chapitre premier"], ["Capítulo II"], ["Capitolo 3"]]),
+                       ["Chapitre premier", "Capítulo II", "Capitolo 3"])
+
+        for prose in ["第四章就讲完了。", "第五章 我们走了。", "Глава семьи сказал", "Глава 5 описывает дом",
+                      "Глава 4. Начало 9", "Kapitel 6 beschreibt das", "Chapitre 7 montre comment."] {
+            XCTAssertEqual(try titles([russian[0], [prose], russian[1], russian[2]]), found, prose)
+        }
+
+        XCTAssertEqual(HeadingChapters.chapterNumber("第一百零五回"), 105)
+        XCTAssertEqual(HeadingChapters.chapterNumber("第１２章 归来"), 12)
+        XCTAssertEqual(HeadingChapters.chapterNumber("제 3 장"), 3)
+        XCTAssertEqual(HeadingChapters.chapterNumber("ГЛАВА III"), 3)
+        XCTAssertEqual(HeadingChapters.chapterNumber("Глава четвёртая"), 4)
+        XCTAssertEqual(HeadingChapters.chapterNumber("Erstes Kapitel"), 1)
+    }
+
     func testSparsePageTopsWithoutABookHeaderFailTheGate() {
         var pages: [(page: Int, paragraphs: [[String]])] = []
         let tops = [5: "TARGETS", 9: "TARGETS", 14: "CONCLUSION", 18: "CONCLUSION", 24: "SUMMARY", 27: "SUMMARY"]

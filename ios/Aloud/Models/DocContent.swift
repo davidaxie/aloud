@@ -85,7 +85,7 @@ struct ChapterMap: Codable, Equatable {
 
     /// Bump whenever a detector changes: every PDF's map is worked out again
     /// on its next open.
-    static let currentVersion = 3
+    static let currentVersion = 4
 
     let version: Int
     let source: Source
