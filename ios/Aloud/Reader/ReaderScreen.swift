@@ -47,13 +47,19 @@ struct ReaderScreen: View {
     /// measures its band above the bar's top edge, not above its height.
     @State private var textBottom: CGFloat?
     @State private var barTop: CGFloat?
-    /// The Voice & speed sheet's top edge while it rests open, and the text
-    /// view's bottom edge, both in the window's space (the sheet is hosted
-    /// apart from this screen). The page under the sheet counts as covered
-    /// too, so following keeps the spoken sentence in the strip above it
-    /// (P034); nil once the sheet closes, and the band is the bar's again.
-    @State private var listeningSheetTop: CGFloat?
+    /// The Voice & speed sheet's height while it rests open, and the text
+    /// view's bottom edge in the window's space. The sheet stands on the
+    /// window's bottom edge, where the text ends too, so it covers the page
+    /// from its height above that edge; that strip counts as covered, so
+    /// following keeps the spoken sentence above it (P034). Nil once the
+    /// sheet closes, and the band is the bar's again.
+    @State private var listeningSheetHeight: CGFloat?
     @State private var textBottomInWindow: CGFloat?
+    /// The resting sheet's top edge in the window's space.
+    private var listeningSheetTop: CGFloat? {
+        guard let listeningSheetHeight, let textBottomInWindow else { return nil }
+        return textBottomInWindow - listeningSheetHeight
+    }
     /// How far the chip slot reaches above the bar: the tallest chip seen
     /// and its padding, a running maximum (`FollowBand.chipReach`, P049).
     @State private var chipReach: CGFloat = 0
@@ -128,7 +134,7 @@ struct ReaderScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let content, let navigation {
                 PlayerBarView(document: liveDocument, content: content, navigation: navigation,
-                              listeningSheetTop: $listeningSheetTop)
+                              listeningSheetHeight: $listeningSheetHeight)
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.frame(in: .named(Self.space)).minY
                     } action: { minY in

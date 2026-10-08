@@ -278,7 +278,9 @@ final class ListeningLoopUITests: XCTestCase {
         textCoordinate(cue.point, in: app).press(forDuration: 1.2)
         let lookUp = app.buttons["Look Up"].firstMatch
         XCTAssertTrue(lookUp.waitForExistence(timeout: 5), "The long press should open the menu")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+        // On the reader's bar, below the status bar: iOS keeps a tap on the
+        // status bar for itself, so it never reaches the menu to close it.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
         XCTAssertTrue(lookUp.waitForNonExistence(timeout: 5), "The menu should close")
         XCTAssertEqual(currentSentence(app), cue.start, "Dismissing the menu moves nothing")
         XCTAssertEqual(stringValue(of: cue.play), "paused")

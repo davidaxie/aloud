@@ -75,12 +75,46 @@ final class SettingsUITests: XCTestCase {
         }
     }
 
+    /// `element`'s frame once two reads a quarter second apart agree: a
+    /// sheet's presentation has come to rest.
+    private func settledFrame(of element: XCUIElement) -> CGRect {
+        var frame = element.frame
+        for _ in 0..<16 {
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "let the sheet come to rest")], timeout: 0.25)
+            let next = element.frame
+            if next == frame { break }
+            frame = next
+        }
+        return frame
+    }
+
+    /// The Settings footer's two lines, which the audit can't follow to the
+    /// largest sizes: the rows above them grow with their values and the
+    /// natural voice's line, so the audit's own size steps push the footer
+    /// below the screen, where it reads them as "partially unsupported".
+    /// `assertFooterScales` checks their scaling by hand at every launch size.
+    private static let footerLines = ["settings.privacy", "settings.version"]
+
+    private func isFooterBelowTheFold(_ issue: XCUIAccessibilityAuditIssue) -> Bool {
+        issue.auditType == .dynamicType && Self.footerLines.contains(issue.element?.identifier ?? "")
+    }
+
+    /// The footer's lines at this launch's size, scrolled into view; each
+    /// taller than at the size before, so they follow Dynamic Type.
+    private func footerHeights(_ app: XCUIApplication) -> [CGFloat] {
+        let lines = Self.footerLines.map { app.staticTexts[$0].firstMatch }
+        for _ in 0..<4 where !lines.allSatisfy(\.isHittable) { app.swipeUp() }
+        XCTAssertTrue(lines.allSatisfy(\.exists), "The footer's privacy line and version")
+        return lines.map(\.frame.height)
+    }
+
     private func auditIssues(_ app: XCUIApplication) throws -> [String] {
         var issues: [String] = []
         try app.performAccessibilityAudit(for: [.dynamicType, .textClipped, .contrast,
                                                 .hitRegion, .sufficientElementDescription]) { issue in
             // The root's 1×1 DEBUG probes (debug.announcements) aren't UI.
             if issue.element?.identifier.hasPrefix("debug.") == true { return true }
+            if self.isFooterBelowTheFold(issue) { return true }
             // The bar caps its title's scaling by design; the title shows the
             // Large Content Viewer instead.
             if self.isNavigationBarTextScaling(issue, in: app) { return true }
@@ -195,7 +229,10 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(title.waitForExistence(timeout: 10), "The Aa sheet should open")
         let done = app.buttons["appearance.done"].firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(done.frame.height, 44, "Done is a full touch target")
+        // Measured once the sheet has risen: mid-presentation iOS scales it,
+        // and Done reads 43.2 pt. A hundredth of a point for the frame's
+        // conversion to the screen.
+        XCTAssertGreaterThanOrEqual(settledFrame(of: done).height, 44 - 0.01, "Done is a full touch target")
         XCTAssertEqual(done.label, "Done")
 
         // Without a scrim, a tap above the sheet reaches the page, not a dismiss.
@@ -333,6 +370,7 @@ final class SettingsUITests: XCTestCase {
 
     func testSettingsAndAppearanceAccessibilityAudit() throws {
         var previous: (size: AuditTextSize, height: CGFloat)?
+        var previousFooter: (size: AuditTextSize, heights: [CGFloat])?
         for size in AuditTextSize.all {
             let app = launch(["-uitest-temp-model-dir"] + size.launchArguments)
             openSettings(app)
@@ -341,7 +379,17 @@ final class SettingsUITests: XCTestCase {
             previous = (size, row.height)
             XCTAssertEqual(try auditIssues(app), [], "Settings at \(size.name)")
 
-            app.buttons["settings.appearance"].firstMatch.tap()
+            let footer = footerHeights(app)
+            if let previousFooter {
+                for (line, (before, now)) in zip(Self.footerLines, zip(previousFooter.heights, footer)) {
+                    XCTAssertGreaterThan(now, before, "\(line) grows from \(previousFooter.size.name) to \(size.name)")
+                }
+            }
+            previousFooter = (size, footer)
+
+            let appearanceRow = app.buttons["settings.appearance"].firstMatch
+            for _ in 0..<4 where !appearanceRow.isHittable { app.swipeDown() }
+            appearanceRow.tap()
             XCTAssertTrue(schemeControl(app).waitForExistence(timeout: 10))
             XCTAssertEqual(try auditIssues(app), [], "Text & appearance at \(size.name)")
             app.terminate()

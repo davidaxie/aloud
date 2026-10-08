@@ -212,6 +212,9 @@ struct AppearanceView: View {
                 }
                 .pickerStyle(.segmented)
             }
+            // A segmented picker drops its title: without this VoiceOver
+            // reads the three choices with no name for the control.
+            .accessibilityLabel(AppearanceCopy.appearance)
             .accessibilityIdentifier("appearance.scheme")
         }
     }

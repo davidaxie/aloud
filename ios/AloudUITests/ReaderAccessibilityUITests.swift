@@ -11,10 +11,10 @@ final class ReaderAccessibilityUITests: XCTestCase {
     }
 
     /// The Great Gatsby, paused in the reader.
-    private func openGatsby() -> XCUIApplication {
+    private func openGatsby(_ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication.aloud(["-uitest-seed-classic", "64317", "-uitest-reset-library",
                                          "-uitest-open-first-doc", "-uitest-reset-natural-voice-offer",
-                                         "-uitest-temp-model-dir"])
+                                         "-uitest-temp-model-dir"] + extra)
         app.launch()
         XCTAssertTrue(app.textViews["reader.text"].firstMatch.waitForExistence(timeout: 15),
                       "The reader should open")
@@ -31,20 +31,44 @@ final class ReaderAccessibilityUITests: XCTestCase {
     }
 
     /// P042: a long press on a sentence offers exactly the page's menu and
-    /// moves nothing; dismissing it leaves the playhead where it was.
-    func testALongPressOffersThePagesMenuAndMovesNothing() {
-        let app = openGatsby()
-        let probe = sentenceProbe(app)
-        XCTAssertTrue(probe.waitForExistence(timeout: 10))
-        let before = probe.identifier
-        let text = app.textViews["reader.text"].firstMatch
-        text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).press(forDuration: 1.2)
+    /// moves nothing; dismissing it leaves the playhead where it was, and
+    /// nothing plays (a press that acted as a tap would play). The press
+    /// lands on the cued sentence's first line: a fixed spot on the page can
+    /// fall in a paragraph's gap or past a short last line, where there is
+    /// no sentence and so no menu.
+    func testALongPressOffersThePagesMenuAndMovesNothing() throws {
+        let app = openGatsby(["-uitest-seek-text", "unusually communicative"])
+        let before = try XCTUnwrap(waitForSentence(in: app, timeout: 10) { $0 > 0 },
+                                   "The seek hook should cue a sentence in chapter I")
+        let frame = try XCTUnwrap(settledActiveSentenceFrame(app), "The cued sentence should come to rest")
+        let play = app.buttons["player.play"].firstMatch
+        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        XCTAssertEqual(stringValue(of: play), "paused", "No autoplay in this launch")
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.midX, dy: frame.minY + 10))
+            .press(forDuration: 1.2)
         for title in ["Play from Here", "Copy", "Look Up", "Share\u{2026}"] {
             XCTAssertTrue(app.buttons[title].firstMatch.waitForExistence(timeout: 5), "The menu should offer \(title)")
         }
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+        // On the reader's bar, below the status bar: iOS keeps a tap on the
+        // status bar for itself, so it never reaches the menu to close it.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
         XCTAssertTrue(app.buttons["Look Up"].firstMatch.waitForNonExistence(timeout: 5), "The menu should close")
-        XCTAssertEqual(sentenceProbe(app).identifier, before, "Dismissing the menu moves nothing")
+        XCTAssertEqual(currentSentence(app), before, "Dismissing the menu moves nothing")
+        XCTAssertEqual(stringValue(of: play), "paused", "The press plays nothing")
+    }
+
+    /// The active sentence's frame once two reads a quarter second apart
+    /// agree: the open's placement has come to rest.
+    private func settledActiveSentenceFrame(_ app: XCUIApplication) -> CGRect? {
+        var frame = activeSentenceFrame(app)
+        for _ in 0..<16 {
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "let the text come to rest")], timeout: 0.25)
+            let next = activeSentenceFrame(app)
+            if let next, next == frame { return next }
+            frame = next
+        }
+        return nil
     }
 
     /// P050: a reader that can't load says so and offers one way back. In
@@ -57,7 +81,9 @@ final class ReaderAccessibilityUITests: XCTestCase {
         let back = app.buttons["reader.backToLibrary"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 15), "The failure state should offer the way back")
         XCTAssertFalse(app.textViews["reader.text"].exists, "Nothing loaded")
-        XCTAssertGreaterThanOrEqual(back.frame.height, 44, "The way back is a 44 pt target")
+        // A hundredth of a point for the frame's conversion to the screen: a
+        // fixed 44 pt target can read 43.99999999999994.
+        XCTAssertGreaterThanOrEqual(back.frame.height, 44 - 0.01, "The way back is a 44 pt target")
 
         let title = "Couldn't open this document"
         let detail = "It may be damaged or a scanned document."

@@ -13,9 +13,9 @@ import SwiftUI
 /// control VoiceOver resizes the sheet with) and the SheetGrabber steps
 /// aside. The scrim stays: a tap above the sheet closes it.
 ///
-/// The reader learns where the sheet begins (`coveredFromY`), so calm
-/// follow measures its band above the sheet rather than above the player
-/// bar: the spoken sentence glides into the strip of page left in view,
+/// The reader learns how much of the screen the sheet covers
+/// (`coveredHeight`), so calm follow measures its band above the sheet
+/// rather than above the player bar: the spoken sentence glides into the strip of page left in view,
 /// and a voice picked here is heard over a sentence that can be seen.
 struct ListeningSheet: View {
     /// Where the sheet opens: the page keeps the top 40% of the screen.
@@ -25,22 +25,23 @@ struct ListeningSheet: View {
     /// it, so a drag between detents never re-aims following every frame.
     static let restingDelay: Duration = .milliseconds(150)
 
-    /// The sheet's top edge in window coordinates as it last rested at its
-    /// opening detent, nil once the sheet has gone. The full list keeps
-    /// it: the page is out of view there, and coming back down then moves
-    /// nothing.
-    @Binding private var coveredFromY: CGFloat?
+    /// The sheet's full height, safe areas included, as it last rested at
+    /// its opening detent, nil once the sheet has gone. The sheet stands on
+    /// the window's bottom edge, so the reader takes its top edge from
+    /// there. The full list keeps it: the page is out of view there, and
+    /// coming back down then moves nothing.
+    @Binding private var coveredHeight: CGFloat?
     @State private var detent: PresentationDetent = ListeningSheet.openingDetent
-    /// The top edge as last measured, moving or not.
-    @State private var measuredTop: CGFloat?
+    /// The height as last measured, moving or not.
+    @State private var measuredHeight: CGFloat?
 
-    init(coveredFromY: Binding<CGFloat?> = .constant(nil)) {
-        _coveredFromY = coveredFromY
+    init(coveredHeight: Binding<CGFloat?> = .constant(nil)) {
+        _coveredHeight = coveredHeight
     }
 
-    /// The edge the reader may be told of: only at the opening detent.
-    private var restingTop: CGFloat? {
-        detent == Self.openingDetent ? measuredTop : nil
+    /// The height the reader may be told of: only at the opening detent.
+    private var restingHeight: CGFloat? {
+        detent == Self.openingDetent ? measuredHeight : nil
     }
 
     var body: some View {
@@ -64,20 +65,28 @@ struct ListeningSheet: View {
             ListeningView()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // The window's space: the sheet is hosted apart from the reader.
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.frame(in: .global).minY.rounded()
-        } action: { minY in
-            measuredTop = minY
+        // A size, never a window position: the sheet is hosted apart from
+        // the reader, and its position read in the window was taken before
+        // iOS finished raising it, so the reader never heard where it came
+        // to rest and the spoken sentence stayed under it. Its size is
+        // SwiftUI's own layout, current from the first frame.
+        .background {
+            Color.clear
+                .ignoresSafeArea()
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height.rounded()
+                } action: { height in
+                    measuredHeight = height
+                }
         }
-        .task(id: restingTop) {
-            // Told only once the edge holds still at the opening detent.
-            guard let restingTop else { return }
+        .task(id: restingHeight) {
+            // Told only once the sheet holds still at the opening detent.
+            guard let restingHeight else { return }
             try? await Task.sleep(for: Self.restingDelay)
-            guard !Task.isCancelled, coveredFromY != restingTop else { return }
-            coveredFromY = restingTop
+            guard !Task.isCancelled, coveredHeight != restingHeight else { return }
+            coveredHeight = restingHeight
         }
-        .onDisappear { coveredFromY = nil }
+        .onDisappear { coveredHeight = nil }
         .sheetChrome(Self.detents, selection: $detent)
     }
 }
