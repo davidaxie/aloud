@@ -223,6 +223,9 @@ struct ShelfLinks: View {
     /// The system's paste control, which reads the clipboard with no
     /// prompt. Dressed as a link: its fill is the page's own ground, so the
     /// featured card's play circle stays the screen's one accent fill.
+    /// The control keeps its own intrinsic height inside any outer frame,
+    /// so the 44pt target comes from its large size; the frame is a floor
+    /// for the row's layout only. Only the iPhone hands this an onPaste.
     private func pasteControl(_ onPaste: @escaping ([String]) -> Void) -> some View {
         PasteButton(payloadType: String.self) { strings in
             // Handed to the main actor, whichever thread the control
@@ -231,6 +234,7 @@ struct ShelfLinks: View {
         }
         .labelStyle(.titleOnly)
         .buttonBorderShape(.capsule)
+        .controlSize(.large)
         .tint(Theme.bg)
         .foregroundStyle(Theme.accentStrong)
         .frame(minHeight: 44)

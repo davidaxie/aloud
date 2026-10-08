@@ -63,6 +63,13 @@ final class CoverLintTests: XCTestCase {
         let title = try XCTUnwrap(face.range(of: "Text(title)"))
         XCTAssertTrue(face[title.upperBound..<start.lowerBound].contains(".layoutPriority(1)"),
                       "the title keeps its lines before the author")
+        // The author wraps at its own, slightly wider line (R1-03 on the
+        // Mac's 136pt cover); the title keeps its Theme.Space.md sides.
+        XCTAssertTrue(author.contains(".padding(.horizontal, CoverGeometry.authorInset)"), author)
+        XCTAssertTrue(face[title.upperBound..<start.lowerBound].contains(".padding(.horizontal, Theme.Space.md)"),
+                      String(face[title.upperBound..<start.lowerBound]))
+        XCTAssertEqual(face.components(separatedBy: ".padding(.horizontal,").count - 1, 2,
+                       "no shared side padding narrows the author's line again")
     }
 
     /// Covers draw through `Image(platformImage:)` since the seam (S1);

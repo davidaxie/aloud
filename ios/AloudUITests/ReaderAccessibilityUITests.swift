@@ -85,7 +85,7 @@ final class ReaderAccessibilityUITests: XCTestCase {
         // fixed 44 pt target can read 43.99999999999994.
         XCTAssertGreaterThanOrEqual(back.frame.height, 44 - 0.01, "The way back is a 44 pt target")
 
-        let title = "Couldn't open this document"
+        let title = "Couldn't open this book"
         let detail = "It may be damaged or a scanned document."
         var order: [String] = []
         func visit(_ element: XCUIElementSnapshot) {

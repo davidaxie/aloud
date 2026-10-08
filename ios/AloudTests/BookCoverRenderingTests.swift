@@ -118,14 +118,14 @@ final class BookCoverRenderingTests: XCTestCase {
     // MARK: - The author
 
     /// R1-03: a long author draws at full size, wrapping onto up to three
-    /// centred lines, never shrunk or cut short. The phone's covers run
-    /// from 155pt; MacGridMetricsTests checks the Mac's 136-168 with the
-    /// Mac's own type.
+    /// centred lines, never shrunk or cut short, at the author line's own
+    /// width. The phone's covers run from 155pt; MacGridMetricsTests checks
+    /// the Mac's 136-168 with the Mac's own type.
     func testALongAuthorWrapsAtFullSize() throws {
         let title = "Frankenstein; or, The Modern Prometheus"
         let author = "Mary Wollstonecraft Shelley"
         for width: CGFloat in [155, 160, 169] {
-            let face = width - 2 * Theme.Space.md
+            let face = CoverGeometry.authorLineWidth(forWidth: width)
             let lines = Self.eyebrowLines(author, width: face)
             XCTAssertLessThanOrEqual(lines.count, 3, "\(width)pt: \(lines)")
             for word in author.split(separator: " ") {

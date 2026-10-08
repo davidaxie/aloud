@@ -59,6 +59,17 @@ final class CoverGeometryTests: XCTestCase {
         XCTAssertTrue(DocumentCardView.usesHeroCover(at: .accessibility5))
     }
 
+    /// R1-03: the author's lines run a little wider than the title's, so on
+    /// the narrowest grid cover (the Mac's 136pt) they are 112pt, room for
+    /// the Mac eyebrow's 107pt longest word in a long name, where the
+    /// title's 104pt face cut it. MacGridMetricsTests measures the type.
+    func testTheAuthorLineIsALittleWiderThanTheTitles() {
+        XCTAssertLessThan(CoverGeometry.authorInset, Theme.Space.md)
+        XCTAssertGreaterThanOrEqual(CoverGeometry.authorInset, Theme.Space.xs, "still clear of the cover's edge")
+        XCTAssertEqual(CoverGeometry.authorLineWidth(forWidth: 136), 112)
+        XCTAssertEqual(CoverGeometry.authorLineWidth(forWidth: 160), 160 - 2 * CoverGeometry.authorInset)
+    }
+
     func testTheArtworkCoverIsCentredInItsSquare() {
         let rect = CoverGeometry.artworkCoverRect(side: 300)
         XCTAssertEqual(rect, CGRect(x: 70, y: 30, width: 160, height: 240))

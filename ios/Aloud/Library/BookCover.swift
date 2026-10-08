@@ -27,10 +27,18 @@ enum CoverGeometry {
     static let artworkScale: CGFloat = 3
     /// The cover's height as a fraction of the lock-screen square.
     static let artworkCoverFraction: CGFloat = 0.8
+    /// The author line's side inset on a cover with type: a little under
+    /// the title's (Theme.Space.md), so a long name's longest word still
+    /// fits whole, at full size, on the narrowest grid cover (the Mac's
+    /// 136pt). Both apps.
+    static let authorInset: CGFloat = Theme.Space.sm
 
     static func showsText(width: CGFloat) -> Bool { width >= minimumTextWidth }
 
     static func height(forWidth width: CGFloat) -> CGFloat { width / aspectRatio }
+
+    /// The width the author's lines wrap at on a cover this wide.
+    static func authorLineWidth(forWidth width: CGFloat) -> CGFloat { width - 2 * authorInset }
 
     static func ruleSize(forWidth width: CGFloat) -> CGSize {
         showsText(width: width) ? CGSize(width: 26, height: 1.5)
@@ -208,6 +216,7 @@ private struct TypographicFace: View {
                     .lineLimit(3)
                     .multilineTextAlignment(.center)
                     .minimumScaleFactor(0.8)
+                    .padding(.horizontal, Theme.Space.md)
                     .padding(.top, Theme.Space.xl)
                     // On a short cover the author's lines give way first:
                     // the caption below repeats the author.
@@ -225,11 +234,13 @@ private struct TypographicFace: View {
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(3)
                         .multilineTextAlignment(.center)
+                        // A little wider than the title's lines: see
+                        // CoverGeometry.authorInset.
+                        .padding(.horizontal, CoverGeometry.authorInset)
                         .padding(.bottom, Theme.Space.md)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.horizontal, Theme.Space.md)
         }
     }
 }

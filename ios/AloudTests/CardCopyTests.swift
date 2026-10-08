@@ -239,17 +239,19 @@ final class CardCopyTests: XCTestCase {
 
     // MARK: - Every surface reads the same line
 
-    /// With nothing outranking it, the Continue card's subtitle is the grid
-    /// card's line, word for word.
+    /// With nothing outranking it, the Continue card's subtitle is the
+    /// author, then the grid card's line (R1-02); the spoken line still has
+    /// no author, since the card's label already ends with it.
     func testTheHeroReadsTheCardsLine() {
         let books = [doc(wordCount: 48_208), doc(progress: 0.43, wordCount: 20_842),
                      doc(progress: 1, wordCount: 20_842), doc(progress: 0.43, wordCount: 0),
-                     doc(progress: 0.5, wordCount: 1_320, kind: .pdf)]
+                     doc(progress: 0.5, wordCount: 1_320, kind: .pdf), doc(author: nil, wordCount: 2_317)]
         for book in books {
             for rate in [1, 1.5] {
                 XCTAssertEqual(ContinueListeningCopy.subtitle(for: book, rate: rate, stop: nil,
                                                               offersNaturalVoice: false, modelState: .notInstalled),
-                               book.listeningSubtitle(rate: rate))
+                               [book.author ?? "", book.listeningSubtitle(rate: rate)]
+                                   .filter { !$0.isEmpty }.joined(separator: " · "))
                 XCTAssertEqual(ContinueListeningCopy.spokenSubtitle(for: book, rate: rate, stop: nil,
                                                                     offersNaturalVoice: false,
                                                                     modelState: .notInstalled),

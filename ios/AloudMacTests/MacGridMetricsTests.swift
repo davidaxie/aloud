@@ -70,16 +70,18 @@ final class MacGridMetricsTests: XCTestCase {
         }
     }
 
-    /// R1-03 on the Mac's own type: on the default window's covers and the
-    /// widest, a long author wraps whole words onto at most three lines at
-    /// full size, none cut. Measured with the cover's author type, offered
-    /// the face's width (the cover less its side padding). The narrowest
-    /// window's 136pt cover leaves a 104pt face, short of the 11pt
-    /// eyebrow's longest word here, so it is not claimed.
+    /// R1-03 on the Mac's own type: on every grid cover, from the narrowest
+    /// window's 136pt to the widest, a long author wraps whole words onto
+    /// at most three lines at full size, none cut. Measured with the
+    /// cover's author type, offered the author line's own width (the cover
+    /// less CoverGeometry.authorInset each side, a little more than the
+    /// title gets, so the 136pt cover's line holds the 11pt eyebrow's
+    /// longest word here).
     func testALongAuthorFitsTheGridsCovers() throws {
         let author = "Mary Wollstonecraft Shelley"
-        for width in [MacGridMetrics(windowWidth: 1000).coverWidth, MacGridMetrics.coverWidths.upperBound] {
-            let face = width - 2 * Theme.Space.md
+        for width in [MacGridMetrics.coverWidths.lowerBound, MacGridMetrics(windowWidth: 1000).coverWidth,
+                      MacGridMetrics.coverWidths.upperBound] {
+            let face = CoverGeometry.authorLineWidth(forWidth: width)
             var lines: [String] = []
             for word in author.split(separator: " ").map(String.init) {
                 XCTAssertLessThanOrEqual(Self.eyebrowWidth(word), face, "\(width) pt: '\(word)' is cut")

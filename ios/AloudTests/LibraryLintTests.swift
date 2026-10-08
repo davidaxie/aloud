@@ -352,6 +352,15 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(emptyView.contains("var onPaste: (([String]) -> Void)? = nil"))
         XCTAssertTrue(emptyView.contains("ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, idPrefix: \"library\")"))
         XCTAssertTrue(emptyView.contains("PasteButton(payloadType: String.self)"))
+        // A 44pt target from the control's own size (an outer frame leaves
+        // the system control at its intrinsic height), still dressed as a
+        // link: title only, a capsule in the page's ground, accent text.
+        let control = try XCTUnwrap(emptyView.range(of: "private func pasteControl("))
+        let chain = String(emptyView[control.upperBound...].prefix(900))
+        for modifier in [".controlSize(.large)", ".labelStyle(.titleOnly)", ".buttonBorderShape(.capsule)",
+                         ".tint(Theme.bg)", ".foregroundStyle(Theme.accentStrong)"] {
+            XCTAssertTrue(chain.contains(modifier), "\(modifier): \(chain)")
+        }
         XCTAssertTrue(library.contains("onPaste: clipboardHasText\n                                    ? { importer.importText($0.joined(separator: \"\\n\\n\")) } : nil"))
         XCTAssertFalse(emptyView.contains("import UIKit"))
         XCTAssertFalse(SwiftLiterals.code(in: emptyView).contains("UIPasteboard"))
