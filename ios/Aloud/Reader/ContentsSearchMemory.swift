@@ -5,8 +5,8 @@ import Foundation
 /// The Mac's panel stays open beside the page, so its query and results
 /// simply stay. The iPhone's sheet closes on every pick, so it remembers
 /// the search instead: reopened on the same book, it shows the same query's
-/// results with the last pick marked, and the next hit is a tap away. A
-/// cleared or emptied field, Cancel, or another book forgets it.
+/// results with the last pick marked, and the next hit is a tap away. Any
+/// edit to the field, Cancel, or another book forgets it.
 ///
 /// It also carries one request across the sheet's presentation: the
 /// chapter line's search action asks for the field to take focus, and the

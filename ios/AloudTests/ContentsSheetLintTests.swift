@@ -10,6 +10,7 @@ final class ContentsSheetLintTests: XCTestCase {
     private static let sheetPath = "Reader/ContentsSheet.swift"
     private static let linePath = "Reader/ReaderMessageLine.swift"
     private static let seamPath = "Platform/PlatformContentsEntry.swift"
+    private static let entryPath = "Reader/ChapterLineContentsEntry.swift"
 
     /// The text from `start` up to (not including) the first `end` after
     /// it, whitespace collapsed so a reformat doesn't trip the lint.
@@ -65,8 +66,14 @@ final class ContentsSheetLintTests: XCTestCase {
         let s = try SourceTree.sources(only: [Self.sheetPath])
         let sheet = try XCTUnwrap(s[Self.sheetPath])
         XCTAssertTrue(sheet.contains("PlaceHistory.collapsedCount(atHalfHeight: detent == .medium,"))
-        XCTAssertEqual(occurrences(of: "collapsedCount: collapsed", in: sheet), 2,
-                       "the rows shown and the toggle count from the same number")
+        // The rows shown and the toggle read the same height and size.
+        let section = try region(of: sheet, from: "private func placesSection(", to: "/// Places kept above the toggle")
+        XCTAssertTrue(section.contains("expanded: showsEarlierPlaces, collapsedCount: collapsed)"), section)
+        XCTAssertTrue(section.contains("PlaceHistory.offersEarlier(total: rows.count, hasChapterList: navigation.hasChapterList, "
+                                       + "expanded: showsEarlierPlaces, atHalfHeight: detent == .medium, "
+                                       + "accessibilitySize: dynamicTypeSize.isAccessibilitySize)"),
+                      "the toggle waits for the sheet to grow: \(section)")
+        XCTAssertEqual(occurrences(of: "accessibilitySize: dynamicTypeSize.isAccessibilitySize", in: sheet), 2)
         let place = try region(of: sheet, from: "private func placeRow(", to: "/// An eyebrow over a run of rows")
         XCTAssertTrue(place.contains(".padding(.vertical, Theme.Space.xs)"), "place rows pad 8pt: \(place)")
         XCTAssertTrue(place.contains(".frame(minHeight: 44)"))
@@ -147,7 +154,14 @@ final class ContentsSheetLintTests: XCTestCase {
             XCTAssertTrue(opened.contains(needle), "opening should contain '\(needle)': \(opened)")
         }
         let changed = try region(of: sheet, from: "private func queryChanged(", to: "private func cancelSearch()")
-        XCTAssertTrue(changed.contains("if ContentsSearchMemory.isBlank(newValue) { searchMemory.forget() }"))
+        // Any edit forgets the remembered search, so a reopening never
+        // brings back a query the field no longer holds.
+        XCTAssertTrue(changed.contains("pickedSentence = nil searchMemory.forget() scheduleSearch(for: newValue)"), changed)
+        XCTAssertFalse(changed.contains("isBlank"), "not only a blank field forgets: \(changed)")
+        // The shared memory is read on the main actor, never as a default
+        // argument (a Swift 6 error).
+        XCTAssertTrue(sheet.contains("private var searchMemory: ContentsSearchMemory { .shared }"))
+        XCTAssertFalse(sheet.contains("searchMemory: ContentsSearchMemory = .shared"))
     }
 
     // MARK: - P032
@@ -163,25 +177,40 @@ final class ContentsSheetLintTests: XCTestCase {
     // MARK: - P033: the chapter line's ways in
 
     func testTheChapterLineOffersSearchOnTheIPhoneOnly() throws {
-        let s = try SourceTree.sources(only: [Self.linePath, Self.seamPath])
+        let s = try SourceTree.sources(only: [Self.linePath, Self.seamPath, Self.entryPath])
         let line = try XCTUnwrap(s[Self.linePath])
         let seam = try XCTUnwrap(s[Self.seamPath])
+        let entrySource = try XCTUnwrap(s[Self.entryPath])
         let seamCode = SwiftLiterals.code(in: seam).split(whereSeparator: \.isWhitespace).joined(separator: " ")
         XCTAssertTrue(seamCode.contains("#if os(iOS) static let chapterLineOffersSearch = true"), seamCode)
         XCTAssertTrue(seamCode.contains("#elseif os(macOS) static let chapterLineOffersSearch = false"), seamCode)
 
-        XCTAssertTrue(line.contains(".modifier(ContentsEntry(onOpenContents: onOpenContents, offersSearchAction: true))"),
+        XCTAssertTrue(line.contains(".modifier(ChapterLineContentsEntry(onOpenContents: onOpenContents, offersSearchAction: true))"),
                       "the position line offers the search")
-        XCTAssertTrue(line.contains(".modifier(ContentsEntry(onOpenContents: onOpenContents, offersSearchAction: false))"),
+        XCTAssertTrue(line.contains(".modifier(ChapterLineContentsEntry(onOpenContents: onOpenContents, offersSearchAction: false))"),
                       "the error line keeps Contents in its menu")
-        let entry = try region(of: line, from: "private struct ContentsEntry: ViewModifier", to: "private func searchThisBook()")
+        // The entry lives in its own file, so the player bar's count of the
+        // line's buttons (each with the Large Content Viewer) stays its own.
+        XCTAssertFalse(line.contains("struct ChapterLineContentsEntry"))
+        XCTAssertFalse(line.contains(".contextMenu"), "the line's menu comes only through the entry")
+        let entry = try region(of: entrySource, from: "struct ChapterLineContentsEntry: ViewModifier",
+                               to: "private func searchThisBook()")
         for needle in ["if PlatformContentsEntry.chapterLineOffersSearch {", ".contextMenu {",
                        "Button(ContentsSearch.title, systemImage: \"list.bullet\", action: onOpenContents)",
                        "Button(ContentsSearch.searchPrompt, systemImage: \"magnifyingglass\", action: searchThisBook)",
-                       ".accessibilityActions {"] {
+                       ".accessibilityActions {", "@Environment(\\.dynamicTypeSize) private var dynamicTypeSize",
+                       "if Self.offersMenu(dynamicTypeSize: dynamicTypeSize) {",
+                       "!dynamicTypeSize.isAccessibilitySize"] {
             XCTAssertTrue(entry.contains(needle), "the entry should contain '\(needle)': \(entry)")
         }
-        let search = try region(of: line, from: "private func searchThisBook()", to: "onOpenContents()")
+        // The VoiceOver action comes before the size check, so it stays at
+        // every size; only the long-press menu steps aside for the viewer.
+        let actions = try XCTUnwrap(entry.range(of: ".accessibilityActions {"))
+        let sizeCheck = try XCTUnwrap(entry.range(of: "if Self.offersMenu(dynamicTypeSize: dynamicTypeSize) {"))
+        let menu = try XCTUnwrap(entry.range(of: ".contextMenu {"))
+        XCTAssertLessThan(actions.lowerBound, sizeCheck.lowerBound, entry)
+        XCTAssertLessThan(sizeCheck.lowerBound, menu.lowerBound, entry)
+        let search = try region(of: entrySource, from: "private func searchThisBook()", to: "onOpenContents()")
         XCTAssertTrue(search.contains("ContentsSearchMemory.shared.requestSearchFocus()"))
         // The protected Voice Control names stay, the visible title first.
         let labels = try region(of: line, from: "static func positionInputLabels(", to: "/// The title, and Back 5 min")

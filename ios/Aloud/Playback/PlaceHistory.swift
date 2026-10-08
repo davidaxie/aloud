@@ -148,7 +148,26 @@ enum PlaceHistory {
     /// sizes, where even one stop fills half a screen. The Mac's panel is
     /// full height and keeps `collapsedCount`.
     static func collapsedCount(atHalfHeight: Bool, hasChapterList: Bool, accessibilitySize: Bool) -> Int {
-        atHalfHeight && hasChapterList && !accessibilitySize ? halfHeightCollapsedCount : collapsedCount
+        keepsOneStop(atHalfHeight: atHalfHeight, hasChapterList: hasChapterList, accessibilitySize: accessibilitySize)
+            ? halfHeightCollapsedCount : collapsedCount
+    }
+
+    /// Whether the iPhone's Contents shows the earlier-stops toggle under
+    /// those rows. Where half height keeps one stop, the toggle waits for
+    /// the sheet to grow, so the first chapter clears the fold on the
+    /// smallest screen; growing it shows three stops and the toggle. Once
+    /// pressed it stays at any height, so an expanded list can always fold.
+    static func offersEarlier(total: Int, hasChapterList: Bool, expanded: Bool,
+                              atHalfHeight: Bool, accessibilitySize: Bool) -> Bool {
+        let keepsOne = keepsOneStop(atHalfHeight: atHalfHeight, hasChapterList: hasChapterList,
+                                    accessibilitySize: accessibilitySize)
+        let collapsed = keepsOne ? halfHeightCollapsedCount : collapsedCount
+        return offersEarlier(total: total, hasChapterList: hasChapterList, collapsedCount: collapsed)
+            && (expanded || !keepsOne)
+    }
+
+    private static func keepsOneStop(atHalfHeight: Bool, hasChapterList: Bool, accessibilitySize: Bool) -> Bool {
+        atHalfHeight && hasChapterList && !accessibilitySize
     }
 
     /// The first `excerptLength` characters of a sentence.

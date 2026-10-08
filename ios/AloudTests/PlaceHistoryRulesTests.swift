@@ -136,6 +136,30 @@ final class PlaceHistoryRulesTests: XCTestCase {
                                                  collapsedCount: PlaceHistory.collapsedCount))
     }
 
+    /// P024 on the smallest screen: at half height the toggle's row would
+    /// push the first chapter under the fold, so it waits for the sheet to
+    /// grow; once pressed it stays, so the expanded stops can fold back.
+    func testHalfHeightHoldsTheToggleBackUntilTheSheetGrows() {
+        XCTAssertFalse(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: false,
+                                                  atHalfHeight: true, accessibilitySize: false),
+                       "half height: one stop, then the chapters")
+        XCTAssertTrue(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: false,
+                                                 atHalfHeight: false, accessibilitySize: false),
+                      "grown: three stops and the toggle")
+        XCTAssertTrue(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: true,
+                                                 atHalfHeight: true, accessibilitySize: false),
+                      "pressed, then shrunk: Show fewer stays")
+        XCTAssertTrue(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: false,
+                                                 atHalfHeight: true, accessibilitySize: true),
+                      "the accessibility sizes keep three and their toggle")
+        XCTAssertFalse(PlaceHistory.offersEarlier(total: 3, hasChapterList: true, expanded: false,
+                                                  atHalfHeight: false, accessibilitySize: false),
+                       "nothing held back at full height")
+        XCTAssertFalse(PlaceHistory.offersEarlier(total: 8, hasChapterList: false, expanded: false,
+                                                  atHalfHeight: true, accessibilitySize: false),
+                       "a book without chapters lists them all")
+    }
+
     func testTheExcerptIsTheSentencesStart() {
         let long = String(repeating: "word ", count: 40)
         XCTAssertEqual(PlaceHistory.excerpt(of: long).count, PlaceHistory.excerptLength)

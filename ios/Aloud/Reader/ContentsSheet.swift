@@ -52,7 +52,8 @@ struct ContentsSheet: View {
 
     let content: DocContent
     let navigation: ReaderNavigation
-    private let searchMemory: ContentsSearchMemory
+    /// Read here, on the main actor, rather than as a default argument.
+    private var searchMemory: ContentsSearchMemory { .shared }
 
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -81,11 +82,9 @@ struct ContentsSheet: View {
 
     private static let debounceNanoseconds: UInt64 = 200_000_000
 
-    init(content: DocContent, navigation: ReaderNavigation,
-         searchMemory: ContentsSearchMemory = .shared) {
+    init(content: DocContent, navigation: ReaderNavigation) {
         self.content = content
         self.navigation = navigation
-        self.searchMemory = searchMemory
         // Search only has nothing to show at half height.
         _detent = State(initialValue: navigation.hasChapterList ? .medium : .large)
     }
@@ -181,15 +180,16 @@ struct ContentsSheet: View {
         }
     }
 
-    /// A keystroke: debounce a scan. An emptied field forgets the remembered
-    /// search, and any edit clears the restored pick's mark.
+    /// A keystroke: debounce a scan. Any edit forgets the remembered search,
+    /// so a reopening never brings back a query the field no longer holds
+    /// (the next pick remembers again), and clears the restored pick's mark.
     private func queryChanged(to newValue: String) {
         if let opening = openedQuery {
             openedQuery = nil
             if opening == newValue { return }
         }
         pickedSentence = nil
-        if ContentsSearchMemory.isBlank(newValue) { searchMemory.forget() }
+        searchMemory.forget()
         scheduleSearch(for: newValue)
     }
 
@@ -445,8 +445,11 @@ struct ContentsSheet: View {
         ForEach(Array(rows.prefix(visible)), id: \.sentence) { row in
             placeRow(row)
         }
+        // At half height the toggle waits for the sheet to grow, so the
+        // first chapter clears the fold on the smallest screen.
         if PlaceHistory.offersEarlier(total: rows.count, hasChapterList: navigation.hasChapterList,
-                                      collapsedCount: collapsed) {
+                                      expanded: showsEarlierPlaces, atHalfHeight: detent == .medium,
+                                      accessibilitySize: dynamicTypeSize.isAccessibilitySize) {
             Button {
                 showsEarlierPlaces.toggle()
             } label: {
@@ -465,9 +468,9 @@ struct ContentsSheet: View {
     }
 
     /// Places kept above the toggle: one at half height over a chapter
-    /// list, below the accessibility sizes; three otherwise. Read from the
-    /// live detent, so growing the sheet shows three without resetting the
-    /// toggle.
+    /// list, below the accessibility sizes (with the toggle held back until
+    /// the sheet grows); three otherwise. Read from the live detent, so
+    /// growing the sheet shows three without resetting the toggle.
     private var placesCollapsedCount: Int {
         PlaceHistory.collapsedCount(atHalfHeight: detent == .medium,
                                     hasChapterList: navigation.hasChapterList,

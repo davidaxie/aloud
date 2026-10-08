@@ -117,11 +117,14 @@ final class ListeningLoopUITests: XCTestCase {
 
     // MARK: - Tap to play (R15)
 
-    /// The tap target: chapter I's second paragraph. It is sentence 2, after
-    /// the "I" heading (0) and "In my younger…" (1)
-    /// (TextExtractorTests.testGutenbergFrontMatterExcluded). It is its
-    /// paragraph's only sentence, so every line it covers is its own.
-    private static let tapTarget = "Whenever you feel like criticizing"
+    /// The tap target: chapter I's third paragraph, which it opens. It is
+    /// sentence 3, after the "I" heading (0), "In my younger…" (1) and
+    /// "Whenever you feel…" (2) (TextExtractorTests
+    /// .testGutenbergFrontMatterExcluded). It runs past its first line, so
+    /// that line, where the tap lands, is all its own. A Contents pick plays
+    /// (P025), so the pause that follows may come a sentence in: from either
+    /// of the first two, the target is never the next one.
+    private static let tapTarget = "unusually communicative"
 
     /// The active sentence's frame once the text is at rest: two steady
     /// readings 0.3 s apart that agree. Nil if the playhead leaves `sentence`
@@ -175,14 +178,19 @@ final class ListeningLoopUITests: XCTestCase {
 
         // Chapter I's start through Contents, not the text. Chapter I's
         // heading never fits the band, so the jump always lands at the top of
-        // the book, where the target was measured.
+        // the book, where the target was measured. The pick plays (P025):
+        // pause it at once, then read where the playhead stopped.
         pickChapter(row: 1, in: app)
-        let start = try XCTUnwrap(waitForSentence(in: app, timeout: 5) { $0 != target },
-                                  "Contents should move the playhead to chapter I's start")
+        XCTAssertNotNil(waitForSentence(in: app, timeout: 5) { $0 != target },
+                        "Contents should move the playhead to chapter I's start")
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 10),
+                      "A chapter pick while paused plays, got '\(stringValue(of: play))'")
+        play.tap()
+        XCTAssertTrue(waitForValue("paused", of: play, timeout: 10), "Play pauses the pick's playback")
+        let start = try XCTUnwrap(currentSentence(app), "The playhead probe should exist")
         XCTAssertGreaterThanOrEqual(target, start + 2,
                                     "Sentence \(target) must not be the next one after the playhead (\(start)): "
                                         + "a natural advance would pass for the tap")
-        XCTAssertTrue(waitForValue("paused", of: play, timeout: 5), "A chapter pick while paused stays paused")
         let startFrame = try XCTUnwrap(restingFrame(of: start, in: app), "Sentence \(start) should come to rest")
         XCTAssertLessThan(startFrame.maxY, targetFrame.minY,
                           "Sentence \(start) at \(startFrame) should sit above sentence \(target) at \(targetFrame)")
@@ -267,7 +275,7 @@ final class ListeningLoopUITests: XCTestCase {
         XCTAssertTrue(undo.waitForExistence(timeout: 5), "A chapter jump offers Undo jump")
         undo.tap()
         XCTAssertTrue(waitForSentence(passage, in: app, timeout: 5), "Undo returns to passage \(passage)")
-        XCTAssertEqual(stringValue(of: play), "paused", "Undo restores the paused state")
+        XCTAssertTrue(waitForValue("paused", of: play, timeout: 10), "Undo restores the paused state")
         XCTAssertTrue(waitForNonExistence(of: undo, timeout: 5), "The chip leaves once used")
 
         // An unused offer expires after 10 s.

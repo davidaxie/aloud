@@ -241,8 +241,8 @@ final class ScrubAndContentsUITest: XCTestCase {
     // MARK: - War and Peace: the parity batch's Contents
 
     /// P024: with four stops, half height shows the newest stop and the
-    /// chapters below it, without a scroll. Run on 375x667, 390x844 and
-    /// 440x956 simulators.
+    /// chapters below it, without a scroll; the earlier-stops toggle comes
+    /// with the grown sheet. Run on 375x667, 390x844 and 440x956 simulators.
     func testHalfHeightShowsTheNewestStopAndTheChapters() {
         let app = openReader(classic: 2600, ["-uitest-seed-places", "4"])
         openContents(app)
@@ -252,12 +252,18 @@ final class ScrubAndContentsUITest: XCTestCase {
         let header = app.staticTexts["places.header"].firstMatch
         XCTAssertTrue(header.waitForExistence(timeout: 10), "The stops lead the list")
         XCTAssertTrue(header.isHittable, "\(screen): the stops' header shows at half height")
-        XCTAssertTrue(app.buttons["places.more"].firstMatch.exists, "The earlier stops wait behind the toggle")
+        // The toggle waits for the sheet to grow, so the first chapter
+        // clears the fold on the smallest screen.
+        let more = app.buttons["places.more"].firstMatch
+        XCTAssertFalse(more.exists, "\(screen): no earlier-stops toggle at half height")
         let rows = chapterRows(app)
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 5), "Contents lists chapters")
         let visible = rows.allElementsBoundByIndex.prefix(8).contains { $0.isHittable }
         XCTAssertTrue(visible, "\(screen): a chapter row shows at half height without a scroll")
         keepScreenshot(app, "contents-half-height-\(screen)")
+
+        app.staticTexts["contents.title"].firstMatch.swipeUp()
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "Grown, the earlier stops wait behind the toggle")
     }
 
     /// P029: a picked result's search comes back on reopening, the pick
@@ -364,6 +370,20 @@ final class ScrubAndContentsUITest: XCTestCase {
         XCTAssertTrue(hasKeyboardFocus(field, timeout: 5), "The search opens focused")
         XCTAssertGreaterThan(app.keyboards.count, 0, "with the keyboard up (which grows the sheet)")
         keepScreenshot(app, "contents-search-from-the-menu")
+    }
+
+    /// At AX3 the player bar caps the chapter line, so its long press is the
+    /// Large Content Viewer's: the menu steps aside there. The viewer's HUD
+    /// is outside the accessibility tree; only the menu's absence is read.
+    func testAtAX3TheChapterLinesLongPressIsTheViewers() {
+        let app = openReader(classic: 2600, ["-UIPreferredContentSizeCategoryName",
+                                             "UICTContentSizeCategoryAccessibilityXL"])
+        let line = app.buttons["reader.chapterLine"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 10))
+        line.press(forDuration: 1.2)
+        XCTAssertFalse(app.buttons["Search this book"].firstMatch.waitForExistence(timeout: 3),
+                       "No menu at AX3: the long press shows the line in the viewer")
+        keepScreenshot(app, "chapter-line-long-press-ax3")
     }
 
     /// P033: during a playback error the line's tap retries, and its

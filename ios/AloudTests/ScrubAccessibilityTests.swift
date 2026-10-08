@@ -286,6 +286,28 @@ final class ContentsSheetAccessibilityTests: XCTestCase {
         let names = (line.accessibilityCustomActions ?? []).map(\.name)
         XCTAssertFalse(names.contains(ContentsSearch.searchPrompt), "the retry line's one action is retry: \(names)")
     }
+
+    /// At the accessibility sizes the player bar caps the chapter line, so
+    /// its long press belongs to the Large Content Viewer: the menu steps
+    /// aside there, and the VoiceOver action stays at every size.
+    func testAtAccessibilitySizesOnlyTheMenuStepsAside() async throws {
+        for size in [DynamicTypeSize.xSmall, .large, .xxxLarge] {
+            XCTAssertTrue(ChapterLineContentsEntry.offersMenu(dynamicTypeSize: size), "\(size)")
+        }
+        for size in [DynamicTypeSize.accessibility1, .accessibility2, .accessibility3, .accessibility5] {
+            XCTAssertFalse(ChapterLineContentsEntry.offersMenu(dynamicTypeSize: size), "\(size)")
+        }
+        let position = ReaderPositionLine(kind: .book, title: "Test Book", minutesLeft: 3)
+        let host = AccessibilityHost(
+            ReaderMessageLine(message: nil, position: position,
+                              onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {})
+                .environment(\.dynamicTypeSize, .accessibility3),
+            keepAlive: [])
+        self.host = host
+        let line = try await host.require("reader.chapterLine")
+        let names = (line.accessibilityCustomActions ?? []).map(\.name)
+        XCTAssertTrue(names.contains(ContentsSearch.searchPrompt), "the search action stays at AX3: \(names)")
+    }
 }
 
 /// The view glue the hosted tests above exercise, held in source as well:
