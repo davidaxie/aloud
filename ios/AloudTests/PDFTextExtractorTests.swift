@@ -63,6 +63,106 @@ final class PDFTextExtractorTests: XCTestCase {
         XCTAssertEqual(box.values, box.values.sorted(), "progress must be monotonic")
     }
 
+    // MARK: - Audit fixes (L005, L009, L012)
+
+    /// Five pages: a paragraph running from page 1 onto pages 2 and 3,
+    /// then one paragraph each on pages 4 and 5.
+    private func runOnPDF(title: String? = nil) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-test-\(UUID().uuidString).pdf")
+        try FixturePDF.write(pages: [
+            "The first page starts a long paragraph that runs on and",
+            "it keeps going. Page two has its own sentence here and",
+            "the third page ends it. Another sentence on page three.",
+            "A new paragraph opens the fourth page. It stays there.",
+            "The fifth page is short.",
+        ], to: url, title: title)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    /// L009: a paragraph stitched across pages gives each sentence the
+    /// page it starts on, not the paragraph's first page, so page
+    /// navigation and the outline find sentences on pages 2 and 3.
+    func testStitchedParagraphKeepsEachSentencesPage() async throws {
+        let content = try await ExtractionPipeline().extract(pdfURL: runOnPDF(), progress: nil)
+
+        XCTAssertEqual(content.paragraphs.map(\.page), [1, 4, 5])
+        XCTAssertEqual(content.sentences.map(\.page), [1, 2, 3, 4, 4, 5])
+        XCTAssertEqual(content.sentences.map(\.para), [0, 0, 0, 1, 1, 2])
+        XCTAssertTrue(content.sentences[0].text.hasSuffix("runs on and it keeps going."))
+        XCTAssertTrue(content.sentences[1].text.hasPrefix("Page two has its own sentence"))
+        XCTAssertEqual(content.sentences[2].text, "Another sentence on page three.")
+    }
+
+    /// L009: stitching a paragraph that runs on page after page reads
+    /// only the end of what it has so far, so it takes linear time; it
+    /// used to rescan the whole paragraph for every page (minutes for a
+    /// few hundred pages of Thai).
+    func testLongRunOnParagraphStitchesInLinearTime() {
+        let words = "and the river kept on running past the old mill where nobody worked any longer "
+        let body = String(repeating: words, count: 19)
+        var blocks: [TextBlock] = []
+        let start = Date()
+        for page in 1...300 {
+            PDFTextExtractor.appendPageParagraphs(&blocks, [(page == 1 ? "The " : "") + body + "then"],
+                                                  page: page, english: true)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks.first?.laterPages.map(\.page), Array(2...300))
+        XCTAssertEqual(blocks.first?.letters, blocks.first.map { TextBlock.letters(in: $0.text) })
+    }
+
+    /// L005: reading the pages through several openings of the document
+    /// (so PDFKit lets go of the pages already read) changes nothing.
+    func testPagesReadThroughSeveralOpeningsMatchOne() throws {
+        let url = try runOnPDF(title: "The Quiet Hour")
+        let whole = try PDFTextExtractor().extract(url: url)
+        for perOpening in [1, 2] {
+            let batched = try PDFTextExtractor(pagesPerOpening: perOpening).extract(url: url)
+            XCTAssertEqual(batched.title, "The Quiet Hour")
+            XCTAssertEqual(batched.pageCount, 5)
+            XCTAssertEqual(batched.blocks.map(\.text), whole.blocks.map(\.text))
+            XCTAssertEqual(batched.blocks.map(\.page), whole.blocks.map(\.page))
+            XCTAssertEqual(batched.blocks.map(\.laterPages), whole.blocks.map(\.laterPages))
+            XCTAssertEqual(batched.pageHeaders, whole.pageHeaders)
+        }
+        XCTAssertEqual(whole.blocks.map(\.page), [1, 4, 5])
+    }
+
+    /// L005: pass 1 drains each page's temporaries and reopens the
+    /// document every `pagesPerOpening` pages; L009: pass 2 can be
+    /// cancelled.
+    func testPageReadingHoldsBoundedMemoryAndCancels() throws {
+        let s = try SourceTree.sources(only: ["Extraction/PDFTextExtractor.swift"])
+        let source = try XCTUnwrap(s["Extraction/PDFTextExtractor.swift"])
+        XCTAssertTrue(source.contains("try autoreleasepool { () throws -> [Line] in"))
+        XCTAssertTrue(source.contains("if index % perOpening == 0 {"))
+        XCTAssertGreaterThanOrEqual(source.components(separatedBy: "try Task.checkCancellation()").count - 1, 2)
+        XCTAssertEqual(PDFTextExtractor().pagesPerOpening, 100)
+    }
+
+    /// L012: reading the pages with PDFKit, the quick part, fills the bar
+    /// to 0.3, not 0.9; folding the pages and splitting sentences report
+    /// the rest instead of the bar sitting at 90%.
+    func testPDFProgressCoversEveryStage() async throws {
+        final class Box: @unchecked Sendable {
+            var values: [Double] = []
+            let lock = NSLock()
+            func add(_ v: Double) { lock.lock(); values.append(v); lock.unlock() }
+        }
+        let box = Box()
+        _ = try await ExtractionPipeline().extract(pdfURL: runOnPDF()) { box.add($0) }
+        let values = box.values
+        XCTAssertEqual(values, values.sorted(), "progress must be monotonic")
+        XCTAssertEqual(values.last, 1.0)
+        XCTAssertGreaterThanOrEqual(values.count, 5)
+        XCTAssertEqual(values[4], 0.3, accuracy: 1e-9, "the fifth page read ends PDFKit's share")
+        XCTAssertTrue(values.contains { $0 > 0.3 && $0 < 0.6 }, "folding the pages reports nothing")
+        XCTAssertTrue(values.contains { $0 > 0.6 && $0 < 1 }, "splitting sentences reports nothing")
+    }
+
     // MARK: - Generated PDFs (deterministic geometry)
 
     func testRunningHeadersAndPageNumbersStripped() async throws {

@@ -11,15 +11,17 @@ actor ExtractionPipeline {
 
     init() {}
 
-    /// Extract a PDF into a fully-chunked `DocContent`. Progress runs 0…1,
-    /// dominated by per-page parsing. `fallbackTitle` names a PDF without
+    /// Extract a PDF into a fully-chunked `DocContent`. Progress runs 0…1:
+    /// reading the pages with PDFKit, the quick part, fills to 0.3, folding
+    /// them into paragraphs to 0.6, and splitting those into sentences to
+    /// 0.95 (L012). `fallbackTitle` names a PDF without
     /// Title metadata — pass the picked file's name, because the library copy
     /// at `pdfURL` is named by UUID.
     func extract(pdfURL: URL,
                  fallbackTitle: String? = nil,
                  progress: (@Sendable (Double) -> Void)?) async throws -> DocContent {
         let output = try pdfExtractor.extract(url: pdfURL) { fraction in
-            progress?(fraction * 0.9)
+            progress?(fraction * 0.6)
         }
         let rawTitle = output.title ?? fallbackTitle ?? Self.fileTitle(of: pdfURL)
         let normalizedTitle = TextNormalizer.normalize(rawTitle)
@@ -27,7 +29,9 @@ actor ExtractionPipeline {
 
         var content = try Self.buildContent(title: title,
                                             pageCount: output.pageCount,
-                                            blocks: output.blocks)
+                                            blocks: output.blocks) { fraction in
+            progress?(0.6 + fraction * 0.35)
+        }
         content.pageHeaders = output.pageHeaders.isEmpty ? nil : output.pageHeaders
         content.chapterMap = PDFChapterDetector.chapterMap(for: content, outline: output.outline)
         progress?(1.0)
@@ -62,7 +66,9 @@ actor ExtractionPipeline {
         progress?(0.6)
         let content = try Self.buildContent(title: title,
                                             pageCount: output.pageCount,
-                                            blocks: output.blocks)
+                                            blocks: output.blocks) { fraction in
+            progress?(0.6 + fraction * 0.35)
+        }
         progress?(1.0)
         return content
     }
@@ -77,25 +83,37 @@ actor ExtractionPipeline {
 
     // MARK: - Assembly
 
+    /// `progress` gets the share of blocks done, each whole percent.
+    /// A paragraph stitched across pages gives each sentence the page it
+    /// starts on (L009).
     private static func buildContent(title: String,
                                      pageCount: Int,
-                                     blocks: [TextBlock]) throws -> DocContent {
+                                     blocks: [TextBlock],
+                                     progress: ((Double) -> Void)? = nil) throws -> DocContent {
         var sentences: [Sentence] = []
         var paragraphs: [Paragraph] = []
 
-        for block in blocks {
+        var reported = 0
+        for (index, block) in blocks.enumerated() {
             try Task.checkCancellation()
+            defer {
+                let percent = (index + 1) * 100 / blocks.count
+                if percent > reported {
+                    reported = percent
+                    progress?(Double(index + 1) / Double(blocks.count))
+                }
+            }
             let normalized = TextNormalizer.normalize(block.text)
             let chunks = SentenceSegmenter.chunkParagraph(normalized)
             guard !chunks.isEmpty else { continue }
 
             let paragraphID = paragraphs.count
             let start = sentences.count
-            for chunk in chunks {
+            for (chunk, page) in zip(chunks, block.pages(of: chunks)) {
                 sentences.append(Sentence(id: sentences.count,
                                           text: chunk,
                                           para: paragraphID,
-                                          page: block.page))
+                                          page: page))
             }
             paragraphs.append(Paragraph(id: paragraphID,
                                         sentenceIDs: start..<sentences.count,

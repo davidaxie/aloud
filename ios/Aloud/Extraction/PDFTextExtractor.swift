@@ -14,8 +14,50 @@ enum ExtractionError: Error, Equatable {
 
 /// A reconstructed paragraph plus the 1-based page it starts on.
 struct TextBlock {
-    let text: String
+    var text: String
     let page: Int
+    /// A paragraph stitched across page breaks: where each later page
+    /// begins in it, so each sentence keeps the page it starts on (L009).
+    /// Empty for a paragraph on one page.
+    var laterPages: [PageStart] = []
+    /// The letters in `text`, kept up as pages are stitched on; nil until
+    /// the first one is.
+    var letters: Int?
+
+    struct PageStart: Equatable {
+        /// The letters in the paragraph before the page.
+        let letters: Int
+        let page: Int
+    }
+
+    /// Letters and marks only: what normalizing white space, quotes,
+    /// dashes and hyphens leaves alone.
+    static func letters(in text: some StringProtocol) -> Int {
+        text.unicodeScalars.reduce(0) { $0 + ($1.properties.isAlphabetic ? 1 : 0) }
+    }
+
+    /// The page each of `chunks`, this paragraph normalized and split,
+    /// starts on: a later page begins where the share of letters read
+    /// passes its share in the raw text.
+    func pages(of chunks: [String]) -> [Int] {
+        guard let letters, letters > 0, !laterPages.isEmpty else {
+            return Array(repeating: page, count: chunks.count)
+        }
+        let counts = chunks.map { Self.letters(in: $0) }
+        let total = counts.reduce(0, +)
+        guard total > 0 else { return Array(repeating: page, count: chunks.count) }
+        var current = page
+        var starts = laterPages[...]
+        var read = 0
+        return counts.map { count in
+            while let next = starts.first, next.letters * total <= read * letters {
+                current = next.page
+                starts.removeFirst()
+            }
+            read += count
+            return current
+        }
+    }
 }
 
 /// PDFKit port of `frontend/src/lib/pdf.ts`: recovers layout by sampling
@@ -38,28 +80,45 @@ struct PDFTextExtractor {
         var pageHeaders: [Int: String] = [:]
     }
 
-    func extract(url: URL, progress: ((Double) -> Void)? = nil) throws -> Output {
-        guard let document = PDFDocument(url: url) else {
-            throw ExtractionError.invalidPDF
-        }
-        if document.isLocked || (document.isEncrypted && !document.unlock(withPassword: "")) {
-            throw ExtractionError.passwordProtected
-        }
-        let pageCount = document.pageCount
-        guard pageCount > 0 else { throw ExtractionError.emptyDocument }
+    /// Pages read through one opening of the document. PDFKit keeps every
+    /// page it has laid out until the document goes, about half a megabyte
+    /// a dense page: a 3,000-page book read through one opening outgrows
+    /// an iPhone's memory (L005).
+    var pagesPerOpening = 100
 
-        // Pass 1: per-page line reconstruction (needed before header detection).
+    /// `progress` runs 0…1 over the two passes over the pages: the first
+    /// half reads them with PDFKit, the second folds them into paragraphs.
+    func extract(url: URL, progress: ((Double) -> Void)? = nil) throws -> Output {
+        // The title and outline come from an opening of their own.
+        let (pageCount, title, outline) = try autoreleasepool { () throws -> (Int, String?, [PDFOutlineItem]) in
+            let document = try Self.open(url)
+            guard document.pageCount > 0 else { throw ExtractionError.emptyDocument }
+            let title = (document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty || Self.isPlaceholderTitle($0) ? nil : $0 }
+            return (document.pageCount, title, PDFChapterDetector.outlineItems(of: document))
+        }
+
+        // Pass 1: per-page line reconstruction (needed before header
+        // detection), reopening the document every `pagesPerOpening` pages
+        // so only the lines stay.
         var pageLines: [[Line]] = []
         pageLines.reserveCapacity(pageCount)
+        var document: PDFDocument?
+        let perOpening = max(1, pagesPerOpening)
         for index in 0..<pageCount {
             try Task.checkCancellation()
-            if let page = document.page(at: index) {
-                pageLines.append(Self.lines(of: page))
-            } else {
-                pageLines.append([])
+            let lines = try autoreleasepool { () throws -> [Line] in
+                if index % perOpening == 0 {
+                    document = nil
+                    document = try Self.open(url)
+                }
+                return document?.page(at: index).map(Self.lines(of:)) ?? []
             }
-            progress?(Double(index + 1) / Double(pageCount))
+            pageLines.append(lines)
+            progress?(Double(index + 1) / Double(pageCount) / 2)
         }
+        document = nil
 
         // Detect repeating headers/footers: across the whole document, and
         // per page for the ones that run through a chapter or alternate.
@@ -73,6 +132,7 @@ struct PDFTextExtractor {
         var pageHeaders: [Int: String] = [:]
         var pagesWithText = 0
         for (index, lines) in pageLines.enumerated() {
+            try Task.checkCancellation()
             if let header = Self.topHeader(lines, running: running[index]) {
                 pageHeaders[index + 1] = header
             }
@@ -84,6 +144,7 @@ struct PDFTextExtractor {
                 Self.appendPageParagraphs(&blocks, paragraphs, page: index + 1, english: english)
             }
             if hasText { pagesWithText += 1 }
+            progress?(0.5 + Double(index + 1) / Double(pageCount) / 2)
         }
         // A scan whose only text layer is a cover sheet or a usage notice
         // reads as having no text, not as a book of a few sentences.
@@ -91,13 +152,20 @@ struct PDFTextExtractor {
             throw ExtractionError.noReadableText
         }
 
-        let title = (document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .flatMap { $0.isEmpty || Self.isPlaceholderTitle($0) ? nil : $0 }
-
         return Output(title: title, pageCount: pageCount, blocks: blocks,
-                      outline: PDFChapterDetector.outlineItems(of: document),
+                      outline: outline,
                       pageHeaders: pageHeaders)
+    }
+
+    /// The document at `url`, unlocked if it opens with no password.
+    private static func open(_ url: URL) throws -> PDFDocument {
+        guard let document = PDFDocument(url: url) else {
+            throw ExtractionError.invalidPDF
+        }
+        if document.isLocked || (document.isEncrypted && !document.unlock(withPassword: "")) {
+            throw ExtractionError.passwordProtected
+        }
+        return document
     }
 
     /// Five or more pages, under a tenth of them with text: page images
@@ -363,7 +431,11 @@ struct PDFTextExtractor {
                 paragraphs.append(buffer)
                 buffer = ""
             }
-            buffer = buffer.isEmpty ? line.text : appendLine(buffer, line.text, english: english)
+            if buffer.isEmpty {
+                buffer = line.text
+            } else {
+                appendLine(&buffer, line.text, english: english)
+            }
         }
         if !buffer.isEmpty { paragraphs.append(buffer) }
 
@@ -451,24 +523,52 @@ struct PDFTextExtractor {
     /// the split is re-joined here ("main-⏎tenant"). `english` is the
     /// book's; nil reads the text either side of the break.
     static func appendLine(_ buffer: String, _ next: String, english: Bool? = nil) -> String {
+        var buffer = buffer
+        appendLine(&buffer, next, english: english)
+        return buffer
+    }
+
+    /// `appendLine` in place, reading only the end of `buffer`: a paragraph
+    /// that runs on for hundreds of lines or pages grows in linear time,
+    /// never copied or rescanned from its start for each one (L009).
+    static func appendLine(_ buffer: inout String, _ next: String, english: Bool? = nil) {
         let nextTrim = next.replacing(#/^\s+/#, with: "")
-        if buffer.firstMatch(of: #/[A-Za-z]-$/#) != nil && nextTrim.firstMatch(of: #/^[a-z]/#) != nil {
+        if endsInLetterHyphen(buffer) && nextTrim.firstMatch(of: #/^[a-z]/#) != nil {
             if english ?? readsAsEnglish(String(buffer.suffix(300)) + " " + nextTrim.prefix(100)) {
-                return buffer + "\n" + nextTrim
+                buffer += "\n" + nextTrim
+            } else {
+                buffer.removeLast()
+                buffer += nextTrim
             }
-            return String(buffer.dropLast()) + nextTrim
+            return
         }
         if endsInSoftHyphen(buffer) && nextTrim.firstMatch(of: #/^\p{Ll}/#) != nil {
-            return buffer.replacing(#/\u{00AD}$/#, with: "") + nextTrim
+            buffer.removeLast()
+            buffer += nextTrim
+            return
         }
-        let head = buffer.replacing(#/\s+$/#, with: "")
+        while buffer.last?.isWhitespace == true { buffer.removeLast() }
         // Chinese and Japanese put no space between words: a wrap there
         // is no word break. (Korean does space its words.)
-        if let last = head.unicodeScalars.last, let first = nextTrim.unicodeScalars.first,
+        if let last = buffer.unicodeScalars.last, let first = nextTrim.unicodeScalars.first,
            isUnspacedCJK(last), isUnspacedCJK(first) {
-            return head + nextTrim
+            buffer += nextTrim
+        } else {
+            buffer += " " + nextTrim
         }
-        return head + " " + nextTrim
+    }
+
+    /// An ASCII letter, then a hyphen, at the very end.
+    static func endsInLetterHyphen(_ text: String) -> Bool {
+        tail(text).firstMatch(of: #/[A-Za-z]-$/#) != nil
+    }
+
+    /// The end of `text`: its last 16 characters before any trailing white
+    /// space, and that space. All an end-anchored pattern needs, without
+    /// scanning a long paragraph from its start.
+    static func tail(_ text: String) -> String {
+        let last = text.lastIndex { !$0.isWhitespace } ?? text.startIndex
+        return String(text[(text.index(last, offsetBy: -16, limitedBy: text.startIndex) ?? text.startIndex)...])
     }
 
     /// Whether the on-device recognizer reads `text` as English, the one
@@ -502,14 +602,14 @@ struct PDFTextExtractor {
     /// Chinese or Japanese on both sides of a page break: Han and kana
     /// have no case, so the lowercase test can't see a sentence go on.
     static func continuesUnspacedCJK(_ previous: String, _ next: String) -> Bool {
-        guard let last = previous.replacing(#/\s+$/#, with: "").unicodeScalars.last,
+        guard let last = previous.last(where: { !$0.isWhitespace })?.unicodeScalars.last,
               let first = next.unicodeScalars.first else { return false }
         return isUnspacedCJK(last) && isUnspacedCJK(first)
     }
 
     /// A letter of any script, then a soft hyphen, at the very end.
     static func endsInSoftHyphen(_ text: String) -> Bool {
-        text.firstMatch(of: #/\p{L}\u{00AD}$/#) != nil
+        tail(text).firstMatch(of: #/\p{L}\u{00AD}$/#) != nil
     }
 
     private static func median(_ values: [CGFloat]) -> CGFloat {
@@ -731,7 +831,7 @@ struct PDFTextExtractor {
     /// Arabic "؟" and the Urdu "۔". A page's raw lines still have curly
     /// closing quotes ("Out.”"), so those count too.
     static func looksFinished(_ text: String) -> Bool {
-        text.firstMatch(of: #/[.!?…。।॥؟۔]["'\u{201D}\u{2019})\]」』]?\s*$/#) != nil
+        tail(text).firstMatch(of: #/[.!?…。।॥؟۔]["'\u{201D}\u{2019})\]」』]?\s*$/#) != nil
     }
 
     /// Korean, Arabic, Hebrew, Devanagari, Thai: a letter of a script with
@@ -757,25 +857,36 @@ struct PDFTextExtractor {
     /// lowercase or with a digit, in any script, goes on in Chinese or
     /// Japanese from Chinese or Japanese, or in another caseless script from
     /// the same kind, or the previous ended mid-hyphenation, normal or soft).
+    /// The merged block grows in place and notes where `page` begins in it.
     static func appendPageParagraphs(_ blocks: inout [TextBlock],
                                      _ paragraphs: [String],
                                      page: Int,
                                      english: Bool? = nil) {
         for (index, paragraph) in paragraphs.enumerated() {
-            if index == 0,
-               let previous = blocks.last,
-               !looksFinished(previous.text),
-               paragraph.firstMatch(of: #/^[\p{Ll}\p{N}]/#) != nil
-                   || continuesUnspacedCJK(previous.text, paragraph)
-                   || continuesCaseless(previous.text, paragraph)
-                   || previous.text.firstMatch(of: #/[A-Za-z]-$/#) != nil
-                   || endsInSoftHyphen(previous.text) {
-                blocks[blocks.count - 1] = TextBlock(text: appendLine(previous.text, paragraph, english: english),
-                                                     page: previous.page)
+            if index == 0, blocks.last.map({ runsOn($0.text, into: paragraph) }) == true {
+                var block = blocks.removeLast()
+                if page != (block.laterPages.last?.page ?? block.page) {
+                    let before = block.letters ?? TextBlock.letters(in: block.text)
+                    block.laterPages.append(TextBlock.PageStart(letters: before, page: page))
+                    block.letters = before
+                }
+                appendLine(&block.text, paragraph, english: english)
+                block.letters = block.letters.map { $0 + TextBlock.letters(in: paragraph) }
+                blocks.append(block)
             } else {
                 blocks.append(TextBlock(text: paragraph, page: page))
             }
         }
+    }
+
+    /// Whether `next` carries on the paragraph `previous` across a break.
+    private static func runsOn(_ previous: String, into next: String) -> Bool {
+        !looksFinished(previous)
+            && (next.firstMatch(of: #/^[\p{Ll}\p{N}]/#) != nil
+                || continuesUnspacedCJK(previous, next)
+                || continuesCaseless(previous, next)
+                || endsInLetterHyphen(previous)
+                || endsInSoftHyphen(previous))
     }
 
     // MARK: - Character helpers

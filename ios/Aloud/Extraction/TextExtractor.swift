@@ -1402,10 +1402,121 @@ struct TextExtractor {
         // Windows "ANSI" text: CP1252 has curly quotes and dashes at
         // 0x80–0x9F, where Latin-1 has control characters the normalizer
         // deletes. Latin-1 remains for the five bytes CP1252 leaves undefined.
-        if let text = String(data: data, encoding: .windowsCP1252) { return text }
-        if let text = String(data: data, encoding: .isoLatin1) { return text }
-        throw ExtractionError.unreadableTextFile
+        // Central European, Turkish and Baltic text has its own code pages.
+        guard let text = latinDecoded(data) else { throw ExtractionError.unreadableTextFile }
+        return text
     }
+
+    /// Single-byte Latin text: Windows-1252, as Windows "ANSI" text mostly
+    /// is, unless another code page reads it better. Central European
+    /// (Windows-1250, ISO-8859-2), Turkish (Windows-1254) and Baltic
+    /// (Windows-1257) text read as 1252 turns "ł" into "³", "ı" into "ý"
+    /// and "ų" into "ø" (L006). Each reading is scored by
+    /// `latinMisreadings`; the first with the fewest wins, so a tie keeps
+    /// 1252, and a reading with none ends the search. Latin-1 stands in
+    /// for 1252 when 1252 leaves a byte undefined.
+    static func latinDecoded(_ data: Data) -> String? {
+        var best: (text: String, misreadings: Int)?
+        for code in latinCodePages {
+            guard let text = String(data: data, encoding: code.encoding) else { continue }
+            let misreadings = latinMisreadings(text, languages: code.languages, western: code.western)
+            if best.map({ misreadings < $0.misreadings }) ?? true {
+                best = (text, misreadings)
+                if misreadings == 0 { break }
+            }
+        }
+        return best?.text
+    }
+
+    /// How badly `text` reads as one of `languages`: control characters,
+    /// which no code page's own text has (weight 3); a symbol inside a
+    /// word, or a "³" or "¿" ending one (weight 2); letters outside the
+    /// best-fitting alphabet (weight 1 each). Western text with only a
+    /// sprinkling of accents, an English book's "café" and "Bjørn", may
+    /// draw on every Western alphabet at once.
+    static func latinMisreadings(_ text: String, languages: [Set<Unicode.Scalar>], western: Bool) -> Int {
+        let scalars = Array(text.unicodeScalars)
+        func isLetter(_ index: Int) -> Bool {
+            guard scalars.indices.contains(index) else { return false }
+            let scalar = scalars[index]
+            if scalar.isASCII { return ("A"..."Z").contains(scalar) || ("a"..."z").contains(scalar) }
+            return letterCategories.contains(scalar.properties.generalCategory)
+        }
+        var controls = 0, symbols = 0, asciiLetters = 0
+        var accented: [Unicode.Scalar: Int] = [:]
+        for (index, scalar) in scalars.enumerated() {
+            if scalar.isASCII {
+                if isLetter(index) { asciiLetters += 1 }
+            } else if (0x80...0x9F).contains(scalar.value) || scalar == "\u{FFFD}" {
+                controls += 1
+            } else if isLetter(index) {
+                accented[scalar, default: 0] += 1
+            } else if isLetter(index - 1) && (isLetter(index + 1) || wordEndingSymbols.contains(scalar)) {
+                symbols += 1
+            }
+        }
+        let accentedCount = accented.values.reduce(0, +)
+        var alphabets = languages
+        if western && accentedCount * 100 <= accentedCount + asciiLetters {
+            alphabets.append(languages.reduce(into: Set()) { $0.formUnion($1) })
+        }
+        let misfits = alphabets.map { alphabet in
+            accented.reduce(0) { $0 + (alphabet.contains($1.key) ? 0 : $1.value) }
+        }.min() ?? accentedCount
+        return controls * 3 + symbols * 2 + misfits
+    }
+
+    private static let letterCategories: Set<Unicode.GeneralCategory> =
+        [.uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .otherLetter]
+
+    /// Never the end of a word in Latin text, but what 1252 makes of a
+    /// Polish "ł", "ą" or "ż" there.
+    private static let wordEndingSymbols = Set("¹²³¼½¾¿¡¤¦¨¯¸±¬¥¢£°ˇ˘˙˛˝".unicodeScalars)
+
+    /// A language's letters beyond ASCII, in both cases.
+    private static func alphabet(_ lowercase: String, _ extra: String = "") -> Set<Unicode.Scalar> {
+        Set((lowercase + lowercase.uppercased() + extra).unicodeScalars.filter { !$0.isASCII })
+    }
+
+    /// The candidates in order of preference, each with the alphabets of
+    /// the languages written in it.
+    private static let latinCodePages: [(encoding: String.Encoding, languages: [Set<Unicode.Scalar>], western: Bool)] = {
+        let western = [
+            alphabet("àâæçéèêëîïôœùûüÿ"),            // French
+            alphabet("áéíñóúüªº"),                   // Spanish
+            alphabet("áâãàçéêíóôõúªº"),              // Portuguese
+            alphabet("àèéìíîòóùúªº"),                // Italian
+            alphabet("àçéèíïòóúü·"),                 // Catalan
+            alphabet("äöüßé"),                       // German
+            alphabet("áéëïóöüèà"),                   // Dutch
+            alphabet("æøåéèêóòô"),                   // Danish, Norwegian
+            alphabet("åäöé"),                        // Swedish
+            alphabet("åäöõüšž"),                     // Finnish, Estonian
+            alphabet("áéíóúýþæöðø"),                 // Icelandic, Faroese
+            alphabet("µ"),
+        ]
+        let centralEuropean = [
+            alphabet("ąćęłńóśźż"),                   // Polish
+            alphabet("áčďéěíňóřšťúůýž"),             // Czech
+            alphabet("áäčďéíĺľňóôŕšťúýž"),           // Slovak
+            alphabet("áéíóöőúüű"),                   // Hungarian
+            alphabet("čćđšž"),                       // Slovenian, Croatian, Bosnian
+            alphabet("ăâîşţșț"),                     // Romanian
+        ]
+        let turkish = [alphabet("çğıöşüâîû", "İ")]
+        let baltic = [
+            alphabet("ąčęėįšųūž"),                   // Lithuanian
+            alphabet("āčēģīķļņšūž"),                 // Latvian
+            alphabet("äõöüšž"),                      // Estonian
+        ]
+        let windowsBaltic = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.windowsBalticRim.rawValue)))
+        return [
+            (.windowsCP1252, western, true), (.isoLatin1, western, true),
+            (.windowsCP1250, centralEuropean, false), (.isoLatin2, centralEuropean, false),
+            (.windowsCP1254, turkish, false), (windowsBaltic, baltic, false),
+        ]
+    }()
 
     /// A PDF's "%PDF-" signature, or control bytes no text has: with no
     /// UTF-16 or UTF-32 byte-order mark, more than one byte in a hundred

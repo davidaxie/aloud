@@ -158,6 +158,63 @@ final class ExtractionEncodingTests: XCTestCase {
         XCTAssertTrue(TextExtractor.hasPDFSignature(Data([0xEF, 0xBB, 0xBF, 0x0A]) + Data("%PDF-1.7".utf8)))
     }
 
+    // MARK: - Audit fix (L006)
+
+    /// Central European text in Windows-1250 or ISO-8859-2, Turkish in
+    /// Windows-1254 and Baltic in Windows-1257, mostly ASCII with no
+    /// byte-order mark, read as themselves: not as Windows-1252 with a
+    /// superscript "³" for "ł", "ý" for "ı" or "ø" for "ř", nor with
+    /// letters lost as control characters.
+    func testCentralEuropeanTurkishAndBalticCodePagesAreDecoded() throws {
+        func cf(_ encoding: CFStringEncodings) -> String.Encoding {
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(encoding.rawValue)))
+        }
+        let polish = "Był sobie raz król, który żył długo i szczęśliwie. Ścieżka prowadziła przez las."
+        let czech = "Dobrý den, jak se máte? Děkuji, mám se dobře. Řekl, že přijde zítra ráno, a čekal na nádraží."
+        let czechWithT = "Příliš žluťoučký kůň úpěl ďábelské ódy. Šel domů a čekal."
+        let hungarian = "Árvíztűrő tükörfúrógép. Őszi szél fúj. A lőtér mellett ülő öregember különös történetet mesélt."
+        let croatian = "Čovjek je išao kroz šumu i vidio đaka koji je žurio kući. Ćup je bio pun vode."
+        let turkish = "Uzun yıllar boyunca İstanbul şehrinde yaşamış, sonra başka bir şehre taşınmış. "
+            + "Çocuklar ağaçların altında oynuyordu. Öğretmen gülümsedi."
+        let lithuanian = "Lietuvos sostinė yra Vilnius. Ąžuolas augo prie upės, o vaikai žaidė kieme. "
+            + "Šiandien graži diena, ir mes einame į mišką."
+        let latvian = "Rīga ir Latvijas galvaspilsēta. Ķēniņš dzīvoja pilī, un ļaudis strādāja laukos. "
+            + "Šodien ir skaista diena, un mēs ejam uz mežu."
+        let cases: [(String, String.Encoding)] = [
+            (polish, .windowsCP1250), (czech, .windowsCP1250), (czechWithT, .windowsCP1250),
+            (hungarian, .windowsCP1250), (croatian, .windowsCP1250),
+            (polish, .isoLatin2), (czechWithT, .isoLatin2), (hungarian, .isoLatin2),
+            (turkish, .windowsCP1254), (lithuanian, cf(.windowsBalticRim)), (latvian, cf(.windowsBalticRim)),
+        ]
+        for (sample, encoding) in cases {
+            let data = try XCTUnwrap(sample.data(using: encoding), "\(encoding)")
+            XCTAssertEqual(try text(data), sample, "\(encoding)")
+        }
+    }
+
+    /// L006: Western text keeps its Windows-1252 reading letter for letter,
+    /// the French "è" never a Czech "č" nor the Danish "ø" a Lithuanian
+    /// "ų", and Latin-1 still stands in for bytes 1252 leaves undefined.
+    func testWesternTextKeepsItsWindows1252Reading() throws {
+        let samples = [
+            "Il était une fois un café où l'on dînait. Très bien, à côté de la forêt, Noël et le cœur naïf.",
+            "El niño comió. ¿Qué pasó? ¡Hola! Mañana iremos a la montaña con el señor Muñoz. Nº 5, 1º y 2ª.",
+            "È così però più bello. La città è là, perché già lo sai.",
+            "Über den Fluss ging der Müller. Größe und Straße, schön.",
+            "Bjørn gik på arbejde i går. Æblerne var søde, og pigen spiste dem på trappen.",
+            "Það var einu sinni maður sem bjó á Íslandi. Hann átti þrjú börn og hús við sjóinn.",
+            "São Paulo é uma cidade grande. As crianças comeram pão e maçã à tarde.",
+            "The naïve fiancée ordered a café crème; Bjørn said señor Muñoz liked smörgåsbord. It cost £5 at 20°C.",
+        ]
+        for sample in samples {
+            let data = try XCTUnwrap(sample.data(using: .windowsCP1252), sample)
+            XCTAssertEqual(TextExtractor.latinDecoded(data), sample)
+            XCTAssertEqual(try text(data), sample)
+        }
+        let undefined = Data([0x63, 0x61, 0x66, 0xE9, 0x20, 0x81, 0x20, 0xE0, 0x20, 0x62, 0x69, 0x65, 0x6E, 0x74, 0xF4, 0x74])
+        XCTAssertEqual(TextExtractor.latinDecoded(undefined), String(data: undefined, encoding: .isoLatin1))
+    }
+
     func testUTF8IsUnchanged() throws {
         let blocks = try extractBlocks(utf8("It\u{2019}s \u{201C}fine\u{201D} \u{2014} caf\u{E9}."))
         XCTAssertEqual(blocks.map(\.text), ["It\u{2019}s \u{201C}fine\u{201D} \u{2014} caf\u{E9}."])
