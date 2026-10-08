@@ -91,14 +91,28 @@ final class ScrubAndContentsUITest: XCTestCase {
         return title
     }
 
-    /// Swipes Contents closed, from either height.
+    /// Drags Contents closed by its title, from either height: a drag to
+    /// the bottom of the screen (`dragSheetClosed`), not `swipeDown()`,
+    /// which on the title label travels only the label's height and never
+    /// moves the sheet.
     private func closeContents(_ app: XCUIApplication) {
         let title = app.staticTexts["contents.title"].firstMatch
         for _ in 0..<3 where title.exists {
-            title.swipeDown(velocity: .fast)
-            _ = waitForNonExistence(of: title, timeout: 2)
+            dragSheetClosed(app, by: title)
+            _ = waitForNonExistence(of: title, timeout: 3)
         }
         XCTAssertFalse(title.exists, "Contents should close on a swipe")
+    }
+
+    /// Grows Contents to full height: its title dragged to the top of the
+    /// screen, as a finger on the grabber would. `swipeUp()` on the title
+    /// travels only the label's height and leaves the sheet at half height.
+    private func growContents(_ app: XCUIApplication) {
+        let title = app.staticTexts["contents.title"].firstMatch
+        guard title.exists else { return }
+        let start = title.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1,
+                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)))
     }
 
     /// Kept with the result, for the visual check (silent: a screenshot).
@@ -109,9 +123,16 @@ final class ScrubAndContentsUITest: XCTestCase {
         add(shot)
     }
 
+    /// Sampled every tenth of a second: an `XCTNSPredicateExpectation`
+    /// evaluates about once a second, so a short timeout read the keyboard
+    /// once, at its end, wherever its exit animation had got to.
     private func keyboardGone(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: app.keyboards)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+        let deadline = Date().addingTimeInterval(timeout)
+        while app.keyboards.count > 0 {
+            guard Date() < deadline else { return false }
+            idle(0.1)
+        }
+        return true
     }
 
     private func hasKeyboardFocus(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
@@ -262,7 +283,7 @@ final class ScrubAndContentsUITest: XCTestCase {
         XCTAssertTrue(visible, "\(screen): a chapter row shows at half height without a scroll")
         keepScreenshot(app, "contents-half-height-\(screen)")
 
-        app.staticTexts["contents.title"].firstMatch.swipeUp()
+        growContents(app)
         XCTAssertTrue(more.waitForExistence(timeout: 5), "Grown, the earlier stops wait behind the toggle")
     }
 
@@ -313,7 +334,11 @@ final class ScrubAndContentsUITest: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("Pierre\n")
-        XCTAssertTrue(keyboardGone(app, timeout: 1), "The Search key drops the keyboard")
+        // The field lets go at once and the keyboard's exit animation
+        // follows; each sample is a whole-app snapshot, taken while some
+        // 1,900 "Pierre" hits land, so the keyboard gets two seconds (a
+        // keyboard the Search key left up would still be up at any length).
+        XCTAssertTrue(keyboardGone(app, timeout: 2), "The Search key drops the keyboard")
         XCTAssertTrue(app.staticTexts["search.count"].firstMatch.waitForExistence(timeout: 10),
                       "and the results land")
         XCTAssertTrue(app.staticTexts["contents.title"].firstMatch.exists, "Contents stays open")

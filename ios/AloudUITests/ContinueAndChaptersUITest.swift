@@ -108,12 +108,23 @@ final class ContinueAndChaptersUITest: XCTestCase {
                       "Contents should list the book's first chapter")
 
         // …and tapping the FIRST chapter seeks to its start (sentence 0 by the
-        // id-equals-index contract), dismissing the sheet.
+        // id-equals-index contract), dismissing the sheet. The pick also
+        // plays from there (P025, muted), and Gatsby's sentence 0 is the
+        // chapter heading "I": one word, spoken and passed within a second,
+        // before a probe read after the sheet closes can catch it. So the
+        // cue is read as the playhead back at the chapter's opening, on the
+        // heading or the six-second line after it, polled from the moment
+        // of the tap; the resume point sits past both, and playing only
+        // moves forward, so only the seek can bring it there.
+        XCTAssertGreaterThan(resumedSentence, 1,
+                             "The playhead should be past the first chapter's opening before the seek")
         firstChapter.tap()
-        XCTAssertTrue(readerText.waitForExistence(timeout: 10),
+        let cued = waitForSentence(in: app, timeout: 10) { $0 <= 1 }
+        XCTAssertNotNil(cued, "Tapping the first chapter should cue its start sentence, "
+                        + "got \(currentSentence(app).map(String.init) ?? "none")")
+        XCTAssertTrue(waitForNonExistence(of: app.staticTexts["contents.title"].firstMatch, timeout: 10),
                       "Contents should dismiss back to the reader")
-        XCTAssertTrue(waitForSentence(0, in: app, timeout: 10),
-                      "Tapping the first chapter should cue its start sentence")
+        XCTAssertTrue(readerText.exists, "The reader shows again")
         // P025: a Contents pick plays from there, even from a pause (muted).
         XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: playButton, timeout: 10),
                       "A chapter pick plays from its start, got '\(stringValue(of: playButton))'")
