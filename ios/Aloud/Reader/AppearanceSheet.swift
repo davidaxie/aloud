@@ -172,47 +172,55 @@ struct AppearanceView: View {
     }
 
     /// One row of three segments; at accessibility sizes the segments stack
-    /// so "System" never hyphenates across two lines. VoiceOver hears one
-    /// segmented control named Appearance, with each choice's place in the
-    /// three; the capsules draw exactly as before.
+    /// so "System" never hyphenates across two lines. In the row VoiceOver
+    /// hears one segmented control named Appearance, with each choice's
+    /// place in the three; the capsules draw exactly as before. Stacked, the
+    /// three keep their own elements, so each focus rectangle and Voice
+    /// Control number sits on the capsule it names (a segmented control
+    /// would lay its segments side by side across the stack).
+    @ViewBuilder
     private var appearanceRow: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(spacing: 0) {
-                    ForEach(AppearancePreference.allCases) { preference in
-                        appearanceSegment(preference)
-                    }
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 0) {
+                ForEach(Array(AppearancePreference.allCases.enumerated()), id: \.element) { index, preference in
+                    appearanceSegment(preference)
+                        .accessibilityValue(AppearanceCopy.position(index + 1,
+                                                                    of: AppearancePreference.allCases.count))
                 }
-                .padding(Theme.Space.xxs)
-                .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                    .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
-            } else {
-                HStack(spacing: 0) {
-                    ForEach(AppearancePreference.allCases) { preference in
-                        appearanceSegment(preference)
-                    }
-                }
-                .padding(Theme.Space.xxs)
-                .background(Theme.surface2, in: Capsule())
-                .overlay(Capsule().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
             }
-        }
-        .accessibilityRepresentation {
-            Picker(AppearanceCopy.appearance, selection: appearanceSelection) {
+            .padding(Theme.Space.xxs)
+            .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(AppearanceCopy.appearance)
+            .accessibilityIdentifier("appearance.scheme")
+        } else {
+            HStack(spacing: 0) {
                 ForEach(AppearancePreference.allCases) { preference in
-                    Text(preference.label).tag(preference)
+                    appearanceSegment(preference)
                 }
             }
-            .pickerStyle(.segmented)
+            .padding(Theme.Space.xxs)
+            .background(Theme.surface2, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+            .accessibilityRepresentation {
+                Picker(AppearanceCopy.appearance, selection: appearanceSelection) {
+                    ForEach(AppearancePreference.allCases) { preference in
+                        Text(preference.label).tag(preference)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            .accessibilityIdentifier("appearance.scheme")
         }
-        .accessibilityIdentifier("appearance.scheme")
     }
 
     /// One selection style, as on the speed presets: the selected segment is
     /// an accentSoft fill with an accentStrong semibold label; the others
-    /// are bare muted labels. Touch only: VoiceOver reads the segmented
-    /// control that represents the row.
+    /// are bare muted labels. In the row VoiceOver reads the segmented
+    /// control that represents it; stacked, each segment speaks for itself,
+    /// its name and selection never color alone.
     private func appearanceSegment(_ preference: AppearancePreference) -> some View {
         let selected = preference.rawValue == appearanceRaw
         return Button {
@@ -232,6 +240,8 @@ struct AppearanceView: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(preference.label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     // MARK: - Reading

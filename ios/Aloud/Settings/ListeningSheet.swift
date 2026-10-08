@@ -12,12 +12,36 @@ import SwiftUI
 /// Two detents, so `sheetChrome` keeps the system drag indicator (the
 /// control VoiceOver resizes the sheet with) and the SheetGrabber steps
 /// aside. The scrim stays: a tap above the sheet closes it.
+///
+/// The reader learns where the sheet begins (`coveredFromY`), so calm
+/// follow measures its band above the sheet rather than above the player
+/// bar: the spoken sentence glides into the strip of page left in view,
+/// and a voice picked here is heard over a sentence that can be seen.
 struct ListeningSheet: View {
     /// Where the sheet opens: the page keeps the top 40% of the screen.
     static let openingDetent: PresentationDetent = .fraction(0.6)
     static let detents: Set<PresentationDetent> = [openingDetent, .large]
+    /// How long the sheet's top edge holds still before the reader hears of
+    /// it, so a drag between detents never re-aims following every frame.
+    static let restingDelay: Duration = .milliseconds(150)
 
+    /// The sheet's top edge in window coordinates as it last rested at its
+    /// opening detent, nil once the sheet has gone. The full list keeps
+    /// it: the page is out of view there, and coming back down then moves
+    /// nothing.
+    @Binding private var coveredFromY: CGFloat?
     @State private var detent: PresentationDetent = ListeningSheet.openingDetent
+    /// The top edge as last measured, moving or not.
+    @State private var measuredTop: CGFloat?
+
+    init(coveredFromY: Binding<CGFloat?> = .constant(nil)) {
+        _coveredFromY = coveredFromY
+    }
+
+    /// The edge the reader may be told of: only at the opening detent.
+    private var restingTop: CGFloat? {
+        detent == Self.openingDetent ? measuredTop : nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,6 +64,20 @@ struct ListeningSheet: View {
             ListeningView()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The window's space: the sheet is hosted apart from the reader.
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.frame(in: .global).minY.rounded()
+        } action: { minY in
+            measuredTop = minY
+        }
+        .task(id: restingTop) {
+            // Told only once the edge holds still at the opening detent.
+            guard let restingTop else { return }
+            try? await Task.sleep(for: Self.restingDelay)
+            guard !Task.isCancelled, coveredFromY != restingTop else { return }
+            coveredFromY = restingTop
+        }
+        .onDisappear { coveredFromY = nil }
         .sheetChrome(Self.detents, selection: $detent)
     }
 }

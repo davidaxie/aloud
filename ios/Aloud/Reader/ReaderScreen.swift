@@ -45,6 +45,13 @@ struct ReaderScreen: View {
     /// measures its band above the bar's top edge, not above its height.
     @State private var textBottom: CGFloat?
     @State private var barTop: CGFloat?
+    /// The Voice & speed sheet's top edge while it rests open, and the text
+    /// view's bottom edge, both in the window's space (the sheet is hosted
+    /// apart from this screen). The page under the sheet counts as covered
+    /// too, so following keeps the spoken sentence in the strip above it
+    /// (P034); nil once the sheet closes, and the band is the bar's again.
+    @State private var listeningSheetTop: CGFloat?
+    @State private var textBottomInWindow: CGFloat?
     private static let space = "reader.screen"
 
     var body: some View {
@@ -66,7 +73,9 @@ struct ReaderScreen: View {
                     // Following resumes on a user Play, every jump and Undo,
                     // and the Follow chip: never by itself.
                     followRequest: playback.userPlayAction &+ playback.jumpSerial &+ followChipTaps,
-                    obscuredBottom: FollowBand.obscuredBottom(textMaxY: textBottom, chromeMinY: barTop),
+                    obscuredBottom: FollowBand.obscuredBottom(textMaxY: textBottom, chromeMinY: barTop,
+                                                              windowTextMaxY: textBottomInWindow,
+                                                              sheetMinY: listeningSheetTop),
                     colophon: colophon(for: content, navigation: navigation),
                     voiceOffscreen: $voiceOffscreen,
                     textUnderTopBar: $textUnderTopBar,
@@ -77,6 +86,11 @@ struct ReaderScreen: View {
                     proxy.frame(in: .named(Self.space)).maxY
                 } action: { maxY in
                     textBottom = maxY
+                }
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.frame(in: .global).maxY
+                } action: { maxY in
+                    textBottomInWindow = maxY
                 }
                 .overlay(alignment: .top) { topEdgeRule }
                 #if DEBUG
@@ -92,12 +106,18 @@ struct ReaderScreen: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let content, let navigation {
-                PlayerBarView(document: liveDocument, content: content, navigation: navigation)
+                PlayerBarView(document: liveDocument, content: content, navigation: navigation,
+                              listeningSheetTop: $listeningSheetTop)
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.frame(in: .named(Self.space)).minY
                     } action: { minY in
                         barTop = minY
                     }
+                    // The Aa sheet covers the bar but leaves the page live
+                    // (P037), so VoiceOver could walk into the bar behind it,
+                    // where the Voice chip or the chapter line would ask for
+                    // a second sheet iOS refuses. Hidden until the sheet goes.
+                    .accessibilityHidden(showAppearanceSheet)
             }
         }
         // One space for the text's bottom and the bar's top: their gap is
@@ -125,6 +145,12 @@ struct ReaderScreen: View {
         .toolbarColorScheme(colorScheme, for: .navigationBar)
         .toolbar { toolbarContent }
         .sheet(isPresented: $showAppearanceSheet) { AppearanceSheet() }
+        // A voice added or removed in Settings drops the System pick; rank
+        // it again off the main thread before the Voice & speed sheet asks.
+        .onReceive(NotificationCenter.default.publisher(for: AVSpeechEngine.installedVoicesDidChange)
+            .receive(on: RunLoop.main)) { _ in
+            AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage)
+        }
         .task {
             await load()
         }
@@ -280,6 +306,10 @@ struct ReaderScreen: View {
             // the controller cues at the saved sentence.
             playback.load(document: liveDocument, content: loaded)
             store.noteOpened(id: document.id)
+            // The System row names its voice on the Voice & speed sheet's
+            // first frame (P035): rank the pick for this book's language
+            // now, off the main thread, so that frame finds it cached.
+            AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage)
 
             // UI-test hook (no-op in Release): `-uitest-seek-text <substring>`
             // cues the playhead at the first sentence containing the

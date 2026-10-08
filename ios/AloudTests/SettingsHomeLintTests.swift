@@ -173,6 +173,23 @@ final class SettingsHomeLintTests: XCTestCase {
         }
     }
 
+    /// P035: the System row names its voice on the Voice & speed view's
+    /// first frame, so the pick is ranked off the main thread before that
+    /// frame: when the reader loads a book, when Settings opens, and again
+    /// after the installed voices change.
+    func testTheSystemVoiceIsRankedBeforeTheVoiceViewAsks() throws {
+        let paths = ["Reader/ReaderScreen.swift", "Settings/SettingsView.swift", "Playback/AVSpeechEngine.swift"]
+        let sources = try SourceTree.sources(only: paths)
+        let reader = try XCTUnwrap(sources[paths[0]])
+        let settings = try XCTUnwrap(sources[paths[1]])
+        let engine = try XCTUnwrap(sources[paths[2]])
+        XCTAssertEqual(reader.components(separatedBy: "AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage)").count - 1,
+                       2, "the reader warms on load and on installedVoicesDidChange")
+        XCTAssertTrue(reader.contains("publisher(for: AVSpeechEngine.installedVoicesDidChange)"))
+        XCTAssertTrue(settings.contains("AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage)"))
+        XCTAssertTrue(engine.contains("Task.detached(priority: .utility)"), "ranked off the main thread")
+    }
+
     func testNoSystemErrorTextInDownloadOrSettings() throws {
         let sources = try SourceTree.sources(only: ["TTS", "Settings"])
         XCTAssertEqual(SourceTree.files(containing: "localizedDescription", in: sources), [],

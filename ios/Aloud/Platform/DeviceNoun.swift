@@ -60,15 +60,21 @@ enum DeviceCopy {
     /// The installed card's remove action, which asks first.
     static let removeDownload = "Remove Download"
     /// Where more System voices come from, as a link. None on the iPhone:
-    /// iOS has no public link to the Spoken Content pane.
+    /// iOS has no public link to the pane that holds them.
     static let addSystemVoices: String? = nil
     /// The System row's subtitle until it names its voice, and with no
     /// installed voice to name.
     static let systemVoiceFallback = "Built into iOS"
     /// Under the System row while its voice isn't a premium one: where
     /// better System voices download, as plain text (no link reaches it).
-    static let systemVoicesHint: String? =
-        "More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content \u{203A} Voices"
+    /// iOS 26 renamed the Accessibility pane that holds them, so the path
+    /// names the pane this iPhone shows.
+    static var systemVoicesHint: String? {
+        if #available(iOS 26, *) {
+            return "More voices: Settings \u{203A} Accessibility \u{203A} Read & Speak \u{203A} Voices"
+        }
+        return "More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content \u{203A} Voices"
+    }
     /// What to do after a file couldn't be opened: add it again from where
     /// it came.
     static let addAgain = "Try adding it again from Files."

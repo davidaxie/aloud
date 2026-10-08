@@ -19,6 +19,9 @@ struct PlayerBarView: View {
     let document: LibraryDocument
     let content: DocContent
     let navigation: ReaderNavigation
+    /// Where the Voice & speed sheet begins while it rests open, for the
+    /// reader's calm follow (`ListeningSheet.coveredFromY`).
+    var listeningSheetTop: Binding<CGFloat?> = .constant(nil)
 
     @EnvironmentObject private var playback: PlaybackController
     @EnvironmentObject private var naturalVoiceOffer: NaturalVoiceOffer
@@ -91,7 +94,7 @@ struct PlayerBarView: View {
                 .fill(Theme.Stroke.hairlineColor)
                 .frame(height: Theme.Stroke.hairlineWidth)
         }
-        .sheet(isPresented: $showListening) { ListeningSheet() }
+        .sheet(isPresented: $showListening) { ListeningSheet(coveredFromY: listeningSheetTop) }
         .sheet(isPresented: $showContents) {
             ContentsSheet(content: content, navigation: navigation)
         }

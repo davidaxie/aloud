@@ -220,6 +220,57 @@ final class ListeningUITests: XCTestCase {
         dismissListeningSheet(app)
     }
 
+    /// P034: the spoken sentence stays in the strip of page above the
+    /// sheet. Scrolled by hand low in the band, where the sheet will cover
+    /// it (still in view, so following resumes), the cued sentence glides
+    /// above the sheet's top as it opens: no voice tapped (a tap speaks),
+    /// no Play. Measured on the highlight's probe, not the text view, whose
+    /// top is always above the sheet.
+    func testTheSpokenSentenceGlidesAboveTheSheetAsItOpens() throws {
+        let app = XCUIApplication.aloud(["-uitest-temp-model-dir", "-uitest-reset-library",
+                                         "-uitest-reset-voice-pref",
+                                         "-aloud.naturalVoice.offerAnswer.v1", "notNow",
+                                         "-aloud.prefs.v1.textSize", "2",
+                                         "-uitest-seed-classic", "64317", "-uitest-open-first-doc",
+                                         "-uitest-seek-text", "unaffected scorn"])
+        app.launch()
+        let text = app.textViews["reader.text"].firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 20), "The reader should open")
+        XCTAssertNotNil(settledSentenceFrame(app), "The seek hook cues a sentence a page into chapter I")
+
+        // Slow and held at the end, so the page doesn't coast on.
+        let from = text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        let to = text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.3)
+        let low = try XCTUnwrap(settledSentenceFrame(app), "The sentence is still on the page")
+
+        openListeningSheet(app)
+        let title = app.staticTexts["listening.title"].firstMatch
+        let sheetTop = settledFrame(of: title).minY - 24
+        XCTAssertGreaterThan(low.maxY, sheetTop, "Set-up: the sentence sat where the sheet would cover it")
+        var above = false
+        for _ in 0..<20 where !above {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            above = (activeSentenceFrame(app)?.maxY ?? .infinity) <= sheetTop
+        }
+        XCTAssertTrue(above, "The spoken sentence glides above the sheet: it ends at "
+                      + "\(String(describing: activeSentenceFrame(app)?.maxY)), the sheet starts at \(sheetTop)")
+        dismissListeningSheet(app)
+    }
+
+    /// The active sentence's frame once two reads a quarter second apart
+    /// agree: a placement or a scroll has come to rest.
+    private func settledSentenceFrame(_ app: XCUIApplication) -> CGRect? {
+        var frame = activeSentenceFrame(app)
+        for _ in 0..<16 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            let next = activeSentenceFrame(app)
+            if next != nil, next == frame { break }
+            frame = next
+        }
+        return frame
+    }
+
     /// P035/P036 on the pushed page (natural voice not installed): the
     /// System row names the voice it speaks in, the hint about better voices
     /// shows only below a premium one, and the card says what the download

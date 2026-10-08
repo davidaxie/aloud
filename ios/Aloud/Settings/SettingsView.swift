@@ -67,6 +67,9 @@ struct SettingsView: View {
         // the app's scheme, not the phone's: under an in-app Dark override
         // on a Light phone the title otherwise drew dark-on-dark.
         .toolbarColorScheme(colorScheme, for: .navigationBar)
+        // Voice & speed names the System voice on its first frame (P035):
+        // rank the pick off the main thread before that push asks for it.
+        .task { AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage) }
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text("Settings")
@@ -106,13 +109,20 @@ struct SettingsView: View {
     }
 
     /// The Voice & speed row's second line: while the device could run the
-    /// natural voice and it isn't installed, that it exists and its size.
-    nonisolated static func naturalVoiceLine(supported: Bool, installed: Bool) -> String? {
-        supported && !installed ? NaturalVoiceCopy.available : nil
+    /// natural voice and nothing is fetching it (never downloaded, or a
+    /// download that failed and can be tried again), that it exists and its
+    /// size. Nil once installed, and while it downloads or waits for Wi-Fi,
+    /// where the pushed card says so: the row never offers what's on its way.
+    nonisolated static func naturalVoiceLine(supported: Bool, state: ModelManager.ModelState) -> String? {
+        guard supported else { return nil }
+        switch state {
+        case .notInstalled, .failed: return NaturalVoiceCopy.available
+        case .downloading, .waitingForWiFi, .installed: return nil
+        }
     }
 
     private var naturalVoiceLine: String? {
-        Self.naturalVoiceLine(supported: model.neuralVoiceOffered, installed: modelManager.isInstalled)
+        Self.naturalVoiceLine(supported: model.neuralVoiceOffered, state: modelManager.state)
     }
 
     private var textPoints: CGFloat { ReaderTextSize.points(forStep: textSizeStep) }

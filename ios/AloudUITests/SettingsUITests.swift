@@ -224,8 +224,56 @@ final class SettingsUITests: XCTestCase {
         }
         XCTAssertEqual(issues, [], "The Aa sheet")
 
+        // The bar under the sheet is out of VoiceOver's reach while it's up:
+        // its Voice chip would ask for a second sheet iOS refuses.
+        let voiceChip = app.buttons["player.listening"].firstMatch
+        XCTAssertFalse(voiceChip.exists, "The covered player bar is hidden from VoiceOver")
+
         done.tap()
         XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "Done closes the Aa sheet")
+        XCTAssertTrue(voiceChip.waitForExistence(timeout: 5), "The bar is back once the sheet goes")
+        voiceChip.tap()
+        let listening = app.staticTexts["listening.title"].firstMatch
+        XCTAssertTrue(listening.waitForExistence(timeout: 10), "The Voice chip still opens its sheet")
+        dismissListeningSheet(app)
+    }
+
+    /// P039 at accessibility sizes: the stacked System / Light / Dark
+    /// capsules are three elements in a group named Appearance, each framed
+    /// on its own capsule (a segmented control laid its segments side by
+    /// side across the stack, so a tap on its Dark could land on System),
+    /// with its place in the three; a tap on Dark picks Dark.
+    func testStackedAppearanceChoicesAreEachTheirOwnElement() {
+        let app = launch(["-uitest-temp-model-dir",
+                          "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"])
+        let scheme = app.descendants(matching: .any)["appearance.scheme"].firstMatch
+        func choice(_ label: String) -> XCUIElement {
+            scheme.buttons.matching(NSPredicate(format: "label ==[c] %@", label)).firstMatch
+        }
+        addTeardownBlock {
+            let system = choice("System")
+            if system.exists, !system.isSelected { system.tap() }
+        }
+        openSettings(app)
+        app.buttons["settings.appearance"].firstMatch.tap()
+        XCTAssertTrue(scheme.waitForExistence(timeout: 10), "The scheme group")
+
+        let choices = ["System", "Light", "Dark"].map(choice)
+        for _ in 0..<6 where !choices[2].isHittable { app.swipeUp() }
+        XCTAssertTrue(choices.allSatisfy(\.exists), "Each choice is its own element")
+        XCTAssertEqual(scheme.label, "Appearance")
+        let frames = choices.map(\.frame)
+        for (upper, lower) in zip(frames, frames.dropFirst()) {
+            XCTAssertLessThanOrEqual(upper.maxY, lower.minY + 1, "Stacked: \(upper) over \(lower)")
+        }
+        for frame in frames {
+            XCTAssertGreaterThan(frame.width, scheme.frame.width * 0.8, "Each spans its own capsule: \(frame)")
+        }
+        XCTAssertEqual(choices[2].value as? String, "3 of 3")
+
+        choices[2].tap()
+        XCTAssertTrue(wait(for: "selected == true", on: choices[2]), "Dark should be selected")
+        XCTAssertFalse(choices[0].isSelected, "System no longer is")
     }
 
     /// P039: VoiceOver hears System / Light / Dark as one segmented control

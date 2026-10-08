@@ -63,18 +63,24 @@ final class SheetsAndSettingsTests: XCTestCase {
         let system = AVSpeechEngine(mutesOutput: true).defaultVoice
         XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: system, rate: 1), "Voice & speed, System, 1×",
                        "no natural-voice line, nothing more said")
-        let line = SettingsView.naturalVoiceLine(supported: true, installed: false)
+        let line = SettingsView.naturalVoiceLine(supported: true, state: .notInstalled)
         XCTAssertEqual(line, "Natural voice available \u{00B7} 353 MB")
         XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: system, rate: 1, naturalVoice: line),
                        "Voice & speed, System, 1×, Natural voice available, 353 MB")
     }
 
     /// The natural voice's line shows only where it could be installed and
-    /// isn't yet.
+    /// nothing is fetching it: never while a download is under way or waits
+    /// for Wi-Fi, when the pushed card says so.
     func testTheNaturalVoiceLineShowsOnlyWhileItCouldBeInstalled() {
-        XCTAssertNotNil(SettingsView.naturalVoiceLine(supported: true, installed: false))
-        XCTAssertNil(SettingsView.naturalVoiceLine(supported: true, installed: true), "already installed")
-        XCTAssertNil(SettingsView.naturalVoiceLine(supported: false, installed: false), "it can't run here")
+        XCTAssertNotNil(SettingsView.naturalVoiceLine(supported: true, state: .notInstalled))
+        XCTAssertNotNil(SettingsView.naturalVoiceLine(supported: true, state: .failed(.interrupted)),
+                        "a failed download can be tried again")
+        XCTAssertNil(SettingsView.naturalVoiceLine(supported: true, state: .downloading(0.4)), "on its way")
+        XCTAssertNil(SettingsView.naturalVoiceLine(supported: true, state: .waitingForWiFi(0.4)),
+                     "paused for Wi-Fi")
+        XCTAssertNil(SettingsView.naturalVoiceLine(supported: true, state: .installed), "already installed")
+        XCTAssertNil(SettingsView.naturalVoiceLine(supported: false, state: .notInstalled), "it can't run here")
     }
 
     // MARK: - P034: the Voice & speed sheet

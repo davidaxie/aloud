@@ -169,8 +169,14 @@ final class NaturalVoiceCopyTests: XCTestCase {
         XCTAssertNil(DeviceCopy.addSystemVoices)
         XCTAssertNil(PlatformVoiceSetup.addVoicesURL)
         XCTAssertEqual(DeviceCopy.systemVoiceFallback, "Built into iOS")
-        XCTAssertEqual(DeviceCopy.systemVoicesHint,
-                       "More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content \u{203A} Voices")
+        // The pane iOS 26 renamed: the hint names the one this OS shows.
+        if #available(iOS 26, *) {
+            XCTAssertEqual(DeviceCopy.systemVoicesHint,
+                           "More voices: Settings \u{203A} Accessibility \u{203A} Read & Speak \u{203A} Voices")
+        } else {
+            XCTAssertEqual(DeviceCopy.systemVoicesHint,
+                           "More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content \u{203A} Voices")
+        }
         #else
         XCTAssertEqual(DeviceCopy.addSystemVoices, "Add voices in System Settings\u{2026}")
         XCTAssertNotNil(PlatformVoiceSetup.addVoicesURL)

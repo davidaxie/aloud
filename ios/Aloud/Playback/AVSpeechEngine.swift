@@ -193,6 +193,19 @@ final class AVSpeechEngine: TtsEngine {
         }
     }
 
+    /// Ranks the System voice for `language` off the main thread and keeps
+    /// it, so the System row's first look (the Voice & speed sheet's first
+    /// frame) finds the pick cached instead of ranking every installed voice
+    /// there. The cache is lock-guarded and never keeps a ranking that
+    /// straddled a change of the installed voices; a miss still ranks in
+    /// place.
+    @discardableResult
+    static func warmSystemVoice(reading language: String?) -> Task<Void, Never> {
+        Task.detached(priority: .utility) {
+            _ = cachedBestSystemVoice(reading: language)
+        }
+    }
+
     /// The voice the System voice reads `language` in, ranked once per
     /// language like the English pick: that language's best installed
     /// voice, or the English pick when none is installed. Nil, or any

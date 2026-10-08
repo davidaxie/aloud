@@ -105,6 +105,23 @@ final class FollowBandTests: XCTestCase {
         XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 500, chromeMinY: 600), 0, "a bar below the text covers none")
     }
 
+    /// P034: the Voice & speed sheet resting at 60% covers the page above
+    /// the bar, so the band is measured above the sheet while it's up (its
+    /// edge and the text's bottom in the window's space), and above the bar
+    /// alone once it's gone.
+    func testASheetOverThePageCoversFromItsTopEdge() {
+        // Screen space: the bar's top at 598 over text to 852. Window space:
+        // the text's bottom at 852 again, the sheet's top at 382.
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 852, chromeMinY: 598,
+                                                 windowTextMaxY: 852, sheetMinY: 382), 470, "the sheet reaches higher")
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 852, chromeMinY: 598,
+                                                 windowTextMaxY: 852, sheetMinY: nil), 254, "no sheet: the bar")
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 852, chromeMinY: 598,
+                                                 windowTextMaxY: 852, sheetMinY: 700), 254, "a sheet below the bar")
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 852, chromeMinY: 598,
+                                                 windowTextMaxY: nil, sheetMinY: 382), 254, "not measured yet")
+    }
+
     func testGlidesOnlyWithinOneViewportAndNeverUnderReduceMotion() {
         XCTAssertTrue(FollowBand.glides(distance: 400, viewportHeight: 500, reduceMotion: false))
         XCTAssertTrue(FollowBand.glides(distance: -500, viewportHeight: 500, reduceMotion: false))

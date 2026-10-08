@@ -98,6 +98,17 @@ enum FollowBand {
         guard let textMaxY, let chromeMinY else { return 0 }
         return max(textMaxY - chromeMinY, 0)
     }
+
+    /// The same with a sheet resting over the page too: whichever reaches
+    /// further up the text. A sheet is hosted apart from the screen, so its
+    /// top edge and the text's bottom come in the window's space
+    /// (`windowTextMaxY`, `sheetMinY`), the bar's in the screen's own. No
+    /// sheet, and the bar alone counts.
+    static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,
+                               windowTextMaxY: CGFloat?, sheetMinY: CGFloat?) -> CGFloat {
+        max(obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY),
+            obscuredBottom(textMaxY: windowTextMaxY, chromeMinY: sheetMinY))
+    }
 }
 
 #if DEBUG
