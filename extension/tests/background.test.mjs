@@ -176,7 +176,8 @@ test('I018: the old localhost default saved with other settings moves to 127.0.0
       ['http://localhost:8000', 'http://127.0.0.1:8000'],
       ['http://localhost:8000/', 'http://127.0.0.1:8000'],
       ['http://localhost:8001', 'http://localhost:8001'],
-      ['http://my-mac.local:8000', 'http://my-mac.local:8000'],
+      // L043: only this computer; a backend on another one is refused.
+      ['http://my-mac.local:8000', 'http://127.0.0.1:8000'],
     ]) {
       sync.get = () => Promise.resolve({ 'aloud.prefs.v1': { rate: 1.5, backendUrl: stored } })
       const prefs = await loadPrefs()
@@ -344,4 +345,131 @@ test('J047: only the popup may activate a tab, not a content script in a page', 
   const fromPopup = await ask({ kind: 'activate', tabId: 7, action: 'start' }, { id: 'test', url: 'chrome-extension://test/popup.html' })
   assert.equal(fromPopup.ok, true)
   assert.ok(mock.sent.some((s) => s.tabId === 7 && s.msg.kind === 'command' && s.msg.action === 'start'))
+})
+
+/** A storage area holding `items`, as chrome.storage's get and set see it. */
+function fakeArea(items = {}) {
+  return {
+    items,
+    get: (key) => Promise.resolve(key in items ? { [key]: structuredClone(items[key]) } : {}),
+    set: (more) => Promise.resolve(void Object.assign(items, structuredClone(more))),
+  }
+}
+
+/** Run `fn` with `areas` in place of the mock's storage areas. */
+async function withStorage(areas, fn) {
+  const storage = mock.chrome.storage
+  const real = { ...storage }
+  Object.assign(storage, areas)
+  try {
+    return await fn()
+  } finally {
+    Object.assign(storage, real)
+  }
+}
+
+test('L043: a backend URL off this computer is refused, and no request leaves it', async () => {
+  const { loadPrefs, savePrefs, onThisComputer } = await load('shared/prefs.ts')
+  const realFetch = globalThis.fetch
+  const asked = []
+  globalThis.fetch = async (url) => {
+    asked.push(String(url))
+    const { pathname } = new URL(url)
+    if (pathname === '/health') return Response.json(KOKORO)
+    if (pathname === '/synthesize') return RIFF()
+    return Response.json({ voices: [], default: 'af_heart' })
+  }
+  try {
+    // Written by a content script in a compromised page: to sync, as before
+    // the split, or to this computer's own key.
+    const planted = 'https://collector.example'
+    for (const areas of [
+      { sync: fakeArea({ 'aloud.prefs.v1': { rate: 1.5, backendUrl: planted } }), local: fakeArea() },
+      { sync: fakeArea(), local: fakeArea({ 'aloud.backendUrl.v1': planted }) },
+    ]) {
+      await withStorage(areas, async () => {
+        assert.equal((await loadPrefs()).backendUrl, 'http://127.0.0.1:8000')
+        asked.length = 0
+        await ask({ kind: 'health' })
+        await ask({ kind: 'voices' })
+        await ask(SYNTH, { tab: { id: 1 }, frameId: 0 })
+        assert.ok(asked.length > 0)
+        for (const url of asked) assert.equal(new URL(url).hostname, '127.0.0.1', `the worker sent a request to ${url}`)
+        assert.equal((await savePrefs({ backendUrl: planted })).backendUrl, 'http://127.0.0.1:8000')
+      })
+    }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  for (const url of ['http://127.0.0.1:8123', 'http://localhost:8001/', 'http://[::1]:8000', 'https://127.0.0.1:8443']) {
+    assert.equal(onThisComputer(url), true, url)
+  }
+  for (const url of [
+    'https://collector.example',
+    'http://203.0.113.9:80',
+    'http://my-mac.local:8000',
+    'http://127.0.0.1:8000@collector.example',
+    'http://user:pw@127.0.0.1:8000',
+    'http://127.0.0.1.collector.example',
+    'file:///etc/passwd',
+    'not a url',
+  ]) {
+    assert.equal(onThisComputer(url), false, url)
+  }
+})
+
+test('L043: every request the worker makes is checked against this computer first', async () => {
+  const source = await readFile(join(SRC, 'background', 'index.ts'), 'utf8')
+  const fetches = [...source.matchAll(/(?<![\w.])fetch\(/g)]
+  assert.equal(fetches.length, 1, 'a fetch in the worker skips the loopback check')
+  const guard = source.slice(source.lastIndexOf('function ', fetches[0].index), fetches[0].index)
+  assert.match(guard, /if \(!onThisComputer\(url\)\) return Promise\.reject/)
+})
+
+test('L040: the backend URL stays on the computer it was set on; the other settings sync', async () => {
+  const { loadPrefs, savePrefs, watchPrefs } = await load('shared/prefs.ts')
+  // One sync store shared by two computers, as saved before the split.
+  const sync = fakeArea({ 'aloud.prefs.v1': { voiceId: 'bf_emma', rate: 1.5, backendUrl: 'http://127.0.0.1:8123' } })
+  const laptop = fakeArea()
+  const desktop = fakeArea()
+  const on = (local, fn) => withStorage({ sync, local }, fn)
+
+  // The laptop, where it was set, keeps it; the copy in sync is dropped.
+  const first = await on(laptop, loadPrefs)
+  assert.equal(first.backendUrl, 'http://127.0.0.1:8123')
+  assert.equal(first.voiceId, 'bf_emma')
+  assert.equal(first.rate, 1.5)
+  assert.equal('backendUrl' in sync.items['aloud.prefs.v1'], false, 'the backend URL is still synced')
+  assert.equal(sync.items['aloud.prefs.v1'].voiceId, 'bf_emma')
+
+  // The desktop never sees it, so its default URL still scans the fallback ports.
+  assert.equal((await on(desktop, loadPrefs)).backendUrl, 'http://127.0.0.1:8000')
+  const moved = await on(desktop, () => savePrefs({ backendUrl: 'http://127.0.0.1:8001' }))
+  assert.equal(moved.backendUrl, 'http://127.0.0.1:8001')
+  assert.equal((await on(laptop, loadPrefs)).backendUrl, 'http://127.0.0.1:8123', 'the desktop moved the laptop')
+
+  // The rest still follows the user.
+  await on(laptop, () => savePrefs({ rate: 2 }))
+  const desk = await on(desktop, loadPrefs)
+  assert.equal(desk.rate, 2)
+  assert.equal(desk.backendUrl, 'http://127.0.0.1:8001')
+  assert.equal('backendUrl' in sync.items['aloud.prefs.v1'], false)
+
+  // Moved once: a URL an older build syncs later is not taken up.
+  sync.items['aloud.prefs.v1'].backendUrl = 'http://127.0.0.1:9999'
+  assert.equal((await on(laptop, loadPrefs)).backendUrl, 'http://127.0.0.1:8123')
+  assert.equal((await on(desktop, loadPrefs)).backendUrl, 'http://127.0.0.1:8001')
+
+  // A change to the synced settings reports this computer's URL, not another's.
+  let listener
+  mock.chrome.storage.onChanged = { addListener: (fn) => (listener = fn), removeListener: () => {} }
+  const seen = []
+  const stop = watchPrefs((p) => seen.push(p))
+  await on(desktop, async () => {
+    listener({ 'aloud.prefs.v1': { newValue: { ...sync.items['aloud.prefs.v1'], rate: 2.5 } } }, 'sync')
+    await settle()
+  })
+  stop()
+  assert.equal(seen.at(-1)?.backendUrl, 'http://127.0.0.1:8001')
 })

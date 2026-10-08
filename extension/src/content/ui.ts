@@ -359,8 +359,11 @@ export class PlayerBar {
   private voiceEl!: HTMLSelectElement
   private rateEl!: HTMLSelectElement
 
-  /** Signature of the rendered voice list, so we only rebuild <option>s on change. */
-  private voiceSig = ''
+  /**
+   * Signature of the rendered voice list, so we only rebuild <option>s on change.
+   * Null until the first build, so an empty first list still gets its placeholder (L045).
+   */
+  private voiceSig: string | null = null
 
   constructor(private cb: BarCallbacks) {
     this.host = document.createElement('div')

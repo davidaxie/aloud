@@ -102,7 +102,7 @@ export type PlayerStatus =
   | 'ended' // reached the end of the page
   | 'error'
 
-/** User-tunable settings, persisted in chrome.storage.sync. */
+/** User-tunable settings, persisted in chrome.storage.sync (the backend URL in local). */
 export interface Prefs {
   /** Kokoro voice id. */
   voiceId: string
@@ -116,6 +116,6 @@ export interface Prefs {
   clickToJump: boolean
   /** Paint the karaoke word highlight on top of the sentence highlight. */
   highlightWords: boolean
-  /** Where the local Aloud TTS server lives. */
+  /** Where the Aloud TTS server lives on this computer: a loopback URL only. */
   backendUrl: string
 }

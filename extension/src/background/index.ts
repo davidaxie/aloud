@@ -20,7 +20,7 @@
 // the worker alive.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { BACKEND_FALLBACK_PORTS, DEFAULT_PREFS, loadPrefs } from '../shared/prefs'
+import { BACKEND_FALLBACK_PORTS, DEFAULT_PREFS, loadPrefs, onThisComputer } from '../shared/prefs'
 import {
   bytesToBase64,
   type BgRequest,
@@ -222,11 +222,21 @@ async function backendBase(): Promise<string> {
  */
 const PROBE_TIMEOUT_MS = 5_000
 
+/**
+ * The worker's only way to the network: fetch, to this computer only. Prefs
+ * already refuse a backend URL on any other host; this checks again before
+ * each request, since every sentence the user reads goes out here (L043).
+ */
+function fetchLocal(url: string, init?: RequestInit): Promise<Response> {
+  if (!onThisComputer(url)) return Promise.reject(new TypeError('backend not on this computer'))
+  return fetch(url, init)
+}
+
 async function probe(url: string): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
-    return await fetch(url, { signal: controller.signal })
+    return await fetchLocal(url, { signal: controller.signal })
   } finally {
     clearTimeout(timer)
   }
@@ -402,7 +412,7 @@ async function synthesize(
   try {
     let res: Response
     try {
-      res = await fetch(`${await backendBase()}/synthesize`, {
+      res = await fetchLocal(`${await backendBase()}/synthesize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

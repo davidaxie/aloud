@@ -15,6 +15,7 @@ import {
   installPlaybackGlobals,
   load,
   NodeTypes,
+  until,
   wavBase64,
 } from './harness.mjs'
 
@@ -230,7 +231,13 @@ test('G019: a reader injected after a reload stops the orphan left from before i
   // The reloaded extension's script runs in a fresh isolated world: the
   // window-level guard is unset there, and the orphan can't be messaged.
   delete p.win.__aloudReaderInjected
+  // The reload took the orphan's extension away: Chrome cleared its runtime id
+  // (L047: only such a reader stands down).
+  const runtime = globalThis.chrome.runtime
+  const id = runtime.id
+  delete runtime.id
   const fresh = await p.boot()
+  runtime.id = id
   try {
     assert.equal((await orphan({ kind: 'state' })).state.active, false, 'two readers on one page')
 
@@ -559,6 +566,8 @@ test('J045/K009: an Escape the page uses to close its dialog or modal leaves the
   /** A key press, bubbling from the document up to the window as Chrome's does. */
   const press = (prevented = false) => {
     const e = Object.assign(new Event('keydown', { cancelable: true }), { key: 'Escape' })
+    // The user's own key, which Chrome marks trusted (L047).
+    Object.defineProperty(e, 'isTrusted', { value: true })
     if (prevented) e.preventDefault()
     doc.dispatchEvent(e)
     p.win.dispatchEvent(e)
@@ -627,4 +636,103 @@ test('J046: once /health answers again, the bar stops blaming an unreachable eng
       await reader({ kind: 'command', action: 'stop' })
     }
   })
+})
+
+test('L045: a bar first painted with no voices still offers the default voice', async () => {
+  const dom = stubDom()
+  globalThis.document = dom.document
+  const { PlayerBar } = await load('content/ui.ts')
+  const noop = () => {}
+  const bar = new PlayerBar({ onToggle: noop, onNext: noop, onPrev: noop, onClose: noop, onSeekFraction: noop, onVoice: noop, onRate: noop })
+  const voice = dom.found.get('.chip.voice select')
+  const options = []
+  voice.append = (...kids) => options.push(...kids)
+  const view = {
+    status: 'paused',
+    index: 0,
+    total: 2,
+    title: 'Selection',
+    error: null,
+    voices: [],
+    voiceId: 'af_heart',
+    rate: 1,
+    engine: 'offline',
+    truncated: false,
+    bufferAhead: 0,
+    readyThrough: -1,
+  }
+  bar.update(view)
+  bar.update(view)
+  assert.deepEqual(options.map((o) => o.value), ['af_heart'], 'the voice chip has no options at all')
+})
+
+test('L045: voices missed while the engine was down are fetched once it answers', async () => {
+  const p = page(anyDocument([]))
+  const reader = await p.boot()
+  let up = false
+  let asked = 0
+  const down = { kind: 'synth', ok: false, error: 'Speech engine unreachable.', aborted: false, retryable: false, status: 0, retryAfterMs: null }
+  globalThis.chrome.runtime.sendMessage = (msg) => {
+    if (msg.kind === 'health') {
+      return Promise.resolve({ kind: 'health', state: up ? 'ok' : 'offline', voiceCount: up ? 1 : 0, warm: up, queueDepth: 0 })
+    }
+    if (msg.kind === 'voices') {
+      asked++
+      const voices = up ? [{ id: 'am_michael', name: 'Michael', lang: 'en-us', gender: 'male' }] : []
+      return Promise.resolve({ kind: 'voices', voices, default: 'af_heart' })
+    }
+    if (msg.kind === 'synth') return Promise.resolve(up ? { kind: 'synth', ok: true, audio: wavBase64() } : down)
+    return Promise.resolve(undefined)
+  }
+  // The health poll's seconds, made milliseconds.
+  const realTimeout = p.win.setTimeout
+  p.win.setTimeout = (fn, ms, ...args) => setTimeout(fn, ms >= 1000 ? 5 : ms, ...args)
+  try {
+    await reader({ kind: 'command', action: 'start-selection', text: 'One sentence here. Another one there.' })
+    await until(() => asked === 1, 2000, 'the voice list asked for at the start')
+    up = true
+    await until(() => asked === 2, 2000, 'the voice list asked for again once the engine answers')
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(asked, 2, 'the voices were asked for again though the bar has them')
+  } finally {
+    await reader({ kind: 'command', action: 'stop' })
+    p.win.setTimeout = realTimeout
+  }
+})
+
+test('L047: events a page dispatches neither stop the reader nor move it', async () => {
+  const doc = anyDocument([])
+  const probed = []
+  doc.caretRangeFromPoint = (x, y) => {
+    probed.push([x, y])
+    return null
+  }
+  const p = page(doc)
+  p.win.getSelection = () => ({ isCollapsed: true, rangeCount: 0, toString: () => '' })
+  const reader = await p.boot()
+  const active = async () => (await reader({ kind: 'state' })).state.active
+  /** Input the user made, which Chrome marks trusted. */
+  const trusted = (e) => Object.defineProperty(e, 'isTrusted', { value: true })
+  const click = () => Object.assign(new Event('click', { bubbles: true }), { button: 0, clientX: 40, clientY: 60 })
+  const escape = () => Object.assign(new Event('keydown'), { key: 'Escape' })
+  try {
+    await reader({ kind: 'command', action: 'start-selection', text: 'One sentence here. Another one there.' })
+    assert.equal(await active(), true)
+
+    // The extension is still here, so no reader is taking over from this one.
+    doc.dispatchEvent(new Event('aloud:takeover'))
+    assert.equal(await active(), true, 'a page script took the reader over')
+    p.win.dispatchEvent(escape())
+    assert.equal(await active(), true, 'an Escape a page script dispatched ended the reading')
+    doc.dispatchEvent(click())
+    assert.deepEqual(probed, [], 'a click a page script dispatched went looking for a sentence to jump to')
+
+    // The user's own click and key still work.
+    doc.dispatchEvent(trusted(click()))
+    assert.deepEqual(probed, [[40, 60]])
+    p.win.dispatchEvent(trusted(escape()))
+    assert.equal(await active(), false)
+  } finally {
+    await reader({ kind: 'command', action: 'stop' })
+  }
 })

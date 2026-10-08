@@ -19,7 +19,7 @@
 import { loadPrefs, savePrefs, watchPrefs } from '../shared/prefs'
 import type { TabAction, TabRequest, TabResponse, TabStateSnapshot } from '../shared/protocol'
 import type { PlayerStatus, Prefs, ReadDoc, ReaderEngineState, Voice } from '../shared/types'
-import { getHealth, getShortcuts, getVoices } from './api'
+import { extensionAlive, getHealth, getShortcuts, getVoices } from './api'
 import {
   extractPage,
   extractSelection,
@@ -101,6 +101,7 @@ async function main(onReady: (respond: Responder) => void) {
   let bar: PlayerBar | null = null
   let highlighter: Highlighter | null = null
   let voices: Voice[] = []
+  let voicesPending = false
 
   let status: PlayerStatus = 'idle'
   let error: string | null = null
@@ -269,14 +270,26 @@ async function main(onReady: (respond: Responder) => void) {
     paintBar()
     player.play()
     void pollHealth()
+    loadVoices()
+    return true
+  }
 
-    if (voices.length === 0) {
-      void getVoices().then((v) => {
+  /**
+   * Fetch the engine's voices unless the bar has them. A list asked for while
+   * the engine was down comes back empty, so a health check that finds it up
+   * asks again (L045).
+   */
+  function loadVoices() {
+    if (voices.length > 0 || voicesPending) return
+    voicesPending = true
+    void getVoices()
+      .then((v) => {
         voices = v.voices
         paintBar()
       })
-    }
-    return true
+      .finally(() => {
+        voicesPending = false
+      })
   }
 
   function teardown() {
@@ -323,7 +336,10 @@ async function main(onReady: (respond: Responder) => void) {
       const report = await getHealth()
       // The engine answers: a stop that blamed it being unreachable is now
       // false, so it stands down to paused, ready for Play (J046).
-      if (report.state === 'ok') player.engineRecovered()
+      if (report.state === 'ok') {
+        player.engineRecovered()
+        loadVoices()
+      }
       if (report.state !== engine) {
         engine = report.state
         paintBar()
@@ -462,7 +478,9 @@ async function main(onReady: (respond: Responder) => void) {
   document.addEventListener(
     'click',
     (e) => {
-      if (!isActive() || !prefs.clickToJump) return
+      // A click the page dispatched is not the user's: it would move the reader
+      // to any sentence the page chose (L047).
+      if (!e.isTrusted || !isActive() || !prefs.clickToJump) return
       if (e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
       const target = e.target as Element | null
       if (!target || target.closest?.('[data-aloud]')) return
@@ -489,7 +507,8 @@ async function main(onReady: (respond: Responder) => void) {
   // On window, not document: a modal's own document listener, often added when
   // it opens and so after ours, has run by the time the key gets here.
   window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !isActive()) return
+    // Only the user's own key: a page's synthetic Escape would end the reading (L047).
+    if (!e.isTrusted || e.key !== 'Escape' || !isActive()) return
     const el = document.activeElement as HTMLElement | null
     if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
     if (escapeIsThePages(e)) return
@@ -527,6 +546,10 @@ async function main(onReady: (respond: Responder) => void) {
     if (isActive()) teardown()
   })
   window.addEventListener('pagehide', () => teardown())
-  // A reader injected after an extension reload is taking over this page.
-  document.addEventListener(TAKEOVER_EVENT, () => teardown())
+  // A reader injected after an extension reload is taking over this page. Only
+  // a reader the reload left behind stands down: the window guard keeps a second
+  // one out of this world, and any page script can dispatch the event (L047).
+  document.addEventListener(TAKEOVER_EVENT, () => {
+    if (!extensionAlive()) teardown()
+  })
 }
