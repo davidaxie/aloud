@@ -51,9 +51,9 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertTrue(column.contains("detail(BookshelfView.rowByline(for: book))"), "the author under the title: \(column)")
         XCTAssertTrue(column.contains("Text(BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding))"),
                       "the trailing column always holds a status: \(column)")
-        XCTAssertTrue(column.contains(".font(Theme.font(.caption))"), column)
-        XCTAssertTrue(column.contains(".foregroundStyle(Theme.textMuted)"), column)
-        XCTAssertTrue(column.contains(".frame(width: statusWidth, alignment: .trailing)"), column)
+        XCTAssertTrue(column.contains(".font(Theme.font(.caption))"), String(column))
+        XCTAssertTrue(column.contains(".foregroundStyle(Theme.textMuted)"), String(column))
+        XCTAssertTrue(column.contains(".frame(width: statusWidth, alignment: .trailing)"), String(column))
         XCTAssertTrue(view.contains("stacked: dynamicTypeSize.isAccessibilitySize"), "the row stacks at AX sizes")
         XCTAssertTrue(view.contains(".buttonStyle(ShelfRowButtonStyle())"), "rows keep their surface2 press")
     }

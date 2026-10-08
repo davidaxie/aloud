@@ -63,7 +63,9 @@ final class ReaderLintTests: XCTestCase {
         let s = try SourceTree.sources()
         for (path, text) in s where path.hasPrefix("Reader/") {
             for line in codeLines(text) {
-                XCTAssertFalse(line.contains(".font(.title)"), "\(path): \(line)")
+                // A raw system style, not the theme's token (Theme.font(.title)).
+                let raw = line.replacingOccurrences(of: "Theme.font(.title)", with: "")
+                XCTAssertFalse(raw.contains(".font(.title)"), "\(path): \(line)")
             }
         }
         let screen = try XCTUnwrap(s["Reader/ReaderScreen.swift"])

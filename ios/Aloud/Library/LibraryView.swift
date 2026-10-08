@@ -328,12 +328,7 @@ struct LibraryView: View {
             shelfScroll
                 .onChange(of: pendingFocus) { _, id in
                     guard let id else { return }
-                    if voiceOverEnabled { proxy.scrollTo(id, anchor: .center) }
-                    Task { @MainActor in
-                        try? await Task.sleep(for: Self.scrollSettleDelay)
-                        voFocus = id
-                        pendingFocus = nil
-                    }
+                    landVoiceOverFocus(on: id, proxy: proxy)
                 }
         }
     }
@@ -512,6 +507,19 @@ struct LibraryView: View {
     /// the dialog nor the menu says when it has gone, hence the wait, which
     /// the Library lint sanctions (`LibraryEntryLintTests.sanctionedSleeps`):
     /// the Delete or mark has already landed, and nothing is added or opened.
+    /// Scrolls the hand-off's card in (under VoiceOver only) and moves
+    /// focus there once the lazy grid has built it. The grid says nothing
+    /// when a cell is ready, hence the short wait, which the Library lint
+    /// sanctions beside `moveVoiceOverFocus`.
+    private func landVoiceOverFocus(on id: UUID, proxy: ScrollViewProxy) {
+        if voiceOverEnabled { proxy.scrollTo(id, anchor: .center) }
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.scrollSettleDelay)
+            voFocus = id
+            pendingFocus = nil
+        }
+    }
+
     private func moveVoiceOverFocus(to card: UUID?) {
         guard let card else { return }
         Task { @MainActor in

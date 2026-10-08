@@ -90,7 +90,10 @@ final class LibraryEntryLintTests: XCTestCase {
     /// App/UITestLaunchActions.swift (DEBUG only) is outside the scan, and so
     /// is RootView, which owns the import overlay's display delay (P015).
     private static let sanctionedSleeps: Set<String> = ["Library/DocumentStore.swift#scheduleDebouncedSave",
-                                                        "Library/LibraryView.swift#moveVoiceOverFocus"]
+                                                        "Library/LibraryView.swift#moveVoiceOverFocus",
+                                                        // The VoiceOver hand-off's second step: the lazy grid
+                                                        // gives no signal when the scrolled-to card exists.
+                                                        "Library/LibraryView.swift#landVoiceOverFocus"]
 
     func testNoFixedWaitsInAddOrOpenPaths() throws {
         let scanned = try sources(in: Self.appRoot,
