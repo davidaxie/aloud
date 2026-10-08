@@ -34,7 +34,8 @@ final class MacShortcutsTests: XCTestCase {
     /// Menus use title case: every word but the short joining ones starts
     /// upper case. And the Mac's copy never names a phone gesture or device.
     func testMenuTitlesAreTitleCaseAndDeviceNeutral() {
-        let lowercaseWords: Set<String> = ["a", "an", "and", "from", "of", "the", "to"]
+        // "as" too: Mark as Finished, as Apple's title case writes it.
+        let lowercaseWords: Set<String> = ["a", "an", "and", "as", "from", "of", "the", "to"]
         for title in MacMenuCopy.all {
             let words = title.split(separator: " ").map(String.init)
             for (index, word) in words.enumerated() where index == 0 || !lowercaseWords.contains(word) {

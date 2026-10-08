@@ -22,6 +22,13 @@ struct BookshelfBook: Codable, Identifiable, Hashable {
         ListeningEstimate.minutes(words: words)
     }
 
+    /// Whole-book listening length at `rate`: what a Classics row shows and
+    /// what its shelf is chosen by, so a shelf's heading and the times
+    /// under it are one measure at any speed (L019).
+    func listeningMinutes(rate: Double) -> Int {
+        ListeningEstimate.minutes(words: words, wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case gutenbergID = "gutenberg_id"
         case title, author, year, file, words
@@ -32,7 +39,8 @@ struct BookshelfBook: Codable, Identifiable, Hashable {
 
 // MARK: - Sections
 
-/// The Bookshelf's three shelves, by whole-book listening length at 1×.
+/// The Bookshelf's three shelves, by whole-book listening length at the
+/// app-wide speed, as the rows under them show it (`shelves(rate:)`).
 enum BookshelfSection: String, CaseIterable, Identifiable {
     case underAnHour, anEvening, longReads
 
@@ -68,7 +76,9 @@ struct BookshelfShelf: Identifiable {
 struct BookshelfIndex {
 
     let books: [BookshelfBook]
-    /// Sections in enum order, books in catalog order, empty sections omitted.
+    /// Sections in enum order, books in catalog order, empty sections
+    /// omitted, at 1×; the screens shelve at the app-wide speed
+    /// (`shelves(rate:)`).
     let shelves: [BookshelfShelf]
 
     private let keys: [SearchKey]
@@ -81,17 +91,27 @@ struct BookshelfIndex {
         let sortTitle: String
         let titleWords: [Substring]
         let authorWords: [Substring]
-        /// What every query token must appear in: title, then author.
+        /// What every query token must appear in: title, then author, then
+        /// the other names and spellings the book goes by.
         let haystack: String
 
-        init(_ book: BookshelfBook) {
+        /// `aliases`: the author's names the display author leaves out
+        /// (`BookshelfIndex.authorAliases`), already search words.
+        init(_ book: BookshelfBook, aliases: [String] = []) {
             // Title and author fold apart, so initials never join across them.
             title = BookshelfIndex.searchWords(book.title).joined(separator: " ")
             sortTitle = Self.droppingArticle(title)
             titleWords = Self.words(title)
-            let author = BookshelfIndex.searchWords(book.author).joined(separator: " ")
+            let author = ([BookshelfIndex.searchWords(book.author).joined(separator: " ")] + aliases)
+                .joined(separator: " ")
             authorWords = Self.words(author)
-            haystack = title + " " + author
+            // The header's own title, where the catalog shortened it, and
+            // each hyphenated word written as one, as a reader may type it.
+            let headerTitle = book.headerTitle.map { BookshelfIndex.searchWords($0) } ?? []
+            let joined = BookshelfIndex.hyphenJoinedWords(book.title)
+                + (book.headerTitle.map(BookshelfIndex.hyphenJoinedWords) ?? [])
+                + BookshelfIndex.hyphenJoinedWords(book.author)
+            haystack = ([title, author] + headerTitle + joined).joined(separator: " ")
         }
 
         /// Lower is better; see `search(_:)`. `tokens` is never empty.
@@ -119,14 +139,27 @@ struct BookshelfIndex {
 
     init(books: [BookshelfBook]) {
         self.books = books
-        self.keys = books.map(SearchKey.init)
+        let aliases = Self.authorAliases(in: books)
+        self.keys = books.map { SearchKey($0, aliases: aliases[Self.authorKey($0.author)] ?? []) }
         self.byID = Dictionary(books.enumerated().map { ($1.gutenbergID, $0) },
                                uniquingKeysWith: { first, _ in first })
+        self.shelves = Self.shelve(books, rate: 1)
+    }
+
+    /// The shelves at `rate`, the app-wide speed the rows show their times
+    /// at: a book's shelf follows the time its row shows, so "Under an
+    /// hour" never heads a row of more than an hour (L019). At 1× it is
+    /// `shelves`; any other speed shelves the ~450 books again, one pass.
+    func shelves(rate: Double) -> [BookshelfShelf] {
+        rate == 1 ? shelves : Self.shelve(books, rate: rate)
+    }
+
+    private static func shelve(_ books: [BookshelfBook], rate: Double) -> [BookshelfShelf] {
         // Dictionary(grouping:) keeps each group in sequence order.
         let grouped = Dictionary(grouping: books) {
-            BookshelfSection.section(forMinutes: $0.estimatedListeningMinutes)
+            BookshelfSection.section(forMinutes: $0.listeningMinutes(rate: rate))
         }
-        self.shelves = BookshelfSection.allCases.compactMap { section in
+        return BookshelfSection.allCases.compactMap { section in
             guard let books = grouped[section], !books.isEmpty else { return nil }
             return BookshelfShelf(section: section, books: books)
         }
@@ -159,6 +192,41 @@ struct BookshelfIndex {
         }
         hits.sort { ($0.rank, $0.index) < ($1.rank, $1.index) }
         return hits.map { books[$0.index] }
+    }
+
+    /// The names each display author goes by in the Gutenberg headers but
+    /// not in the display name (a full name behind initials, a real name
+    /// behind a pen name), gathered across all of that author's books, so a
+    /// search by the name a reader knows finds every one of them, not only
+    /// the books whose header spelled it out.
+    static func authorAliases(in books: [BookshelfBook]) -> [String: [String]] {
+        var aliases: [String: [String]] = [:]
+        for book in books {
+            guard let header = book.headerAuthor else { continue }
+            let key = authorKey(book.author)
+            let known = Set(searchWords(book.author))
+            for word in searchWords(header) where !known.contains(word) {
+                if aliases[key]?.contains(word) != true { aliases[key, default: []].append(word) }
+            }
+        }
+        return aliases
+    }
+
+    /// One display author however it is spaced or cased.
+    private static func authorKey(_ author: String) -> String {
+        searchWords(author).joined(separator: " ")
+    }
+
+    /// Each hyphenated word of `text` written as one, in search words:
+    /// "casebook" for "Case-Book". Search splits at a hyphen as at any
+    /// punctuation, so "case book" already matches; this lets the one-word
+    /// spelling match too.
+    static func hyphenJoinedWords(_ text: String) -> [String] {
+        let hyphens: Set<Character> = ["-", "\u{2010}", "\u{2011}"]
+        return fold(text).split(whereSeparator: \.isWhitespace).flatMap { chunk -> [String] in
+            guard chunk.contains(where: hyphens.contains) else { return [] }
+            return searchWords(String(chunk.filter { !hyphens.contains($0) }))
+        }
     }
 
     /// Case-, diacritic- and width-insensitive, with curly apostrophes made

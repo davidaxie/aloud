@@ -236,7 +236,9 @@ struct MacLibraryView: View {
                 .frame(maxWidth: Self.continueMaxWidth, alignment: .leading)
                 // The keyboard's as a grid card is (mac-ux §3.2): ↑ from the
                 // grid's first row reaches it, ↓ goes back, Return opens it
-                // and Delete Book… (⌘⌫) acts on its book.
+                // (on its circle, Return plays or pauses in place: the
+                // circle takes the key first) and Edit's Rename Book…, Mark
+                // as Finished and Delete Book… (⌘⌫) act on its book.
                 .focused($focusedCard, equals: hero.id)
                 .onKeyPress(.return) {
                     open(hero)
@@ -245,7 +247,7 @@ struct MacLibraryView: View {
                 .onMoveCommand { direction in
                     moveFocus(direction, in: metrics)
                 }
-                .focusedValue(\.macDeleteBook) { perform(.delete, on: hero) }
+                .macBookCommands(for: hero) { perform($0, on: hero) }
             }
             grid(metrics)
                 // The cells carry the plates: pull them out by a

@@ -159,6 +159,15 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         }
         .buttonStyle(AccentCircleButtonStyle(diameter: Theme.PlayCircle.compactDiameter))
+        #if os(macOS)
+        // Return on the focused circle plays or pauses in place, as Space
+        // does: a Mac button leaves Return to its ancestors, and the Mac
+        // card's own Return opens the book (L015).
+        .onKeyPress(.return) {
+            onTogglePlayback()
+            return .handled
+        }
+        #endif
         .accessibilityLabel(playState.label)
         .accessibilityValue(playState.value)
         .accessibilityIdentifier("library.continue.play")
@@ -259,7 +268,8 @@ struct ShelfHeroCard<Cover: View, Accessory: View>: View {
                     // fixedSize: inside a button label in a scroll view the
                     // stack was offered one line's height, so "The Cask of
                     // Amontillado" truncated despite its two-line limit.
-                    titleText.lineLimit(2)
+                    // From xxLarge it wraps in full, as the grid card's does.
+                    titleText.lineLimit(DocumentCardView.wrapsInFull(at: dynamicTypeSize) ? nil : 2)
                         .fixedSize(horizontal: false, vertical: true)
                     // Wraps instead of truncating, at any length: the natural
                     // voice's space line ends on the space it needs, and

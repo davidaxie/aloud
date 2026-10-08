@@ -114,7 +114,7 @@ enum MacCommand: String, CaseIterable, Sendable {
     case playPause, back15, forward15, previousChapter, nextChapter, followVoice
     case faster, slower, voiceAndSpeed, sleepTimer
     // Edit
-    case undoJump, find, deleteBook
+    case undoJump, find, renameBook, markFinished, deleteBook
     // View
     case toggleContents, biggerText, smallerText, appearance, back
     // File
@@ -138,6 +138,8 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .sleepTimer: return MacMenuCopy.sleepTimer
         case .undoJump: return MacMenuCopy.undoJump
         case .find: return MacMenuCopy.find
+        case .renameBook: return MacMenuCopy.renameBook
+        case .markFinished: return MacMenuCopy.markFinished
         case .deleteBook: return MacMenuCopy.deleteBook
         case .toggleContents: return MacMenuCopy.showContents
         case .biggerText: return MacMenuCopy.biggerText
@@ -155,7 +157,8 @@ enum MacCommand: String, CaseIterable, Sendable {
         }
     }
 
-    /// nil: a menu item with no key (Voice & Speed…, the two submenus).
+    /// nil: a menu item with no key (Voice & Speed…, the two submenus,
+    /// Rename Book… and Mark as Finished, as Finder's Rename has none).
     var shortcut: MacShortcut? {
         switch self {
         case .playPause: return MacShortcut(key: .space)
@@ -166,7 +169,7 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .followVoice: return MacShortcut(key: .character("j"), modifiers: .command)
         case .faster: return MacShortcut(key: .character("]"))
         case .slower: return MacShortcut(key: .character("["))
-        case .voiceAndSpeed, .sleepTimer, .appearance: return nil
+        case .voiceAndSpeed, .sleepTimer, .appearance, .renameBook, .markFinished: return nil
         case .undoJump: return MacShortcut(key: .character("z"), modifiers: .command)
         case .find: return MacShortcut(key: .character("f"), modifiers: .command)
         case .deleteBook: return MacShortcut(key: .delete, modifiers: .command)
@@ -190,7 +193,7 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .playPause, .back15, .forward15, .previousChapter, .nextChapter, .followVoice,
              .faster, .slower, .voiceAndSpeed, .sleepTimer:
             return .playback
-        case .undoJump, .find, .deleteBook: return .edit
+        case .undoJump, .find, .renameBook, .markFinished, .deleteBook: return .edit
         case .toggleContents, .biggerText, .smallerText, .appearance, .back, .fullScreen: return .view
         case .addFromFiles, .addClassic, .closeWindow: return .file
         case .settings, .hide, .quit: return .aloud
@@ -205,6 +208,12 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .settings, .fullScreen, .minimize, .hide, .quit: return true
         default: return false
         }
+    }
+
+    /// Edit's book items: they act on the Library card with keyboard
+    /// focus, which publishes them (`FocusedValues`).
+    var actsOnFocusedBook: Bool {
+        self == .renameBook || self == .markFinished || self == .deleteBook
     }
 
     var isPlainKey: Bool { shortcut?.isPlain ?? false }
@@ -297,7 +306,9 @@ enum MacMenuCopy {
     static let undoJump = "Undo Jump"
     static let findMenu = "Find"
     static let find = "Find\u{2026}"
-    /// "Book" keeps it apart from the system's text Delete beside it.
+    /// "Book" keeps these apart from the system's text items beside them.
+    static let renameBook = "Rename Book\u{2026}"
+    static let markFinished = "Mark as Finished"
     static let deleteBook = "Delete Book\u{2026}"
 
     static let showContents = "Show Contents"
@@ -321,9 +332,9 @@ enum MacMenuCopy {
     static let all: Set<String> = [
         playbackMenu, play, pause, tryAgain, listenAgain, back15, forward15, previousChapter, nextChapter,
         previousPage, nextPage, followVoice, faster, slower, voiceAndSpeed, sleepTimer, endOfChapter,
-        endOfBook, off, undoJump, findMenu, find, deleteBook, showContents, hideContents, biggerText,
-        smallerText, appearance, back, addFromFiles, addClassic, close, settings, fullScreen, minimize,
-        hide, quit, about,
+        endOfBook, off, undoJump, findMenu, find, renameBook, markFinished, deleteBook, showContents,
+        hideContents, biggerText, smallerText, appearance, back, addFromFiles, addClassic, close, settings,
+        fullScreen, minimize, hide, quit, about,
     ]
 
     /// The tooltips' names, in the shared sentence case.
@@ -342,6 +353,8 @@ enum MacMenuCopy {
             case .sleepTimer: return SleepTimer.Copy.section
             case .undoJump: return "Undo jump"
             case .find: return "Find"
+            case .renameBook: return "Rename book"
+            case .markFinished: return DocumentAction.markFinished.title
             case .deleteBook: return "Delete book"
             case .toggleContents: return "Contents"
             case .biggerText: return "Bigger text"

@@ -5,9 +5,10 @@ import SwiftUI
 /// the book and plays it (R4); Return or Space does the same for a card
 /// with keyboard focus. Hover draws a Theme.bgTint plate behind it and
 /// nothing moves. Right-click gives Open, Rename…, Mark as Finished and
-/// Delete…, and ⌘⌫ deletes a focused card's book after the confirmation;
-/// VoiceOver gets the same three management actions under the
-/// iPhone's names (R12g).
+/// Delete…; Edit ▸ Rename Book…, Mark as Finished and Delete Book… (⌘⌫)
+/// act on a focused card's book, so the keyboard reaches all three (L014);
+/// VoiceOver gets the same three management actions under the iPhone's
+/// names (R12g).
 struct MacLibraryCard: View {
     let document: LibraryDocument
     let rate: Double
@@ -36,8 +37,22 @@ struct MacLibraryCard: View {
         .contextMenu {
             MacDocumentMenu(document: document, onOpen: onOpen, perform: perform)
         }
-        // Edit ▸ Delete Book… (⌘⌫) acts on the card with keyboard focus.
-        .focusedValue(\.macDeleteBook) { perform(.delete) }
+        .macBookCommands(for: document, perform: perform)
+    }
+}
+
+extension View {
+    /// Edit ▸ Rename Book…, Mark as Finished and Delete Book… (⌘⌫) act on
+    /// the book whose card has keyboard focus, a grid card or the Continue
+    /// card alike. Mark as Finished only while the book has something left
+    /// to mark, as its context menu offers it.
+    func macBookCommands(for document: LibraryDocument,
+                         perform: @escaping (DocumentAction) -> Void) -> some View {
+        let markFinished: (() -> Void)? = DocumentAction.available(for: document).contains(.markFinished)
+            ? { perform(.markFinished) } : nil
+        return focusedValue(\.macRenameBook) { perform(.rename) }
+            .focusedValue(\.macMarkFinished, markFinished)
+            .focusedValue(\.macDeleteBook) { perform(.delete) }
     }
 }
 
@@ -49,7 +64,7 @@ extension DocumentAction {
     var menuTitle: String {
         switch self {
         case .rename: return "Rename\u{2026}"
-        case .markFinished: return "Mark as Finished"
+        case .markFinished: return MacMenuCopy.markFinished
         case .delete: return "Delete\u{2026}"
         }
     }

@@ -49,6 +49,27 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertTrue(listening.contains(".hairlineHeight()"))
     }
 
+    /// L027: Settings and Licenses give VoiceOver's Headings rotor their
+    /// titles, as every other pushed screen does, and each Licenses card's
+    /// name is a heading, so the rotor steps card to card.
+    func testSettingsAndLicensesOfferHeadings() throws {
+        let paths = ["Settings/SettingsView.swift", "Settings/LicensesView.swift"]
+        let sources = try SourceTree.sources(only: paths)
+        for (path, title) in zip(paths, ["Text(\"Settings\")", "Text(\"Licenses\")"]) {
+            let text = try XCTUnwrap(sources[path])
+            let start = try XCTUnwrap(text.range(of: "ToolbarItem(placement: .principal) {"), path)
+            let item = text[start.upperBound...].prefix { $0 != "}" }
+            XCTAssertTrue(item.contains(title), String(item))
+            XCTAssertTrue(item.contains(".accessibilityAddTraits(.isHeader)"), "\(path)'s title is a heading")
+        }
+        let licenses = try XCTUnwrap(sources[paths[1]])
+        for name in ["let name = Text(entry.id)", "Text(Self.classicsTitle)"] {
+            let start = try XCTUnwrap(licenses.range(of: name), name)
+            let modifiers = licenses[start.upperBound...].prefix(250)
+            XCTAssertTrue(modifiers.contains(".accessibilityAddTraits(.isHeader)"), "\(name) is a heading")
+        }
+    }
+
     func testNoSystemErrorTextInDownloadOrSettings() throws {
         let sources = try SourceTree.sources(only: ["TTS", "Settings"])
         XCTAssertEqual(SourceTree.files(containing: "localizedDescription", in: sources), [],

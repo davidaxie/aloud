@@ -23,6 +23,14 @@ struct DocumentCardView: View {
         .accessibilityLabel(Self.accessibilityLabel(for: document, rate: rate))
     }
 
+    /// Whether a card's title and author wrap in full rather than stop at
+    /// two lines and one: from xxLarge, the largest sizes below the
+    /// accessibility range, where a phone's two columns cut a long author's
+    /// name and a classic's title short (L016). The hero's title follows.
+    static func wrapsInFull(at size: DynamicTypeSize) -> Bool {
+        size >= .xxLarge
+    }
+
     /// What Voice Control answers to ("Tap The Great Gatsby"): the title
     /// alone, since the label's time left changes as you listen (J017).
     static func inputLabels(for document: LibraryDocument) -> [String] {
@@ -60,13 +68,14 @@ struct DocumentCardView: View {
 
     // MARK: Details
 
-    /// At the accessibility sizes the grid is one column (LibraryView.columns)
-    /// and the title and author wrap in full: two lines and one cut "The
-    /// Strange Case of Dr. Jekyll and Mr. Hyde" and "Arthur Conan Doyle"
-    /// short. fixedSize, as on the hero: inside a button label in a scroll
-    /// view a Text can be offered less height than its lines need.
+    /// From xxLarge up the title and author wrap in full: two lines and one
+    /// cut "The Strange Case of Dr. Jekyll and Mr. Hyde" and "Arthur Conan
+    /// Doyle" short, in the two columns those sizes keep as in the one the
+    /// accessibility sizes get (LibraryView.columns). fixedSize, as on the
+    /// hero: inside a button label in a scroll view a Text can be offered
+    /// less height than its lines need.
     private var details: some View {
-        let wrapsInFull = dynamicTypeSize.isAccessibilitySize
+        let wrapsInFull = Self.wrapsInFull(at: dynamicTypeSize)
         return VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Text(document.title)
                 .font(Theme.font(.headline))

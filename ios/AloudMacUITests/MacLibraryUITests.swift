@@ -127,7 +127,9 @@ final class MacLibraryUITests: XCTestCase {
             XCTAssertTrue(suite.app.menuItems[title].firstMatch.waitForExistence(timeout: 5), "\(title) is in the menu")
         }
         press(.escape, in: suite.app)
-        XCTAssertTrue(suite.poll(timeout: 5) { !suite.app.menuItems["Mark as Finished"].firstMatch.exists })
+        // "Rename…" is the context menu's alone: Edit also holds Mark as
+        // Finished (and Rename Book…) for the focused card (L014).
+        XCTAssertTrue(suite.poll(timeout: 5) { !suite.app.menuItems["Rename\u{2026}"].firstMatch.exists })
         XCTAssertEqual(suite.place, .library, "the menu opened nothing")
         XCTAssertEqual(suite.beeps, 0)
     }

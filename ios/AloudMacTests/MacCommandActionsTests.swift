@@ -240,6 +240,48 @@ final class MacCommandActionsTests: XCTestCase {
         XCTAssertEqual(followed, 1)
     }
 
+    /// L014: Edit's Rename Book… and Mark as Finished, like Delete Book…,
+    /// act on the focused card's book and are off without one, so a
+    /// keyboard user reaches all three without the context menu. Under
+    /// Rename or the Delete confirmation, none asks for a second alert.
+    func testEditsBookItemsActOnTheFocusedCard() {
+        let (_, base) = makeActions()
+        let bookItems: [MacCommand] = [.renameBook, .markFinished, .deleteBook]
+        for command in bookItems {
+            XCTAssertFalse(base.isEnabled(command), "\(command) with no focused card")
+            XCTAssertFalse(base.perform(command), "\(command) with no focused card")
+            XCTAssertEqual(command.menu, .edit, "\(command) sits beside Delete Book…")
+            XCTAssertTrue(command.actsOnFocusedBook, "\(command)")
+        }
+        XCTAssertNil(MacCommand.renameBook.shortcut)
+        XCTAssertNil(MacCommand.markFinished.shortcut)
+        XCTAssertEqual(MacCommand.renameBook.title, MacMenuCopy.renameBook)
+        XCTAssertEqual(MacCommand.markFinished.title, MacMenuCopy.markFinished)
+        XCTAssertEqual(DocumentAction.markFinished.menuTitle, MacMenuCopy.markFinished, "the context menu's wording")
+
+        var actions = base
+        var performed: [String] = []
+        actions.renameBook = { performed.append("rename") }
+        actions.markFinished = { performed.append("finish") }
+        actions.deleteBook = { performed.append("delete") }
+        for command in bookItems {
+            XCTAssertTrue(actions.isEnabled(command), "\(command)")
+            XCTAssertTrue(actions.perform(command), "\(command)")
+        }
+        XCTAssertEqual(performed, ["rename", "finish", "delete"])
+
+        let router = actions.router
+        for alert: LibraryRouter.RootPresentation in [.rename, .deleteConfirmation, .deleteFailed] {
+            router.rootPresentation = alert
+            for command in bookItems {
+                XCTAssertFalse(actions.perform(command), "\(command) under \(alert)")
+            }
+            XCTAssertEqual(router.rootPresentation, alert, "the alert stays up")
+            router.dismissRootPresentation(alert)
+        }
+        XCTAssertEqual(performed.count, 3, "nothing ran under an alert")
+    }
+
     /// Under Rename or the Delete confirmation, ⌘O would swap the alert for
     /// the open panel and SwiftUI would close it without its Save, losing
     /// the typed title (H025). The commands that act in the main window

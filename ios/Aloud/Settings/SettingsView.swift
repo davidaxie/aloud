@@ -59,6 +59,7 @@ struct SettingsView: View {
                 Text("Settings")
                     .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
+                    .accessibilityAddTraits(.isHeader)
                     // The bar caps text scaling; at accessibility sizes a
                     // long press shows the title large instead.
                     .accessibilityShowsLargeContentViewer()

@@ -49,7 +49,11 @@ struct MacCommandActions {
     var showMainWindow: () -> Void = {}
     /// The reader's Follow the voice, while it offers one (`FocusedValues`).
     var followVoice: (() -> Void)?
-    /// The focused Library card's Delete…, while one has focus.
+    /// The focused Library card's Rename…, Mark as Finished and Delete…,
+    /// while one has focus (Mark as Finished only while it has something
+    /// left to mark).
+    var renameBook: (() -> Void)?
+    var markFinished: (() -> Void)?
     var deleteBook: (() -> Void)?
     /// The key window and any modal panel, where ⌘W looks. Tests replace it.
     var windows: @MainActor () -> (key: NSWindow?, modal: NSWindow?) = { (NSApp.keyWindow, NSApp.modalWindow) }
@@ -78,10 +82,10 @@ struct MacCommandActions {
     func isEnabled(_ command: MacCommand) -> Bool {
         // Under Rename or the Delete confirmation, a command that acts in
         // the main window would ask for another root presentation (or a
-        // second Delete), and SwiftUI would close the alert without its
-        // Save. The key router holds plain keys behind an alert the same
-        // way (`MacKeyRouter.run`).
-        if isRootAlertShown, needsMainWindow(command) || command == .deleteBook { return false }
+        // second Rename or Delete), and SwiftUI would close the alert
+        // without its Save. The key router holds plain keys behind an alert
+        // the same way (`MacKeyRouter.run`).
+        if isRootAlertShown, needsMainWindow(command) || command.actsOnFocusedBook { return false }
         switch command {
         case .playPause: return playback.document != nil || continueBook != nil
         case .back15, .forward15, .sleepTimer: return hasBook
@@ -92,6 +96,8 @@ struct MacCommandActions {
         case .slower: return Self.steppedRate(from: playback.rate, faster: false) != nil
         case .undoJump: return playback.undoableJump != nil
         case .find: return place == .classics || place.isReader
+        case .renameBook: return renameBook != nil
+        case .markFinished: return markFinished != nil
         case .deleteBook: return deleteBook != nil
         case .toggleContents: return place.isReader
         case .biggerText: return Self.steppedTextSize(from: textSizeStep, bigger: true) != nil
@@ -139,6 +145,8 @@ struct MacCommandActions {
                 ui.searchFocus = .classics
                 focusClassicsSearchOn14()
             }
+        case .renameBook: renameBook?()
+        case .markFinished: markFinished?()
         case .deleteBook: deleteBook?()
         case .toggleContents: ui.isContentsShown.toggle()
         case .biggerText: stepTextSize(bigger: true)

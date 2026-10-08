@@ -172,6 +172,76 @@ final class BookshelfSearchTests: XCTestCase {
         XCTAssertEqual(short.shelves.map(\.section), [.underAnHour])
     }
 
+    /// L019: a shelf is chosen by the time its rows show, at the app-wide
+    /// speed, so a heading never disagrees with the times under it. At
+    /// 0.5× a 56-minute book reads 1 hr 52 min and moves to An evening.
+    func testShelvesFollowTheSpeedTheRowsShow() {
+        let bigFix = book(1, "The Big Fix", "A. Writer", words: 9_251)
+        XCTAssertEqual(bigFix.listeningMinutes(rate: 1), 56)
+        XCTAssertEqual(bigFix.listeningMinutes(rate: 0.5), 112)
+        let single = BookshelfIndex(books: [bigFix])
+        XCTAssertEqual(single.shelves(rate: 1).map(\.section), [.underAnHour])
+        XCTAssertEqual(single.shelves(rate: 0.5).map(\.section), [.anEvening], "no hour-long row under Under an hour")
+
+        XCTAssertEqual(index.shelves(rate: 1).map(\.section), index.shelves.map(\.section), "1× is the built shelving")
+        for rate in [0.5, 0.75, 1, 1.25, 1.5, 2, 3] {
+            let shelves = index.shelves(rate: rate)
+            XCTAssertEqual(shelves.reduce(0) { $0 + $1.books.count }, index.books.count, "every book at \(rate)×")
+            for shelf in shelves {
+                for book in shelf.books {
+                    XCTAssertEqual(BookshelfSection.section(forMinutes: book.listeningMinutes(rate: rate)),
+                                   shelf.section, "\(book.title) at \(rate)×")
+                }
+            }
+        }
+    }
+
+    // MARK: - Other names and spellings
+
+    /// L017: the catalog shortens an author to the name it displays and
+    /// keeps the header's in `headerAuthor`. A search by the fuller name, or
+    /// the real name behind a pen name, finds every book by that display
+    /// author, not only the one whose header spelled it out.
+    func testSearchFindsTheNamesTheHeaderSpelledOut() {
+        var tales = book(1597, "Andersen\u{2019}s Fairy Tales", "H. C. Andersen", words: 60_000)
+        tales.headerAuthor = "H. C. (Hans Christian) Andersen"
+        var river = book(245, "Life on the Mississippi", "Mark Twain", words: 140_000)
+        river.headerAuthor = "Mark Twain (Samuel Clemens)"
+        let tom = book(74, "The Adventures of Tom Sawyer", "Mark Twain", words: 70_000)
+        var subtitled = book(500, "The Short Title", "A. Writer", words: 10_000)
+        subtitled.headerTitle = "The Short Title; or, The Golden Afternoon"
+        let named = BookshelfIndex(books: [tales, river, tom, subtitled,
+                                           book(1342, "Pride and Prejudice", "Jane Austen", words: 127_359)])
+        let found = { (query: String) in named.search(query)?.map(\.gutenbergID) }
+
+        XCTAssertEqual(found("hans christian andersen"), [1597])
+        XCTAssertEqual(found("hans"), [1597])
+        XCTAssertEqual(found("samuel clemens"), [245, 74], "every Mark Twain book, in catalog order")
+        XCTAssertEqual(found("clemens twain"), [245, 74])
+        XCTAssertEqual(found("golden afternoon"), [500], "the header's own title")
+        XCTAssertEqual(found("andersen"), [1597], "the display name still finds it")
+        XCTAssertEqual(found("hans austen"), [], "every word must match one book")
+        XCTAssertEqual(named.search("hans")?.first?.author, "H. C. Andersen", "the display name is unchanged")
+    }
+
+    /// L018: search splits a hyphen as it does any punctuation, so a title's
+    /// "Case-Book" is "case book"; typed as one word, the usual modern
+    /// spelling, it finds the book too.
+    func testAHyphenatedWordMatchesWrittenAsOne() {
+        let hyphenated = BookshelfIndex(books: [
+            book(69700, "The Case-Book of Sherlock Holmes", "Arthur Conan Doyle", words: 90_000),
+            book(7184, "A Heart-Song of To-Day", "A. Writer", words: 20_000),
+            book(1342, "Pride and Prejudice", "Jane Austen", words: 127_359),
+        ])
+        for query in ["casebook", "caseb", "the casebook of sherlock holmes", "case book", "case-book"] {
+            XCTAssertEqual(hyphenated.search(query)?.map(\.gutenbergID), [69700], query)
+        }
+        XCTAssertEqual(hyphenated.search("today")?.map(\.gutenbergID), [7184])
+        XCTAssertEqual(hyphenated.search("heartsong")?.map(\.gutenbergID), [7184])
+        XCTAssertEqual(BookshelfIndex.hyphenJoinedWords("The Case-Book of Sherlock Holmes"), ["casebook"])
+        XCTAssertEqual(BookshelfIndex.hyphenJoinedWords("Pride and Prejudice"), [])
+    }
+
     // MARK: - Shipped catalog
 
     func testShippedCatalog() throws {
@@ -181,5 +251,12 @@ final class BookshelfSearchTests: XCTestCase {
         XCTAssertEqual(shipped.search("pride")?.first?.gutenbergID, 1342)
         XCTAssertTrue(shipped.search("chretien")?.contains { $0.gutenbergID == 831 } ?? false)
         XCTAssertEqual(shipped.book(gutenbergID: 1063)?.title, "The Cask of Amontillado")
+        // L017, L018: the names and spellings a reader types.
+        if shipped.book(gutenbergID: 1597) != nil {
+            XCTAssertTrue(shipped.search("hans christian andersen")?.contains { $0.gutenbergID == 1597 } ?? false)
+        }
+        if shipped.book(gutenbergID: 69700) != nil {
+            XCTAssertTrue(shipped.search("casebook")?.contains { $0.gutenbergID == 69700 } ?? false)
+        }
     }
 }

@@ -148,6 +148,74 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertLessThan(menu.lowerBound, menuItems.lowerBound, "the menu keeps the Mac's wording")
     }
 
+    /// L014: a keyboard user reaches Rename and Mark as Finished as they do
+    /// Delete: Edit's book items act on the focused grid card or Continue
+    /// card, which publishes all three (Mark as Finished only while there
+    /// is something left to mark), so none needs the context menu.
+    func testTheFocusedMacCardOffersEditsBookItems() throws {
+        let files = ["Library/MacLibraryCard.swift", Self.macLibraryFile, "Commands/AloudCommands.swift"]
+        let mac = try SourceTree.sources(in: SourceTree.macRoot, only: files)
+        let cardFile = try XCTUnwrap(mac[files[0]])
+        let grid = body(ofStruct: "MacLibraryCard", in: cardFile)
+        XCTAssertTrue(grid.contains(".macBookCommands(for: document, perform: perform)"), "the grid card")
+        let library = try XCTUnwrap(mac[files[1]])
+        XCTAssertTrue(library.contains(".macBookCommands(for: hero) { perform($0, on: hero) }"), "the Continue card")
+        XCTAssertFalse(library.contains(".focusedValue(\\.macDeleteBook)"), "Delete alone would leave the others out")
+
+        let helper = try XCTUnwrap(cardFile.range(of: "func macBookCommands(for document: LibraryDocument,"))
+        let published = cardFile[helper.upperBound...].prefix(700)
+        XCTAssertTrue(published.contains("focusedValue(\\.macRenameBook) { perform(.rename) }"), String(published))
+        XCTAssertTrue(published.contains(".focusedValue(\\.macMarkFinished, markFinished)"), String(published))
+        XCTAssertTrue(published.contains("DocumentAction.available(for: document).contains(.markFinished)"),
+                      "a Finished book has nothing to mark")
+        XCTAssertTrue(published.contains(".focusedValue(\\.macDeleteBook) { perform(.delete) }"), String(published))
+
+        let commands = try XCTUnwrap(mac[files[2]])
+        let edit = try XCTUnwrap(commands.range(of: "CommandGroup(after: .pasteboard) {"))
+        let items = commands[edit.upperBound...].prefix { $0 != "}" }
+        XCTAssertTrue(items.contains("item(.renameBook)\n            item(.markFinished)\n            item(.deleteBook)"),
+                      "beside Delete Book…: \(items)")
+        for (key, value) in [("macRenameBook", "renameBook"), ("macMarkFinished", "markFinished")] {
+            XCTAssertTrue(commands.contains("@FocusedValue(\\.\(key)) private var \(value)"), key)
+            XCTAssertTrue(commands.contains("actions.\(value) = \(value)"), value)
+            XCTAssertTrue(commands.contains("case .\(value): return \(value) != nil"), value)
+        }
+    }
+
+    /// L019: both Classics screens shelve by the time their rows show, at
+    /// the app-wide speed, never by the 1× shelving under rate-aware rows.
+    func testTheClassicsScreensShelveAtTheirRowsSpeed() throws {
+        let phonePath = "Bookshelf/BookshelfView.swift"
+        let macPath = "Library/MacClassicsView.swift"
+        let phone = try SourceTree.sources(only: [phonePath])
+        let mac = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
+        for (path, text) in [(phonePath, try XCTUnwrap(phone[phonePath])), (macPath, try XCTUnwrap(mac[macPath]))] {
+            XCTAssertTrue(text.contains("bookshelfIndex.shelves(rate: model.globalRate)"), path)
+            XCTAssertFalse(text.contains("bookshelfIndex.shelves)"), "\(path) shelves at 1×")
+            XCTAssertFalse(text.contains("bookshelfIndex.shelves."), "\(path) shelves at 1×")
+            XCTAssertTrue(text.contains("book.listeningMinutes(rate: rate)"), "\(path)'s rows use the shelves' measure")
+        }
+    }
+
+    /// L015: Return on the Mac Continue card's focused circle plays or
+    /// pauses in place, as Space does, instead of bubbling up to the card's
+    /// Return, which opens the reader.
+    func testReturnOnTheMacContinueCircleTogglesInPlace() throws {
+        let path = "Library/ContinueListeningCard.swift"
+        let sources = try SourceTree.sources(only: [path])
+        let card = try XCTUnwrap(sources[path])
+        let start = try XCTUnwrap(card.range(of: "private var circle: some View {"))
+        let circle = card[start.upperBound...].prefix(1200)
+        let mac = try XCTUnwrap(circle.range(of: "#if os(macOS)"))
+        let key = try XCTUnwrap(circle.range(of: ".onKeyPress(.return) {"))
+        let end = try XCTUnwrap(circle.range(of: "#endif"))
+        XCTAssertLessThan(mac.lowerBound, key.lowerBound)
+        XCTAssertLessThan(key.lowerBound, end.lowerBound, "the Mac's alone: the iPhone has no card Return")
+        let handler = circle[key.upperBound..<end.lowerBound]
+        XCTAssertTrue(handler.contains("onTogglePlayback()"), String(handler))
+        XCTAssertTrue(handler.contains("return .handled"), "the card's Return never sees it")
+    }
+
     /// J020: the bar caps its text size, so the Library's title, like every
     /// other bar title, shows large on a long press.
     func testTheLibraryTitleOffersTheLargeContentViewer() throws {

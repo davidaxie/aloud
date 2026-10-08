@@ -38,6 +38,8 @@ final class CardCopyTests: XCTestCase {
         for rate in [0.5, 1, 1.5, 2, 3] {
             XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: rate),
                            FeaturedClassic.subtitle(for: cask, rate: rate), "the featured card agrees at \(rate)×")
+            // L019: and its shelf is chosen by the same time.
+            XCTAssertEqual(BookshelfView.rowMinutes(of: cask, rate: rate), cask.listeningMinutes(rate: rate))
         }
         let added = doc(title: cask.title, author: cask.author, wordCount: cask.words)
         XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: 2),

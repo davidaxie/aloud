@@ -92,7 +92,7 @@ struct BookshelfView: View {
                 ForEach(results) { row($0) }
             }
         } else {
-            ForEach(model.bookshelfIndex.shelves) { shelf in
+            ForEach(model.bookshelfIndex.shelves(rate: model.globalRate)) { shelf in
                 Section {
                     ForEach(shelf.books) { row($0) }
                 } header: {
@@ -136,11 +136,11 @@ struct BookshelfView: View {
     // MARK: Row copy
 
     /// A book's length at the app-wide speed, as the featured card and
-    /// every Library card show it (R7). The shelves still group at 1×
-    /// (`BookshelfSection`), so a book never changes shelf with the speed.
+    /// every Library card show it (R7). The shelves group by the same
+    /// measure (`BookshelfIndex.shelves(rate:)`), so a heading never
+    /// disagrees with the times under it (L019).
     nonisolated static func rowMinutes(of book: BookshelfBook, rate: Double) -> Int {
-        ListeningEstimate.minutes(words: book.words,
-                                  wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate)
+        book.listeningMinutes(rate: rate)
     }
 
     /// "Edgar Allan Poe · 7 min" at 2×.

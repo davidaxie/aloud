@@ -71,6 +71,7 @@ struct LicensesView: View {
                     Text(Self.classicsTitle)
                         .font(Theme.font(.body).weight(.semibold))
                         .foregroundStyle(Theme.text)
+                        .accessibilityAddTraits(.isHeader)
                     Text(Self.classicsNote)
                         .font(Theme.font(.footnote))
                         .foregroundStyle(Theme.textMuted)
@@ -92,6 +93,7 @@ struct LicensesView: View {
                 Text("Licenses")
                     .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
+                    .accessibilityAddTraits(.isHeader)
                     // The bar caps text scaling; at accessibility sizes a
                     // long press shows the title large instead.
                     .largeContentViewerIfAvailable()
@@ -104,9 +106,11 @@ struct LicensesView: View {
     /// two split the card's width and wrapped a character per line at AX5.
     @ViewBuilder
     private func nameAndLicense(for entry: Entry) -> some View {
+        // Each card's name is a heading, so the rotor steps card to card.
         let name = Text(entry.id)
             .font(Theme.font(.body).weight(.semibold))
             .foregroundStyle(Theme.text)
+            .accessibilityAddTraits(.isHeader)
         let license = Text(entry.license)
             .font(Theme.font(.caption))
             .foregroundStyle(Theme.accentStrong)

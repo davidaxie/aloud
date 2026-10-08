@@ -106,4 +106,32 @@ final class ShelfAccessibilityTests: XCTestCase {
         XCTAssertEqual(ContinueListeningCopy.inputLabels(title: gatsby.title),
                        ["The Great Gatsby", "Continue listening"])
     }
+
+    // MARK: - Large text
+
+    /// L016: from xxLarge, the largest sizes below the accessibility range,
+    /// a card's title and author wrap in full rather than stop at two lines
+    /// and one: at those sizes a phone's two columns cut a long author's
+    /// name and a classic's title short. Below it the limits stay.
+    func testCardsWrapInFullFromTheLargestStandardSizes() {
+        for size: DynamicTypeSize in [.xSmall, .small, .medium, .large, .xLarge] {
+            XCTAssertFalse(DocumentCardView.wrapsInFull(at: size), "\(size)")
+        }
+        for size: DynamicTypeSize in [.xxLarge, .xxxLarge, .accessibility1, .accessibility5] {
+            XCTAssertTrue(DocumentCardView.wrapsInFull(at: size), "\(size)")
+        }
+    }
+
+    /// L016: the grid card and the hero both read that rule; the hero no
+    /// longer keeps its title at two lines beside the cover and circle.
+    func testTheCardAndTheHeroWrapByTheOneRule() throws {
+        let paths = ["Library/DocumentCardView.swift", "Library/ContinueListeningCard.swift"]
+        let sources = try SourceTree.sources(only: paths)
+        let card = try XCTUnwrap(sources[paths[0]])
+        let hero = try XCTUnwrap(sources[paths[1]])
+        XCTAssertTrue(card.contains("let wrapsInFull = Self.wrapsInFull(at: dynamicTypeSize)"))
+        XCTAssertFalse(card.contains("let wrapsInFull = dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(hero.contains("titleText.lineLimit(DocumentCardView.wrapsInFull(at: dynamicTypeSize) ? nil : 2)"))
+        XCTAssertFalse(hero.contains("titleText.lineLimit(2)"), "a fixed two lines cut the hero's title")
+    }
 }

@@ -33,6 +33,23 @@ final class MacShelfFeedTests: XCTestCase {
         }
     }
 
+    /// L019: the Mac's Classics headings and the rows under them are one
+    /// measure: a row's time is the one its shelf is chosen by, at any speed.
+    /// At 0.5× a 56-minute book reads 1 hr 52 min, under An evening.
+    func testClassicsShelvesAndRowsAreOneMeasure() {
+        let bigFix = BookshelfBook(gutenbergID: 1, title: "The Big Fix", author: "A. Writer", year: nil,
+                                   file: "1.txt", words: 9_251)
+        let index = BookshelfIndex(books: [bigFix])
+        for rate in [0.5, 0.75, 1, 1.5, 2, 3] {
+            let minutes = MacClassicsView.rowMinutes(of: bigFix, rate: rate)
+            XCTAssertEqual(minutes, bigFix.listeningMinutes(rate: rate), "\(rate)×")
+            XCTAssertEqual(index.shelves(rate: rate).map(\.section), [BookshelfSection.section(forMinutes: minutes)],
+                           "the heading over a \(minutes)-minute row at \(rate)×")
+        }
+        XCTAssertEqual(MacClassicsView.rowStatus(for: bigFix, rate: 0.5, inLibrary: false, adding: false), "1 hr 52 min")
+        XCTAssertEqual(index.shelves(rate: 0.5).map(\.section), [.anEvening])
+    }
+
     func testAShownLibraryRebuildsOnEveryPublish() {
         var feed = MacShelfFeed()
         XCTAssertTrue(feed.publish([started, other], loadedID: nil, libraryShows: true))

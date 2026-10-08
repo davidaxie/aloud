@@ -5,7 +5,8 @@ import SwiftUI
 /// Spelling, Substitutions, Transformations or Speech (its first item would
 /// speak past the muted engine); no toolbar or sidebar items; no empty
 /// Help item. Added: About Aloud's credits, File (Add from Files…, Add a
-/// Classic…), Edit (Undo Jump, Delete Book…, Find), View (Contents, text
+/// Classic…), Edit (Undo Jump; Rename Book…, Mark as Finished and Delete
+/// Book… on the focused card; Find), View (Contents, text
 /// size, Appearance, Back) and Playback, with its Sleep Timer submenu.
 ///
 /// Plain keys (Space, ←, →, [, ]) are never key equivalents here:
@@ -15,6 +16,8 @@ struct AloudCommands: Commands {
     @ObservedObject var state: MacCommandState
 
     @FocusedValue(\.macFollowVoice) private var followVoice
+    @FocusedValue(\.macRenameBook) private var renameBook
+    @FocusedValue(\.macMarkFinished) private var markFinished
     @FocusedValue(\.macDeleteBook) private var deleteBook
     @Environment(\.openSettings) private var openSettings
     @AppStorage(AppearancePreference.prefKey) private var appearanceRaw = AppearancePreference.system.rawValue
@@ -49,6 +52,8 @@ struct AloudCommands: Commands {
         }
         CommandGroup(after: .pasteboard) {
             Divider()
+            item(.renameBook)
+            item(.markFinished)
             item(.deleteBook)
         }
         CommandGroup(replacing: .textEditing) {
@@ -101,6 +106,8 @@ struct AloudCommands: Commands {
     private var actions: MacCommandActions {
         var actions = state.actions
         actions.followVoice = followVoice
+        actions.renameBook = renameBook
+        actions.markFinished = markFinished
         actions.deleteBook = deleteBook
         let openSettings = openSettings
         actions.openSettings = { openSettings() }
@@ -124,6 +131,8 @@ struct AloudCommands: Commands {
     private func isEnabled(_ command: MacCommand) -> Bool {
         switch command {
         case .followVoice: return followVoice != nil
+        case .renameBook: return renameBook != nil
+        case .markFinished: return markFinished != nil
         case .deleteBook: return deleteBook != nil
         default: return snapshot.isEnabled(command)
         }
@@ -174,6 +183,18 @@ struct MacDeleteBookKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+/// Rename Book…, published by the focused Library card, so a keyboard
+/// user reaches it without the card's context menu (L014).
+struct MacRenameBookKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+/// Mark as Finished, published by the focused Library card while its book
+/// has something left to mark. With none, the item is disabled.
+struct MacMarkFinishedKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
     var macFollowVoice: MacFollowVoiceKey.Value? {
         get { self[MacFollowVoiceKey.self] }
@@ -183,5 +204,15 @@ extension FocusedValues {
     var macDeleteBook: MacDeleteBookKey.Value? {
         get { self[MacDeleteBookKey.self] }
         set { self[MacDeleteBookKey.self] = newValue }
+    }
+
+    var macRenameBook: MacRenameBookKey.Value? {
+        get { self[MacRenameBookKey.self] }
+        set { self[MacRenameBookKey.self] = newValue }
+    }
+
+    var macMarkFinished: MacMarkFinishedKey.Value? {
+        get { self[MacMarkFinishedKey.self] }
+        set { self[MacMarkFinishedKey.self] = newValue }
     }
 }
