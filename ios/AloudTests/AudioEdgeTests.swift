@@ -283,7 +283,8 @@ final class AudioEdgeTests: XCTestCase {
 
     /// Sentences 0 and 1 (0.5 s each) heard and sentence 2 held at the gate,
     /// so the queue ran dry at 1 s and the node plays silence. Returns once
-    /// the playhead is past 1.8 s, with a probe on sentence 2's landing.
+    /// the playhead is past 1.8 s and sentence 1 has been heard, with a
+    /// probe on sentence 2's landing.
     private func playingPastADryQueue() async throws -> (rig: PlaybackTestRig, gate: GatedEngine,
                                                          probe: LandingProbe) {
         let gate = GatedEngine(voices: [PlaybackTestRig.voiceA], lateFrom: 2,
@@ -295,6 +296,10 @@ final class AudioEdgeTests: XCTestCase {
         try await rig.waitUntilPlayingOrSkip()
         let past = await rig.waitUntil(5) { (rig.controller.playerMediaSeconds ?? 0) >= 1.8 }
         if !past { throw XCTSkip("The player node reports no playhead in this test host") }
+        // The playhead above is the render's; a sentence ends once the
+        // device has played its clip, which trails it by the output's
+        // latency (a Bluetooth route's can be most of a second).
+        _ = await rig.waitUntil(3) { rig.controller.currentSentence >= 2 }
         XCTAssertEqual(rig.controller.currentSentence, 2, "sentences 0 and 1 have been heard")
         XCTAssertNil(rig.controller.wordTiming.clip(for: 2), "sentence 2 isn't on the node yet")
 

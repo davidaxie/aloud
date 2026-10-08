@@ -150,9 +150,21 @@ final class ThermalGuardTests: XCTestCase {
         guard PlatformPlaybackTuning.coolingSwitchLandsWithin != nil else {
             throw XCTSkip("a Mac splices after its whole queue")
         }
-        // 50 ms natural clips: the next boundary always falls inside the ramp.
+        // 50 ms natural clips: once reading runs steadily, the next boundary
+        // always falls inside the ramp.
         let rig = makeRig(FakeNeuralEngine(warm: true, clipDuration: 0.05), deepQueue: true)
         try await startPlaying(rig)
+        // Steady first, as `AudioEdgeTests` waits before its boundary inside
+        // a ramp: a boundary is heard once the device has played the clip,
+        // which trails the render by the output's latency (a Bluetooth
+        // route's is well over the 50 ms of the first clip). A pause in the
+        // first moments of playback can end its 120 ms ramp before the
+        // first clip is heard at all, and then no boundary falls inside it.
+        let steady = await rig.waitUntil(2) {
+            !rig.controller.isRampingVolume && rig.controller.requestedOutputVolume == 1
+                && rig.controller.currentSentence >= 2
+        }
+        XCTAssertTrue(steady, "the start's fade-in finished and boundaries are heard")
         let deep = PlatformPlaybackTuning.lookAheadSentences.upperBound
         let filled = await rig.waitUntil(2) {
             (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence >= deep
