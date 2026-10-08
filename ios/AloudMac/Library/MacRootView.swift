@@ -84,7 +84,8 @@ struct MacRootView: View {
         }
         // Fixed copy only: one sentence and its next step (R10). The
         // intake's failure (a file that never reached the importer) first.
-        .alert(shownFailure?.title ?? "", isPresented: failureShown, presenting: shownFailure) { _ in
+        // A batch's failure names its file (L007).
+        .alert(shownFailureTitle, isPresented: failureShown, presenting: shownFailure) { _ in
             Button("OK", role: .cancel) {}
         } message: { failure in
             Text(failure.nextStep)
@@ -128,6 +129,12 @@ struct MacRootView: View {
         return intake.failure ?? openFailure ?? importer.failure
     }
 
+    /// `shownFailure`'s title, from the same source in the same order.
+    private var shownFailureTitle: String {
+        guard router.rootPresentation == nil else { return "" }
+        return intake.failureTitle ?? openFailure?.title ?? importer.failureTitle ?? ""
+    }
+
     private var failureShown: Binding<Bool> {
         Binding(get: { shownFailure != nil },
                 set: { shown in
@@ -149,7 +156,7 @@ struct MacRootView: View {
     /// failure to show: the intake would drop it without a word. Static, so
     /// the tests take the same steps.
     static func receiveOpened(_ url: URL, router: LibraryRouter, intake: MacFileIntake) -> ImportFailure? {
-        guard MacFileIntake.isAddable(url) else { return .textNoText }
+        guard MacFileIntake.isAddable(url) else { return .unsupportedType }
         router.clearForOpenIn()
         intake.admitOpened(url)
         return nil

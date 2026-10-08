@@ -52,6 +52,13 @@ struct MacLibraryView: View {
                 shelfView
             }
         }
+        // L011: a library.json that can't be read leaves the shelf empty or
+        // short; the notice says the books are kept, over either.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !store.isIndexReadable {
+                UnreadableLibraryNotice(gutter: Theme.Space.lg)
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
         .navigationTitle("Library")

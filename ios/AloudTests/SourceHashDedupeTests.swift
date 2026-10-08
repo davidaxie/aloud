@@ -496,4 +496,32 @@ final class SourceHashDedupeTests: XCTestCase {
         XCTAssertEqual(type, .typeRegular, "the copy is the book, not a link")
         XCTAssertEqual(try Data(contentsOf: copy), bytes)
     }
+
+    /// L004: a Finder-locked file's library copy isn't locked, so Delete and
+    /// the launch's orphan sweep can remove it. Before, copyItem kept the
+    /// lock and every removal failed without a word, leaving the book's
+    /// bytes in the container for good. The user's own file keeps its lock.
+    func testALockedFilesLibraryCopyCanBeRemoved() async throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("aloud-locked-\(UUID().uuidString)",
+                                                                   isDirectory: true)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("Locked.txt")
+        try Data("Call me Ishmael.".utf8).write(to: source)
+        try fm.setAttributes([.immutable: true], ofItemAtPath: source.path)
+        addTeardownBlock { DocumentStore.unlock(source) }
+        XCTAssertEqual(try fm.attributesOfItem(atPath: source.path)[.immutable] as? Bool, true,
+                       "the host locks a file as Finder does")
+
+        let copy = folder.appendingPathComponent("library-copy.txt")
+        try await DocumentStore.copyFile(from: source, to: copy)
+
+        XCTAssertNotEqual(try fm.attributesOfItem(atPath: copy.path)[.immutable] as? Bool, true,
+                          "the library's copy is unlocked")
+        XCTAssertNoThrow(try fm.removeItem(at: copy), "Delete can remove it")
+        XCTAssertFalse(fm.fileExists(atPath: copy.path))
+        XCTAssertEqual(try fm.attributesOfItem(atPath: source.path)[.immutable] as? Bool, true,
+                       "the user's file is left as it was")
+    }
 }

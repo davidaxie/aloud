@@ -63,6 +63,19 @@ final class MacFileIntake: ObservableObject {
     /// A file that never reached the importer. Shown in the importer's
     /// failure alert, before the importer's own failure, one at a time.
     @Published private(set) var failure: ImportFailure?
+    /// The file `failure` is about, when its batch had others: the alert
+    /// names it (`failureTitle`). Nil for a file added on its own.
+    @Published private(set) var failureFileName: String?
+    /// Failures still to show after `failure`, oldest first: every file
+    /// of a batch that failed to copy, and a later batch's while one is on
+    /// screen, each in turn (L007).
+    private var pendingFailures: [(failure: ImportFailure, fileName: String?)] = []
+
+    /// The alert's title for `failure`: its fixed sentence, naming the file
+    /// when it was one of several (`ImportFailure.title(naming:)`).
+    var failureTitle: String? {
+        failure.map { $0.title(naming: failureFileName) }
+    }
 
     /// Copies a file to where the importer reads it. Tests replace it.
     typealias Stage = @Sendable (URL) async throws -> URL
@@ -143,14 +156,16 @@ final class MacFileIntake: ObservableObject {
         let batch = UUID()
         let task = Task {
             var staged: [URL] = []
-            var firstFailure: ImportFailure?
+            var failures: [(failure: ImportFailure, fileName: String?)] = []
             for file in files {
                 guard !Task.isCancelled else { break }
-                noteCopying(file.lastPathComponent, for: batch)
+                let name = file.displayName
+                noteCopying(name, for: batch)
                 do {
                     staged.append(try await stage(file))
                 } catch {
-                    firstFailure = firstFailure ?? Self.failure(for: error, isPDF: Self.isPDF(file))
+                    failures.append((Self.failure(for: error, isPDF: Self.isPDF(file)),
+                                     files.count > 1 ? name : nil))
                 }
             }
             copyingBatches[batch] = nil
@@ -175,7 +190,8 @@ final class MacFileIntake: ObservableObject {
             importer.importFiles(at: staged)
             staging -= files.count
             noteCopying(nil, for: batch)
-            if failure == nil { failure = firstFailure }
+            pendingFailures += failures
+            if failure == nil { showNextFailure() }
             releaseHoldIfSettled()
         }
         copyingBatches[batch] = (task, files.count)
@@ -243,9 +259,18 @@ final class MacFileIntake: ObservableObject {
         admit(urls)
     }
 
-    /// The user has seen this file's failure.
+    /// The user has seen this file's failure: the next one waiting, if any.
     func dismissFailure() {
         failure = nil
+        failureFileName = nil
+        showNextFailure()
+    }
+
+    private func showNextFailure() {
+        guard !pendingFailures.isEmpty else { return }
+        let next = pendingFailures.removeFirst()
+        failureFileName = next.fileName
+        failure = next.failure
     }
 
     // MARK: Paste
@@ -435,6 +460,8 @@ final class MacFileIntake: ObservableObject {
     /// source's security scope (a Files panel pick) is held for the read.
     /// A symbolic link is followed: the library keeps a copy of the book,
     /// never a link that a relaunch's sandbox or a moved original breaks.
+    /// A Finder-locked source gives an unlocked copy, which the importer
+    /// can remove once its add ends (`DocumentStore.unlock(_:)`).
     nonisolated static func stageCopy(of url: URL, into root: URL,
                                       read: CoordinatedRead) throws -> URL {
         let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -445,6 +472,7 @@ final class MacFileIntake: ObservableObject {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try read(url) { readable in
                 try FileManager.default.copyItem(at: readable.resolvingSymlinksInPath(), to: destination)
+                DocumentStore.unlock(destination)
             }
             return destination
         } catch {
@@ -471,7 +499,8 @@ final class MacFileIntake: ObservableObject {
     /// The importer deletes each staged file, not its folder: the empty
     /// folders go before the next batch, while nothing is being copied.
     /// `includingUnfinished` also removes folders that still hold a copy
-    /// (only the intake's own, named by a UUID), once per launch.
+    /// (only the intake's own, named by a UUID), once per launch: an
+    /// earlier build's locked copy is unlocked first, or it would stay.
     static func sweepStagingFolders(in root: URL, includingUnfinished: Bool) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: root,
@@ -481,6 +510,8 @@ final class MacFileIntake: ObservableObject {
             let isEmpty = (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true
             let isOurs = UUID(uuidString: folder.lastPathComponent) != nil
             if isEmpty || (includingUnfinished && isOurs) {
+                (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil))?
+                    .forEach(DocumentStore.unlock)
                 try? fm.removeItem(at: folder)
             }
         }

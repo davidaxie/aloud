@@ -169,4 +169,28 @@ final class LibraryLintTests: XCTestCase {
             XCTAssertTrue(line.contains("stop: model.playback.stopped"), line)
         }
     }
+
+    /// L011: while library.json can't be read, both Libraries show the
+    /// standing notice over whatever the shelf shows (the first-run screen,
+    /// or the books that still decode). Before, neither read the store's
+    /// state, and the shelf looked as if every book were gone.
+    func testBothLibrariesShowTheUnreadableLibraryNotice() throws {
+        let ios = try SourceTree.sources(only: [Self.libraryFile])
+        let mac = try SourceTree.sources(in: SourceTree.macRoot, only: [Self.macLibraryFile])
+        let shared = try SourceTree.sources(only: ["Library/EmptyLibraryView.swift"])
+        for text in [try XCTUnwrap(ios[Self.libraryFile]), try XCTUnwrap(mac[Self.macLibraryFile])] {
+            let body = try XCTUnwrap(text.range(of: "var body: some View {").map { String(text[$0.upperBound...]) })
+            let inset = try XCTUnwrap(body.range(of: ".safeAreaInset(edge: .top"), "pinned above the shelf")
+            let gate = try XCTUnwrap(body.range(of: "if !store.isIndexReadable {"))
+            let notice = try XCTUnwrap(body.range(of: "UnreadableLibraryNotice("))
+            XCTAssertTrue(inset.upperBound < gate.lowerBound && gate.upperBound < notice.lowerBound,
+                          "the inset shows the notice only while the index can't be read")
+            let branch = try XCTUnwrap(body.range(of: "if store.documents.isEmpty {"))
+            XCTAssertTrue(branch.lowerBound < inset.lowerBound, "over the empty screen and the shelf alike")
+        }
+        let notice = body(ofStruct: "UnreadableLibraryNotice", in: try XCTUnwrap(shared["Library/EmptyLibraryView.swift"]))
+        XCTAssertTrue(notice.contains("Text(UnreadableLibraryCopy.title)"))
+        XCTAssertTrue(notice.contains("Text(UnreadableLibraryCopy.detail)"))
+        XCTAssertTrue(notice.contains(".accessibilityElement(children: .combine)"), "read as one")
+    }
 }

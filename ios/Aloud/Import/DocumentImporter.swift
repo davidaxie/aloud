@@ -50,7 +50,16 @@ final class DocumentImporter: ObservableObject {
         case failed(ImportFailure)
     }
 
-    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var phase: Phase = .idle {
+        // Each new phase drops the last failure's file name; a batch's
+        // failure sets its own just after (`failedFileName`).
+        didSet { if failedFileName != nil { failedFileName = nil } }
+    }
+    /// The file the failure on screen is about, when it is one of several
+    /// handed over at once (a Mac drop or multi-file pick, M8): the alert
+    /// names it (`failureTitle`). Nil for a single add, whose file the
+    /// user has just chosen, and for every other failure (L007).
+    @Published private(set) var failedFileName: String?
     /// The classic being added; the Bookshelf shows its row's spinner from it.
     @Published private(set) var addingClassicID: Int?
 
@@ -62,6 +71,12 @@ final class DocumentImporter: ObservableObject {
     var failure: ImportFailure? {
         if case .failed(let failure) = phase { return failure }
         return nil
+    }
+
+    /// The failure alert's title: the fixed sentence, naming the file
+    /// when it was one of a batch (`ImportFailure.title(naming:)`).
+    var failureTitle: String? {
+        failure.map { $0.title(naming: failedFileName) }
     }
 
     var onAdded: ((LibraryDocument) -> Void)?
@@ -167,7 +182,8 @@ final class DocumentImporter: ObservableObject {
         // record already on the shelf) is announced as such.
         let before = Set(library.documents.map(\.id))
         let isPDF = !Self.isPastedText(url) && Self.isPDF(url)
-        phase = .importing(fileName: title ?? url.lastPathComponent, progress: 0)
+        let name = title ?? url.displayName
+        phase = .importing(fileName: name, progress: 0)
 
         let progress: @Sendable (Double) -> Void = { [weak self] value in
             Task { @MainActor in
@@ -200,6 +216,8 @@ final class DocumentImporter: ObservableObject {
             } catch {
                 if token == mine {
                     phase = .failed(ImportFailure(error, isPDF: isPDF))
+                    // One of several added at once: the alert says which.
+                    if batch != nil { failedFileName = name }
                 }
             }
             // Inbox cleanup runs on success, failure and cancel alike, and
@@ -375,6 +393,7 @@ final class DocumentImporter: ObservableObject {
             guard let arrived = values?.addedToDirectoryDate ?? values?.creationDate
                     ?? values?.contentModificationDate,
                   arrived < cutoff else { continue }
+            DocumentStore.unlock(entry)
             try? fm.removeItem(at: entry)
         }
     }
@@ -390,9 +409,11 @@ final class DocumentImporter: ObservableObject {
 
     /// The importer's own copy of what it was handed, an Inbox copy or a
     /// paste's file, removed once its add ends. A file picked where it
-    /// lives is never touched.
+    /// lives is never touched. A locked copy (an Open-in's, an earlier
+    /// build's staged one) is unlocked first, or it would stay.
     private static func removeHandedOverCopy(_ url: URL) {
         guard isInboxCopy(url) || isPastedText(url) else { return }
+        DocumentStore.unlock(url)
         try? FileManager.default.removeItem(at: url)
     }
 
@@ -454,12 +475,13 @@ final class DocumentImporter: ObservableObject {
         return TextExtractor.hasPDFSignature(head)
     }
 
-    /// "moby-dick_ch1.txt" → "Moby Dick Ch1"
-    private static func title(from url: URL) -> String {
-        let base = url.deletingPathExtension().lastPathComponent
+    /// "moby-dick_ch1.txt" → "Moby Dick Ch1". From the name Finder shows
+    /// (`URL.displayStem`), so "AC/DC Live.txt" is "AC/DC Live".
+    static func title(from url: URL) -> String {
+        let base = url.displayStem
             .replacingOccurrences(of: "[-_]+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
-        guard !base.isEmpty else { return url.lastPathComponent }
+        guard !base.isEmpty else { return url.displayName }
         return base == base.lowercased() ? base.localizedCapitalized : base
     }
 }
@@ -580,4 +602,24 @@ struct ImportProgressOverlay: View {
 
     private var clampedProgress: Double { min(max(progress, 0), 1) }
     private var percent: Int { Int((clampedProgress * 100).rounded()) }
+}
+
+extension URL {
+    /// The name Finder and Files show: a ":" in the name on disk reads as
+    /// "/" there, so "AC/DC Live.txt" is never "AC:DC Live.txt" (L010).
+    /// The name on disk when the file can't be asked (gone, out of scope).
+    var displayName: String {
+        (try? resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? lastPathComponent
+    }
+
+    /// `displayName` without its extension. The shown name may already
+    /// hide it (Finder's Hide extension), so only a matching one is cut:
+    /// "Mr. Smith" stays whole.
+    var displayStem: String {
+        let name = displayName
+        let ext = pathExtension
+        guard !ext.isEmpty, name.lowercased().hasSuffix("." + ext.lowercased()),
+              name.count > ext.count + 1 else { return name }
+        return String(name.dropLast(ext.count + 1))
+    }
 }

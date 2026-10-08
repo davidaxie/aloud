@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import Aloud
 
@@ -410,8 +411,10 @@ final class MacImportTests: XCTestCase {
 
         let failure = MacRootView.receiveOpened(notes, router: router, intake: intake)
 
-        XCTAssertEqual(failure, .textNoText)
-        XCTAssertEqual(failure?.nextStep, "Try a PDF or a plain-text file.")
+        // L008: the type row, never the unreadable-text one: a plain-text
+        // file with no extension is refused by its name here too.
+        XCTAssertEqual(failure, .unsupportedType)
+        XCTAssertEqual(failure?.nextStep, "Aloud adds PDFs and plain-text files.")
         XCTAssertEqual(router.path, [.reader(reading)], "the reader stays open")
         XCTAssertEqual(router.rootPresentation, .rename, "Rename stays up")
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -641,5 +644,179 @@ final class MacImportTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: unfinished.path), "an earlier run's copy goes at launch")
         XCTAssertTrue(fm.fileExists(atPath: foreign.appendingPathComponent("other.txt").path),
                       "only the intake's own folders")
+    }
+
+    // MARK: Locked files, failures by name, shown names
+
+    /// Locks `url` as Finder's Get Info Locked box does, and unlocks it
+    /// after the test, before its folder goes.
+    private func lock(_ url: URL) throws {
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: url.path)
+        addTeardownBlock { DocumentStore.unlock(url) }
+    }
+
+    /// L004: a Finder-locked file stages as an unlocked copy, which the
+    /// importer can remove once its add ends. Before, the copy kept the
+    /// lock, and each add of the file left one more copy no cleanup could
+    /// remove. The user's own file keeps its lock.
+    func testALockedFileStagesACopyThatCanBeRemoved() throws {
+        let folder = try makeFolder()
+        let root = folder.appendingPathComponent("Inbox", isDirectory: true)
+        let source = try writeText("Locked.txt", in: folder)
+        try lock(source)
+
+        let staged = try MacFileIntake.stageCopy(of: source, into: root, read: MacFileIntake.systemCoordinatedRead)
+
+        let fm = FileManager.default
+        XCTAssertNotEqual(try fm.attributesOfItem(atPath: staged.path)[.immutable] as? Bool, true,
+                          "the staged copy isn't locked")
+        XCTAssertNoThrow(try fm.removeItem(at: staged.deletingLastPathComponent()), "its folder can go")
+        XCTAssertEqual(try fm.attributesOfItem(atPath: source.path)[.immutable] as? Bool, true,
+                       "the user's file is left as it was")
+    }
+
+    /// L004: a locked copy an earlier build staged still goes at launch.
+    func testTheLaunchSweepClearsALockedLeftover() throws {
+        let root = try makeFolder()
+        let unfinished = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: unfinished, withIntermediateDirectories: true)
+        try lock(try writeText("left.txt", in: unfinished))
+
+        MacFileIntake.sweepStagingFolders(in: root, includingUnfinished: true)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unfinished.path), "the locked leftover goes")
+    }
+
+    /// L007: every file of a batch that failed to copy is shown in turn,
+    /// each alert naming its file, and a later drop's failure waits behind
+    /// them. Before, only the batch's first failure was kept, unnamed, and
+    /// a failure arriving while one was on screen was dropped. A file added
+    /// on its own keeps the fixed sentence.
+    func testEveryFailedCopyOfABatchIsShownByName() async throws {
+        let folder = try makeFolder()
+        let library = FakeLibrary()
+        let importer = DocumentImporter(library: library) { _ in }
+        let intake = MacFileIntake(importer: importer) { url in
+            if url.lastPathComponent.hasPrefix("cloud") {
+                throw MacFileIntake.CoordinationError(underlying: CocoaError(.fileReadUnknown))
+            }
+            if url.lastPathComponent.hasPrefix("moved") { throw CocoaError(.fileReadNoSuchFile) }
+            return url
+        }
+        let files = try ["a.txt", "cloud-1.txt", "moved.txt", "cloud-2.txt"].map { try writeText($0, in: folder) }
+
+        intake.admit(files)
+        let shown = await waitUntil { intake.failure != nil && library.documents.count == 1 }
+        XCTAssertTrue(shown, "the one that copied is added, and a failure shows")
+        XCTAssertEqual(intake.failureTitle, "\u{201C}cloud-1.txt\u{201D} isn't downloaded yet.")
+
+        // A file dropped on its own while the alert is up, which fails too.
+        var copying: [String?] = []
+        let watch = intake.$copyingName.sink { copying.append($0) }
+        intake.admit([try writeText("cloud-3.txt", in: folder)])
+        let copied = await waitUntil { copying.contains("cloud-3.txt") && copying.last == .some(nil) }
+        watch.cancel()
+        XCTAssertTrue(copied, "the later drop is over while the first alert is up")
+        XCTAssertEqual(intake.failure, .notDownloaded, "the first alert stays")
+
+        intake.dismissFailure()
+        XCTAssertEqual(intake.failureTitle, "\u{201C}moved.txt\u{201D} couldn't be opened.")
+        intake.dismissFailure()
+        XCTAssertEqual(intake.failureTitle, "\u{201C}cloud-2.txt\u{201D} isn't downloaded yet.")
+        intake.dismissFailure()
+        XCTAssertEqual(intake.failure, .notDownloaded, "the later drop's failure, kept")
+        XCTAssertEqual(intake.failureTitle, ImportFailure.notDownloaded.title, "a file on its own isn't named")
+        intake.dismissFailure()
+        XCTAssertNil(intake.failure)
+        XCTAssertNil(intake.failureTitle)
+    }
+
+    /// In-memory LibraryAdding that can't read one file, as a scan has no
+    /// text: the importer's own failure.
+    @MainActor
+    private final class RefusingLibrary: LibraryAdding {
+        let refused: String
+        var documents: [LibraryDocument] = []
+        init(refusing name: String) { refused = name }
+
+        func importPDF(from url: URL, progress: (@Sendable (Double) -> Void)?) async throws -> LibraryDocument {
+            try add(url)
+        }
+
+        func importText(title: String, author: String?, from url: URL,
+                        progress: (@Sendable (Double) -> Void)?) async throws -> LibraryDocument {
+            try add(url)
+        }
+
+        func addClassic(_ book: BookshelfBook) async throws -> LibraryDocument {
+            try add(URL(fileURLWithPath: book.file))
+        }
+
+        private func add(_ url: URL) throws -> LibraryDocument {
+            guard url.lastPathComponent != refused else { throw ExtractionError.noReadableText }
+            let document = LibraryDocument(id: UUID(), title: url.lastPathComponent, fileName: "x.txt",
+                                           addedAt: Date(), pageCount: 1, sentenceCount: 1,
+                                           contentHash: "h-\(url.lastPathComponent)", kind: .text)
+            documents.append(document)
+            return document
+        }
+    }
+
+    /// L007 and L010: a file of a batch the importer can't read is named in
+    /// its alert, by the name Finder shows ("/" for the ":" on disk); the
+    /// same file added on its own keeps the fixed sentence.
+    func testTheImportersFailureInABatchNamesItsFile() async throws {
+        let folder = try makeFolder()
+        let library = RefusingLibrary(refusing: "AC:DC Scan.txt")
+        let importer = DocumentImporter(library: library) { _ in }
+        let files = try ["a.txt", "AC:DC Scan.txt"].map { try writeText($0, in: folder) }
+
+        importer.importFiles(at: files)
+        let failed = await waitUntil { importer.failure != nil }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(importer.failureTitle, "\u{201C}AC/DC Scan.txt\u{201D} has no readable text.")
+        importer.dismissFailure()
+        XCTAssertNil(importer.failedFileName, "dismissed with its alert")
+
+        importer.importFile(at: files[1])
+        let alone = await waitUntil { importer.failure != nil }
+        XCTAssertTrue(alone)
+        XCTAssertEqual(importer.failureTitle, ImportFailure.textNoText.title)
+    }
+
+    /// L010: Finder shows a ":" in a name on disk as "/". A text file's
+    /// title, an untitled PDF's and the copying overlay's name take the
+    /// shown name: "AC/DC Live", not "AC:DC Live". A name whose extension
+    /// Finder hides is never cut at a dot of its own.
+    func testTitlesTakeTheNameFinderShows() throws {
+        let folder = try makeFolder()
+        let text = try writeText("AC:DC Live.txt", in: folder)
+        XCTAssertEqual(text.displayName, "AC/DC Live.txt")
+        XCTAssertEqual(DocumentImporter.title(from: text), "AC/DC Live")
+        let pdf = folder.appendingPathComponent("AC:DC Tour.pdf")
+        try Data("%PDF-1.4".utf8).write(to: pdf)
+        XCTAssertEqual(ExtractionPipeline.fileTitle(of: pdf), "AC/DC Tour")
+
+        var hidden = try writeText("Mr. Smith.txt", in: folder)
+        var values = URLResourceValues()
+        values.hasHiddenExtension = true
+        try hidden.setResourceValues(values)
+        hidden.removeAllCachedResourceValues()
+        XCTAssertEqual(DocumentImporter.title(from: hidden), "Mr. Smith")
+    }
+
+    /// L010: the copying overlay names a dropped file as Finder does.
+    func testTheCopyingOverlayShowsTheNameFinderShows() async throws {
+        let folder = try makeFolder()
+        let importer = DocumentImporter(library: FakeLibrary()) { _ in }
+        let intake = MacFileIntake(importer: importer) { url in
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+            return url
+        }
+        intake.admit([try writeText("AC:DC Live.txt", in: folder)])
+        let named = await waitUntil { intake.copyingName != nil }
+        XCTAssertTrue(named)
+        XCTAssertEqual(intake.copyingName, "AC/DC Live.txt")
+        intake.cancel()
     }
 }

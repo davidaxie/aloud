@@ -60,6 +60,12 @@ enum DeviceCopy {
     /// What to do after a file couldn't be opened: add it again from where
     /// it came.
     static let addAgain = "Try adding it again from Files."
+    /// Under the Library's notice while library.json can't be read
+    /// (`UnreadableLibraryNotice`): the books are kept, what to try, and
+    /// the one step that would lose them, since deleting an iPhone app
+    /// deletes its files.
+    static let unreadableLibraryDetail =
+        "Your books are still on this iPhone. Update Aloud, or close and reopen it. Deleting Aloud would delete them."
     #elseif os(macOS)
     /// A crash, a force quit or a flat battery mid-read: the Mac's system
     /// doesn't close apps on its own.
@@ -87,5 +93,7 @@ enum DeviceCopy {
     /// A Mac file arrives by the open panel, a drop or Open With, so the
     /// step names none of them.
     static let addAgain = "Try adding it again."
+    /// A Mac app moved to the Trash leaves its files, so no warning.
+    static let unreadableLibraryDetail = "Your books are still on this Mac. Update Aloud, or quit and reopen it."
     #endif
 }

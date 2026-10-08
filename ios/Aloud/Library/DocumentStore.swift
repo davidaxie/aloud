@@ -1065,14 +1065,27 @@ final class DocumentStore: ObservableObject {
 
     /// A copy of the book itself: copyItem copies a symlink as a link, which
     /// in the library would point outside it, or nowhere once relative
-    /// (F038). The link's target is copied as a regular file instead.
+    /// (F038). The link's target is copied as a regular file instead. The
+    /// copy never keeps the source's Finder Locked flag (`unlock(_:)`).
     static func copyFile(from source: URL, to destination: URL) async throws {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let resolved = source.resolvingSymlinksInPath()
         try await Task.detached(priority: .userInitiated) {
             try FileManager.default.copyItem(at: resolved, to: destination)
+            Self.unlock(destination)
         }.value
+    }
+
+    /// Clears the Finder Locked (immutable) and append-only flags on `url`.
+    /// copyItem carries both over from a locked source, and a locked copy
+    /// can never be removed: not by Delete, the launch's orphan sweep nor
+    /// the inbox's cleanup, each of which goes on without a word (L004).
+    /// Every copy the app makes of a user's file is unlocked here, and a
+    /// leftover is unlocked before it is removed.
+    nonisolated static func unlock(_ url: URL) {
+        try? FileManager.default.setAttributes([.immutable: false, .appendOnly: false],
+                                               ofItemAtPath: url.path)
     }
 
     /// Stamped with this build's extractor (`DocContent.extractorVersion`):

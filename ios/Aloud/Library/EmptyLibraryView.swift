@@ -6,6 +6,50 @@ enum PrivacyCopy {
     static let line = "Everything stays on your device."
 }
 
+/// The Library's standing notice while library.json can't be read (L011).
+/// The detail names the device, so it is spelled in `DeviceCopy`.
+enum UnreadableLibraryCopy {
+    static let title = "Aloud couldn't read your library."
+    static var detail: String { DeviceCopy.unreadableLibraryDetail }
+}
+
+/// Above the Library in both apps while library.json can't be read
+/// (`DocumentStore.isIndexReadable`, L011). The shelf below shows only the
+/// books whose records still decode, or the first-run screen, which would
+/// read as every book gone; this says they are kept and what to try. It
+/// stays until a launch reads the file: nothing on screen can mend it.
+struct UnreadableLibraryNotice: View {
+    /// The screen's side margin: the iPhone's gutter, the Mac's.
+    let gutter: CGFloat
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(Theme.font(.callout))
+                .foregroundStyle(Theme.textMuted)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Theme.Space.xs / 2) {
+                Text(UnreadableLibraryCopy.title)
+                    .font(Theme.font(.callout).weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                Text(UnreadableLibraryCopy.detail)
+                    .font(Theme.font(.footnote))
+                    .foregroundStyle(Theme.textMuted)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(Theme.Space.md)
+        .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .padding(.horizontal, gutter)
+        .padding(.vertical, Theme.Space.xs)
+        // On the paper, so a shelf scrolled beneath never shows round it.
+        .background(Theme.bg)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("library.unreadableNotice")
+    }
+}
+
 /// R4: the empty Library's one featured short classic, so a new listener is
 /// one tap from a voice.
 enum FeaturedClassic {

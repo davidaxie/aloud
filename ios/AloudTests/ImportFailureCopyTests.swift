@@ -35,6 +35,7 @@ final class ImportFailureCopyTests: XCTestCase {
             .notDownloaded: ("This file isn't downloaded yet.", "Connect, then add it again."),
             .libraryUnreadable: ("This book couldn't be added.",
                                  "Aloud couldn't read your library, so it leaves it as it is. Update Aloud, then try again."),
+            .unsupportedType: ("Aloud can't add this kind of file.", "Aloud adds PDFs and plain-text files."),
         ]
         XCTAssertEqual(Set(table.keys), Set(ImportFailure.allCases), "every row is pinned")
         for (failure, copy) in table {
@@ -122,6 +123,56 @@ final class ImportFailureCopyTests: XCTestCase {
         XCTAssertEqual(ImportFailure(LibraryIndexError.unreadable, isPDF: true), .libraryUnreadable)
         XCTAssertEqual(ImportFailure(LibraryIndexError.unreadable, isPDF: false), .libraryUnreadable)
         XCTAssertEqual(ImportFailure.libraryUnreadable.nextStep, DeleteFailure.libraryUnreadable.nextStep)
+    }
+
+    /// L007: a failure among several files at once names its file, so the
+    /// user can tell which of a drop failed; with no name it is the fixed
+    /// sentence. Running out of space and a missing classic name none.
+    func testABatchFailureNamesItsFile() {
+        for failure in ImportFailure.allCases {
+            XCTAssertEqual(failure.title(naming: nil), failure.title, "\(failure) unnamed")
+        }
+        let named: [ImportFailure: String] = [
+            .pdfNoText: "\u{201C}Scan.pdf\u{201D} has no readable text.",
+            .pdfLocked: "\u{201C}Scan.pdf\u{201D} is locked with a password.",
+            .pdfDamaged: "\u{201C}Scan.pdf\u{201D} can't be opened.",
+            .pdfNoPages: "\u{201C}Scan.pdf\u{201D} has no pages.",
+            .textNoText: "\u{201C}Scan.pdf\u{201D} has no readable text.",
+            .textUnreadable: "\u{201C}Scan.pdf\u{201D} can't be read.",
+            .couldNotOpen: "\u{201C}Scan.pdf\u{201D} couldn't be opened.",
+            .notDownloaded: "\u{201C}Scan.pdf\u{201D} isn't downloaded yet.",
+            .libraryUnreadable: "\u{201C}Scan.pdf\u{201D} couldn't be added.",
+            .unsupportedType: "Aloud can't add \u{201C}Scan.pdf\u{201D}.",
+            .outOfSpace: ImportFailure.outOfSpace.title,
+            .classicMissing: ImportFailure.classicMissing.title,
+        ]
+        XCTAssertEqual(Set(named.keys), Set(ImportFailure.allCases), "every row is pinned")
+        for (failure, title) in named {
+            XCTAssertEqual(failure.title(naming: "Scan.pdf"), title, "\(failure) named")
+        }
+    }
+
+    /// L008: a file of a type Aloud doesn't add says so, never that it has
+    /// no readable text, which a plain-text file with no extension has.
+    func testAnUnsupportedTypeIsNotCalledUnreadable() {
+        XCTAssertNotEqual(ImportFailure.unsupportedType.title, ImportFailure.textNoText.title)
+        XCTAssertFalse(ImportFailure.unsupportedType.title.contains("readable"))
+    }
+
+    /// L011: the Library's notice while library.json can't be read says
+    /// the books are kept, on this device, and what to try. On the iPhone
+    /// it warns that deleting the app deletes them; a Mac app moved to the
+    /// Trash leaves its files.
+    func testTheUnreadableLibraryNoticeSaysTheBooksAreKept() {
+        XCTAssertEqual(UnreadableLibraryCopy.title, "Aloud couldn't read your library.")
+        XCTAssertEqual(UnreadableLibraryCopy.detail, DeviceCopy.unreadableLibraryDetail)
+        #if os(iOS)
+        XCTAssertEqual(UnreadableLibraryCopy.detail,
+                       "Your books are still on this iPhone. Update Aloud, or close and reopen it. Deleting Aloud would delete them.")
+        #else
+        XCTAssertEqual(UnreadableLibraryCopy.detail,
+                       "Your books are still on this Mac. Update Aloud, or quit and reopen it.")
+        #endif
     }
 
     func testMissingClassicMapsToClassicMissing() {

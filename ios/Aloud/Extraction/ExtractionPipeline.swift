@@ -69,8 +69,9 @@ actor ExtractionPipeline {
 
     /// The file name without its extension, unless that is a UUID (the
     /// library copy's name), which is never a title: "" becomes "Untitled".
+    /// The name Finder shows (`URL.displayStem`): "AC/DC Live", not "AC:DC Live".
     static func fileTitle(of url: URL) -> String {
-        let stem = url.deletingPathExtension().lastPathComponent
+        let stem = url.displayStem
         return UUID(uuidString: stem) == nil ? stem : ""
     }
 

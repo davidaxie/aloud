@@ -55,6 +55,13 @@ struct LibraryView: View {
                 grid
             }
         }
+        // L011: a library.json that can't be read leaves the shelf empty or
+        // short; the notice says the books are kept, over either.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !store.isIndexReadable {
+                UnreadableLibraryNotice(gutter: Theme.Space.screenGutter)
+            }
+        }
         // R12b: magic tap plays or pauses the hero from anywhere on the shelf.
         .accessibilityAction(.magicTap) { magicTap() }
         // R10: VoiceOver cannot reach the shelf under the import overlay.

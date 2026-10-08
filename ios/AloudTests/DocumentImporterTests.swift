@@ -833,6 +833,25 @@ final class DocumentImporterTests: XCTestCase {
         XCTAssertFalse(exists(fresh))
     }
 
+    /// L004: an Inbox copy that arrived locked (Finder's Locked flag, kept
+    /// by the copy that brought it) still goes. Before, the sweep's removal
+    /// failed without a word and the copy stayed for good.
+    func testALockedInboxLeftoverIsSwept() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("aloud-locked-inbox-\(UUID().uuidString)",
+                                                                   isDirectory: true)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let locked = folder.appendingPathComponent("Locked.txt")
+        try Data("Call me Ishmael.".utf8).write(to: locked)
+        try fm.setAttributes([.immutable: true], ofItemAtPath: locked.path)
+        addTeardownBlock { DocumentStore.unlock(locked) }
+
+        DocumentImporter.sweepLeftovers(in: folder, arrivedBefore: Date().addingTimeInterval(60))
+
+        XCTAssertFalse(fm.fileExists(atPath: locked.path))
+    }
+
     /// The time an add holds against suspension is given back once, and a
     /// second end is harmless (the add's end and the system's expiry).
     func testBackgroundTimeEndsOnce() {
