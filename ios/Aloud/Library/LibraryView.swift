@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// The shelf. Root screen: the Continue Listening hero over an adaptive grid
@@ -17,11 +18,16 @@ struct LibraryView: View {
     @EnvironmentObject private var importer: DocumentImporter
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
+    /// The import overlay is up (RootView reveals it only for a slow add):
+    /// the shelf and its bar items leave VoiceOver and the bar only then.
+    @Environment(\.importOverlayRevealed) private var overlayRevealed
 
     /// Hero + grid split, memoized against the store's and the loaded book's
-    /// publishes. The split scans the whole library, so it runs once per
-    /// change and never per body re-run.
-    @State private var shelf = ShelfLayout.empty
+    /// publishes, and only while the Library shows (`ShelfFeed`): under the
+    /// reader every sentence's progress save publishes the store, and a
+    /// covered shelf only marks itself stale. The split scans the whole
+    /// library, so it runs once per change and never per body re-run.
+    @State private var feed = ShelfFeed()
     /// The book the controller holds: always the hero, at any progress (R18).
     @State private var loadedID: UUID?
     /// The hero circle's load-and-play, when the book isn't loaded yet. The
@@ -39,18 +45,34 @@ struct LibraryView: View {
     /// Why the last Delete, Rename or Mark as finished didn't happen, for
     /// the failure alert.
     @State private var shelfFailure: (any ShelfFailure)?
+    /// Where VoiceOver goes after a Delete (a neighbour) or a Mark as
+    /// finished on the Continue card (the book's grid card): lost, it
+    /// jumped to the top of the screen.
+    @AccessibilityFocusState private var voFocus: UUID?
+    /// The shelf's width, for the column gap (`PhoneShelfMetrics`).
+    @State private var shelfWidth: CGFloat = 0
+    /// Whether the clipboard holds text, for the paste item and link. Read
+    /// without the paste prompt; the text itself is read only on a tap.
+    @State private var clipboardHasText = UIPasteboard.general.hasStrings
+
+    /// The shelf as the feed has it.
+    private var shelf: ShelfLayout { feed.layout }
+
+    private var metrics: PhoneShelfMetrics {
+        PhoneShelfMetrics(width: shelfWidth, isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
 
     /// Two columns; one at the accessibility text sizes (AX1+), where a
     /// half-width card can't hold a legible title.
     private var columns: [GridItem] {
-        let count = dynamicTypeSize.isAccessibilitySize ? 1 : 2
-        return Array(repeating: GridItem(.flexible(), spacing: Theme.Space.md), count: count)
+        Array(repeating: GridItem(.flexible(), spacing: metrics.columnSpacing), count: metrics.columns)
     }
 
     var body: some View {
         Group {
             if store.documents.isEmpty {
-                EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker })
+                EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker },
+                                 onPasteText: clipboardHasText ? { pasteText() } : nil)
             } else {
                 grid
             }
@@ -68,7 +90,7 @@ struct LibraryView: View {
         // RootView's hiding of the whole stack doesn't carry into the
         // stack's hosted root or its bar, so the shelf (and each bar item
         // below) hides itself; the overlay above stays reachable.
-        .accessibilityHidden(importer.isImporting)
+        .accessibilityHidden(overlayRevealed)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -81,22 +103,11 @@ struct LibraryView: View {
             // the magic tap itself. Under the import overlay the title hides
             // itself; the buttons leave the bar, because iOS hosts bar buttons
             // as system items that SwiftUI's accessibility hiding doesn't reach.
-            ToolbarItem(placement: .navigationBarLeading) {
-                Text("Aloud")
-                    .font(Theme.font(.title))
-                    .foregroundStyle(Theme.text)
-                    .fixedSize()
-                    .accessibilityAddTraits(.isHeader)
-                    // The bar caps text scaling; at accessibility sizes a
-                    // long press shows the title large instead (J020).
-                    .accessibilityShowsLargeContentViewer()
-                    .accessibilityAction(.magicTap) { magicTap() }
-                    .accessibilityHidden(importer.isImporting)
-            }
+            PaperTitleItem(isHidden: overlayRevealed, onMagicTap: magicTap)
             // + sits rightmost, and only once there is a book: the empty
             // Library's own links are the way in until then.
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if !importer.isImporting {
+                if !overlayRevealed {
                     settingsButton
                     if !store.documents.isEmpty {
                         addMenu
@@ -104,25 +115,44 @@ struct LibraryView: View {
                 }
             }
         }
+        // Several files at once are a batch: all added, none opened, one
+        // count said (M8). One file opens playing, as ever (R4).
         .fileImporter(isPresented: presented(.filePicker),
-                      allowedContentTypes: [.pdf, .plainText]) { result in
+                      allowedContentTypes: [.pdf, .plainText],
+                      allowsMultipleSelection: true) { result in
             // The picker is gone once it reports. Clear its flag now rather
             // than whenever SwiftUI does: a failure alert waits on it.
             router.dismissRootPresentation(.filePicker)
-            importer.handlePick(result)
+            importer.handlePicks(result)
         }
         // The controller's unattended stop holds a book Finished by the
         // slack rule at its sentence (`DocumentStore.isAtItsEnd`), as the
         // shortcut and remote Play do.
         .onReceive(store.$documents) { documents in
-            shelf = ShelfLayout(for: documents, loadedID: loadedID, stop: model.playback.stopped)
+            let shows = router.path.isEmpty
+            feedShelf { $0.publish(documents, loadedID: loadedID, stop: model.playback.stopped, libraryShows: shows) }
         }
         // The plain publisher, like the store's, deduplicated here: only a
         // change of book reshapes the shelf.
         .onReceive(model.playback.$document) { document in
             guard document?.id != loadedID else { return }
-            loadedID = document?.id
-            shelf = ShelfLayout(for: store.documents, loadedID: loadedID, stop: model.playback.stopped)
+            let id = document?.id
+            loadedID = id
+            let shows = router.path.isEmpty
+            feedShelf { $0.publish(store.documents, loadedID: id, stop: model.playback.stopped, libraryShows: shows) }
+        }
+        // Back from the reader, Classics or Settings: the saves made
+        // meanwhile, once, so the Continue card shows the new place at once.
+        .onChange(of: router.path.isEmpty) { _, shows in
+            guard shows else { return }
+            feedShelf { $0.libraryShown(store.documents, loadedID: loadedID, stop: model.playback.stopped) }
+        }
+        // Copied elsewhere, or here: the paste item and link follow.
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            refreshClipboard()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            refreshClipboard()
         }
         .alert("Rename", isPresented: presented(.rename)) {
             TextField("Title", text: $renameText)
@@ -150,9 +180,16 @@ struct LibraryView: View {
         ) {
             Button("Delete", role: .destructive) {
                 // A delete the library can't record keeps the book, and says
-                // why: the dialog's own close leaves this alert up.
-                if let target = deleteTarget, let failure = model.deleteDocument(target) {
-                    showFailure(failure)
+                // why: the dialog's own close leaves this alert up. One that
+                // succeeds hands VoiceOver to a neighbour, read off the shelf
+                // before the book leaves it.
+                if let target = deleteTarget {
+                    let next = ShelfLayout.focusAfterRemoving(target.id, in: shelf)
+                    if let failure = model.deleteDocument(target) {
+                        showFailure(failure)
+                    } else {
+                        moveVoiceOverFocus(to: next)
+                    }
                 }
                 deleteTarget = nil
             }
@@ -168,6 +205,13 @@ struct LibraryView: View {
         } message: { failure in
             Text(failure.nextStep)
         }
+    }
+
+    /// `change` on a copy of the feed, written back only when it changed:
+    /// a publish under the reader writes no state at all after the first.
+    private func feedShelf(_ change: (inout ShelfFeed) -> Bool) {
+        var next = feed
+        if change(&next) { feed = next }
     }
 
     /// One root modal's flag, read from and written to the router.
@@ -188,9 +232,10 @@ struct LibraryView: View {
         Button {
             router.showSettings()
         } label: {
+            // The same ink and weight as +, so the pair reads as one control.
             Image(systemName: "gearshape")
-                .font(Theme.font(.body).weight(.medium))
-                .foregroundStyle(Theme.textMuted)
+                .font(Theme.font(.body).weight(.semibold))
+                .foregroundStyle(Theme.text)
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
@@ -211,6 +256,14 @@ struct LibraryView: View {
                     Label(item.title, systemImage: item.systemImage)
                 }
             }
+            // The clipboard's text as a book, last. Off while there is no
+            // text to paste; the system asks before the text is read.
+            Button {
+                pasteText()
+            } label: {
+                Label(PasteTextAction.menuTitle, systemImage: PasteTextAction.systemImage)
+            }
+            .disabled(!clipboardHasText)
         } label: {
             Image(systemName: "plus")
                 .font(Theme.font(.body).weight(.semibold))
@@ -232,46 +285,73 @@ struct LibraryView: View {
         }
     }
 
+    /// The clipboard's text, added as a book that opens playing (R4); text
+    /// that is only whitespace fails as an empty text file does. Nothing,
+    /// when the paste was declined or the text has gone.
+    private func pasteText() {
+        guard let text = UIPasteboard.general.string else {
+            refreshClipboard()
+            return
+        }
+        importer.importText(text)
+    }
+
+    private func refreshClipboard() {
+        let hasText = UIPasteboard.general.hasStrings
+        if hasText != clipboardHasText { clipboardHasText = hasText }
+    }
+
     // MARK: Grid
 
     private var grid: some View {
         ScrollView {
-            VStack(spacing: Theme.Space.xl) {
+            VStack(spacing: PhoneShelfMetrics.heroToGrid) {
                 if let hero = shelf.hero {
                     // Every estimate runs at the one app-wide speed (R7).
                     ContinueHero(document: hero,
                                  rate: model.globalRate,
                                  playback: model.playback,
                                  continuePlayback: continuePlayback,
+                                 focus: $voFocus,
                                  onOpen: { open(hero) },
                                  onTogglePlayback: { toggleFromTap(hero) }) {
                         documentActions(for: hero)
+                    } menu: {
+                        contextMenuActions(for: hero)
                     }
                 }
                 documentGrid
             }
-            .padding(.horizontal, Theme.Space.screenGutter)
-            .padding(.top, Theme.Space.sm)
+            .padding(.horizontal, PhoneShelfMetrics.gutter)
+            .padding(.top, PhoneShelfMetrics.topPadding)
             .padding(.bottom, Theme.Space.xl)
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            shelfWidth = width
         }
         .modifier(ShelfScrollEdge())
     }
 
     private var documentGrid: some View {
-        LazyVGrid(columns: columns, spacing: Theme.Space.lg) {
+        LazyVGrid(columns: columns, spacing: PhoneShelfMetrics.rowSpacing) {
             ForEach(shelf.grid) { document in
                 Button {
                     open(document)
                 } label: {
                     DocumentCardView(document: document, rate: model.globalRate)
                 }
-                .buttonStyle(.plain)
+                // A paper plate under the finger, never a dimmed cover.
+                .buttonStyle(ShelfPlateButtonStyle())
                 // A Finished book opens paused at its end, so it promises nothing.
                 .accessibilityHint(document.isFinished ? "" : "Opens and starts reading aloud")
                 .accessibilityInputLabels(DocumentCardView.inputLabels(for: document))
                 .accessibilityIdentifier("library.card")
                 .accessibilityActions { documentActions(for: document) }
-                .contextMenu { documentActions(for: document) }
+                .accessibilityFocused($voFocus, equals: document.id)
+                // The long press lifts a rounded card, not a square cell.
+                .contentShape(.contextMenuPreview,
+                              RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .contextMenu { contextMenuActions(for: document) }
             }
         }
     }
@@ -321,17 +401,34 @@ struct LibraryView: View {
     // MARK: Management
 
     /// Rename, Mark as finished and Delete: ONE implementation, attached as
-    /// the context menu and the VoiceOver actions of every surface that
-    /// stands in for a document (R12g), grid card and hero alike, so no book
-    /// can be shown without a way to manage it.
+    /// the VoiceOver actions of every surface that stands in for a document
+    /// (R12g), grid card and hero alike, so no book can be shown without a
+    /// way to manage it. The context menu is the same list, sectioned.
     @ViewBuilder
     private func documentActions(for document: LibraryDocument) -> some View {
         ForEach(DocumentAction.available(for: document), id: \.self) { action in
-            Button(role: action.role) {
-                perform(action, on: document)
-            } label: {
-                Label(action.title, systemImage: action.systemImage)
+            actionButton(action, on: document)
+        }
+    }
+
+    /// The long-press menu: Delete in a section of its own, in red, apart
+    /// from the actions that keep the book.
+    @ViewBuilder
+    private func contextMenuActions(for document: LibraryDocument) -> some View {
+        ForEach(DocumentAction.menuSections(for: document), id: \.self) { section in
+            Section {
+                ForEach(section, id: \.self) { action in
+                    actionButton(action, on: document)
+                }
             }
+        }
+    }
+
+    private func actionButton(_ action: DocumentAction, on document: LibraryDocument) -> some View {
+        Button(role: action.role) {
+            perform(action, on: document)
+        } label: {
+            Label(action.title, systemImage: action.systemImage)
         }
     }
 
@@ -346,6 +443,7 @@ struct LibraryView: View {
             // as it was, playing if it was. Then the player and any Continue
             // load let go, at once, so no later progress write or Play
             // undoes it.
+            let wasHero = document.id == shelf.hero?.id
             do {
                 try store.markFinished(id: document.id)
             } catch {
@@ -353,6 +451,9 @@ struct LibraryView: View {
                 return
             }
             continuePlayback.letGo(of: document.id, playback: model.playback)
+            // A finished Continue book is redrawn as a grid card: VoiceOver
+            // follows it there.
+            if wasHero { moveVoiceOverFocus(to: document.id) }
             PlaybackController.postAnnouncement("Marked as finished", muted: model.playback.isOutputMuted)
         case .delete:
             deleteTarget = document
@@ -366,20 +467,67 @@ struct LibraryView: View {
         shelfFailure = failure
         router.rootPresentation = .deleteFailed
     }
+
+    /// Once the shelf has redrawn and the dialog or menu has gone (its
+    /// dismissal would otherwise put VoiceOver back where it was).
+    private func moveVoiceOverFocus(to card: UUID?) {
+        guard let card else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.focusHandoffDelay)
+            voFocus = card
+        }
+    }
+
+    /// Long enough for a confirmation dialog to finish leaving.
+    private static let focusHandoffDelay: Duration = .milliseconds(300)
+}
+
+// MARK: - Title
+
+/// The wordmark on the bar's paper. iOS 26 sets every bar item on a shared
+/// glass capsule, which drew the app's name as a button; the leading item
+/// opts out of it there. Earlier systems draw no capsule.
+private struct PaperTitleItem: ToolbarContent {
+    let isHidden: Bool
+    let onMagicTap: () -> Void
+
+    var body: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .navigationBarLeading) { wordmark }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigationBarLeading) { wordmark }
+        }
+    }
+
+    private var wordmark: some View {
+        Text("Aloud")
+            .font(Theme.font(.title))
+            .foregroundStyle(Theme.text)
+            .fixedSize()
+            .accessibilityAddTraits(.isHeader)
+            // The bar caps text scaling; at accessibility sizes a
+            // long press shows the title large instead (J020).
+            .accessibilityShowsLargeContentViewer()
+            .accessibilityAction(.magicTap) { onMagicTap() }
+            .accessibilityHidden(isHidden)
+    }
 }
 
 // MARK: - Continue hero
 
 /// The Continue card wired to playback. The one view on the shelf that
 /// observes the controller, so a sentence change redraws the hero alone.
-private struct ContinueHero<Actions: View>: View {
+private struct ContinueHero<Actions: View, MenuItems: View>: View {
     let document: LibraryDocument
     let rate: Double
     @ObservedObject var playback: PlaybackController
     @ObservedObject var continuePlayback: ContinuePlayback
+    let focus: AccessibilityFocusState<UUID?>.Binding
     let onOpen: () -> Void
     let onTogglePlayback: () -> Void
     private let actions: Actions
+    private let menu: MenuItems
 
     @EnvironmentObject private var naturalVoiceOffer: NaturalVoiceOffer
     // Observed for the offer's line: the offer stays visible through a
@@ -388,15 +536,18 @@ private struct ContinueHero<Actions: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(document: LibraryDocument, rate: Double, playback: PlaybackController,
-         continuePlayback: ContinuePlayback, onOpen: @escaping () -> Void,
-         onTogglePlayback: @escaping () -> Void, @ViewBuilder actions: () -> Actions) {
+         continuePlayback: ContinuePlayback, focus: AccessibilityFocusState<UUID?>.Binding,
+         onOpen: @escaping () -> Void, onTogglePlayback: @escaping () -> Void,
+         @ViewBuilder actions: () -> Actions, @ViewBuilder menu: () -> MenuItems) {
         self.document = document
         self.rate = rate
         self.playback = playback
         self.continuePlayback = continuePlayback
+        self.focus = focus
         self.onOpen = onOpen
         self.onTogglePlayback = onTogglePlayback
         self.actions = actions()
+        self.menu = menu()
     }
 
     var body: some View {
@@ -420,7 +571,10 @@ private struct ContinueHero<Actions: View>: View {
                               onOpen: onOpen,
                               onTogglePlayback: onTogglePlayback) {
             actions
+        } menu: {
+            menu
         }
+        .voiceOverFocus(focus)
     }
 }
 
@@ -432,17 +586,42 @@ private struct ContinueHero<Actions: View>: View {
 /// hard scroll pocket claims the shared bar's glass, and once this screen is
 /// pushed under another its offscreen pocket reads the backdrop as white and
 /// turns every glass button light, even in dark mode. Earlier systems keep
-/// their plain bar.
+/// their plain bar, which draws its own separator once content scrolls
+/// under it.
+///
+/// The opaque bar draws no edge of its own, so covers slid under a bar of
+/// their own colour: a hairline fades in once anything has scrolled under
+/// it (`ShelfEdgeRule`), and none shows at rest, as on the Mac.
 struct ShelfScrollEdge: ViewModifier {
     var ground: Color = Theme.bg
+
+    @State private var scrolledUnder = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
                 .toolbarBackground(ground, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    ShelfEdgeRule.shows(contentOffsetY: geometry.contentOffset.y,
+                                        topInset: geometry.contentInsets.top)
+                } action: { _, scrolled in
+                    scrolledUnder = scrolled
+                }
+                .overlay(alignment: .top) { rule }
         } else {
             content
         }
+    }
+
+    private var rule: some View {
+        Rectangle()
+            .fill(Theme.Stroke.hairlineColor)
+            .frame(height: Theme.Stroke.hairlineWidth)
+            .opacity(scrolledUnder ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.press), value: scrolledUnder)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

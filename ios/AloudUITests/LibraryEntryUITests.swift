@@ -60,7 +60,10 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertEqual(privacy.count, 1, "The privacy line shows exactly once")
     }
 
-    func testAddMenuHasExactlyTwoItems() {
+    /// R10 with P017: Classics, From Files… and then Paste Text, which
+    /// follows the clipboard (off while it holds no text), so only its
+    /// presence is checked here.
+    func testAddMenuHasExactlyThreeItems() {
         let app = XCUIApplication.aloud([seed, reset])
         app.launch()
 
@@ -69,7 +72,8 @@ final class LibraryEntryUITests: XCTestCase {
         add.tap()
         XCTAssertTrue(app.buttons["Classics"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["From Files\u{2026}"].firstMatch.exists)
-        for retired in ["Scan pages", "Paste text", "Soon"] {
+        XCTAssertTrue(app.buttons["Paste Text"].firstMatch.exists, "the clipboard's text, last")
+        for retired in ["Scan pages", "Soon"] {
             XCTAssertFalse(app.buttons[retired].exists, "'\(retired)' is gone")
             XCTAssertFalse(app.staticTexts[retired].exists, "'\(retired)' is gone")
         }
@@ -168,6 +172,36 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertTrue(featured.isHittable)
         XCTAssertEqual(libraryCount(app), 0, "A cancelled import adds nothing")
         XCTAssertFalse(readerText(app).exists, "A cancelled import never opens")
+    }
+
+    /// P015: a small text file is added before the overlay's 0.8 s delay,
+    /// so no scrim flashes and + never leaves the bar; the book still
+    /// opens, as a pick does (R4).
+    func testAQuickAddNeverShowsTheOverlay() {
+        let app = XCUIApplication.aloud([reset, seed, systemVoice, "-uitest-pick-fixture", "text"])
+        app.launch()
+
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline, !readerText(app).exists {
+            XCTAssertFalse(overlay(app).exists, "a quick add shows no overlay")
+            usleep(100_000)
+        }
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 15), "the picked file opens")
+        XCTAssertFalse(overlay(app).exists)
+    }
+
+    /// P015: a slow add shows the overlay once the delay has passed, and
+    /// Cancel still works.
+    func testASlowAddShowsTheOverlayAfterTheDelay() {
+        let app = XCUIApplication.aloud([reset, seed, "-uitest-slow-import", "-uitest-open-fixture", "text"])
+        app.launch()
+
+        XCTAssertTrue(overlay(app).waitForExistence(timeout: 15), "past 0.8 s the overlay shows")
+        let cancel = app.buttons["import.cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        XCTAssertTrue(waitForNonExistence(of: overlay(app), timeout: 5))
+        XCTAssertTrue(app.buttons["library.add"].firstMatch.waitForExistence(timeout: 5), "+ is back")
     }
 
     func testOverlayHidesTheShelfFromAccessibility() {

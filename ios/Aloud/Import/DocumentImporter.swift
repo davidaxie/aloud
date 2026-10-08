@@ -37,8 +37,8 @@ extension LibraryRouter: NavigationTracking {}
 /// slow classic was still being added. So a batch of queued files opens
 /// only the last one.
 ///
-/// Several files handed over at once (`importFiles(at:)`, the Mac's
-/// multi-file pick or drop) are a batch of their own (M8): all are added,
+/// Several files handed over at once (`importFiles(at:)`: a multi-file
+/// pick on either app, or a drop on the Mac) are a batch of their own (M8): all are added,
 /// none opens, and VoiceOver hears one count when the last ends ("Added 3
 /// books") instead of a line per file.
 @MainActor
@@ -129,6 +129,19 @@ final class DocumentImporter: ObservableObject {
         }
     }
 
+    /// The Files picker's answer when it lets several be chosen: one file
+    /// is an ordinary add, opening playing (R4); several are a batch
+    /// (`importFiles(at:)`). Backing out is silent and any other failure
+    /// is `couldNotOpen`, as for a single pick.
+    func handlePicks(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            importFiles(at: urls)
+        case .failure(let error):
+            handlePick(.failure(error))
+        }
+    }
+
     func importFile(at url: URL) {
         start(url, in: nil)
     }
@@ -147,7 +160,7 @@ final class DocumentImporter: ObservableObject {
         for url in urls { start(url, in: batch) }
     }
 
-    /// ⌘V's text in the Mac's Library (M8): a book of its own, titled from
+    /// ⌘V's text in the Mac's Library, or the iPhone's paste item (M8): a book of its own, titled from
     /// its first line with words in it, added as a text file is. The words
     /// are written to a file of their own (`pastedTextFolder`) and handed to
     /// the store like any text file, so the same text pasted twice is the
@@ -486,12 +499,56 @@ final class DocumentImporter: ObservableObject {
     }
 }
 
-/// Progress card shown over the Library while extraction runs: a modal
+// MARK: - Overlay reveal
+
+/// When the import overlay shows, in both apps (M8): an add that extracts
+/// within the delay never shows it, so a small text file or PDF doesn't
+/// flash a scrim, blink the bar's buttons out or pull VoiceOver away. The
+/// add itself never waits on it.
+enum ImportOverlayReveal {
+    /// Quicker adds than this show nothing.
+    static let delay: Duration = .milliseconds(800)
+
+    /// Waits out the delay and says whether the overlay should then show:
+    /// only when the add is still running, and the wait wasn't cancelled
+    /// (the add ended, or another began). False at once when idle. `sleep`
+    /// is the clock, a fake one in tests.
+    @MainActor
+    static func revealsAfterDelay(isBusy: () -> Bool,
+                                  sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+        async -> Bool {
+        guard isBusy() else { return false }
+        do {
+            try await sleep(delay)
+        } catch {
+            return false
+        }
+        return !Task.isCancelled && isBusy()
+    }
+}
+
+private struct ImportOverlayRevealedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// The import overlay is up (revealed, not merely an add under way):
+    /// the screens beneath hide themselves and their bar items from
+    /// VoiceOver only then.
+    var importOverlayRevealed: Bool {
+        get { self[ImportOverlayRevealedKey.self] }
+        set { self[ImportOverlayRevealedKey.self] = newValue }
+    }
+}
+
+/// Progress card shown over the Library while a slow add runs: a modal
 /// scrim in shadow ink under a raised surface card. The scrim swallows
 /// touches and the overlay is modal for VoiceOver, so the shelf beneath
 /// can't be reached until the add ends or is cancelled. Modal alone doesn't
 /// hide the stack's hosted content, so LibraryView hides its shelf and bar
-/// items itself while `isImporting`.
+/// items itself while the overlay is revealed (`importOverlayRevealed`).
+/// It is inserted only on reveal, so VoiceOver's pull to the progress
+/// happens then, never for an add too quick to show.
 struct ImportProgressOverlay: View {
     let fileName: String
     let progress: Double

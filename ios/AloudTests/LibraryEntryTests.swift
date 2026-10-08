@@ -54,7 +54,12 @@ final class LibraryEntryTests: XCTestCase {
 
     // MARK: - Add menu
 
-    func testAddMenuHasExactlyTwoItems() {
-        XCTAssertEqual(LibraryAddMenuItem.allCases.map(\.title), ["Classics", "From Files\u{2026}"])
+    /// R10, with P017: the iPhone's + menu has exactly three items, the two
+    /// both apps share and then the clipboard's text. The Mac's keeps the
+    /// two, and pastes from its Edit menu.
+    func testAddMenuHasExactlyThreeItems() {
+        XCTAssertEqual(LibraryAddMenuItem.allCases.map(\.title) + [PasteTextAction.menuTitle],
+                       ["Classics", "From Files\u{2026}", "Paste Text"])
+        XCTAssertEqual(LibraryAddMenuItem.allCases.map(\.title), ["Classics", "From Files\u{2026}"], "the Mac's")
     }
 }

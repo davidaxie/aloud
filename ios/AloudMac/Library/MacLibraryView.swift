@@ -18,8 +18,8 @@ struct MacLibraryView: View {
     @EnvironmentObject private var importer: DocumentImporter
 
     /// Hero and grid, split once per store or loaded-book publish while
-    /// the Library shows (`MacShelfFeed`).
-    @State private var shelfFeed = MacShelfFeed()
+    /// the Library shows (`ShelfFeed`, shared with the iPhone).
+    @State private var shelfFeed = ShelfFeed()
     /// The book the controller holds: always the hero (R18).
     @State private var loadedID: UUID?
     // Whether Rename or Delete is up lives on the router, so Open With can
@@ -133,8 +133,7 @@ struct MacLibraryView: View {
                     // Focus passes to a neighbour, as Finder's selection
                     // does: lost, the arrows and Space would fall through
                     // to the loaded book's skips and Play/Pause.
-                    let next = Self.focusAfterRemoving(target.id, hero: shelf.hero?.id,
-                                                       grid: shelf.grid.map(\.id))
+                    let next = ShelfLayout.focusAfterRemoving(target.id, in: shelf)
                     let hadFocus = deleteHadFocus
                     if let failure = model.deleteDocument(target) {
                         // The book stays, and so does focus on its card;
@@ -177,7 +176,7 @@ struct MacLibraryView: View {
 
     /// `change` on a copy of the feed, written back only when it changed:
     /// a publish under the reader writes no state at all.
-    private func feedShelf(_ change: (inout MacShelfFeed) -> Bool) {
+    private func feedShelf(_ change: (inout ShelfFeed) -> Bool) {
         var feed = shelfFeed
         if change(&feed) { shelfFeed = feed }
     }
@@ -306,18 +305,6 @@ struct MacLibraryView: View {
         return move == .up ? hero : nil
     }
 
-    /// Where keyboard focus goes when `removed` leaves the shelf: the next
-    /// grid card, else the one before it, else the Continue card; from the
-    /// Continue card, the grid's first. nil: no card is left.
-    static func focusAfterRemoving(_ removed: UUID, hero: UUID?, grid: [UUID]) -> UUID? {
-        if let index = grid.firstIndex(of: removed) {
-            if index + 1 < grid.count { return grid[index + 1] }
-            if index > 0 { return grid[index - 1] }
-            return hero
-        }
-        return removed == hero ? grid.first : nil
-    }
-
     /// Focuses `card` once the shelf has redrawn and any dialog has gone
     /// (its dismissal would otherwise put focus back where it was).
     private func refocus(_ card: UUID?) {
@@ -388,46 +375,6 @@ struct MacLibraryView: View {
     private func showFailure(_ failure: any ShelfFailure) {
         shelfFailure = failure
         router.rootPresentation = .deleteFailed
-    }
-}
-
-// MARK: - Shelf feed
-
-/// The Library's shelf (`ShelfLayout`), rebuilt only while the Library
-/// shows. Under the reader (or Classics) the Library stays in the window's
-/// stack, and the controller saves progress every sentence: a hidden shelf
-/// rebuilt for each save is work nobody sees. A publish while covered marks
-/// the shelf stale; the Library showing again rebuilds it once, from the
-/// store as it is then.
-struct MacShelfFeed {
-    private(set) var layout = ShelfLayout.empty
-    /// A publish arrived while the Library was covered.
-    private(set) var isStale = false
-    /// Layouts built (tests).
-    private(set) var builds = 0
-
-    /// A publish of the store or of the loaded book. False when the feed is
-    /// unchanged (covered and already stale), so the view writes no state.
-    /// `stop` is the controller's unattended stop, which keeps a book
-    /// stopped in its last minute on offer (`DocumentStore.isAtItsEnd`).
-    mutating func publish(_ documents: [LibraryDocument], loadedID: UUID?, stop: PlaybackStop? = nil,
-                          libraryShows: Bool) -> Bool {
-        guard libraryShows else {
-            guard !isStale else { return false }
-            isStale = true
-            return true
-        }
-        layout = ShelfLayout(for: documents, loadedID: loadedID, stop: stop)
-        isStale = false
-        builds += 1
-        return true
-    }
-
-    /// The Library shows again: a stale shelf is rebuilt, once; a current
-    /// one is left alone.
-    mutating func libraryShown(_ documents: [LibraryDocument], loadedID: UUID?, stop: PlaybackStop? = nil) -> Bool {
-        guard isStale else { return false }
-        return publish(documents, loadedID: loadedID, stop: stop, libraryShows: true)
     }
 }
 

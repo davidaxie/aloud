@@ -18,8 +18,9 @@ struct MacImportOverlay: View {
     /// The window's intake: its copies come before the importer has them.
     @ObservedObject private var intake = MacFileIntake.shared
 
-    /// Quicker extraction than this shows nothing.
-    static let revealDelay: Duration = .milliseconds(800)
+    /// Quicker extraction than this shows nothing: the iPhone's delay too
+    /// (`ImportOverlayReveal`).
+    static let revealDelay: Duration = ImportOverlayReveal.delay
 
     var body: some View {
         ZStack {

@@ -8,6 +8,9 @@ struct RootView: View {
     @EnvironmentObject private var importer: DocumentImporter
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The import overlay has waited out its delay (`ImportOverlayReveal`):
+    /// a quicker add shows nothing and leaves the shelf as it was.
+    @State private var isOverlayRevealed = false
 
     var body: some View {
         NavigationStack(path: $router.path) {
@@ -20,10 +23,16 @@ struct RootView: View {
                     }
                 }
         }
+        // The screens beneath hide themselves and their bar items while the
+        // overlay is up, and only then.
+        .environment(\.importOverlayRevealed, overlayShows)
         // R10: VoiceOver cannot reach anything under the overlay.
-        .accessibilityHidden(importer.isImporting)
+        .accessibilityHidden(overlayShows)
         // Above the WHOLE stack, so the scrim covers the nav bar too.
         .overlay { importLayer }
+        // Keyed on the add as a whole: a queued file starts in the same turn
+        // the last one ends, so a run of adds keeps the overlay up.
+        .task(id: importer.isImporting) { await revealOnceSlow() }
         // The tint colors text — back buttons, bar buttons, alert and dialog
         // actions — so it is accentStrong. Controls that want the plain
         // accent (toggles, sliders, spinners) set their own tint.
@@ -33,7 +42,8 @@ struct RootView: View {
         .onOpenURL { model.handleOpenURL($0) }
         // Fixed copy only: one sentence and its next step, never the error's
         // own text (R10).
-        .alert(importer.failure?.title ?? "", isPresented: failureShown,
+        // A file that failed among several picked at once is named.
+        .alert(importer.failureTitle ?? "", isPresented: failureShown,
                presenting: importer.failure) { _ in
             Button("OK", role: .cancel) {}
         } message: { failure in
@@ -71,15 +81,27 @@ struct RootView: View {
         failure != nil && rootPresentation == nil
     }
 
+    /// The overlay is up: revealed, and the add still under way.
+    private var overlayShows: Bool { isOverlayRevealed && importer.isImporting }
+
     /// The overlay fades; under Reduce Motion it simply appears.
     private var importLayer: some View {
         ZStack {
-            if case .importing(let name, let progress) = importer.phase {
+            if isOverlayRevealed, case .importing(let name, let progress) = importer.phase {
                 ImportProgressOverlay(fileName: name, progress: progress, onCancel: importer.cancel)
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.crossfade),
-                   value: importer.isImporting)
+                   value: overlayShows)
+    }
+
+    /// A display delay only: the add itself never waits on it. Hidden at
+    /// once when the add ends.
+    private func revealOnceSlow() async {
+        let importer = importer
+        let reveals = await ImportOverlayReveal.revealsAfterDelay(isBusy: { importer.isImporting })
+        guard !Task.isCancelled else { return }
+        isOverlayRevealed = reveals
     }
 }
 

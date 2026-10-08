@@ -42,6 +42,18 @@ extension View {
     func returnKeyActsOnMac(_ action: @escaping () -> Void) -> some View {
         self
     }
+
+    /// A shelf card's press: the paper plate under a finger
+    /// (`ShelfPlateButtonStyle`), its corners `radius`.
+    func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md) -> some View {
+        buttonStyle(ShelfPlateButtonStyle(radius: radius))
+    }
+
+    /// A long press lifts the card as a rounded paper card, not the square
+    /// cell its hit area is.
+    func contextMenuPreviewCorners(_ radius: CGFloat) -> some View {
+        contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: radius, style: .continuous))
+    }
 }
 #elseif os(macOS)
 extension View {
@@ -86,6 +98,17 @@ extension View {
             action()
             return .handled
         }
+    }
+
+    /// A plain button: the Mac card draws its own hover and press plate
+    /// around it (`MacHoverPlate`).
+    func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md) -> some View {
+        buttonStyle(.plain)
+    }
+
+    /// A Mac context menu lifts no preview.
+    func contextMenuPreviewCorners(_ radius: CGFloat) -> some View {
+        self
     }
 }
 #endif

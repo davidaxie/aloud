@@ -110,7 +110,19 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
         self.menu = menu()
     }
 
+    /// Where the shelf moves VoiceOver to after a Delete or a Mark as
+    /// finished (`voiceOverFocus(_:)`); nil on the Mac, whose keyboard
+    /// focus is its own.
+    private var focus: AccessibilityFocusState<UUID?>.Binding?
+
     private var isSpeaking: Bool { ContinueListeningCopy.isSpeaking(playState) }
+
+    /// The card's body takes VoiceOver focus when `binding` names this book.
+    func voiceOverFocus(_ binding: AccessibilityFocusState<UUID?>.Binding) -> Self {
+        var card = self
+        card.focus = binding
+        return card
+    }
 
     var body: some View {
         Button(action: onOpen) {
@@ -126,7 +138,9 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
                     .anchorPreference(key: CircleSlotKey.self, value: .bounds) { $0 }
             }
         }
-        .buttonStyle(.plain)
+        // The iPhone's paper plate under a finger, round the card's corners;
+        // the Mac's own hover plate.
+        .shelfCardPressStyle(radius: Theme.Radius.lg)
         // On the body alone: modifiers after the overlay would reach the circle too.
         .accessibilityLabel(ContinueListeningCopy.label(title: document.title, author: document.author))
         .accessibilityValue(ContinueListeningCopy.value(
@@ -139,6 +153,7 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
         .accessibilityInputLabels(ContinueListeningCopy.inputLabels(title: document.title))
         .accessibilityActions { actions }
         .accessibilityIdentifier("library.continue")
+        .modifier(BodyFocus(focus: focus, id: document.id))
         .overlayPreferenceValue(CircleSlotKey.self) { slot in
             GeometryReader { proxy in
                 if let slot {
@@ -148,7 +163,9 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
             }
         }
         // The hero is lifted out of the grid, so it carries the management
-        // affordances its grid card would have given it.
+        // affordances its grid card would have given it. A long press lifts
+        // the card by its own rounded corners.
+        .contextMenuPreviewCorners(Theme.Radius.lg)
         .contextMenu { menu }
     }
 
@@ -183,6 +200,21 @@ extension ContinueListeningCard where MenuItems == Actions {
                   offersNaturalVoice: offersNaturalVoice, modelState: modelState,
                   spaceNeeded: spaceNeeded, opensPlaying: opensPlaying, onOpen: onOpen,
                   onTogglePlayback: onTogglePlayback, actions: actions, menu: actions)
+    }
+}
+
+/// VoiceOver focus on the card's body alone, never its circle, when the
+/// shelf hands it one.
+private struct BodyFocus: ViewModifier {
+    let focus: AccessibilityFocusState<UUID?>.Binding?
+    let id: UUID
+
+    func body(content: Content) -> some View {
+        if let focus {
+            content.accessibilityFocused(focus, equals: id)
+        } else {
+            content
+        }
     }
 }
 

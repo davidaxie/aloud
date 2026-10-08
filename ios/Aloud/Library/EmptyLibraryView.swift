@@ -97,12 +97,15 @@ struct FeaturedClassicCard: View {
     }
 }
 
-/// The Library with no books: the featured classic, two text links and the
+/// The Library with no books: the featured classic, its text links and the
 /// privacy line, centered while it fits and scrolling once it doesn't
 /// (AX5). No heading and no other copy; the play circle is the screen's
 /// only accent-filled element.
 struct EmptyLibraryView: View {
     let onAddFile: () -> Void
+    /// Adds the clipboard's text as a book; its link shows only when set
+    /// (the iPhone, while there is text to paste).
+    var onPasteText: (() -> Void)? = nil
 
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var router: LibraryRouter
@@ -145,7 +148,8 @@ struct EmptyLibraryView: View {
         } label: {
             FeaturedClassicCard(book: book, rate: model.globalRate)
         }
-        .buttonStyle(.plain)
+        // A paper plate under the finger, round the card's corners.
+        .buttonStyle(ShelfPlateButtonStyle(radius: Theme.Radius.lg))
         .disabled(importer.addingClassicID != nil)
         .accessibilityLabel(FeaturedClassic.accessibilityLabel(for: book, rate: model.globalRate))
         .accessibilityHint("Opens and starts reading aloud")
@@ -166,6 +170,9 @@ struct EmptyLibraryView: View {
             link("More classics", identifier: "library.moreClassics") { router.showBookshelf() }
         }
         link("Add a file", identifier: "library.addFile", action: onAddFile)
+        if let onPasteText {
+            link(PasteTextAction.linkTitle, identifier: "library.pasteText", action: onPasteText)
+        }
     }
 
     /// Accent text is accentStrong; the label is padded out to a 44pt target.

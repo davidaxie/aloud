@@ -112,25 +112,4 @@ final class MacGridMetricsTests: XCTestCase {
         XCTAssertNil(target(grid[4], .right), "a row's end stays put")
         XCTAssertNil(target(nil, .down), "nothing focused")
     }
-
-    /// Delete Book… on the focused card hands focus to a neighbour, as
-    /// Finder's selection moves (H013): lost, ←/→ and Space would skip or
-    /// pause the loaded book instead of moving between cards. The next
-    /// card, else the one before, else the Continue card; from the
-    /// Continue card, the grid's first.
-    func testARemovedCardHandsFocusToANeighbour() {
-        let hero = UUID()
-        let grid = (0..<4).map { _ in UUID() }
-        func next(_ removed: UUID, hero: UUID? = hero, grid: [UUID] = grid) -> UUID? {
-            MacLibraryView.focusAfterRemoving(removed, hero: hero, grid: grid)
-        }
-        XCTAssertEqual(next(grid[1]), grid[2], "the next card")
-        XCTAssertEqual(next(grid[0]), grid[1])
-        XCTAssertEqual(next(grid[3]), grid[2], "the last card: the one before")
-        XCTAssertEqual(next(grid[0], grid: [grid[0]]), hero, "the only card: the Continue card")
-        XCTAssertNil(next(grid[0], hero: nil, grid: [grid[0]]), "nothing left")
-        XCTAssertEqual(next(hero), grid[0], "the Continue card: the grid's first")
-        XCTAssertNil(next(hero, grid: []), "the Continue card alone")
-        XCTAssertNil(next(UUID()), "a card not on the shelf")
-    }
 }
