@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -180,6 +181,53 @@ def choose_port() -> int:
     return port
 
 
+# What the user is told when the window cannot start, since stderr goes nowhere
+# when Aloud.app is opened from Finder or the Dock.
+_ALERT_TITLE = "Aloud could not start"
+_MODELS_MISSING = (
+    "The Kokoro speech model is missing. In Terminal, go to the backend folder "
+    "and run .venv/bin/python download_models.py, then open Aloud again."
+)
+_BACKEND_FAILED = "The speech server could not load: {error}"
+_PORT_TAKEN = (
+    "Port {port} is in use by another program. Quit that program, or set "
+    "ALOUD_PORT to a free port, then open Aloud again."
+)
+_NOT_HEALTHY = "The speech server did not start within {seconds:.0f} seconds."
+
+
+def _launched_without_a_terminal() -> bool:
+    """True on a Mac when nothing will show stderr: a Finder or Dock launch."""
+    return (
+        sys.platform == "darwin"
+        and os.environ.get("ALOUD_HEADLESS") != "1"
+        and sys.stderr is not None
+        and not sys.stderr.isatty()
+    )
+
+
+def _tell_user(message: str) -> None:
+    """Log ``message`` and, when nobody can read the log, show it in an alert.
+
+    A Finder or Dock launch has no terminal, so a failure that only logs looks
+    like the app quitting for no reason. From a terminal, or headless, the log
+    line is enough.
+    """
+    logger.error("%s", message)
+    if not _launched_without_a_terminal():
+        return
+    # The message goes in as an argument, never into the script's source.
+    script = (
+        "on run argv\n"
+        f'  display alert "{_ALERT_TITLE}" message (item 1 of argv) as critical\n'
+        "end run"
+    )
+    try:
+        subprocess.run(["osascript", "-e", script, message], check=False)
+    except OSError:
+        logger.exception("Could not show the startup alert")
+
+
 def _start_own_server(port: int) -> tuple[uvicorn.Server, threading.Thread] | None:
     """Start the Aloud backend on ``port`` in a daemon thread; None if it cannot load.
 
@@ -188,8 +236,12 @@ def _start_own_server(port: int) -> tuple[uvicorn.Server, threading.Thread] | No
     """
     try:
         from app import app as asgi_app
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to import the Aloud backend app")
+        if isinstance(exc, FileNotFoundError) and "Kokoro" in str(exc):
+            _tell_user(_MODELS_MISSING)
+        else:
+            _tell_user(_BACKEND_FAILED.format(error=exc))
         return None
     config = uvicorn.Config(asgi_app, host=HOST, port=port, log_level="info")
     server = uvicorn.Server(config)
@@ -312,17 +364,10 @@ def main() -> int:
     logger.info("Waiting for backend health at %s/health ...", base_url)
     if not _wait_for_health(base_url, HEALTH_TIMEOUT_SECS, server_thread):
         if server_thread is not None and not server_thread.is_alive():
-            logger.error(
-                "The backend stopped before it was ready, most likely because port %d "
-                "is in use by another program (see the error above). Stop that "
-                "program, or set ALOUD_PORT to a free port.",
-                port,
-            )
+            logger.error("The backend stopped before it was ready (see the error above).")
+            _tell_user(_PORT_TAKEN.format(port=port))
             return 1
-        logger.error(
-            "Backend did not become healthy within %.0fs — giving up.",
-            HEALTH_TIMEOUT_SECS,
-        )
+        _tell_user(_NOT_HEALTHY.format(seconds=HEALTH_TIMEOUT_SECS))
         stop_server()
         return 1
 

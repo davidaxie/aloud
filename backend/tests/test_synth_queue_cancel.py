@@ -59,6 +59,21 @@ class CancelTests(unittest.TestCase):
         self.release.set()
         self.queue.result(self.in_flight)  # finishes normally; nobody reads it
 
+    def test_in_flight_job_is_told_its_client_left(self) -> None:
+        # L034: the engine asks this between model calls, so a long job nobody
+        # waits for stops early instead of holding the worker to the end.
+        self.assertFalse(self.queue.in_flight_cancelled())
+        self.queue.cancel(self.in_flight)
+        self.assertTrue(self.queue.in_flight_cancelled())
+        self.release.set()
+        self.queue.result(self.in_flight)
+        self.assertFalse(self.queue.in_flight_cancelled())
+
+    def test_a_live_in_flight_job_is_not_cancelled(self) -> None:
+        waiting = self.queue.enqueue("next", "af_heart", 1.0)
+        self.queue.cancel(waiting)
+        self.assertFalse(self.queue.in_flight_cancelled())
+
     def test_submit_still_blocks_and_returns_the_result(self) -> None:
         self.release.set()
         samples, rate = self.queue.submit("plain", "af_heart", 1.0)

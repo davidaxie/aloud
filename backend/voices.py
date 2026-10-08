@@ -96,6 +96,20 @@ _ESPEAK_LANG: dict[str, str] = {
 }
 
 
+# Languages this server cannot phonemize. espeak-ng's Japanese has no kanji
+# readings: it spells every kanji as the English words "Chinese letter", and
+# writes the /a/ vowel as a symbol Kokoro's vocabulary drops, so a Japanese
+# voice turned ordinary Japanese into gibberish. Kokoro's Japanese voices need a
+# Japanese G2P (misaki[ja] / pyopenjtalk), which the engine does not have, so
+# they are left out of /voices and treated as not installed until it does.
+_UNSPEAKABLE_LANGS: frozenset[str] = frozenset({"ja"})
+
+
+def voice_is_speakable(voice_id: str) -> bool:
+    """False for a voice whose language this server cannot phonemize."""
+    return parse_voice(voice_id)["lang"] not in _UNSPEAKABLE_LANGS
+
+
 def lang_for_voice(voice_id: str) -> str:
     """Return the espeak language tag that Kokoro's ``create()`` should use."""
     lang_char = voice_id[0] if voice_id else ""

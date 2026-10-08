@@ -127,6 +127,8 @@ class SynthQueue:
         self._prefetch: deque[_Job] = deque()
         self._warm = False
         self._stopping = False
+        # The job the worker is running, so a long one can be told its client left.
+        self._in_flight: _Job | None = None
 
         self._thread = threading.Thread(target=self._run, name="synth-worker", daemon=True)
 
@@ -213,9 +215,10 @@ class SynthQueue:
         """Give up on ``job`` because nobody is waiting for it any more.
 
         A job still waiting is taken out of its lane, so the worker never spends
-        a second on it, and returns True. A job already in flight cannot be
-        interrupted; it finishes, its result is thrown away, and this returns
-        False.
+        a second on it, and returns True. A job already in flight is only
+        flagged, and this returns False: ``synth_fn`` sees the flag through
+        :meth:`in_flight_cancelled` and the engine stops at its next model call,
+        so a long job gives the worker back early. Its result is thrown away.
         """
         with self._cv:
             job.cancelled = True
@@ -232,6 +235,15 @@ class SynthQueue:
             job.done.set()
             logger.debug("dropped abandoned %s job voice=%s", job.priority, job.voice)
         return removed
+
+    def in_flight_cancelled(self) -> bool:
+        """True when the job the worker is running has been given up on.
+
+        Meant for ``synth_fn`` to ask between model calls; outside the worker,
+        or with nothing in flight, it is False.
+        """
+        job = self._in_flight
+        return job is not None and job.cancelled
 
     # -- worker -----------------------------------------------------------
 
@@ -279,11 +291,13 @@ class SynthQueue:
 
     def _execute(self, job: _Job) -> None:
         started = time.perf_counter()
+        self._in_flight = job
         try:
             job.result = self._synth_fn(job.text, job.voice, job.speed)
         except Exception as exc:  # noqa: BLE001 — reported to the submitter
             job.error = exc
         finally:
+            self._in_flight = None
             job.done.set()
 
         logger.debug(

@@ -25,13 +25,15 @@ import logging
 import os
 import threading
 import time
+from typing import Callable
 
 import numpy as np
 from kokoro_onnx import Kokoro
 
-from phoneme_batches import split_for_model
+from phoneme_batches import check_length, respell_for_model, split_for_model
+from synth_queue import JobCancelledError
 from text_normalize import normalize_for_tts
-from voices import VoiceMeta, build_voice_metadata, lang_for_voice
+from voices import VoiceMeta, build_voice_metadata, lang_for_voice, voice_is_speakable
 
 logger = logging.getLogger("aloud.kokoro")
 
@@ -63,8 +65,12 @@ class KokoroEngine:
 
         t0 = time.time()
         self._kokoro = Kokoro(model_path, voices_path)
-        # Snapshot the installed voice ids and precompute their metadata.
-        self._voice_ids: list[str] = sorted(self._kokoro.get_voices())
+        # Snapshot the installed voice ids and precompute their metadata. A
+        # voice whose language this engine cannot phonemize is left out, so it
+        # is neither listed nor used (see voices.voice_is_speakable).
+        self._voice_ids: list[str] = sorted(
+            v for v in self._kokoro.get_voices() if voice_is_speakable(v)
+        )
         self._voices: list[VoiceMeta] = build_voice_metadata(self._voice_ids)
         load_secs = time.time() - t0
         logger.info(
@@ -100,7 +106,11 @@ class KokoroEngine:
     # -- synthesis --------------------------------------------------------
 
     def synthesize(
-        self, text: str, voice: str, speed: float
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        should_stop: Callable[[], bool] | None = None,
     ) -> tuple[np.ndarray, int]:
         """Synthesize ``text`` with ``voice`` at ``speed``.
 
@@ -111,6 +121,11 @@ class KokoroEngine:
         - A punctuation-free stretch too long for the model (a row of numbers,
           say) is split at spaces and spoken in full rather than failing.
         - Concurrent callers are serialized; only one inference runs at a time.
+        - Text that phonemizes to more than ``phoneme_batches.MAX_PHONEMES``
+          raises ``TooLongError`` (a ValueError) before any inference.
+        - ``should_stop`` is asked between model calls; once it answers True
+          the rest is skipped and ``JobCancelledError`` is raised, so a long
+          job nobody is waiting for gives the worker back early.
 
         Returns ``(samples, sample_rate)`` where samples is a float32 waveform.
         Raises ``ValueError`` on empty text; propagates other errors to the
@@ -123,6 +138,8 @@ class KokoroEngine:
         # smart quotes, dashes, line-wrap hyphenation, control chars) that make
         # the espeak-ng phonemizer mis-phonemize and garble the speech.
         text = normalize_for_tts(text)
+        if not text.strip():
+            raise ValueError("text must be a non-empty string")
 
         clamped_speed = float(max(_MIN_SPEED, min(_MAX_SPEED, speed)))
 
@@ -136,13 +153,17 @@ class KokoroEngine:
             # Phonemize here rather than inside create() so a punctuation-free
             # run too long for the model can be split first (see
             # phoneme_batches); create() would otherwise crash on it.
-            phonemes = self._kokoro.tokenizer.phonemize(text, lang)
-            parts = [
-                self._kokoro.create(
-                    piece, voice=voice, speed=clamped_speed, lang=lang, is_phonemes=True
+            phonemes = respell_for_model(self._kokoro.tokenizer.phonemize(text, lang), lang)
+            check_length(phonemes)
+            parts = []
+            for piece in split_for_model(phonemes):
+                if parts and should_stop is not None and should_stop():
+                    raise JobCancelledError("the client stopped waiting for this sentence")
+                parts.append(
+                    self._kokoro.create(
+                        piece, voice=voice, speed=clamped_speed, lang=lang, is_phonemes=True
+                    )
                 )
-                for piece in split_for_model(phonemes)
-            ]
         sample_rate = parts[0][1]
         if len(parts) == 1:
             return parts[0][0], sample_rate

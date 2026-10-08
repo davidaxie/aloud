@@ -58,6 +58,7 @@ from pydantic import BaseModel
 
 # Importing the engine triggers the one-time model load and logs load time.
 from kokoro_engine import engine
+from phoneme_batches import TooLongError
 from synth_queue import (
     PRIORITY_NOW,
     PRIORITY_PREFETCH,
@@ -84,8 +85,13 @@ def _queue_max() -> int:
 # Started at import time, not on the ASGI startup event, so the ~4.1s warm-up
 # overlaps with the rest of uvicorn's boot instead of following it. Requests that
 # arrive meanwhile queue behind the warm-up job and /health reports "warming".
+def _synthesize(text: str, voice: str, speed: float) -> Any:
+    """The worker's call. A job whose client has gone stops at its next model call."""
+    return engine.synthesize(text, voice, speed, should_stop=synth_queue.in_flight_cancelled)
+
+
 synth_queue = SynthQueue(
-    engine.synthesize,
+    _synthesize,
     max_prefetch=_queue_max(),
     warmup_voice=engine.default_voice,
 )
@@ -321,8 +327,9 @@ async def synthesize(req: SynthesizeRequest, request: Request) -> Response:
     - 200 with ``Content-Type: audio/wav`` and raw WAV bytes on success.
     - 400 on empty/invalid text or an over-long voice id — **not** retryable,
       the client skips it.
-    - 413 when the text is over ``MAX_TEXT_CHARS`` or the body is over
-      ``MAX_BODY_BYTES`` — **not** retryable.
+    - 413 when the text is over ``MAX_TEXT_CHARS``, the body is over
+      ``MAX_BODY_BYTES``, or the text phonemizes to more than
+      ``phoneme_batches.MAX_PHONEMES`` — **not** retryable.
     - 415 when the body is not sent as JSON — **not** retryable. Both clients
       send ``Content-Type: application/json``; a cross-site page can only skip
       the CORS preflight by leaving it out.
@@ -382,6 +389,10 @@ async def synthesize(req: SynthesizeRequest, request: Request) -> Response:
 
     try:
         samples, sample_rate = synth_queue.result(job)
+    except TooLongError as exc:
+        # Within MAX_TEXT_CHARS, but it expands into far more speech than any
+        # reader's chunk (a character NFKC spells out as a whole phrase).
+        return _error(413, str(exc), retryable=False, req=req)
     except ValueError as exc:
         # Defensive: engine also guards against empty text.
         return _error(400, str(exc), retryable=False, req=req)

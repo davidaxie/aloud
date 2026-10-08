@@ -36,7 +36,7 @@ class FakeEngine:
     def list_voices(self) -> list:
         return []
 
-    def synthesize(self, text: str, voice: str, speed: float):
+    def synthesize(self, text: str, voice: str, speed: float, should_stop=None):
         return np.zeros(240, dtype=np.float32), 24000
 
 

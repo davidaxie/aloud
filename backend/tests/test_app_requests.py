@@ -115,6 +115,37 @@ class InputLimitTests(unittest.TestCase):
         self.assertEqual(self.synth.calls, ["Hello there."])
 
 
+class PhonemeBoundTests(unittest.TestCase):
+    """L034: text inside MAX_TEXT_CHARS that expands into hours of speech."""
+
+    def setUp(self) -> None:
+        self.app_module = load_app()
+
+    def serve_with(self, synth_fn):
+        queue = make_queue(synth_fn)
+        self.addCleanup(queue.stop)
+        with mock.patch.object(self.app_module, "synth_queue", queue):
+            return call(self.app_module.app, "POST", "/synthesize", body=synth_body("ﷺ" * 2000))
+
+    def test_too_long_after_phonemizing_is_413_and_not_retryable(self) -> None:
+        from phoneme_batches import TooLongError
+
+        def synth(text: str, voice: str, speed: float):
+            if text == WARMUP_TEXT:
+                return silent_synth(text, voice, speed)
+            raise TooLongError("text is too long to speak in one request")
+
+        reply = self.serve_with(synth)
+        self.assertEqual(reply.status, 413)
+        self.assertIs(reply.json()["retryable"], False)
+
+    def test_the_worker_lets_the_engine_stop_an_abandoned_job(self) -> None:
+        with mock.patch.object(self.app_module, "engine") as engine:
+            self.app_module._synthesize("Hello.", "af_heart", 1.0)
+        should_stop = engine.synthesize.call_args.kwargs["should_stop"]
+        self.assertEqual(should_stop, self.app_module.synth_queue.in_flight_cancelled)
+
+
 class LocalOnlyTests(unittest.TestCase):
     """F054: only this machine's pages and Host names get through."""
 

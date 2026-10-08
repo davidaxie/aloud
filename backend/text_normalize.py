@@ -81,6 +81,14 @@ _DASHES: dict[int, str] = {
 # Ellipsis -> three ASCII dots.
 _ELLIPSIS: dict[int, str] = {0x2026: "..."}
 
+# The ideographic comma and full stop survive NFKC and espeak-ng drops them, so
+# Chinese text ran on with no pause at all. The trailing space keeps the next
+# character from fusing onto the mark; the whitespace collapse tidies it.
+_CJK_PUNCTUATION: dict[int, str] = {
+    0x3001: ", ",  # IDEOGRAPHIC COMMA
+    0x3002: ". ",  # IDEOGRAPHIC FULL STOP
+}
+
 # Non-ASCII bullet / list-marker glyphs -> removed. Any surrounding whitespace is
 # collapsed later, so "• Item" cleanly becomes "Item".
 _BULLETS: dict[int, str] = {
@@ -107,6 +115,7 @@ _TRANSLATION.update(_SPACE)
 _TRANSLATION.update(_QUOTES)
 _TRANSLATION.update(_DASHES)
 _TRANSLATION.update(_ELLIPSIS)
+_TRANSLATION.update(_CJK_PUNCTUATION)
 _TRANSLATION.update(_BULLETS)
 
 # ---------------------------------------------------------------------------
@@ -167,6 +176,29 @@ def _drop_stray_joiners(text: str) -> str:
 # Regex passes
 # ---------------------------------------------------------------------------
 
+# A lone UTF-16 surrogate: half of an emoji or Ext-B ideograph that a client's
+# chunker cut through. JSON carries it as an escape, and the espeak-ng
+# phonemizer cannot encode it, so the whole chunk failed and was skipped.
+_LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+# NFKC turns vulgar fractions and superscripts into different numbers ("3¼"
+# becomes "31⁄4", "10⁶" becomes "106"), while espeak-ng reads the originals
+# correctly, so they skip the fold. Same set as
+# TextNormalizer.keepsCompatibilityForm (iOS/Mac).
+_KEEP_COMPATIBILITY_FORM_RE = re.compile(
+    "([\u00b2\u00b3\u00b9\u00bc-\u00be\u2070-\u207f\u2150-\u215f\u2189])"
+)
+
+
+def _compatibility_folded(text: str) -> str:
+    """NFKC, leaving vulgar fractions and superscripts as they are."""
+    parts = _KEEP_COMPATIBILITY_FORM_RE.split(text)
+    # split() with a group puts each kept character at an odd index.
+    return "".join(
+        part if i % 2 else unicodedata.normalize("NFKC", part) for i, part in enumerate(parts)
+    )
+
+
 # Remaining C0/C1 control characters, keeping only the "normal whitespace"
 # controls TAB, LF, VT, FF, CR (0x09-0x0D). NEL (0x85) was already mapped to a
 # line break above, so deleting the 0x7F-0x9F range here is safe.
@@ -206,11 +238,14 @@ def normalize_for_tts(text: str) -> str:
 
     The transformation is a fixed pipeline:
 
-    1. Unicode **NFKC** normalization (expands ligatures ``ﬁ`` -> ``fi`` etc.).
+    0. Drop lone UTF-16 surrogates.
+    1. Unicode **NFKC** normalization (expands ligatures ``ﬁ`` -> ``fi`` etc.),
+       except for vulgar fractions and superscripts.
     2. Single-pass character translation: delete soft hyphen / zero-width
        space / BOM, map exotic spaces to a plain space (and Unicode line
        separators to a newline), straighten quotes,
-       convert dashes to " - ", expand the ellipsis, and drop non-ASCII
+       convert dashes to " - ", expand the ellipsis, turn the ideographic
+       comma and full stop into ASCII ones, and drop non-ASCII
        bullets. Then drop ZWJ/ZWNJ except inside emoji sequences and
        non-Latin words, where they are spelling.
     3. Strip remaining C0/C1 control characters (keeping normal whitespace).
@@ -234,8 +269,12 @@ def normalize_for_tts(text: str) -> str:
     if not text:
         return text
 
-    # 1. NFKC: expands ligatures, folds most compatibility spaces, etc.
-    result = unicodedata.normalize("NFKC", text)
+    # 0. Drop lone surrogates, which the phonemizer cannot encode at all.
+    text = _LONE_SURROGATE_RE.sub("", text)
+
+    # 1. NFKC: expands ligatures, folds most compatibility spaces, etc., but
+    #    keeps vulgar fractions and superscripts.
+    result = _compatibility_folded(text)
 
     # 2. One-pass character rewrites (deletions, spaces, quotes, dashes, ...).
     result = result.translate(_TRANSLATION)

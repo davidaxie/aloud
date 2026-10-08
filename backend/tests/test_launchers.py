@@ -548,6 +548,103 @@ class AttachWatchTests(unittest.TestCase):
         start_own.assert_not_called()
 
 
+class NativeStartupAlertTests(unittest.TestCase):
+    """L038: opened from Finder, a startup failure only reached stderr, which
+    goes nowhere, so the app quit without a word."""
+
+    def setUp(self) -> None:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ALOUD_")}
+        for patcher in (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(native_app, "find_running_backend", return_value=None),
+            mock.patch.object(native_app, "choose_port", return_value=8000),
+            mock.patch.object(native_app, "_launched_without_a_terminal", return_value=True),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.run_cmd = mock.patch.object(native_app.subprocess, "run").start()
+        self.addCleanup(mock.patch.stopall)
+
+    def alerted(self) -> str:
+        self.run_cmd.assert_called_once()
+        argv = self.run_cmd.call_args.args[0]
+        self.assertEqual(argv[0], "osascript")
+        # The message is an argument, never spliced into the AppleScript.
+        self.assertNotIn(argv[-1], argv[2])
+        return argv[-1]
+
+    def import_failing_with(self, exc: Exception):
+        class Broken(types.ModuleType):
+            def __getattr__(self, name: str):
+                raise exc
+
+        return mock.patch.dict(sys.modules, {"app": Broken("app")})
+
+    def test_missing_model_names_the_download_step(self) -> None:
+        with self.import_failing_with(FileNotFoundError("Kokoro model not found: models/x")):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(native_app.main(), 1)
+        self.assertIn("download_models.py", self.alerted())
+
+    def test_other_import_failure_is_shown(self) -> None:
+        with self.import_failing_with(RuntimeError("espeak-ng is not installed")):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(native_app.main(), 1)
+        self.assertIn("espeak-ng is not installed", self.alerted())
+
+    def test_port_taken_is_shown(self) -> None:
+        ended = threading.Thread(target=lambda: None)
+        ended.start()
+        ended.join()
+        with mock.patch.object(
+            native_app, "_start_own_server", return_value=(mock.Mock(), ended)
+        ), mock.patch.object(native_app, "_wait_for_health", return_value=False):
+            self.assertEqual(native_app.main(), 1)
+        self.assertIn("8000", self.alerted())
+
+    def test_health_timeout_is_shown(self) -> None:
+        alive = mock.Mock()
+        alive.is_alive.return_value = True
+        with mock.patch.object(
+            native_app, "_start_own_server", return_value=(mock.Mock(), alive)
+        ), mock.patch.object(native_app, "_wait_for_health", return_value=False):
+            self.assertEqual(native_app.main(), 1)
+        self.assertIn("30", self.alerted())
+
+    def test_from_a_terminal_the_log_is_enough(self) -> None:
+        with mock.patch.object(
+            native_app, "_launched_without_a_terminal", return_value=False
+        ), self.import_failing_with(FileNotFoundError("Kokoro model not found: x")):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(native_app.main(), 1)
+        self.run_cmd.assert_not_called()
+
+
+
+class NativeLaunchKindTests(unittest.TestCase):
+    def launched_without_a_terminal(self, *, tty: bool, headless: str = "") -> bool:
+        stderr = mock.Mock()
+        stderr.isatty.return_value = tty
+        with mock.patch.object(native_app.sys, "platform", "darwin"), mock.patch.object(
+            native_app.sys, "stderr", stderr
+        ), mock.patch.dict(os.environ, {"ALOUD_HEADLESS": headless}):
+            return native_app._launched_without_a_terminal()
+
+    def test_only_a_finder_launch_needs_the_alert(self) -> None:
+        self.assertTrue(self.launched_without_a_terminal(tty=False))
+        self.assertFalse(self.launched_without_a_terminal(tty=True))
+        self.assertFalse(self.launched_without_a_terminal(tty=False, headless="1"))
+
+
+def requirement_lines(filename: str) -> list[str]:
+    """The requirement lines of ``backend/<filename>``, without comments or options."""
+    return [
+        line.strip()
+        for line in (BACKEND / filename).read_text().splitlines()
+        if line.strip() and not line.strip().startswith(("#", "-"))
+    ]
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -605,14 +702,51 @@ class ModelDownloadTests(unittest.TestCase):
             self.assertRegex(digest, r"^[0-9a-f]{64}$", name)
 
     def test_backend_requirements_are_pinned(self) -> None:
-        lines = [
-            line.strip()
-            for line in (BACKEND / "requirements.txt").read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
+        lines = requirement_lines("requirements.txt")
         self.assertTrue(lines)
         for line in lines:
             self.assertRegex(line, r"^[A-Za-z0-9_.\-\[\]]+==[0-9][0-9A-Za-z.]*$", line)
+
+    def test_requirements_apply_the_constraints(self) -> None:
+        # L042: pip and uv both read a -c line inside a requirements file.
+        lines = (BACKEND / "requirements.txt").read_text().splitlines()
+        self.assertIn("-c constraints.txt", [line.strip() for line in lines])
+        for line in requirement_lines("constraints.txt"):
+            self.assertRegex(line, r"^[A-Za-z0-9_.\-]+==[0-9][0-9A-Za-z.]*$", line)
+
+    def test_every_dependency_is_pinned_to_the_tested_version(self) -> None:
+        # L042: only the direct requirements were pinned, so a fresh install
+        # took the newest Starlette, pydantic, onnxruntime and phonemizer of
+        # the day. Walks what the installed packages require, as installed.
+        from importlib import metadata
+
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+
+        pins = {}
+        for line in requirement_lines("constraints.txt"):
+            name, _, version = line.partition("==")
+            pins[canonicalize_name(name)] = version
+        todo = [Requirement(line) for line in requirement_lines("requirements.txt")]
+        seen: dict[str, set[str]] = {}
+        while todo:
+            req = todo.pop()
+            name = canonicalize_name(req.name)
+            if name in seen and req.extras <= seen[name]:
+                continue
+            seen[name] = seen.get(name, set()) | set(req.extras)
+            try:
+                dist = metadata.distribution(req.name)
+            except metadata.PackageNotFoundError:
+                self.skipTest(f"{req.name} is not installed; run with backend/.venv")
+            self.assertEqual(pins.get(name), dist.version, f"{name} is not pinned as installed")
+            for raw in dist.requires or []:
+                dep = Requirement(raw)
+                extras = seen[name] or {""}
+                if dep.marker is None or any(dep.marker.evaluate({"extra": e}) for e in extras):
+                    todo.append(dep)
+        self.assertIn("starlette", seen)
+        self.assertIn("onnxruntime", seen)
 
 
 if __name__ == "__main__":

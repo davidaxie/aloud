@@ -229,6 +229,16 @@ uv pip install --python .venv/bin/python -r requirements.txt
 cd ../frontend && npm install
 ```
 
+`requirements.txt` applies `backend/constraints.txt`, which pins every
+package the server installs, including the ones its direct requirements pull
+in, to the versions its tests ran against.
+
+The server offers every Kokoro voice except the Japanese ones. It turns text
+into sounds with espeak-ng, which can't read kanji and spells each one out as
+the English words "Chinese letter", so a Japanese voice spoke gibberish. They
+stay hidden until the server gets a Japanese pronunciation library (such as
+misaki[ja] or pyopenjtalk), which it doesn't have yet.
+
 ### Run
 
 ```bash
