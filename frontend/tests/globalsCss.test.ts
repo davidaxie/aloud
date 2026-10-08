@@ -37,3 +37,16 @@ test('H067: the voice search row shows focus, since the field drops its outline'
   assert.ok(row, '.popover__search:focus-within rule exists')
   assert.match(row.body, /box-shadow:[^;]*var\(--accent\)/)
 })
+
+test('L035: a reader held under the loading view is hidden but keeps its layout', () => {
+  const held = ruleBody('.reader.is-held')
+  assert.ok(held, '.reader.is-held rule exists')
+  // display: none would drop the box, and with it the scroll position.
+  assert.match(held.body, /visibility:\s*hidden/)
+  assert.doesNotMatch(held.body, /display:\s*none/)
+  const over = ruleBody('.app__main-over')
+  assert.ok(over, '.app__main-over rule exists')
+  assert.match(over.body, /position:\s*absolute/)
+  assert.match(over.body, /inset:\s*0/)
+  assert.match(ruleBody('.app__main')!.body, /position:\s*relative/, 'the overlay is placed over main')
+})

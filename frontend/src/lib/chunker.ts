@@ -231,6 +231,10 @@ function tokenWeight(token: string): number {
   return Math.max(1, estimatedSyllables(token)) + trailingPauseWeight(token)
 }
 
+// A token the read-along can light: one with a letter or digit in any script,
+// so 'é' and Hindi or Japanese words are highlighted as they are spoken (L036).
+const HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
+
 // Bracket pairs treated as "skippable content" spans.
 const OPENERS: Record<string, ')' | ']' | '}'> = { '(': ')', '[': ']', '{': '}' }
 
@@ -314,7 +318,7 @@ export function tokenizeSentence(text: string): WordToken[] {
     } else {
       tokens.push({
         text: raw,
-        isWord: /[A-Za-z0-9]/.test(raw),
+        isWord: HAS_LETTER_OR_DIGIT.test(raw),
         weight: tokenWeight(raw),
         isSkippable: skippable,
       })

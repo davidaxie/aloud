@@ -142,6 +142,15 @@ export function positionValueText(pos: number, total: number, page?: number): st
 }
 
 /**
+ * Whether a press on the position slider starts a scrub that seeks where it
+ * lets go (L039): only the primary button. A right-click, a two-finger tap or
+ * a Mac Control-click opens the context menu instead, which takes the release.
+ */
+export function startsScrub(press: { button: number; ctrlKey: boolean }): boolean {
+  return press.button === 0 && !press.ctrlKey
+}
+
+/**
  * The play button's name. While a sentence is buffering the button pauses, so
  * it is named Pause, as on iPhone and Mac (H034); `busy` marks the wait.
  */

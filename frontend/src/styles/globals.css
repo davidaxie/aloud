@@ -339,6 +339,12 @@ kbd {
   display: flex;
   position: relative;
 }
+/* The loading view over an open book, which stays mounted beneath it (L035). */
+.app__main-over {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
 
 /* ── Dropzone / empty state ────────────────────────────────────────────────── */
 .dropzone-wrap {
@@ -493,6 +499,11 @@ kbd {
   scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
+}
+/* Under the loading view: out of sight and out of reach, but still laid out,
+   so its scroll position is kept (L035). */
+.reader.is-held {
+  visibility: hidden;
 }
 .reader::-webkit-scrollbar {
   width: 10px;

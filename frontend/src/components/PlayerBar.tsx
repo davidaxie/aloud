@@ -5,7 +5,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { playButtonLabel, positionKeyTarget, positionValueText } from '../lib/controlKeys'
+import {
+  playButtonLabel,
+  positionKeyTarget,
+  positionValueText,
+  startsScrub,
+} from '../lib/controlKeys'
 import { player } from '../lib/player'
 import { useStore } from '../store'
 import type { Doc } from '../types'
@@ -49,12 +54,17 @@ export function PlayerBar({ doc }: PlayerBarProps) {
   }
 
   function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
-    if (total === 0) return
+    if (total === 0 || !startsScrub(e)) return
     e.currentTarget.setPointerCapture(e.pointerId)
     setPreview(indexFromClientX(e.clientX))
   }
   function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
     if (preview === null) return
+    // The press ended without its release reaching the track (L039).
+    if (e.buttons === 0) {
+      endScrub()
+      return
+    }
     setPreview(indexFromClientX(e.clientX))
   }
   function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
@@ -62,6 +72,10 @@ export function PlayerBar({ doc }: PlayerBarProps) {
     const target = indexFromClientX(e.clientX)
     setPreview(null)
     player.seekTo(target)
+  }
+  /** A scrub cut short (cancelled, or the capture lost) stops without seeking (L039). */
+  function endScrub() {
+    setPreview(null)
   }
 
   return (
@@ -79,6 +93,8 @@ export function PlayerBar({ doc }: PlayerBarProps) {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={endScrub}
+        onLostPointerCapture={endScrub}
         onKeyDown={(e) => {
           if (e.metaKey || e.ctrlKey || e.altKey) return
           // Arrows step a sentence, Page keys a twentieth of the book, Home/End

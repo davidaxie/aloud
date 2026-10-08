@@ -1,6 +1,6 @@
-// H027 / H034 / H037 / H066: the transport keys, the play button's name, the
-// position slider and the voice list. Pure decisions plus the wiring that uses
-// them; no DOM, no audio.
+// H027 / H034 / H037 / H066 / L039: the transport keys, the play button's name,
+// the position slider and the voice list. Pure decisions plus the wiring that
+// uses them; no DOM, no audio.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -11,9 +11,29 @@ import {
   playButtonLabel,
   positionKeyTarget,
   positionValueText,
+  startsScrub,
 } from '../src/lib/controlKeys.ts'
 
 const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8')
+
+test('L039: only a primary press scrubs the position slider', () => {
+  assert.equal(startsScrub({ button: 0, ctrlKey: false }), true)
+  assert.equal(startsScrub({ button: 2, ctrlKey: false }), false, 'right-click or two-finger tap')
+  assert.equal(startsScrub({ button: 1, ctrlKey: false }), false, 'middle click')
+  assert.equal(startsScrub({ button: 0, ctrlKey: true }), false, 'Control-click opens the Mac context menu')
+})
+
+test('L039: a scrub cut short stops without seeking, and nothing else starts one', () => {
+  const src = source('components/PlayerBar.tsx')
+  assert.match(src, /if \(total === 0 \|\| !startsScrub\(e\)\) return/)
+  assert.match(src, /onPointerCancel=\{endScrub\}/)
+  assert.match(src, /onLostPointerCapture=\{endScrub\}/)
+  const move = src.slice(src.indexOf('function onPointerMove'), src.indexOf('function onPointerUp'))
+  assert.match(move, /if \(e\.buttons === 0\) \{\s*endScrub\(\)\s*return/, 'a release the track never saw')
+  const end = src.slice(src.indexOf('function endScrub'), src.indexOf('return (\n'))
+  assert.match(end, /setPreview\(null\)/)
+  assert.doesNotMatch(end, /seekTo|moveTo/, 'a cancelled scrub must not seek')
+})
 
 test('H027: a button the mouse left focused does not keep Space or the arrows', () => {
   // Chrome focuses Next on click; Space must pause, not skip again.

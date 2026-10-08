@@ -16,12 +16,21 @@
 // put when playback reaches or leaves it — which is why Space and ←/→ on a
 // focused sentence still drive the transport, as the header hint says.
 // ─────────────────────────────────────────────────────────────────────────────
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
 import { player } from '../lib/player'
 import { tokenizeSentence } from '../lib/chunker'
 import {
   autoScrollAllowed,
   browsingAfter,
+  clickSeekGate,
   isScrollKey,
   sentenceFocusTarget,
   sentenceKeyAction,
@@ -43,6 +52,19 @@ const SKIPPED_WORD_STYLE: CSSProperties = { color: 'var(--text-faint)' }
 function seek(sid: number) {
   player.seekTo(sid)
 }
+
+/** Text in the reader is selected, so a click there was part of selecting it. */
+function selectingInReader(): boolean {
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed) return false
+  const node = selection.anchorNode
+  const el = node instanceof Element ? node : node?.parentElement
+  return !!el?.closest('.reader')
+}
+
+// A click on a sentence plays from it, but not a double-click on a word or a
+// drag across a phrase: the user is selecting text to copy (L033).
+const clickSeek = clickSeekGate(seek, selectingInReader)
 
 /**
  * Enter plays from the sentence. Space plays/pauses and ←/→ step sentences, as
@@ -163,7 +185,7 @@ const ReaderParagraph = memo(function ReaderParagraph({
               role="button"
               tabIndex={sid === tabStopId ? 0 : -1}
               title={wasSkipped ? 'Skipped: this sentence couldn\u2019t be read' : undefined}
-              onClick={() => seek(sid)}
+              onClick={(e) => clickSeek.click(sid, e.detail)}
               onKeyDown={(e) => onSentenceKeyDown(e, sid, sentences.length)}
             >
               {active ? <ActiveWords text={s.text} /> : s.text}{' '}
@@ -177,9 +199,15 @@ const ReaderParagraph = memo(function ReaderParagraph({
 
 interface ReaderProps {
   doc: Doc
+  /**
+   * Another PDF is parsing (L035): the reader stays mounted under the loading
+   * view, out of sight, so a file that can't be read leaves the book showing
+   * where it was, scroll and all.
+   */
+  held?: boolean
 }
 
-export function Reader({ doc }: ReaderProps) {
+export function Reader({ doc, held = false }: ReaderProps) {
   const currentSentence = useStore((s) => s.currentSentence)
   const autoScroll = useStore((s) => s.autoScroll)
   const skippedSentences = useStore((s) => s.skippedSentences)
@@ -202,6 +230,36 @@ export function Reader({ doc }: ReaderProps) {
     if (focused && focused !== document.body) return
     titleRef.current?.focus({ preventScroll: true })
   }, [])
+
+  // Held under the loading view (L035), a click waiting to play is dropped and
+  // the focus leaves the hidden sentences, so Enter can't play from one. Shown
+  // again after a PDF that couldn't be read, the focus goes back where it was,
+  // else to the title, as when the reader mounts.
+  const wasHeld = useRef(held)
+  const heldFocus = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    if (held) {
+      clickSeek.cancel()
+      wasHeld.current = true
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && scrollRef.current?.contains(focused)) {
+        heldFocus.current = focused
+        focused.blur()
+      }
+      return
+    }
+    if (!wasHeld.current) return
+    wasHeld.current = false
+    const back = heldFocus.current
+    heldFocus.current = null
+    const focused = document.activeElement
+    if (focused && focused !== document.body) return
+    const target = back?.isConnected ? back : titleRef.current
+    target?.focus({ preventScroll: true })
+  }, [held])
+
+  // A click still waiting to play goes with the reader (L033).
+  useEffect(() => () => clickSeek.cancel(), [])
 
   const activePara =
     currentSentence >= 0 ? doc.sentences[currentSentence]?.para ?? -1 : -1
@@ -293,7 +351,7 @@ export function Reader({ doc }: ReaderProps) {
 
   return (
     <div
-      className="reader"
+      className={held ? 'reader is-held' : 'reader'}
       ref={scrollRef}
       onFocus={(e) => {
         const sid = (e.target as HTMLElement).dataset.sentence
@@ -301,7 +359,9 @@ export function Reader({ doc }: ReaderProps) {
       }}
       onBlur={(e) => {
         // Leaving the reader hands the Tab stop back to the sentence being read,
-        // and auto-scroll back to following it.
+        // and auto-scroll back to following it. Not while held: the focus
+        // comes back to where it was (L035).
+        if (held) return
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
           setFocusedId(null)
           browsing.current = false

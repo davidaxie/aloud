@@ -114,3 +114,62 @@ export function autoScrollAllowed(o: {
 }): boolean {
   return o.autoScroll && o.current >= 0 && !o.browsing && o.msSinceUserScroll >= USER_SCROLL_HOLD_MS
 }
+
+/**
+ * How long a click on a sentence waits before it plays from there (L033): the
+ * usual double-click time, so the first click of a double-click can be told
+ * apart from a click meant to play.
+ */
+export const CLICK_SEEK_HOLD_MS = 500
+
+export interface ClickSeekTimers {
+  set(run: () => void, ms: number): unknown
+  clear(handle: unknown): void
+}
+
+const WINDOW_TIMERS: ClickSeekTimers = {
+  set: (run, ms) => setTimeout(run, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+}
+
+export interface ClickSeekGate {
+  /** A click on sentence `sid`; `detail` is the click count (0: no pointer behind it). */
+  click(sid: number, detail: number): void
+  /** Drops a click still waiting, as the reader goes away. */
+  cancel(): void
+}
+
+/**
+ * Click-to-play that leaves selecting text alone (L033, the web twin of the
+ * Mac's F005/G008/J022). A click plays from its sentence only once the
+ * double-click time has passed with no further click and nothing selected in
+ * the reader, so double-clicking a word or dragging across a phrase to copy it
+ * neither moves the place nor starts the audio. A click with no pointer behind
+ * it (assistive technology) plays at once.
+ */
+export function clickSeekGate(
+  seek: (sid: number) => void,
+  selecting: () => boolean,
+  timers: ClickSeekTimers = WINDOW_TIMERS,
+): ClickSeekGate {
+  let pending: unknown = null
+  const cancel = () => {
+    if (pending !== null) timers.clear(pending)
+    pending = null
+  }
+  return {
+    click(sid, detail) {
+      cancel()
+      if (detail === 0) {
+        seek(sid)
+        return
+      }
+      if (detail > 1 || selecting()) return
+      pending = timers.set(() => {
+        pending = null
+        if (!selecting()) seek(sid)
+      }, CLICK_SEEK_HOLD_MS)
+    },
+    cancel,
+  }
+}

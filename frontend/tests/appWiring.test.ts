@@ -79,7 +79,63 @@ test('K017: New says the book closed and hands its focus to the drop target', ()
   assert.match(reset, /setAnnouncement\(open \? closedMessage\(open\) : ''\)/, 'nothing is said')
   assert.match(reset, /setFocusDropzone\(true\)/)
   assert.match(app, /const \[focusDropzone, setFocusDropzone\] = useState\(false\)/, 'first load moves focus')
-  assert.match(app, /<Dropzone onFile=\{handleFile\} focusOnMount=\{focusDropzone\} \/>/)
+  assert.match(app, /<Dropzone onFile=\{handleFile\} focusOnMount=\{focusDropzone\b/)
+})
+
+test('L044: a first PDF that could not be read hands the focus back to the drop target', () => {
+  // The drop target that had focus went with the loading view; the error state
+  // mounts a new one, and only it can take the focus back.
+  assert.match(
+    app,
+    /<Dropzone onFile=\{handleFile\} focusOnMount=\{focusDropzone \|\| status === 'error'\} \/>/,
+  )
+})
+
+test('L035: a PDF parsing over an open book leaves the reader mounted beneath it', () => {
+  const main = app.slice(app.indexOf('<main className="app__main">'), app.indexOf('</main>'))
+  // Mounted whenever a book is open, loading or not, so a failed parse keeps
+  // its scroll position, its focus state and its browsing state.
+  assert.match(main, /\{doc && <Reader key=\{readerKey\(doc\)\} doc=\{doc\} held=\{isLoading\} \/>\}/)
+  assert.doesNotMatch(main, /isLoading \? \(\s*<LoadingView \/>\s*\) : doc \? \(\s*<Reader/, 'the reader is torn down')
+  assert.match(main, /<div className="app__main-over">\s*<LoadingView \/>/)
+  // A new book is a new reader: its top, its title focused (J041).
+  assert.match(app, /const readerKeys = new WeakMap<Doc, number>\(\)/)
+  assert.match(reader, /className=\{held \? 'reader is-held' : 'reader'\}/)
+  const held = reader.slice(reader.indexOf('const wasHeld'), reader.indexOf('const activePara'))
+  assert.match(held, /useLayoutEffect\(\(\) => \{\s*if \(held\) \{\s*clickSeek\.cancel\(\)/, 'a click waiting to play would start audio mid-parse')
+  // A hidden sentence keeping focus would still take Enter, and play.
+  assert.match(held, /heldFocus\.current = focused\s*focused\.blur\(\)/)
+  assert.match(held, /const target = back\?\.isConnected \? back : titleRef\.current/)
+  assert.match(held, /target\?\.focus\(\{ preventScroll: true \}\)/)
+  assert.match(held, /\}, \[held\]\)/)
+  // That blur must not hand the Tab stop back or end browsing.
+  const blur = reader.slice(reader.indexOf('onBlur={(e) => {'), reader.indexOf('onKeyDown={(e) => {'))
+  assert.ok(blur.indexOf('if (held) return') > 0 && blur.indexOf('if (held) return') < blur.indexOf('setFocusedId(null)'))
+})
+
+test('L041: a file the drop target refuses is said from a live region', () => {
+  const region = dropzone.search(
+    /<p className="visually-hidden" role="status" aria-live="polite">\s*\{rejected \? `\$\{title\} \$\{hint\}` : ''\}\s*<\/p>/,
+  )
+  assert.ok(region > 0, 'the fixed button name hides the refusal from a screen reader')
+  // Outside the button, whose content is not part of its name.
+  assert.ok(region > dropzone.indexOf('</button>'))
+  assert.match(dropzone, /<span className="dropzone__title">\{title\}<\/span>/, 'one wording, shown and said')
+})
+
+const banners = readFileSync(new URL('../src/components/StatusBadge.tsx', import.meta.url), 'utf8')
+
+test('L046: the error banner hands on the focus it held before it goes away', () => {
+  const banner = banners.slice(banners.indexOf('export function ErrorBanner'))
+  assert.match(banner, /role="alert" ref=\{bannerRef\}/)
+  // A store listener runs as the error clears, before React removes the banner:
+  // Dismiss and the engine coming back (G016) alike.
+  assert.match(banner, /useStore\.subscribe\(\(s, prev\) => \{/)
+  assert.match(banner, /if \(!prev\.error \|\| s\.error\) return/)
+  assert.match(banner, /bannerRef\.current\?\.contains\(document\.activeElement\)\) return\s*focusAfterBanner\(\)/)
+  const target = banners.slice(banners.indexOf('function focusAfterBanner'), banners.indexOf('export function ErrorBanner'))
+  assert.match(target, /\['\.play-btn', '\.dropzone', '\.reader__title'\]/, 'in order of preference')
+  assert.match(target, /target\.focus\(\)/)
 })
 
 test('K017: the drop target takes focus the reset button dropped, once, as it mounts', () => {

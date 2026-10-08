@@ -21,6 +21,19 @@ import { ThemeToggle } from './components/ThemeToggle'
 import { StatusBadge, ErrorBanner } from './components/StatusBadge'
 import { Toast } from './components/Toast'
 import { WaveIcon, FileIcon } from './components/Icons'
+import type { Doc } from './types'
+
+// One reader per book, so the next book opens at its top (L035).
+const readerKeys = new WeakMap<Doc, number>()
+let lastReaderKey = 0
+function readerKey(doc: Doc): number {
+  let key = readerKeys.get(doc)
+  if (key === undefined) {
+    key = ++lastReaderKey
+    readerKeys.set(doc, key)
+  }
+  return key
+}
 
 export default function App() {
   useTheme()
@@ -162,12 +175,22 @@ export default function App() {
       </div>
 
       <main className="app__main">
+        {/* A PDF parsing over an open book keeps the reader mounted beneath
+            the loading view, so one that can't be read leaves the book's view
+            as it was (L035). A new book is a new reader, from its top. */}
+        {doc && <Reader key={readerKey(doc)} doc={doc} held={isLoading} />}
         {isLoading ? (
-          <LoadingView />
-        ) : doc ? (
-          <Reader doc={doc} />
-        ) : (
-          <Dropzone onFile={handleFile} focusOnMount={focusDropzone} />
+          doc ? (
+            <div className="app__main-over">
+              <LoadingView />
+            </div>
+          ) : (
+            <LoadingView />
+          )
+        ) : doc ? null : (
+          // A first PDF that couldn't be read took the focus away with the
+          // drop target; the new one takes it back (L044).
+          <Dropzone onFile={handleFile} focusOnMount={focusDropzone || status === 'error'} />
         )}
       </main>
 

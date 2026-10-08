@@ -73,6 +73,11 @@ export function Dropzone({ onFile, focusOnMount = false }: DropzoneProps) {
     handleFiles(e.dataTransfer.files)
   }
 
+  const title = rejected ? 'That file isn’t a PDF' : 'Drop a PDF to begin'
+  const hint = rejected
+    ? 'Please choose a .pdf file to read aloud.'
+    : 'or click to browse — everything stays on your device'
+
   return (
     <div className="dropzone-wrap">
       <button
@@ -94,14 +99,8 @@ export function Dropzone({ onFile, focusOnMount = false }: DropzoneProps) {
           <UploadIcon size={26} />
         </span>
 
-        <span className="dropzone__title">
-          {rejected ? 'That file isn’t a PDF' : 'Drop a PDF to begin'}
-        </span>
-        <span className="dropzone__hint">
-          {rejected
-            ? 'Please choose a .pdf file to read aloud.'
-            : 'or click to browse — everything stays on your device'}
-        </span>
+        <span className="dropzone__title">{title}</span>
+        <span className="dropzone__hint">{hint}</span>
 
         <input
           ref={inputRef}
@@ -115,6 +114,12 @@ export function Dropzone({ onFile, focusOnMount = false }: DropzoneProps) {
           tabIndex={-1}
         />
       </button>
+
+      {/* The button's name stays fixed, so a refusal is said here too (L041);
+          the region is mounted empty, before there is anything to say. */}
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {rejected ? `${title} ${hint}` : ''}
+      </p>
 
       <p className="dropzone__foot">
         Aloud reads long documents in a natural neural voice, entirely offline.

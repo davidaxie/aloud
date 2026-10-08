@@ -1,19 +1,110 @@
 // F066 / F067: the reader's sentences are one roving-tabindex group, and Enter
 // activates a focused sentence. G013: Space and ←/→ stay the transport keys.
 // H035: auto-scroll leaves the view to a keyboard user browsing the sentences
-// and to scrollbar drags and Page keys.
+// and to scrollbar drags and Page keys. L033: a click plays from its sentence,
+// but selecting text there does not. L036: the read-along lights words in
+// every script.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   autoScrollAllowed,
   browsingAfter,
+  CLICK_SEEK_HOLD_MS,
+  clickSeekGate,
   isScrollKey,
   sentenceFocusTarget,
   sentenceKeyAction,
   tabStopSentence,
   USER_SCROLL_HOLD_MS,
 } from '../src/lib/readerNav.ts'
+import { tokenizeSentence } from '../src/lib/chunker.ts'
+
+/** A click-seek gate on hand-run timers: no clock, no audio. */
+function gateRig(selected = { now: false }) {
+  const seeks: number[] = []
+  let due: { run: () => void; ms: number } | null = null
+  const gate = clickSeekGate(
+    (sid) => seeks.push(sid),
+    () => selected.now,
+    {
+      set: (run, ms) => (due = { run, ms }),
+      clear: () => (due = null),
+    },
+  )
+  const elapse = () => {
+    const run = due?.run
+    due = null
+    run?.()
+  }
+  return { gate, seeks, elapse, selected, pending: () => due }
+}
+
+test('L033: a single click plays from its sentence once the double-click time has passed', () => {
+  const rig = gateRig()
+  rig.gate.click(12, 1)
+  assert.deepEqual(rig.seeks, [], 'the first click of a double-click must not play yet')
+  assert.equal(rig.pending()?.ms, CLICK_SEEK_HOLD_MS)
+  rig.elapse()
+  assert.deepEqual(rig.seeks, [12])
+})
+
+test('L033: double-clicking a word to select it neither moves the place nor plays', () => {
+  const rig = gateRig()
+  rig.gate.click(12, 1)
+  rig.gate.click(12, 2)
+  rig.gate.click(12, 3)
+  rig.elapse()
+  assert.deepEqual(rig.seeks, [])
+})
+
+test('L033: a drag that selects a phrase inside one sentence does not seek', () => {
+  const rig = gateRig({ now: true })
+  rig.gate.click(7, 1)
+  rig.elapse()
+  assert.deepEqual(rig.seeks, [])
+  // Selected after the click, before the hold ran out (a drag that went on).
+  const late = gateRig()
+  late.gate.click(7, 1)
+  late.selected.now = true
+  late.elapse()
+  assert.deepEqual(late.seeks, [])
+})
+
+test('L033: a click from assistive technology plays at once; a newer click replaces one waiting', () => {
+  const rig = gateRig()
+  rig.gate.click(4, 0)
+  assert.deepEqual(rig.seeks, [4])
+  rig.gate.click(5, 1)
+  rig.gate.click(9, 1)
+  rig.elapse()
+  assert.deepEqual(rig.seeks, [4, 9])
+  rig.gate.click(10, 1)
+  rig.gate.cancel()
+  rig.elapse()
+  assert.deepEqual(rig.seeks, [4, 9], 'a click waiting as the reader goes away is dropped')
+})
+
+test('L033: the reader routes sentence clicks through the gate, with the click count', () => {
+  const src = readFileSync(new URL('../src/components/Reader.tsx', import.meta.url), 'utf8')
+  assert.match(src, /onClick=\{\(e\) => clickSeek\.click\(sid, e\.detail\)\}/)
+  assert.doesNotMatch(src, /onClick=\{\(\) => seek\(sid\)\}/, 'a click that seeks at once fights selection')
+  assert.match(src, /clickSeekGate\(seek, selectingInReader\)/)
+  assert.match(src, /selection\.isCollapsed\) return false/)
+  assert.match(src, /useEffect\(\(\) => \(\) => clickSeek\.cancel\(\), \[\]\)/)
+})
+
+test('L036: words with no ASCII letter are words the read-along lights', () => {
+  const words = (text: string) =>
+    tokenizeSentence(text)
+      .filter((t) => t.isWord)
+      .map((t) => t.text)
+  assert.deepEqual(words('Ele é professor.'), ['Ele', 'é', 'professor.'])
+  assert.deepEqual(words('Il est à Paris.'), ['Il', 'est', 'à', 'Paris.'])
+  assert.deepEqual(words('मेरा नाम राम है।'), ['मेरा', 'नाम', 'राम', 'है।'])
+  assert.deepEqual(words('私は猫です。'), ['私は猫です。'])
+  assert.deepEqual(words('Année 2024 — fin.'), ['Année', '2024', 'fin.'], 'a bare dash stays unlit')
+})
 
 test('H035: moving focus with ↑/↓/Home/End starts browsing; Enter and ←/→ end it', () => {
   for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) {
