@@ -173,8 +173,9 @@ struct BookshelfView: View {
     /// The trailing column's width at the default text size; it scales with
     /// the caption style. It fits the widest status, a three-digit hour count
     /// with minutes in tabular digits (the longest classic runs past 100
-    /// hours at 1×).
-    nonisolated static let statusColumnWidth: CGFloat = 84
+    /// hours at 1×, and past 50 hours a half-speed row reaches three digits),
+    /// in bold as well, since Bold Text draws the medium caption heavier.
+    nonisolated static let statusColumnWidth: CGFloat = 88
 
     /// What the row does, as the grid cards say it. A finished library copy
     /// opens paused at its end, so it promises nothing.

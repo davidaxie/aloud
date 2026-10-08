@@ -76,7 +76,7 @@ final class CardCopyTests: XCTestCase {
     /// below the accessibility sizes (where the row stacks instead), so no
     /// length is ever cut short. With tabular digits every three-digit hour
     /// count with minutes is equally wide; the longest classic runs past a
-    /// hundred hours at 1×.
+    /// hundred hours at 1×. B7-1: it fits in bold too, for Bold Text.
     func testTheClassicsStatusColumnFitsItsWidestStatus() {
         let longest = BookshelfBook(gutenbergID: 1, title: "Long", author: "Author", year: nil,
                                     file: "long.txt", words: 59_999 * Int(LibraryDocument.spokenWordsPerMinute))
@@ -92,19 +92,24 @@ final class CardCopyTests: XCTestCase {
             let traits = UITraitCollection(preferredContentSizeCategory: size)
             let points = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .caption1,
                                                                   compatibleWith: traits).pointSize
-            // Theme's caption: medium, tabular digits.
-            let medium = UIFont.systemFont(ofSize: points, weight: .medium)
-            let tabular = medium.fontDescriptor.addingAttributes([.featureSettings: [[
-                UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
-                UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
-            ]]])
-            let font = UIFont(descriptor: tabular, size: points)
             let column = UIFontMetrics(forTextStyle: .caption1)
                 .scaledValue(for: BookshelfView.statusColumnWidth, compatibleWith: traits)
-            for status in statuses {
-                let width = (status as NSString).size(withAttributes: [.font: font]).width
-                XCTAssertLessThanOrEqual(width.rounded(.up), column,
-                                         "'\(status)' at \(size.rawValue) needs \(width) pt of \(column)")
+            // Theme's caption: medium, tabular digits; and bold, as Bold Text
+            // draws it (the column and the text scale together, so a status
+            // that overflows at one size overflows at all of them).
+            for weight: UIFont.Weight in [.medium, .bold] {
+                let plain = UIFont.systemFont(ofSize: points, weight: weight)
+                let tabular = plain.fontDescriptor.addingAttributes([.featureSettings: [[
+                    UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
+                    UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
+                ]]])
+                let font = UIFont(descriptor: tabular, size: points)
+                for status in statuses {
+                    let width = (status as NSString).size(withAttributes: [.font: font]).width
+                    XCTAssertLessThanOrEqual(width.rounded(.up), column,
+                                             "'\(status)' at \(size.rawValue), weight \(weight.rawValue), "
+                                             + "needs \(width) pt of \(column)")
+                }
             }
         }
     }

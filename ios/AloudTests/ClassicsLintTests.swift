@@ -76,31 +76,147 @@ final class ClassicsLintTests: XCTestCase {
 
     /// P053: no hint in either app names a gesture. VoiceOver already says
     /// how to activate an element, and the words are wrong for Voice
-    /// Control and Switch Control.
+    /// Control and Switch Control. B7-2: a hint is read where it is set and
+    /// in the declarations it comes from, the copy tables' constants and
+    /// functions included.
     func testNoHintNamesAGesture() throws {
         let s = try SourceTree.appSources()
+        let scan = try Self.scanHints(in: s)
+        XCTAssertGreaterThan(scan.sites, 5, "the scan should see the apps' hints")
+        let tables: Set = ["contentsHint", "retryHint", "extendHint", "backFiveMinutesHint", "hintSample",
+                           "hintSentence", "hint", "rowHint", "textHint", "privacyLine"]
+        XCTAssertEqual(tables.subtracting(scan.declarations), [],
+                       "the scan should read the declarations the hints come from")
+        XCTAssertEqual(scan.offenders, [], "A hint says what happens, never which gesture makes it")
+    }
+
+    /// B7-2: a gesture written into a hint table, or into a function that
+    /// returns a hint, is caught though the call site holds no literal; a
+    /// table's other constants are left alone.
+    func testTheHintScanReadsTheTablesHintsComeFrom() throws {
+        let sources = [
+            "Copy.swift": """
+            enum PasteCopy {
+                static let open = "Tap to open"
+                static let label = "Tap"
+                static func closing(_ soon: Bool) -> String {
+                    if soon { return "Swipe down to close" }
+                    return ""
+                }
+            }
+            """,
+            "Chip.swift": """
+            enum Chip {
+                case paste
+                var hint: String {
+                    switch self {
+                    case .paste: return "Click to paste"
+                    }
+                }
+            }
+            """,
+            "View.swift": """
+            struct PasteView: View {
+                var body: some View {
+                    Text("Paste").accessibilityHint(PasteCopy.open)
+                    Text("Close").accessibilityHint(PasteCopy.closing(true))
+                    Text("Chip").accessibilityHint(chip.hint)
+                }
+            }
+            """,
+        ]
+        let scan = try Self.scanHints(in: sources)
+        XCTAssertEqual(scan.sites, 3)
+        XCTAssertEqual(scan.offenders, ["Chip.swift:5 \u{00AB}Click to paste\u{00BB}",
+                                        "Copy.swift:2 \u{00AB}Tap to open\u{00BB}",
+                                        "Copy.swift:5 \u{00AB}Swipe down to close\u{00BB}"])
+    }
+
+    /// What `scanHints` found: the literals naming a gesture, the hint sites
+    /// seen, and the names of the declarations read as hints.
+    struct HintScan {
+        var offenders: [String] = []
+        var sites = 0
+        var declarations: Set<String> = []
+    }
+
+    /// Reads every hint in `sources` (path to text). A hint site is a
+    /// `.accessibilityHint(` call or a UIKit hint assignment; a hint
+    /// declaration is any let, var or func named for a hint, or a member a
+    /// site reads through a type (`Copy.name`, `Self.name`). Literals on a
+    /// site's line or inside a hint declaration must name no gesture at all;
+    /// every other literal must not say double-tap.
+    static func scanHints(in sources: [String: String]) throws -> HintScan {
         let gesture = try NSRegularExpression(
             pattern: #"(?i)\b(double[- ]?)?(tap(s|ped|ping)?|click(s|ed|ing)?)\b|\bswip(e|es|ed|ing)\b"#)
         let doubleTap = try NSRegularExpression(pattern: #"(?i)\bdouble[- ]?tap"#)
-        func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {
-            regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+        let site = try NSRegularExpression(pattern: #"\.accessibilityHint\(|\baccessibilityHint(Text)?\s*=(?!=)"#)
+        let member = try NSRegularExpression(pattern: #"\b[A-Z]\w*\.([a-z_]\w*)"#)
+        let declaration = try NSRegularExpression(pattern: #"\b(let|var|func)\s+([A-Za-z_]\w*)"#)
+        let hintName = try NSRegularExpression(pattern: #"[Hh]int"#)
+        func first(_ regex: NSRegularExpression, _ text: String) -> NSTextCheckingResult? {
+            regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+        }
+        func group(_ match: NSTextCheckingResult, _ index: Int, _ text: String) -> String {
+            Range(match.range(at: index), in: text).map { String(text[$0]) } ?? ""
         }
 
-        var offenders: [String] = []
-        var hintCount = 0
-        for (path, source) in s.sorted(by: { $0.key < $1.key }) {
-            let lines = source.components(separatedBy: "\n")
-            let hintLines = Set(lines.indices.filter { lines[$0].contains(".accessibilityHint(") }.map { $0 + 1 })
-            hintCount += hintLines.count
-            for literal in SwiftLiterals.literals(in: source, path: path) {
-                let text = SwiftLiterals.unescaped(literal.text)
-                if hintLines.contains(literal.line) ? matches(gesture, text) : matches(doubleTap, text) {
-                    offenders.append("\(path):\(literal.line) \u{00AB}\(text)\u{00BB}")
+        var scan = HintScan()
+        // Comments dropped and literal text blanked, lines kept in place.
+        let code = sources.mapValues { SwiftLiterals.code(in: $0).components(separatedBy: "\n") }
+
+        // The sites, and the members they read through a type.
+        var siteLines: [String: Set<Int>] = [:]
+        var referenced: Set<String> = []
+        for (path, lines) in code {
+            for (index, line) in lines.enumerated() {
+                guard let found = first(site, line), let range = Range(found.range, in: line) else { continue }
+                siteLines[path, default: []].insert(index + 1)
+                scan.sites += 1
+                let argument = String(line[range.upperBound...])
+                for match in member.matches(in: argument, range: NSRange(argument.startIndex..., in: argument)) {
+                    referenced.insert(group(match, 1, argument))
                 }
             }
         }
-        XCTAssertGreaterThan(hintCount, 5, "the scan should see the apps' hints")
-        XCTAssertEqual(offenders, [], "A hint says what happens, never which gesture makes it")
+
+        // The declarations hints come from: the declaring line, a body in
+        // braces (a function's may open a few lines down), or a constant
+        // whose value continues on the next line.
+        var tableLines: [String: Set<Int>] = [:]
+        for (path, lines) in code {
+            for (index, line) in lines.enumerated() {
+                guard let found = first(declaration, line) else { continue }
+                let name = group(found, 2, line)
+                guard referenced.contains(name) || first(hintName, name) != nil else { continue }
+                scan.declarations.insert(name)
+                var last = index
+                let isFunc = group(found, 1, line) == "func"
+                if let open = (index..<min(index + (isFunc ? 6 : 1), lines.count))
+                    .first(where: { lines[$0].contains("{") }) {
+                    var depth = 0
+                    for end in open..<lines.count {
+                        depth += lines[end].filter { $0 == "{" }.count - lines[end].filter { $0 == "}" }.count
+                        last = end
+                        if depth <= 0 { break }
+                    }
+                } else if line.trimmingCharacters(in: .whitespaces).hasSuffix("="), index + 1 < lines.count {
+                    last = index + 1
+                }
+                tableLines[path, default: []].formUnion((index + 1)...(last + 1))
+            }
+        }
+
+        for (path, source) in sources.sorted(by: { $0.key < $1.key }) {
+            let hinted = siteLines[path, default: []].union(tableLines[path, default: []])
+            for literal in SwiftLiterals.literals(in: source, path: path) {
+                let text = SwiftLiterals.unescaped(literal.text)
+                if first(hinted.contains(literal.line) ? gesture : doubleTap, text) != nil {
+                    scan.offenders.append("\(path):\(literal.line) \u{00AB}\(text)\u{00BB}")
+                }
+            }
+        }
+        return scan
     }
 
     // MARK: - Helpers
