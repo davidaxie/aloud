@@ -125,6 +125,31 @@ final class GutenbergBackfillTests: XCTestCase {
         XCTAssertEqual(retitle(gone).title, "Frankenstein; or, The Modern Prometheus", "no catalog entry")
     }
 
+    /// CD-2: #25525 was added under an earlier build's curated title, which
+    /// differs from today's full title only in one capital and from the
+    /// header's in several. It is still the catalog's spelling, not a rename,
+    /// so it takes the shelf's title, through the v3 pass and the v1 backfill.
+    func testAnEarlierCuratedTitleInOtherCapitalsTakesTheShelfsTitle() {
+        let poe = BookshelfBook(
+            gutenbergID: 25525, title: "The Works of Edgar Allan Poe: Contents and Index",
+            author: "Edgar Allan Poe", year: nil,
+            file: "25525-the-works-of-edgar-allan-poe-the-raven-edition-table-of-cont.txt", words: 443_628,
+            headerTitle: "The Works of Edgar Allan Poe, The Raven Edition: Table Of Contents And Index Of The Five Volumes",
+            fullTitle: "The Works of Edgar Allan Poe, the Raven Edition: Table of Contents and Index of the Five Volumes")
+        let earlier = "The Works of Edgar Allan Poe, The Raven Edition: Table of Contents and Index of the Five Volumes"
+        XCTAssertNotEqual(earlier, poe.fullTitle)
+        XCTAssertNotEqual(earlier, poe.headerTitle)
+        let added = record(title: earlier, author: "Edgar Allan Poe", wordCount: 443_628, gutenbergID: 25525)
+        XCTAssertEqual(DocumentStore.retitlingClassics(in: [added], catalog: [poe])[0].title, poe.title)
+        let v1 = record(title: earlier, author: "Edgar Allan Poe", wordCount: 1)
+        let linked = backfill(v1, catalog: [callOfTheWild, poe])
+        XCTAssertEqual(linked.gutenbergID, 25525)
+        XCTAssertEqual(linked.title, poe.title)
+        let renamed = record(title: "Poe's Index", author: "Edgar Allan Poe", gutenbergID: 25525)
+        XCTAssertEqual(DocumentStore.retitlingClassics(in: [renamed], catalog: [poe])[0].title, "Poe's Index",
+                       "a rename still stays")
+    }
+
     /// A v1 record titled with the full title is linked and retitled too.
     func testTheV1BackfillAcceptsTheFullTitle() {
         let linked = backfill(record(title: "Frankenstein; or, The Modern Prometheus",

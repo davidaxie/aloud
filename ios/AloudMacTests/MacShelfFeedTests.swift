@@ -47,6 +47,12 @@ final class MacShelfFeedTests: XCTestCase {
         XCTAssertEqual(MacClassicsView.rowValue(inLibrary: true, adding: false, finished: true), "Finished")
         XCTAssertEqual(MacClassicsView.rowValue(inLibrary: true, adding: false, playing: true), "Playing")
         XCTAssertEqual(MacClassicsView.rowValue(inLibrary: false, adding: false), "")
+        // CD-1: the hint matches the iPhone's: a playing row only brings up
+        // its reader, and a finished copy, which opens paused, promises nothing.
+        XCTAssertEqual(MacClassicsView.rowHint(finished: false, playing: true), "Opens the reader")
+        XCTAssertEqual(MacClassicsView.rowHint(finished: true, playing: true), "Opens the reader")
+        XCTAssertEqual(MacClassicsView.rowHint(finished: true), "")
+        XCTAssertEqual(MacClassicsView.rowHint(finished: false), "Opens and starts reading aloud")
 
         func copy(_ id: Int?, progress: Double) -> LibraryDocument {
             LibraryDocument(id: UUID(), title: "Title", fileName: "doc.txt", addedAt: Date(timeIntervalSince1970: 0),

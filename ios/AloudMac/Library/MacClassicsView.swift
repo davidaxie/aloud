@@ -168,7 +168,7 @@ struct MacClassicsView: View {
         .accessibilityLabel(label)
         .accessibilityValue(Self.rowValue(inLibrary: inLibrary, adding: adding,
                                           finished: finished, playing: playing))
-        .accessibilityHint("Opens and starts reading aloud")
+        .accessibilityHint(Self.rowHint(finished: finished, playing: playing))
         .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
     }
 
@@ -210,6 +210,15 @@ struct MacClassicsView: View {
         if finished { return "Finished" }
         if inLibrary { return "In library" }
         return ""
+    }
+
+    /// What the row does, as the iPhone's Classics row says it
+    /// (`BookshelfView.rowHint`). A finished copy opens paused at its end, so
+    /// it promises nothing; the copy already playing goes on as it is, so the
+    /// row only brings up its reader (`PlaybackController.opensPlaying`).
+    nonisolated static func rowHint(finished: Bool, playing: Bool = false) -> String {
+        if playing { return "Opens the reader" }
+        return finished ? "" : "Opens and starts reading aloud"
     }
 
     /// The only add path. The importer adds the book if needed (or finds the

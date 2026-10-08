@@ -127,6 +127,19 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertTrue(view.contains("finished: finishedIDs.contains(book.id)"), "the row knows its copy is finished")
     }
 
+    /// CD-1, R1-36 on both apps: the Mac's Classics row takes its hint from
+    /// its own table with the same playing and finished inputs as its value,
+    /// so VoiceOver never hears a playing row promise to start reading.
+    func testTheMacRowHintFollowsPlayingAndFinished() throws {
+        let macPath = "Library/MacClassicsView.swift"
+        let s = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
+        let mac = try XCTUnwrap(s[macPath])
+        XCTAssertTrue(mac.contains(".accessibilityHint(Self.rowHint(finished: finished, playing: playing))"),
+                      "the Mac row's hint follows its state")
+        XCTAssertFalse(mac.contains(".accessibilityHint(\""), "no fixed hint on the Mac row")
+        XCTAssertTrue(mac.contains("nonisolated static func rowHint(finished: Bool, playing: Bool = false) -> String"))
+    }
+
     /// P053: no hint in either app names a gesture. VoiceOver already says
     /// how to activate an element, and the words are wrong for Voice
     /// Control and Switch Control. B7-2: a hint is read where it is set and

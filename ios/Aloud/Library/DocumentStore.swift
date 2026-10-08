@@ -325,14 +325,13 @@ final class DocumentStore: ObservableObject {
             let match = catalog.first { book in
                 (author == book.author || author == book.headerAuthor)
                     && (document.title == book.title
-                        || document.title == book.headerTitle
-                        || document.title == book.fullTitle
+                        || isEarlierCatalogTitle(document.title, of: book)
                         || (document.wordCount > 0 && document.wordCount == book.words))
             }
             guard let book = match else { return document }
             var linked = document
             linked.gutenbergID = book.gutenbergID
-            if document.title == book.headerTitle || document.title == book.fullTitle { linked.title = book.title }
+            if isEarlierCatalogTitle(document.title, of: book) { linked.title = book.title }
             if author == book.headerAuthor { linked.author = book.author }
             return linked
         }
@@ -347,10 +346,21 @@ final class DocumentStore: ObservableObject {
         let books = Dictionary(catalog.map { ($0.gutenbergID, $0) }, uniquingKeysWith: { first, _ in first })
         return documents.map { document in
             guard let id = document.gutenbergID, let book = books[id], document.title != book.title,
-                  document.title == book.fullTitle || document.title == book.headerTitle else { return document }
+                  isEarlierCatalogTitle(document.title, of: book) else { return document }
             var retitled = document
             retitled.title = book.title
             return retitled
+        }
+    }
+
+    /// Whether a record's title is one an earlier catalog gave the book: its
+    /// full title or the Gutenberg header's, in any capitals. A curated
+    /// title of an earlier build could differ from today's full title in
+    /// its capitals alone (#25525's "The" against "the"), and was never the
+    /// listener's rename.
+    nonisolated static func isEarlierCatalogTitle(_ title: String, of book: BookshelfBook) -> Bool {
+        [book.fullTitle, book.headerTitle].contains { spelling in
+            spelling.map { title.caseInsensitiveCompare($0) == .orderedSame } ?? false
         }
     }
 

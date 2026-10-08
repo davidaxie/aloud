@@ -20,8 +20,9 @@ struct BookshelfBook: Codable, Identifiable, Hashable {
     /// did; libraries made before the shortening are renamed from it once
     /// (`DocumentStore.retitlingClassics`).
     var fullTitle: String? = nil
-    /// The book's place at the head of its shelf, 1 first; unranked books
-    /// follow in catalog order (`BookshelfIndex.shelves(rate:)`).
+    /// The book's place at the head of the short shelf, 1 first; unranked
+    /// books follow in catalog order, and the longer shelves ignore it
+    /// (`BookshelfIndex.shelves(rate:)`).
     var rank: Int? = nil
 
     var id: Int { gutenbergID }
@@ -87,9 +88,9 @@ struct BookshelfShelf: Identifiable {
 struct BookshelfIndex {
 
     let books: [BookshelfBook]
-    /// Sections in enum order, ranked books first, then the rest in catalog
-    /// order, empty sections omitted, at 1×; the screens shelve at the
-    /// app-wide speed (`shelves(rate:)`).
+    /// Sections in enum order, the short shelf's ranked books first, then
+    /// the rest in catalog order, empty sections omitted, at 1×; the screens
+    /// shelve at the app-wide speed (`shelves(rate:)`).
     let shelves: [BookshelfShelf]
 
     private let keys: [SearchKey]
@@ -165,17 +166,20 @@ struct BookshelfIndex {
         rate == 1 ? shelves : Self.shelve(books, rate: rate)
     }
 
-    /// Each shelf opens with its ranked books, by rank (the recognisable
-    /// classics the catalog puts first), then the rest in catalog order.
+    /// The short shelf opens with its ranked books, by rank (the
+    /// recognisable classics the catalog puts first), then the rest in
+    /// catalog order. The longer shelves keep catalog order, a ranked book
+    /// a slow speed carries into them included.
     private static func shelve(_ books: [BookshelfBook], rate: Double) -> [BookshelfShelf] {
         let grouped = Dictionary(grouping: books.indices) {
             BookshelfSection.section(forMinutes: books[$0].listeningMinutes(rate: rate))
         }
         return BookshelfSection.allCases.compactMap { section in
             guard let indices = grouped[section], !indices.isEmpty else { return nil }
+            let ranks = section == .underAnHour
             let ordered = indices.sorted { (a: Int, b: Int) -> Bool in
-                let first: (rank: Int, index: Int) = (books[a].rank ?? Int.max, a)
-                let second: (rank: Int, index: Int) = (books[b].rank ?? Int.max, b)
+                let first: (rank: Int, index: Int) = ((ranks ? books[a].rank : nil) ?? Int.max, a)
+                let second: (rank: Int, index: Int) = ((ranks ? books[b].rank : nil) ?? Int.max, b)
                 return first < second
             }
             return BookshelfShelf(section: section, books: ordered.map { books[$0] })

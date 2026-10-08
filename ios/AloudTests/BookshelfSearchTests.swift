@@ -166,27 +166,39 @@ final class BookshelfSearchTests: XCTestCase {
         }
     }
 
-    /// R1-34: a shelf opens with its ranked books, by rank, at any speed;
-    /// the rest follow in catalog order, and a shelf with no ranked book
-    /// keeps catalog order. Search ignores the rank.
+    /// R1-34: the short shelf opens with its ranked books, by rank, at any
+    /// speed; the rest follow in catalog order. An evening and Long reads
+    /// stay unranked (CD-3): at 0.5× a ranked 34-minute book reads over an
+    /// hour, and takes its catalog place in An evening. Search ignores the
+    /// rank.
     func testRankedBooksOpenTheirShelf() {
         var cask = book(1063, "The Cask of Amontillado", "Edgar Allan Poe", words: 2_317)
         cask.rank = 1
         var rabbit = book(14838, "The Tale of Peter Rabbit", "Beatrix Potter", words: 1_012)
         rabbit.rank = 2
+        var crossing = book(1934, "A Ranked Story", "C. Writer", words: 5_539)
+        crossing.rank = 3
+        XCTAssertLessThan(crossing.listeningMinutes(rate: 0.75), 60)
+        XCTAssertGreaterThan(crossing.listeningMinutes(rate: 0.5), 60)
         let ranked = BookshelfIndex(books: [
             book(10, "A Short Pamphlet", "A. Writer", words: 3_000),
             rabbit,
             book(11, "Another Short Piece", "B. Writer", words: 4_000),
+            book(12, "A Middling Story", "D. Writer", words: 20_000),
             book(1342, "Pride and Prejudice", "Jane Austen", words: 127_359),
+            crossing,
             cask,
             book(158, "Emma", "Jane Austen", words: 160_000),
         ])
-        for rate in [0.75, 1, 2] {
+        for rate in [0.5, 0.75, 1, 2] {
             let shelves = ranked.shelves(rate: rate)
+            let slow = rate == 0.5
             XCTAssertEqual(shelves.first?.section, .underAnHour, "\(rate)×")
-            XCTAssertEqual(shelves.first?.books.map(\.gutenbergID), [1063, 14838, 10, 11],
+            XCTAssertEqual(shelves.first?.books.map(\.gutenbergID),
+                           slow ? [1063, 14838, 10, 11] : [1063, 14838, 1934, 10, 11],
                            "ranked first, by rank, then catalog order, at \(rate)×")
+            XCTAssertEqual(shelves.first { $0.section == .anEvening }?.books.map(\.gutenbergID),
+                           slow ? [12, 1934] : [12], "An evening keeps catalog order at \(rate)×")
         }
         XCTAssertEqual(ranked.shelves.last?.books.map(\.gutenbergID), [1342, 158],
                        "an unranked shelf keeps catalog order")
