@@ -48,15 +48,27 @@ enum DeviceCopy {
     static let meteredNetworkDetail: String? = "This Wi-Fi is a Personal Hotspot or uses Low Data Mode."
     /// The download waits for a network that costs nothing.
     static let waitingForNetwork = "Download paused · waiting for Wi-Fi"
-    /// Where the installed voice lives: "353 MB on device · works offline".
-    static let onDevice = "on device"
+    /// Where the installed voice lives, named as the Mac's card names it (M17).
+    static let onDevice = "on this iPhone"
     /// The card's line with no usable network path. None on the iPhone,
     /// whose Download with no network waits for Wi-Fi.
     static let connectToDownload: String? = nil
+    /// The not-installed card's promise under the offer: what the voice is
+    /// and that it needs no network once in place. Spelled with the rest of
+    /// the natural voice's copy, where its "offline" may appear.
+    static var naturalVoicePromise: String? { NaturalVoiceCopy.promise }
     /// The installed card's remove action, which asks first.
     static let removeDownload = "Remove Download"
-    /// Where more System voices come from. None on the iPhone.
+    /// Where more System voices come from, as a link. None on the iPhone:
+    /// iOS has no public link to the Spoken Content pane.
     static let addSystemVoices: String? = nil
+    /// The System row's subtitle until it names its voice, and with no
+    /// installed voice to name.
+    static let systemVoiceFallback = "Built into iOS"
+    /// Under the System row while its voice isn't a premium one: where
+    /// better System voices download, as plain text (no link reaches it).
+    static let systemVoicesHint: String? =
+        "More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content \u{203A} Voices"
     /// What to do after a file couldn't be opened: add it again from where
     /// it came.
     static let addAgain = "Try adding it again from Files."
@@ -86,10 +98,17 @@ enum DeviceCopy {
     static let onDevice = "on this Mac"
     /// No usable network path: Download is disabled until there is one (M17).
     static let connectToDownload: String? = "Connect to the internet to download."
+    /// None: the Mac's card makes its promise before a flight instead
+    /// (`NaturalVoiceCopy.beforeFlight`).
+    static let naturalVoicePromise: String? = nil
     /// A Mac button that asks before it acts ends in an ellipsis.
     static let removeDownload = "Remove Download\u{2026}"
     /// Opens Spoken Content, where premium voices download before a flight (M10).
     static let addSystemVoices: String? = "Add voices in System Settings\u{2026}"
+    /// The System row's subtitle until it names its voice.
+    static let systemVoiceFallback = "Built-in fallback"
+    /// None: the Mac's link to Spoken Content says where voices come from.
+    static let systemVoicesHint: String? = nil
     /// A Mac file arrives by the open panel, a drop or Open With, so the
     /// step names none of them.
     static let addAgain = "Try adding it again."

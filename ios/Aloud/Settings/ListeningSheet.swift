@@ -1,16 +1,23 @@
 import SwiftUI
 
-/// R8: the reader's one voice and speed sheet; opens at a content-sized
-/// detent, scrolled to the selected voice; picks are app-wide (R7).
+/// R8: the reader's one voice and speed sheet; picks are app-wide (R7).
 ///
-/// One detent, so `sheetChrome` hides the system indicator and the
-/// SheetGrabber draws. When the content outgrows the screen the detent tops
-/// out and the list scrolls.
+/// It opens at 60% of the screen, so the page and its highlighted
+/// sentence stay in view above it while voices are auditioned, as the Mac's
+/// capped popover leaves the page in view (P034). The list scrolls inside,
+/// opened at the selected voice, and a drag up takes the sheet to the full
+/// list. A fixed fraction, never the content's height, so the first frame
+/// is the last: nothing snaps as the content is measured.
+///
+/// Two detents, so `sheetChrome` keeps the system drag indicator (the
+/// control VoiceOver resizes the sheet with) and the SheetGrabber steps
+/// aside. The scrim stays: a tap above the sheet closes it.
 struct ListeningSheet: View {
-    /// Seeded near the default-size installed layout (eleven natural voices)
-    /// so the first frame barely moves.
-    @State private var headerHeight: CGFloat = 56
-    @State private var contentHeight: CGFloat = 764
+    /// Where the sheet opens: the page keeps the top 40% of the screen.
+    static let openingDetent: PresentationDetent = .fraction(0.6)
+    static let detents: Set<PresentationDetent> = [openingDetent, .large]
+
+    @State private var detent: PresentationDetent = ListeningSheet.openingDetent
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,13 +36,10 @@ struct ListeningSheet: View {
                     .accessibilityIdentifier("listening.title")
             }
             .padding(.bottom, Theme.Space.xs)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                headerHeight = height
-            }
 
-            ListeningView(onContentHeight: { contentHeight = $0 })
+            ListeningView()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .sheetChrome([.height(headerHeight + contentHeight)])
+        .sheetChrome(Self.detents, selection: $detent)
     }
 }

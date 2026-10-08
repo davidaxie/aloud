@@ -249,13 +249,20 @@ enum NaturalVoiceCopy {
     static let privacyLine = "Downloads once from Hugging Face. Nothing about you is sent."
     /// The Mac card's promise under the offer (M17).
     static let beforeFlight = "Download before you fly. After that, everything works offline."
+    /// The iPhone card's promise under the offer (P036): what the download
+    /// is for and that it needs no network afterwards. Read through
+    /// `DeviceCopy.naturalVoicePromise`, which the Mac leaves empty.
+    static let promise = "Sounds like a person reading. Works offline once downloaded."
     /// The not-installed card's line under the offer: on the Mac, the
-    /// promise, or with no usable path what to do first. None on the
-    /// iPhone, whose card reads as it always has.
+    /// flight promise, or with no usable path what to do first. On the
+    /// iPhone, which watches no path before a Download, always its promise.
     static func promoDetail(offline: Bool) -> String? {
-        guard PlatformVoiceSetup.preparesForFlight else { return nil }
+        guard PlatformVoiceSetup.preparesForFlight else { return DeviceCopy.naturalVoicePromise }
         return offline ? DeviceCopy.connectToDownload : beforeFlight
     }
+    /// Settings' Voice & speed row, while the device could run the natural
+    /// voice and it isn't installed: that it exists, and its size (P040).
+    static var available: String { "Natural voice available \u{00B7} \(ModelManager.downloadSizeText)" }
     /// Under the cellular prompt: the costly network, where the prompt
     /// doesn't name it (`DeviceCopy.meteredDetail`), then the privacy line.
     static var cellularPromptMessage: String { cellularPromptMessage(onCellular: true) }

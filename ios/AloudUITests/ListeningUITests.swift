@@ -29,7 +29,7 @@ final class ListeningUITests: XCTestCase {
     }
 
     /// The element's frame once two reads a quarter second apart agree. The
-    /// sheet's content-sized detent settles after its first layout.
+    /// sheet settles after its presentation animation.
     private func settledFrame(of element: XCUIElement) -> CGRect {
         var frame = element.frame
         for _ in 0..<12 {
@@ -185,6 +185,71 @@ final class ListeningUITests: XCTestCase {
         }
     }
 
+    /// P034: the sheet opens at 60% of the screen without tapping a voice
+    /// (a tap speaks), so the page and its sentence stay in view above it;
+    /// it settles where it opened, drags up to the full list, and a tap
+    /// above it still closes it (the scrim stays).
+    func testTheSheetOpensAtSixtyPercentSoThePageStaysInView() {
+        let app = launchReader()
+        openListeningSheet(app)
+        let screen = app.windows.firstMatch.frame
+        let title = app.staticTexts["listening.title"].firstMatch
+        let opened = settledFrame(of: title)
+        // The sheet starts at its drag indicator, just over the title.
+        let sheetTop = opened.minY - 24
+        XCTAssertGreaterThanOrEqual(sheetTop, screen.height * 0.4 - 8,
+                                    "The sheet leaves the top 40% to the page; its top is at \(sheetTop)")
+        XCTAssertLessThan(sheetTop, screen.height * 0.5, "It opens at 60%, not a sliver")
+        let page = app.textViews["reader.text"].firstMatch
+        XCTAssertTrue(page.exists)
+        XCTAssertLessThan(page.frame.minY, sheetTop, "The page shows above the sheet")
+        usleep(100_000)
+        XCTAssertEqual(title.frame.minY, opened.minY, accuracy: 0.5, "No height jump after it opens")
+
+        // The scrim stays: a tap on the reader's bar above the sheet (never
+        // the text, which would play) closes it.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.07)).tap()
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "A tap above the sheet closes it")
+
+        openListeningSheet(app)
+        _ = settledFrame(of: title)
+        let start = title.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)))
+        let grown = settledFrame(of: title)
+        XCTAssertLessThan(grown.minY, screen.height * 0.2, "A drag up reaches the large detent")
+        dismissListeningSheet(app)
+    }
+
+    /// P035/P036 on the pushed page (natural voice not installed): the
+    /// System row names the voice it speaks in, the hint about better voices
+    /// shows only below a premium one, and the card says what the download
+    /// is for between its offer and Download.
+    func testTheSystemRowNamesItsVoiceAndTheCardMakesItsPromise() {
+        let app = XCUIApplication.aloud(["-uitest-reset-voice-pref", "-uitest-temp-model-dir"])
+        app.launch()
+        let settings = app.buttons["library.settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 20))
+        settings.tap()
+        app.buttons["settings.listening"].firstMatch.tap()
+
+        let system = app.buttons["voice.system"].firstMatch
+        XCTAssertTrue(system.waitForExistence(timeout: 10))
+        XCTAssertTrue(system.label.hasPrefix("System voice, "), system.label)
+        let named = system.label != "System voice, Built into iOS"
+        if named {
+            let hint = app.staticTexts["listening.systemVoicesHint"].firstMatch
+            XCTAssertEqual(hint.exists, !system.label.contains("(Premium)"),
+                           "The hint shows below a premium voice only; row '\(system.label)'")
+        }
+
+        let promise = app.staticTexts["model.beforeFlight"].firstMatch
+        let download = app.buttons["model.download"].firstMatch
+        for _ in 0..<6 where !download.isHittable { app.swipeUp() }
+        XCTAssertTrue(promise.waitForExistence(timeout: 5), "The card's promise")
+        XCTAssertEqual(promise.label, "Sounds like a person reading. Works offline once downloaded.")
+        XCTAssertLessThanOrEqual(promise.frame.maxY, download.frame.minY, "Read before Download")
+    }
+
     func testSettingsReachesSameListeningView() {
         let app = XCUIApplication.aloud(["-uitest-reset-voice-pref", "-uitest-temp-model-dir"])
         app.launch()
@@ -206,7 +271,7 @@ final class ListeningUITests: XCTestCase {
     }
 
     /// Clipping is audited on the Voice & speed page Settings pushes: the
-    /// same ListeningView as the sheet. Inside the reader's content-sized
+    /// same ListeningView as the sheet. Inside the reader's
     /// sheet the clipping check flags lines that are whole on screen (the
     /// run's recording shows them); pushed, the same views pass. So the
     /// sheet's own audit leaves clipping to this one.
@@ -256,8 +321,8 @@ final class ListeningUITests: XCTestCase {
                 return true   // collected, so one failure lists them all
             }
             // The settled sheet first, then Dynamic Type on its own: that
-            // audit steps the text size live and this sheet's detent follows
-            // its content (R8), so the sheet resizes through every step.
+            // audit steps the text size live, and the sheet's content
+            // reflows inside its fixed detent (P034) through every step.
             // Clipping is audited on the pushed page instead
             // (testVoiceAndSpeedPageClipsNothing): in this sheet the check
             // flags lines that are whole on screen, even at rest.

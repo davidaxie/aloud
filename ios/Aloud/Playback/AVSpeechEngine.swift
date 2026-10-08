@@ -31,7 +31,7 @@ final class AVSpeechEngine: TtsEngine {
             gender: "",
             engine: .avSpeech,
             quality: 1,
-            subtitle: "Built-in fallback")
+            subtitle: DeviceCopy.systemVoiceFallback)
         voices = [defaultVoice]
     }
 
@@ -309,6 +309,23 @@ final class AVSpeechEngine: TtsEngine {
         default: return candidate.name
         }
         return candidate.name.hasSuffix(")") ? candidate.name : "\(candidate.name) (\(tier))"
+    }
+
+    /// The tier of the voice the System row speaks in right now: the same
+    /// pick as `resolvedVoiceDisplayName`, so the row's hint about better
+    /// voices never contradicts the name beside it. Nil with no installed
+    /// voice.
+    static func resolvedVoiceQuality(reading language: String? = nil) -> AVSpeechSynthesisVoiceQuality? {
+        cachedBestSystemVoice(reading: language).map { quality(of: VoiceCandidate($0, localeDefaultID: nil)) }
+    }
+
+    /// A ranked candidate's tier as AVFoundation names it.
+    static func quality(of candidate: VoiceCandidate) -> AVSpeechSynthesisVoiceQuality {
+        switch candidate.quality {
+        case 3: return .premium
+        case 2: return .enhanced
+        default: return .default
+        }
     }
 
     /// Posted when voices are added or removed in System Settings, so the

@@ -184,6 +184,27 @@ final class ThemeTokenContrastTests: XCTestCase {
         }
     }
 
+    /// P041: Voice & speed and Text & appearance are pushed on the Settings
+    /// root's bgTint. Their text tiers clear AA there (the solid-ground
+    /// test), a voice row's 3 pt selection bar and a toggle's track keep the
+    /// 3:1 non-text minimum, and the selected speed preset, drawn over
+    /// surface2 on that page (its tint over bgTint alone is 4.41:1 in
+    /// light), and the selected scheme segment clear AA.
+    func testTheSettingsGroundKeepsItsSelectionsLegible() {
+        for appearance in Appearance.all {
+            let bar = contrast(Theme.accent, on: Theme.bgTint, appearance)
+            XCTAssertGreaterThanOrEqual(bar, 3, "accent on bgTint, \(appearance): " + String(format: "%.2f:1", bar))
+            let preset = contrast(Theme.accentStrong, on: Theme.accentSoft, over: Theme.surface2, appearance)
+            XCTAssertGreaterThanOrEqual(preset, 4.5, "accentStrong on accentSoft over surface2, \(appearance): "
+                                        + String(format: "%.2f:1", preset))
+            for text in Self.textColors {
+                let ratio = contrast(text.color, on: Theme.bgTint, appearance)
+                XCTAssertGreaterThanOrEqual(ratio, 4.5, "\(text.name) on bgTint, \(appearance): "
+                                            + String(format: "%.2f:1", ratio))
+            }
+        }
+    }
+
     /// A progress fill (`accent`) stays the 3:1 non-text minimum on its
     /// track in every appearance: the scrubs, cover progress, the download
     /// and import bars. On the Increase Contrast `line` it was 1.00:1.

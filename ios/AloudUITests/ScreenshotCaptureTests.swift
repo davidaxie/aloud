@@ -121,11 +121,14 @@ final class ScreenshotCaptureTests: XCTestCase {
         let aaButton = app.buttons["reader.appearance"].firstMatch
         XCTAssertTrue(aaButton.waitForExistence(timeout: 5))
         aaButton.tap()
-        XCTAssertTrue(app.buttons["appearance.scheme.system"].firstMatch
+        // The scheme capsules are one segmented control for VoiceOver (P039).
+        XCTAssertTrue(app.descendants(matching: .any)["appearance.scheme"].firstMatch
             .waitForExistence(timeout: 10))
         sleep(1)
         save(shot(), to: shotsDir + "/09-appearance-sheet.png")
-        app.swipeDown(velocity: .fast)
+        // The page is live behind the sheet (P037): a swipe there would
+        // scroll it, so the sheet's own Done closes it.
+        app.buttons["appearance.done"].firstMatch.tap()
         XCTAssertTrue(readerText.waitForExistence(timeout: 10))
 
         // 10 — The sleep chip's menu.

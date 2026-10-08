@@ -36,15 +36,28 @@ final class SettingsUITests: XCTestCase {
         card.tap()
     }
 
-    /// The identifiers of the buttons and switches under `prefix`, sorted.
+    /// The identifiers of the buttons, switches and segmented controls under
+    /// `prefix`, sorted.
     private func controlIdentifiers(withPrefix prefix: String, in app: XCUIApplication) -> [String] {
         let predicate = NSPredicate(format: "identifier BEGINSWITH %@", prefix)
         let controls = app.buttons.matching(predicate).allElementsBoundByIndex
             + app.switches.matching(predicate).allElementsBoundByIndex
+            + app.segmentedControls.matching(predicate).allElementsBoundByIndex
         return Set(controls.map(\.identifier)).sorted()
     }
 
-    /// "appearance.scheme.dark" → "appearance.scheme": one control group.
+    /// The System / Light / Dark control: one segmented control for
+    /// VoiceOver, named Appearance (P039).
+    private func schemeControl(_ app: XCUIApplication) -> XCUIElement {
+        app.segmentedControls["appearance.scheme"].firstMatch
+    }
+
+    /// One of its three choices, by its visible name.
+    private func schemeChoice(_ label: String, in app: XCUIApplication) -> XCUIElement {
+        schemeControl(app).buttons.matching(NSPredicate(format: "label ==[c] %@", label)).firstMatch
+    }
+
+    /// "appearance.textSize.larger" → "appearance.textSize": one control group.
     private func group(_ identifier: String) -> String {
         identifier.split(separator: ".").prefix(2).joined(separator: ".")
     }
@@ -57,7 +70,7 @@ final class SettingsUITests: XCTestCase {
     /// A test that picks Dark puts System back, so later launches aren't dark.
     private func restoreSystemAppearance(after app: XCUIApplication) {
         addTeardownBlock {
-            let system = app.buttons["appearance.scheme.system"].firstMatch
+            let system = self.schemeChoice("System", in: app)
             if system.exists, !system.isSelected { system.tap() }
         }
     }
@@ -111,7 +124,7 @@ final class SettingsUITests: XCTestCase {
         let appearance = app.buttons["settings.appearance"].firstMatch
         XCTAssertTrue(appearance.waitForExistence(timeout: 10))
         appearance.tap()                                                 // 2
-        let dark = app.buttons["appearance.scheme.dark"].firstMatch
+        let dark = schemeChoice("Dark", in: app)
         XCTAssertTrue(dark.waitForExistence(timeout: 10))
         dark.tap()                                                       // 3
 
@@ -127,7 +140,7 @@ final class SettingsUITests: XCTestCase {
         let aa = app.buttons["reader.appearance"].firstMatch
         XCTAssertTrue(aa.waitForExistence(timeout: 20))
         aa.tap()                                                         // 2
-        let dark = app.buttons["appearance.scheme.dark"].firstMatch
+        let dark = schemeChoice("Dark", in: app)
         XCTAssertTrue(dark.waitForExistence(timeout: 10))
         dark.tap()                                                       // 3
 
@@ -146,7 +159,10 @@ final class SettingsUITests: XCTestCase {
         let title = app.staticTexts["appearance.title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 10), "The Aa sheet should open")
         XCTAssertEqual(title.label, "Text & appearance")
-        let sheetControls = controlIdentifiers(withPrefix: "appearance.", in: app)
+        // Done is the sheet's chrome (it leaves the page live, P037), not one
+        // of the view's controls: the pushed page has none.
+        XCTAssertTrue(app.buttons["appearance.done"].firstMatch.exists, "The Aa sheet carries Done")
+        let sheetControls = controlIdentifiers(withPrefix: "appearance.", in: app).filter { $0 != "appearance.done" }
         let groups = Set(sheetControls.map(group))
         XCTAssertLessThanOrEqual(groups.count, 4, "The Aa view has 4 or fewer controls")
         XCTAssertEqual(groups, ["appearance.scheme", "appearance.textSize", "appearance.wordHighlight"])
@@ -162,6 +178,109 @@ final class SettingsUITests: XCTestCase {
                        "Settings pushes the same view the Aa sheet presents")
     }
 
+    // MARK: - iPhone parity, batch B5
+
+    /// P037: the Aa sheet leaves the page live behind it. A tap on the
+    /// reader's bar above it (never the text, which would play) no longer
+    /// closes it, A+ changes the size with the sheet still open, and Done
+    /// closes it. The sheet passes the audit.
+    func testTheAaSheetLeavesThePageLiveAndDoneClosesIt() throws {
+        let app = launch(["-uitest-reset-library", "-uitest-seed-first-classic", "-uitest-temp-model-dir",
+                          "-aloud.prefs.v1.textSize", "2"])
+        openBook(app)
+        let aa = app.buttons["reader.appearance"].firstMatch
+        XCTAssertTrue(aa.waitForExistence(timeout: 20))
+        aa.tap()
+        let title = app.staticTexts["appearance.title"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "The Aa sheet should open")
+        let done = app.buttons["appearance.done"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(done.frame.height, 44, "Done is a full touch target")
+        XCTAssertEqual(done.label, "Done")
+
+        // Without a scrim, a tap above the sheet reaches the page, not a dismiss.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.07)).tap()
+        XCTAssertFalse(waitForNonExistence(of: title, timeout: 2), "A tap outside no longer closes the Aa sheet")
+
+        let size = app.descendants(matching: .any)["appearance.textSize.value"].firstMatch
+        XCTAssertTrue(size.waitForExistence(timeout: 5))
+        XCTAssertEqual(size.label, "Text size")
+        XCTAssertEqual(stringValue(of: size), "19 point")
+        app.buttons["appearance.textSize.larger"].firstMatch.tap()
+        XCTAssertTrue(waitForValue("21 point", of: size, timeout: 5), "A+ steps 19 to 21 pt, live")
+        XCTAssertTrue(title.exists, "The sheet stays open while the page reflows")
+
+        let sheetTop = title.frame.minY - 24
+        var issues: [String] = []
+        try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .sufficientElementDescription]) { issue in
+            // Only the sheet: the live page behind it has its own audit.
+            if let element = issue.element,
+               element.frame.minY < sheetTop
+                || ["reader.", "player.", "debug."].contains(where: { element.identifier.hasPrefix($0) }) {
+                return true
+            }
+            issues.append(self.describe(issue))
+            return true   // collected, so one failure lists them all
+        }
+        XCTAssertEqual(issues, [], "The Aa sheet")
+
+        done.tap()
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "Done closes the Aa sheet")
+    }
+
+    /// P039: VoiceOver hears System / Light / Dark as one segmented control
+    /// named Appearance (so each choice says its place in the three), and a
+    /// choice persists across a relaunch. The size readout is one element,
+    /// "Text size" with its value, which the shared step rule moves.
+    func testAppearanceIsOneSegmentedControlAndSizeOneElement() {
+        var app = launch(["-uitest-temp-model-dir"])
+        // Whichever launch is running at the end puts System back.
+        addTeardownBlock {
+            let system = self.schemeChoice("System", in: app)
+            if system.exists, !system.isSelected { system.tap() }
+        }
+        openSettings(app)
+        app.buttons["settings.appearance"].firstMatch.tap()
+
+        let scheme = schemeControl(app)
+        XCTAssertTrue(scheme.waitForExistence(timeout: 10), "One segmented control")
+        XCTAssertEqual(scheme.label, "Appearance")
+        XCTAssertEqual(scheme.buttons.count, 3, "System, Light and Dark")
+        let dark = schemeChoice("Dark", in: app)
+        dark.tap()
+        XCTAssertTrue(wait(for: "selected == true", on: dark), "Dark should be selected")
+
+        let size = app.descendants(matching: .any)["appearance.textSize.value"].firstMatch
+        XCTAssertTrue(size.exists)
+        XCTAssertEqual(size.label, "Text size")
+        XCTAssertTrue(stringValue(of: size).hasSuffix(" point"), "got '\(stringValue(of: size))'")
+
+        app.terminate()
+        app = launch(["-uitest-temp-model-dir"])
+        openSettings(app)
+        app.buttons["settings.appearance"].firstMatch.tap()
+        XCTAssertTrue(schemeControl(app).waitForExistence(timeout: 10))
+        XCTAssertTrue(wait(for: "selected == true", on: schemeChoice("Dark", in: app)),
+                      "The choice persists (appearanceRaw)")
+    }
+
+    /// P040: the root's rows say their values, title first: the size and
+    /// scheme, and, while the natural voice isn't installed, that it is
+    /// available. Exactly three rows stay.
+    func testTheRootRowsSayTheirValues() {
+        let app = launch(["-uitest-temp-model-dir", "-aloud.prefs.v1.textSize", "2",
+                          "-aloud.prefs.v1.appearance", "system"])
+        openSettings(app)
+        XCTAssertEqual(controlIdentifiers(withPrefix: "settings.", in: app),
+                       ["settings.appearance", "settings.licenses", "settings.listening"])
+        XCTAssertEqual(app.buttons["settings.appearance"].firstMatch.label,
+                       "Text & appearance, 19 point, System appearance")
+        let listening = app.buttons["settings.listening"].firstMatch.label
+        XCTAssertTrue(listening.hasPrefix("Voice & speed, "), listening)
+        XCTAssertTrue(listening.hasSuffix(", Natural voice available, 353 MB"),
+                      "The natural voice is named while it isn't installed; got '\(listening)'")
+    }
+
     // MARK: - Accessibility
 
     func testSettingsAndAppearanceAccessibilityAudit() throws {
@@ -175,7 +294,7 @@ final class SettingsUITests: XCTestCase {
             XCTAssertEqual(try auditIssues(app), [], "Settings at \(size.name)")
 
             app.buttons["settings.appearance"].firstMatch.tap()
-            XCTAssertTrue(app.buttons["appearance.scheme.dark"].firstMatch.waitForExistence(timeout: 10))
+            XCTAssertTrue(schemeControl(app).waitForExistence(timeout: 10))
             XCTAssertEqual(try auditIssues(app), [], "Text & appearance at \(size.name)")
             app.terminate()
         }

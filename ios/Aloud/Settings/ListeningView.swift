@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 /// The Listening view's copy, one place for the sheet and the Settings page.
@@ -43,20 +44,29 @@ enum ListeningCopy {
 /// bracketed asides; and the natural-voice card (or its one unsupported
 /// line). Every pick is app-wide (R7) and heard where it is made: a voice tap
 /// re-speaks the current sentence, or a sample line with no book, through the
-/// playback graph — there is no second audio path. On the Mac (M10) the
-/// System row names the voice it resolves to, and a link opens System
-/// Settings, where premium voices download before a flight.
+/// playback graph — there is no second audio path. The System row names the
+/// voice it resolves to (M10, P035). Where better System voices come from
+/// is a link to System Settings on the Mac and, below a premium voice, a
+/// plain line on the iPhone, which has no link to that pane.
 ///
 /// The reader presents it in `ListeningSheet`; Settings pushes it as
 /// `ListeningSettingsPage`.
 struct ListeningView: View {
 
     private let showsInstalledModel: Bool
-    /// The content's natural height, for the sheet's content-sized detent.
+    /// Drawn under a selected speed preset's translucent tint, where the
+    /// ground beneath it would leave its label under AA (the Settings
+    /// page's bgTint). Nil: the tint sits on whatever is behind.
+    private let selectedChipUnderlay: Color?
+    /// The content's natural height, for a content-sized container (the
+    /// Mac's popover and Settings tab; the iPhone's sheet opens at a fixed
+    /// fraction and passes none).
     private let onContentHeight: ((CGFloat) -> Void)?
 
-    init(showsInstalledModel: Bool = false, onContentHeight: ((CGFloat) -> Void)? = nil) {
+    init(showsInstalledModel: Bool = false, selectedChipUnderlay: Color? = nil,
+         onContentHeight: ((CGFloat) -> Void)? = nil) {
         self.showsInstalledModel = showsInstalledModel
+        self.selectedChipUnderlay = selectedChipUnderlay
         self.onContentHeight = onContentHeight
     }
 
@@ -66,10 +76,13 @@ struct ListeningView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.openURL) private var openURL
 
-    /// The System row's resolved voice, "Ava (Premium)" (Mac only): read on
+    /// The System row's resolved voice, its name with its tier: read on
     /// appear and whenever System Settings adds or removes a voice, never
     /// per render (the installed-voice list is slow to read).
     @State private var systemVoiceName: String?
+    /// That voice's tier, read with it: below premium, the iPhone says
+    /// where better voices come from.
+    @State private var systemVoiceQuality: AVSpeechSynthesisVoiceQuality?
 
     /// Fixed-width origin column, so names and subtitles line up row to row.
     @ScaledMetric(relativeTo: .caption) private var originColumnWidth: CGFloat = 80
@@ -197,6 +210,8 @@ struct ListeningView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .background(selected ? Theme.accentSoft : Theme.surface2,
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .background(selected ? selectedChipUnderlay ?? Color.clear : Color.clear,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 // Edged under Increase Contrast, so the selection isn't a faint tint alone.
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .strokeBorder(selected ? Theme.Stroke.selectedColor : Color.clear,
@@ -227,7 +242,37 @@ struct ListeningView: View {
         }
         // The single System row, always offered as the fallback.
         ForEach(model.engine.voices) { voiceRow($0) }
+        systemVoicesHint
         addSystemVoices
+    }
+
+    /// iPhone only: a muted line under the System row naming where better
+    /// System voices download, while the one it speaks in isn't premium.
+    /// Plain text, never a link (iOS has no public link to that pane); it
+    /// wraps at every size.
+    @ViewBuilder
+    private var systemVoicesHint: some View {
+        if let hint = DeviceCopy.systemVoicesHint,
+           Self.showsSystemVoicesHint(hint, quality: systemVoiceQuality) {
+            Text(hint)
+                .font(Theme.font(.footnote))
+                .foregroundStyle(Theme.textMuted)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Theme.Space.sheetGutter)
+                .padding(.bottom, Theme.Space.sm)
+                .accessibilityIdentifier("listening.systemVoicesHint")
+        }
+    }
+
+    /// The hint shows where the platform has one and the System voice in
+    /// use is below premium, or none is installed to name.
+    nonisolated static func showsSystemVoicesHint(_ hint: String?,
+                                                  quality: AVSpeechSynthesisVoiceQuality?) -> Bool {
+        guard hint != nil else { return false }
+        guard let quality else { return true }
+        return quality.rawValue < AVSpeechSynthesisVoiceQuality.premium.rawValue
     }
 
     /// Mac only: opens Spoken Content, where premium System voices download
@@ -256,11 +301,15 @@ struct ListeningView: View {
     }
 
     /// The System row's subtitle names its voice where the platform does,
-    /// once resolved; the iPhone keeps "Built-in fallback".
+    /// once resolved; until then, and with no voice to name, it keeps
+    /// `DeviceCopy.systemVoiceFallback`.
     private func resolveSystemVoiceName() {
         guard PlatformVoiceSetup.namesResolvedSystemVoice else { return }
-        let name = AVSpeechEngine.resolvedVoiceDisplayName(reading: playback.systemVoiceLanguage)
+        let language = playback.systemVoiceLanguage
+        let name = AVSpeechEngine.resolvedVoiceDisplayName(reading: language)
         if name != systemVoiceName { systemVoiceName = name }
+        let quality = AVSpeechEngine.resolvedVoiceQuality(reading: language)
+        if quality != systemVoiceQuality { systemVoiceQuality = quality }
     }
 
     /// One whole-row button: a tap selects and speaks, and the sheet stays
@@ -362,8 +411,8 @@ struct ListeningView: View {
         return voice.gender.isEmpty ? region : "\(region) · \(voice.gender)"
     }
 
-    /// Starts with the visible name and subtitle: "Michael, Deep, warm
-    /// narrator, US, male"; "System voice, Built-in fallback".
+    /// Starts with the visible name and subtitle, then the origin: the
+    /// System row says its resolved voice after its own name.
     nonisolated static func accessibilityLabel(name: String, subtitle: String, origin: String) -> String {
         // When the subtitle already is the origin, don't say it twice.
         let spokenOrigin = subtitle == origin ? "" : origin.replacingOccurrences(of: " · ", with: ", ")
@@ -406,18 +455,22 @@ struct ListeningView: View {
     }
 }
 
-/// R7/R21: Settings' "Voice & speed" row pushes the same Listening view the
-/// reader's chip presents, with the installed-model card.
+/// R7/R21: Settings' Voice & speed row pushes the same Listening view the
+/// reader's chip presents, with the installed-model card. On the Settings
+/// root's own ground, bgTint, so the paper doesn't change colour at the
+/// push (P041); the reader's sheet stays on surface. On bgTint a selected
+/// preset's tint alone leaves its label under AA in light, so it is drawn
+/// over surface2, the unselected chips' fill.
 struct ListeningSettingsPage: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ListeningView(showsInstalledModel: true)
-            .background(Theme.surface.ignoresSafeArea())
+        ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2)
+            .background(Theme.bgTint.ignoresSafeArea())
             // An opaque bar on the page's own ground, never a hard scroll
             // edge on a pushed screen (see `ShelfScrollEdge`).
-            .shelfScrollEdge(ground: Theme.surface)
+            .shelfScrollEdge(ground: Theme.bgTint)
             .inlineTitleOnPhone()
             // The bar's system content follows the app's scheme, not the
             // phone's (an in-app Dark override on a Light phone).

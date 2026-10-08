@@ -72,7 +72,7 @@ struct MacTextAppearanceView: View {
     }
 
     private func stepButton(bigger: Bool) -> some View {
-        let target = MacCommandActions.steppedTextSize(from: currentStep, bigger: bigger)
+        let target = ReaderTextSize.stepped(from: currentStep, bigger: bigger)
         let command: MacCommand = bigger ? .biggerText : .smallerText
         return Button {
             if let target { textSizeStep = target }

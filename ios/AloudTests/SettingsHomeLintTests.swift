@@ -70,6 +70,109 @@ final class SettingsHomeLintTests: XCTestCase {
         }
     }
 
+    // MARK: - iPhone parity, batch B5
+
+    /// P034: the Voice & speed sheet opens at a fixed fraction with `.large`
+    /// above it, never a detent sized to its content (an 820 pt takeover
+    /// with the natural voices, and a first frame that snapped).
+    func testTheVoiceSheetIsNotContentSized() throws {
+        let path = "Settings/ListeningSheet.swift"
+        let sources = try SourceTree.sources(only: [path])
+        let sheet = try XCTUnwrap(sources[path])
+        XCTAssertTrue(sheet.contains(".sheetChrome(Self.detents, selection: $detent)"))
+        XCTAssertTrue(sheet.contains("[openingDetent, .large]"))
+        for needle in [".height(", "onContentHeight", "contentHeight", "backgroundInteraction"] {
+            XCTAssertFalse(sheet.contains(needle), "'\(needle)': the sheet keeps its scrim and a fixed fraction")
+        }
+    }
+
+    /// P037: only the Aa sheet leaves the page live behind it, up through
+    /// its fitted detent, and so carries its own Done. Contents and Voice
+    /// & speed keep the scrim that dismisses on a tap.
+    func testOnlyTheAaSheetLeavesThePageLive() throws {
+        let paths = ["Reader/AppearanceSheet.swift", "Settings/ListeningSheet.swift", "Reader/ContentsSheet.swift",
+                     "Theme/SheetGrabber.swift"]
+        let sources = try SourceTree.sources(only: paths)
+        let aa = try XCTUnwrap(sources[paths[0]])
+        XCTAssertTrue(aa.contains(".sheetChrome(detents, backgroundInteraction: fittedDetent)"))
+        XCTAssertTrue(aa.contains("@Environment(\\.dismiss) private var dismiss"))
+        XCTAssertTrue(aa.contains(".accessibilityIdentifier(\"appearance.done\")"))
+        XCTAssertTrue(aa.contains("Text(AppearanceCopy.done)"))
+        for path in paths[1...2] {
+            XCTAssertFalse(try XCTUnwrap(sources[path]).contains("backgroundInteraction"), path)
+        }
+        let chrome = try XCTUnwrap(sources[paths[3]])
+        XCTAssertEqual(SourceTree.occurrences(of: "backgroundInteraction: PresentationDetent? = nil", in: [paths[3]: chrome]), 2,
+                       "both sheetChrome overloads take it, off by default")
+        XCTAssertTrue(chrome.contains("guard let detent else { return .automatic }"), "nil keeps the system's scrim")
+    }
+
+    /// P038: each section of the Aa view stacks leading, so its eyebrow
+    /// sits on the gutter its control starts at, and Word highlight's title
+    /// is body text, as the Voice & speed toggle's is.
+    func testTheAppearanceSectionsAlignLeadingWithABodyToggle() throws {
+        let path = "Reader/AppearanceSheet.swift"
+        let sources = try SourceTree.sources(only: [path])
+        let sheet = try XCTUnwrap(sources[path])
+        XCTAssertEqual(SourceTree.occurrences(of: "VStack(alignment: .leading, spacing: Theme.Space.sm)", in: [path: sheet]), 3)
+        XCTAssertFalse(sheet.contains("VStack(spacing: Theme.Space.sm)"), "a centred section stack")
+        XCTAssertFalse(sheet.contains("titleFont:"), "the toggle row's title keeps its body default")
+    }
+
+    /// P039: VoiceOver hears the scheme as one segmented control and the
+    /// size as one adjustable element, and every size control steps through
+    /// the one shared rule (the Mac's included).
+    func testTheAppearanceControlsAreOneElementEachOnOneStepRule() throws {
+        let path = "Reader/AppearanceSheet.swift"
+        let sources = try SourceTree.sources(only: [path])
+        let sheet = try XCTUnwrap(sources[path])
+        for needle in [".accessibilityRepresentation {", ".pickerStyle(.segmented)",
+                       ".accessibilityIdentifier(\"appearance.scheme\")", ".accessibilityAdjustableAction",
+                       ".accessibilityLabel(AppearanceCopy.textSize)", "ReaderTextSize.stepped(from: currentStep"] {
+            XCTAssertTrue(sheet.contains(needle), "AppearanceView lacks \(needle)")
+        }
+        XCTAssertFalse(sheet.contains("currentStep + delta"), "a second step rule")
+        let mac = try SourceTree.appSources(platforms: [.macOS])
+        XCTAssertEqual(SourceTree.files(containing: "steppedTextSize", in: mac), [], "the Mac's own step rule is gone")
+        XCTAssertFalse(SourceTree.files(containing: "ReaderTextSize.stepped(", in: mac).isEmpty)
+    }
+
+    /// P041: Settings, its two pushed pages and Licenses draw on one ground,
+    /// bgTint, bars included; the reader's sheets stay on surface.
+    func testTheSettingsStackDrawsOnOneGround() throws {
+        let paths = ["Settings/ListeningView.swift", "Reader/AppearanceSheet.swift", "Settings/SettingsView.swift",
+                     "Settings/LicensesView.swift", "Theme/SheetGrabber.swift"]
+        let sources = try SourceTree.sources(only: paths)
+        for (path, page) in zip(paths[0...1], ["struct ListeningSettingsPage", "struct AppearanceSettingsPage"]) {
+            let text = try XCTUnwrap(sources[path])
+            let start = try XCTUnwrap(text.range(of: page), path)
+            let body = text[start.upperBound...]
+            XCTAssertTrue(body.contains(".background(Theme.bgTint.ignoresSafeArea())"), "\(page)'s ground")
+            XCTAssertTrue(body.contains("round: Theme.bgTint)"), "\(page)'s bar")
+            XCTAssertFalse(body.contains("Theme.surface.ignoresSafeArea()"), page)
+        }
+        for path in paths[2...3] {
+            XCTAssertTrue(try XCTUnwrap(sources[path]).contains("Theme.bgTint.ignoresSafeArea()"), path)
+        }
+        XCTAssertTrue(try XCTUnwrap(sources[paths[4]]).contains(".presentationBackground(Theme.surface)"))
+        // On bgTint a selected preset's tint alone is under AA in light.
+        XCTAssertTrue(try XCTUnwrap(sources[paths[0]]).contains("selectedChipUnderlay: Theme.surface2"))
+    }
+
+    /// P040: the root keeps exactly three rows, the two preference rows say
+    /// their values, and the natural voice's line reads from its copy.
+    func testTheSettingsRowsShowTheirValues() throws {
+        let path = "Settings/SettingsView.swift"
+        let sources = try SourceTree.sources(only: [path])
+        let home = try XCTUnwrap(sources[path])
+        XCTAssertEqual(SourceTree.occurrences(of: "NavigationLink {", in: [path: home]), 3)
+        for needle in ["AppearanceCopy.summary(points: textPoints, appearance: appearance)",
+                       "Self.appearanceRowSpokenLabel(points: textPoints, appearance: appearance)",
+                       "naturalVoice: naturalVoiceLine", "NaturalVoiceCopy.available"] {
+            XCTAssertTrue(home.contains(needle), "SettingsView lacks \(needle)")
+        }
+    }
+
     func testNoSystemErrorTextInDownloadOrSettings() throws {
         let sources = try SourceTree.sources(only: ["TTS", "Settings"])
         XCTAssertEqual(SourceTree.files(containing: "localizedDescription", in: sources), [],

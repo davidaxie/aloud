@@ -100,8 +100,8 @@ struct MacCommandActions {
         case .markFinished: return markFinished != nil
         case .deleteBook: return deleteBook != nil
         case .toggleContents: return place.isReader
-        case .biggerText: return Self.steppedTextSize(from: textSizeStep, bigger: true) != nil
-        case .smallerText: return Self.steppedTextSize(from: textSizeStep, bigger: false) != nil
+        case .biggerText: return ReaderTextSize.stepped(from: textSizeStep, bigger: true) != nil
+        case .smallerText: return ReaderTextSize.stepped(from: textSizeStep, bigger: false) != nil
         case .back: return !router.path.isEmpty
         case .voiceAndSpeed, .appearance, .addFromFiles, .addClassic: return true
         // Off with no window ⌘W could close (the main window closed or
@@ -214,12 +214,6 @@ struct MacCommandActions {
         return faster
             ? SpeedScale.presets.first { $0 > rate + epsilon }
             : SpeedScale.presets.last { $0 < rate - epsilon }
-    }
-
-    /// One reader size step (⌘+ / ⌘−), nil past either end.
-    nonisolated static func steppedTextSize(from step: Int, bigger: Bool) -> Int? {
-        let next = min(max(step, 0), ReaderTextSize.steps.count - 1) + (bigger ? 1 : -1)
-        return ReaderTextSize.steps.indices.contains(next) ? next : nil
     }
 
     /// The window ⌘W closes: the key window, when it has a close button or
@@ -382,7 +376,7 @@ struct MacCommandActions {
     }
 
     private func stepTextSize(bigger: Bool) {
-        guard let next = Self.steppedTextSize(from: textSizeStep, bigger: bigger) else { return }
+        guard let next = ReaderTextSize.stepped(from: textSizeStep, bigger: bigger) else { return }
         defaults.set(next, forKey: ReaderTextSize.prefKey)
     }
 }

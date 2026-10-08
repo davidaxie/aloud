@@ -24,10 +24,10 @@ final class MacCommandActionsTests: XCTestCase {
     }
 
     func testTextSizeStepsStopAtTheEnds() {
-        XCTAssertEqual(MacCommandActions.steppedTextSize(from: 2, bigger: true), 3)
-        XCTAssertEqual(MacCommandActions.steppedTextSize(from: 2, bigger: false), 1)
-        XCTAssertNil(MacCommandActions.steppedTextSize(from: 0, bigger: false))
-        XCTAssertNil(MacCommandActions.steppedTextSize(from: ReaderTextSize.steps.count - 1, bigger: true))
+        XCTAssertEqual(ReaderTextSize.stepped(from: 2, bigger: true), 3)
+        XCTAssertEqual(ReaderTextSize.stepped(from: 2, bigger: false), 1)
+        XCTAssertNil(ReaderTextSize.stepped(from: 0, bigger: false))
+        XCTAssertNil(ReaderTextSize.stepped(from: ReaderTextSize.steps.count - 1, bigger: true))
     }
 
     func testPlaceFollowsTheStack() {

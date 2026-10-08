@@ -5,11 +5,22 @@ import SwiftUI
 /// "Text & appearance" pushes the view the reader's Aa presents; then
 /// Licenses. Each preference has one home in those views, so this screen
 /// holds no toggle. The privacy line and the version close the list.
+///
+/// Each row shows its current value (P040): the voice and speed, then the
+/// text size and scheme. While the natural voice could run here and isn't
+/// installed, the Voice & speed row says so under its value.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var playback: PlaybackController
+    @EnvironmentObject private var modelManager: ModelManager
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Read for the row's value only; Text & appearance binds them.
+    @AppStorage(ReaderTextSize.prefKey)
+    private var textSizeStep = ReaderTextSize.defaultStep
+    @AppStorage(AppearancePreference.prefKey)
+    private var appearanceRaw = AppearancePreference.system.rawValue
 
     var body: some View {
         List {
@@ -19,15 +30,17 @@ struct SettingsView: View {
                 } label: {
                     listeningRowLabel
                 }
-                .accessibilityLabel(Self.listeningRowSpokenLabel(voice: playback.voice, rate: model.globalRate))
+                .accessibilityLabel(Self.listeningRowSpokenLabel(voice: playback.voice, rate: model.globalRate,
+                                                                 naturalVoice: naturalVoiceLine))
                 .accessibilityInputLabels([Text(ListeningCopy.title), Text("Voice"), Text("Speed")])
                 .accessibilityIdentifier("settings.listening")
 
                 NavigationLink {
                     AppearanceSettingsPage()
                 } label: {
-                    rowTitle(AppearanceCopy.title)
+                    appearanceRowLabel
                 }
+                .accessibilityLabel(Self.appearanceRowSpokenLabel(points: textPoints, appearance: appearance))
                 .accessibilityInputLabels([Text(AppearanceCopy.title), Text("Appearance"),
                                            Text("Text size"), Text("Dark mode")])
                 .accessibilityIdentifier("settings.appearance")
@@ -77,30 +90,78 @@ struct SettingsView: View {
 
     /// The row as VoiceOver says it: the title first, so Voice Control still
     /// matches it, then the value as the player chip says it, without the
-    /// middle dot VoiceOver would read aloud as a word.
-    nonisolated static func listeningRowSpokenLabel(voice: TtsVoice, rate: Double) -> String {
-        "\(ListeningCopy.title), \(ListeningFormat.shortName(voice)), \(ListeningFormat.rate(rate))"
+    /// middle dot VoiceOver would read aloud as a word, then the natural
+    /// voice's line when the row shows one.
+    nonisolated static func listeningRowSpokenLabel(voice: TtsVoice, rate: Double,
+                                                    naturalVoice: String? = nil) -> String {
+        let value = "\(ListeningCopy.title), \(ListeningFormat.shortName(voice)), \(ListeningFormat.rate(rate))"
+        guard let naturalVoice else { return value }
+        return "\(value), \(NaturalVoiceCopy.spoken(naturalVoice))"
     }
 
-    /// "Voice & speed" with the app-wide "Michael · 1.25×" after it; at
-    /// accessibility sizes the value moves under the title instead of
-    /// squeezing it.
-    @ViewBuilder
+    /// The Text & appearance row as VoiceOver says it: the title first, as
+    /// the Voice & speed row's, then the size and scheme in words.
+    nonisolated static func appearanceRowSpokenLabel(points: CGFloat, appearance: AppearancePreference) -> String {
+        "\(AppearanceCopy.title), \(AppearanceCopy.spokenSummary(points: points, appearance: appearance))"
+    }
+
+    /// The Voice & speed row's second line: while the device could run the
+    /// natural voice and it isn't installed, that it exists and its size.
+    nonisolated static func naturalVoiceLine(supported: Bool, installed: Bool) -> String? {
+        supported && !installed ? NaturalVoiceCopy.available : nil
+    }
+
+    private var naturalVoiceLine: String? {
+        Self.naturalVoiceLine(supported: model.neuralVoiceOffered, installed: modelManager.isInstalled)
+    }
+
+    private var textPoints: CGFloat { ReaderTextSize.points(forStep: textSizeStep) }
+
+    private var appearance: AppearancePreference {
+        AppearancePreference(rawValue: appearanceRaw) ?? .system
+    }
+
+    /// Voice & speed with the app-wide voice and speed after it, and the
+    /// natural voice's line under both when there is one.
     private var listeningRowLabel: some View {
-        let title = rowTitle(ListeningCopy.title)
-        let value = Text(ListeningFormat.chipTitle(voice: playback.voice, rate: model.globalRate))
-            .font(Theme.font(.callout))
-            .monospacedDigit()
-            .foregroundStyle(Theme.textMuted)
-            .numericReadout(model.globalRate)
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            valueRow(title: ListeningCopy.title,
+                     value: Text(ListeningFormat.chipTitle(voice: playback.voice, rate: model.globalRate))
+                        .font(Theme.font(.callout))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textMuted)
+                        .numericReadout(model.globalRate))
+            if let naturalVoiceLine {
+                Text(naturalVoiceLine)
+                    .font(Theme.font(.footnote))
+                    .foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Text & appearance with the size and scheme after it.
+    private var appearanceRowLabel: some View {
+        valueRow(title: AppearanceCopy.title,
+                 value: Text(AppearanceCopy.summary(points: textPoints, appearance: appearance))
+                    .font(Theme.font(.callout))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textMuted)
+                    .numericReadout(Double(textPoints)))
+    }
+
+    /// A title with its value after it; at accessibility sizes the value
+    /// moves under the title instead of squeezing it.
+    @ViewBuilder
+    private func valueRow(title: String, value: some View) -> some View {
         if dynamicTypeSize.isAccessibilitySize {
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                title
+                rowTitle(title)
                 value
             }
         } else {
             HStack {
-                title
+                rowTitle(title)
                 Spacer()
                 value
             }

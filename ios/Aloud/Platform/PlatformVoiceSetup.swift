@@ -4,12 +4,13 @@ import Foundation
 /// platform. (M10, M17)
 enum PlatformVoiceSetup {
     #if os(iOS)
-    /// The iPhone's card and offer read as they always have: no "before
-    /// you fly" line, no offline state, and the path is watched only from a
-    /// Download (M4), which with no network waits for Wi-Fi.
+    /// The iPhone's card makes its promise (`DeviceCopy.naturalVoicePromise`)
+    /// but has no flight line and no offline state: the path is watched
+    /// only from a Download (M4), which with no network waits for Wi-Fi.
     static let preparesForFlight = false
-    /// The System row keeps its "Built-in fallback" subtitle.
-    static let namesResolvedSystemVoice = false
+    /// The System row names the voice it resolves to, as the Mac's does, so
+    /// a listener on it knows which voice they hear (P035).
+    static let namesResolvedSystemVoice = true
     /// No Settings pane is opened from the Listening view.
     static let addVoicesURL: URL? = nil
     #elseif os(macOS)

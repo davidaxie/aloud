@@ -88,7 +88,9 @@ struct ModelDownloadView: View {
                         .font(Theme.font(.body).weight(.semibold))
                         .foregroundStyle(Theme.text)
                         .fixedSize(horizontal: false, vertical: true)
-                    // The Mac's line (none on the iPhone).
+                    // What the download is for, between the offer and its
+                    // Download, so VoiceOver reads it before the button:
+                    // the iPhone's promise, or the Mac's flight line.
                     if let detail = NaturalVoiceCopy.promoDetail(offline: offline) {
                         Text(detail)
                             .font(Theme.font(.footnote))

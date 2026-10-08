@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Aloud
 
@@ -104,34 +105,46 @@ final class NaturalVoiceCopyTests: XCTestCase {
         XCTAssertEqual(NaturalVoiceCopy.installed, "Natural voice installed")
     }
 
-    /// Where the installed voice lives: the iPhone's words, and the Mac's
-    /// (PRD M17), through `DeviceCopy`.
+    /// Where the installed voice lives: "on this iPhone" as the Mac's card
+    /// says "on this Mac" (PRD M17, P040), through `DeviceCopy`.
     func testInstalledSizeNamesTheDevice() {
         #if os(iOS)
-        XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on device · works offline")
+        XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on this iPhone · works offline")
+        XCTAssertEqual(NaturalVoiceCopy.onDevice(ModelManager.downloadSizeText), "353 MB on this iPhone · works offline")
         #else
         XCTAssertEqual(NaturalVoiceCopy.onDevice("353 MB"), "353 MB on this Mac · works offline")
         #endif
     }
 
     /// M17: the Mac's not-installed card says to download before the
-    /// flight, or with no usable path to connect first. The iPhone's card
-    /// has no such line, so it reads as it always has.
-    func testPromoDetailIsTheMacsOnly() {
+    /// flight, or with no usable path to connect first. P036: the iPhone's
+    /// card says what the voice is and that it works offline, online or
+    /// not, since it watches no path before a Download (M4).
+    func testPromoDetailSaysWhatTheDownloadIsFor() {
         XCTAssertEqual(NaturalVoiceCopy.beforeFlight,
                        "Download before you fly. After that, everything works offline.")
         #if os(iOS)
+        let promise = "Sounds like a person reading. Works offline once downloaded."
         XCTAssertFalse(PlatformVoiceSetup.preparesForFlight)
         XCTAssertNil(DeviceCopy.connectToDownload)
-        XCTAssertNil(NaturalVoiceCopy.promoDetail(offline: false))
-        XCTAssertNil(NaturalVoiceCopy.promoDetail(offline: true))
+        XCTAssertEqual(DeviceCopy.naturalVoicePromise, promise)
+        XCTAssertEqual(NaturalVoiceCopy.promoDetail(offline: false), promise)
+        XCTAssertEqual(NaturalVoiceCopy.promoDetail(offline: true), promise)
         #else
         XCTAssertTrue(PlatformVoiceSetup.preparesForFlight)
+        XCTAssertNil(DeviceCopy.naturalVoicePromise)
         XCTAssertEqual(DeviceCopy.connectToDownload, "Connect to the internet to download.")
         XCTAssertEqual(NaturalVoiceCopy.promoDetail(offline: false),
                        "Download before you fly. After that, everything works offline.")
         XCTAssertEqual(NaturalVoiceCopy.promoDetail(offline: true), "Connect to the internet to download.")
         #endif
+    }
+
+    /// P040: Settings' Voice & speed row names the natural voice while it
+    /// could be installed, with its size, and says it without the dot.
+    func testNaturalVoiceAvailableLine() {
+        XCTAssertEqual(NaturalVoiceCopy.available, "Natural voice available · 353 MB")
+        XCTAssertEqual(NaturalVoiceCopy.spoken(NaturalVoiceCopy.available), "Natural voice available, 353 MB")
     }
 
     /// The installed card's remove action asks first; on the Mac its
@@ -146,16 +159,62 @@ final class NaturalVoiceCopyTests: XCTestCase {
     }
 
     /// M10: the link to more System voices is the Mac's alone, with its
-    /// pane; the iPhone's Listening view shows neither.
+    /// pane. P035: both name the System voice; the iPhone, with no link to
+    /// its pane, says where voices come from in a plain line instead.
     func testAddSystemVoicesIsTheMacsOnly() {
+        XCTAssertTrue(PlatformVoiceSetup.namesResolvedSystemVoice)
+        XCTAssertEqual(AVSpeechEngine(mutesOutput: true).defaultVoice.subtitle, DeviceCopy.systemVoiceFallback,
+                       "the row's subtitle until it names its voice")
         #if os(iOS)
         XCTAssertNil(DeviceCopy.addSystemVoices)
         XCTAssertNil(PlatformVoiceSetup.addVoicesURL)
-        XCTAssertFalse(PlatformVoiceSetup.namesResolvedSystemVoice)
+        XCTAssertEqual(DeviceCopy.systemVoiceFallback, "Built into iOS")
+        XCTAssertEqual(DeviceCopy.systemVoicesHint,
+                       "More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content \u{203A} Voices")
         #else
         XCTAssertEqual(DeviceCopy.addSystemVoices, "Add voices in System Settings\u{2026}")
         XCTAssertNotNil(PlatformVoiceSetup.addVoicesURL)
-        XCTAssertTrue(PlatformVoiceSetup.namesResolvedSystemVoice)
+        XCTAssertEqual(DeviceCopy.systemVoiceFallback, "Built-in fallback")
+        XCTAssertNil(DeviceCopy.systemVoicesHint)
+        #endif
+    }
+
+    /// P035, from a fake installed list ranked as synthesis ranks it: the
+    /// System row names the voice it will speak in, says that name after
+    /// its own, and shows the hint only below a premium voice (iPhone).
+    func testTheSystemRowNamesItsVoiceAndHintsBelowPremium() {
+        typealias Candidate = AVSpeechEngine.VoiceCandidate
+        func resolved(_ voices: [Candidate]) -> (name: String, quality: AVSpeechSynthesisVoiceQuality)? {
+            voices.min { AVSpeechEngine.ranks($0, above: $1) }
+                .map { (name: AVSpeechEngine.displayName(of: $0), quality: AVSpeechEngine.quality(of: $0)) }
+        }
+        let hint = DeviceCopy.systemVoicesHint
+
+        let enhanced = resolved([Candidate(name: "Fred", language: "en-US", quality: 1),
+                                 Candidate(name: "Samantha", language: "en-US", quality: 2),
+                                 Candidate(name: "Am\u{00E9}lie", language: "fr-CA", quality: 3)])
+        XCTAssertEqual(enhanced?.name, "Samantha (Enhanced)")
+        XCTAssertEqual(enhanced?.quality, .enhanced)
+        let label = ListeningView.accessibilityLabel(name: "System voice", subtitle: enhanced?.name ?? "", origin: "")
+        XCTAssertEqual(label, "System voice, Samantha (Enhanced)", "the spoken label names the voice")
+
+        let premium = resolved([Candidate(name: "Samantha", language: "en-US", quality: 2),
+                                Candidate(name: "Ava", language: "en-US", quality: 3)])
+        XCTAssertEqual(premium?.name, "Ava (Premium)")
+        XCTAssertEqual(premium?.quality, .premium)
+
+        let plain = resolved([Candidate(name: "Samantha", language: "en-US", quality: 1)])
+        XCTAssertEqual(plain?.name, "Samantha")
+        XCTAssertEqual(plain?.quality, .default)
+
+        XCTAssertFalse(ListeningView.showsSystemVoicesHint(hint, quality: .premium), "nothing better to get")
+        XCTAssertFalse(ListeningView.showsSystemVoicesHint(nil, quality: .default), "no hint, no line")
+        #if os(iOS)
+        XCTAssertTrue(ListeningView.showsSystemVoicesHint(hint, quality: .enhanced))
+        XCTAssertTrue(ListeningView.showsSystemVoicesHint(hint, quality: .default))
+        XCTAssertTrue(ListeningView.showsSystemVoicesHint(hint, quality: nil), "no installed voice to name")
+        #else
+        XCTAssertFalse(ListeningView.showsSystemVoicesHint(hint, quality: .enhanced), "the Mac has its link")
         #endif
     }
 
