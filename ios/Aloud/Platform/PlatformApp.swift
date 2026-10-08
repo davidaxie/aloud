@@ -153,10 +153,12 @@ enum PlatformLifecycle {
     /// memory by it. The kernel's pressure source names the level on both
     /// platforms (`MemoryPressureRelay`, started here for the default
     /// center). On an iPhone UIKit's own warning, which names none, is the
-    /// safety net and reads as critical, unless the relay names a level
-    /// within `window` of it (nil: `MemoryPressureRelay.coalescingWindow`
-    /// on the default center, none on a test's own), which then stands for
-    /// both: a `.warning` keeps a paused natural voice warm.
+    /// safety net: it acts at once as a `.warning` (a load cancelled, idle
+    /// engines freed) and turns `.critical` once `window` passes with no
+    /// level from the relay (nil: `MemoryPressureRelay.coalescingWindow` on
+    /// the default center; with none, a test's own, it is critical at once).
+    /// A level within the window of it, either way round, stands for both:
+    /// a `.warning` keeps a paused natural voice warm.
     static func memoryPressure(in center: NotificationCenter? = nil,
                                window: TimeInterval? = nil) -> AnyPublisher<MemoryPressure, Never> {
         #if os(iOS)
@@ -288,8 +290,9 @@ enum MemoryPressureRelay {
     static let name = Notification.Name("AloudMemoryWarning")
 
     /// How close UIKit's own warning and the relay's level must come for the
-    /// level to stand for both. Their order isn't fixed, so UIKit's waits
-    /// this long for a level before it acts as critical.
+    /// level to stand for both. Their order isn't fixed, so UIKit's acts at
+    /// once as a `.warning` and waits this long for a level before it turns
+    /// critical.
     static let coalescingWindow: TimeInterval = 1
 
     /// Made and resumed on first use (a static's initializer runs once) and
@@ -325,8 +328,11 @@ enum MemoryPressureRelay {
 #if os(iOS)
 /// Merges the relay's levels with UIKit's own warning (`memoryPressure`):
 /// a level acts at once; UIKit's warning is dropped when a level came
-/// within the window before it, and otherwise waits the window for one,
-/// acting as critical if none comes. Fed on the main thread, where both
+/// within the window before it. Otherwise it acts at once at the safe
+/// level, `.warning`, since it may come just before this app's own jetsam
+/// with a load still allocating, and turns `.critical` once the window
+/// passes with no level; a level in the window replaces that escalation
+/// (a `.warning` adds nothing then). Fed on the main thread, where both
 /// are posted.
 private final class MemoryWarningCoalescer: @unchecked Sendable {
 
@@ -343,8 +349,12 @@ private final class MemoryWarningCoalescer: @unchecked Sendable {
     func receive(_ pressure: PlatformLifecycle.MemoryPressure?) {
         if let pressure {
             lastLevel = .now()
-            safetyNet?.cancel()   // the level speaks for the warning waiting on it
+            // The level speaks for UIKit's warning waiting on it, which
+            // already acted as a `.warning`.
+            let actedAsWarning = safetyNet != nil
+            safetyNet?.cancel()
             safetyNet = nil
+            if actedAsWarning, pressure == .warning { return }
             output.send(pressure)
             return
         }
@@ -354,6 +364,7 @@ private final class MemoryWarningCoalescer: @unchecked Sendable {
         }
         if let lastLevel, DispatchTime.now() <= lastLevel + window { return }
         guard safetyNet == nil else { return }
+        output.send(.warning)
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.safetyNet = nil

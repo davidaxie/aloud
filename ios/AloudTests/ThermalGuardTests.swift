@@ -142,6 +142,45 @@ final class ThermalGuardTests: XCTestCase {
         rig.controller.pause()
     }
 
+    /// P009: a pause whose 120 ms ramp crosses a cut-short splice drops
+    /// the natural voice's queued clips there too, so the Play after it
+    /// reads on in the System voice from the splice, never resuming the
+    /// natural clips that were left on the node.
+    func testAPauseRampOverACutShortSpliceLeavesNoNaturalClipToResume() async throws {
+        guard PlatformPlaybackTuning.coolingSwitchLandsWithin != nil else {
+            throw XCTSkip("a Mac splices after its whole queue")
+        }
+        // 50 ms natural clips: the next boundary always falls inside the ramp.
+        let rig = makeRig(FakeNeuralEngine(warm: true, clipDuration: 0.05), deepQueue: true)
+        try await startPlaying(rig)
+        let deep = PlatformPlaybackTuning.lookAheadSentences.upperBound
+        let filled = await rig.waitUntil(2) {
+            (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence >= deep
+        }
+        try XCTSkipUnless(filled && rig.controller.status == .playing, "the queue never filled")
+        let thermal = makeGuard(rig)
+        let splice = rig.controller.currentSentence + 1
+
+        thermal.thermalStateChanged(.serious)   // fixes the splice at the next boundary, at once
+        rig.controller.pause()
+        let rampDone = await rig.waitUntil(1) { !rig.controller.isRampingVolume }
+        XCTAssertTrue(rampDone)
+        XCTAssertGreaterThanOrEqual(rig.controller.currentSentence, splice, "the ramp crossed the splice")
+        XCTAssertEqual(rig.controller.status, .paused)
+        XCTAssertEqual(rig.controller.voice, Self.system)
+
+        rig.controller.play()
+        let playing = await rig.waitUntil(2) { rig.controller.status == .playing }
+        XCTAssertTrue(playing)
+        await elapse(0.1)
+        let lastStop = rig.events.lastIndex(of: .stopped).map { $0 + 1 } ?? 0
+        let onTheNode = Self.scheduled(Array(rig.events[lastStop...]))
+        XCTAssertFalse(onTheNode.contains { $0.voiceID == Self.michael.id && $0.sentence >= splice },
+                       "no natural-voice clip at or past the splice plays after the cooling notice")
+        XCTAssertTrue(onTheNode.contains { $0.voiceID == Self.system.id }, "the System voice reads on")
+        rig.controller.pause()
+    }
+
     /// The look-ahead under strain: two sentences on an iPhone at
     /// `.serious` heat or in Low Power Mode, the whole queue on a Mac.
     func testStrainShrinksTheLookAheadWhereThePlatformSaysSo() async throws {

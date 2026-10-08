@@ -1886,11 +1886,21 @@ final class PlaybackController: ObservableObject {
         // A splice cut short (R11's cooling switch on a deep queue): the
         // outgoing voice's clips still queued from here on are dropped, and
         // the incoming voice reads on from this sentence, its first clip
-        // already warmed (`primeHandoff`). Never inside a pause's ramp.
-        if isActive, let pending = handoff, pending.outgoingThrough != nil,
+        // already warmed (`primeHandoff`). Inside a pause's ramp too: the
+        // node would otherwise keep those clips for the resume. The ramp
+        // ends here (pausing the node), so the next Play starts afresh from
+        // this sentence; the pause's own place moves here with it.
+        if let pending = handoff, pending.outgoingThrough != nil,
            let splice = pending.spliceAt, currentSentence >= splice {
             commitHandoff()
-            startPlayback(at: currentSentence)
+            if isActive {
+                startPlayback(at: currentSentence)
+            } else {
+                invalidateSchedule()
+                stampResumeAnchor()
+                placeStopMovedByPauseRamp()
+                cuePrefetch()
+            }
             return
         }
         // The first clip in the incoming voice is now the one playing.
@@ -2263,6 +2273,17 @@ final class PlaybackController: ObservableObject {
         releaseNeuralEngineIfIdle()
     }
 
+    /// The audio engine stopped while not playing: the idle stop, or the
+    /// system stopping it first (an interruption, an output change, a
+    /// media-services reset), which no idle stop follows. From then iOS may
+    /// suspend a paused Aloud in the background, and a suspended app gets
+    /// no memory warning to free the natural voice by, so where the
+    /// platform frees memory there it goes now. Play warms it again.
+    private func releaseNeuralEngineIfBackgrounded() {
+        guard PlatformTuning.releasesNeuralOnBackground, !isAppActive() else { return }
+        releaseNeuralEngineIfIdle()
+    }
+
     /// Listening view hook: auditioning a natural voice may have warmed the
     /// ~800 MB neural engine before the listener settled on another voice —
     /// give it back when the active voice isn't neural. A memory warning asks
@@ -2507,6 +2528,7 @@ final class PlaybackController: ObservableObject {
     func mediaServicesWereReset() {
         stop(because: .playbackError)
         if hasActiveSchedule { invalidateSchedule() }
+        releaseNeuralEngineIfBackgrounded()   // the engine went with the server
         #if DEBUG
         renderPump?.stop()
         renderPump = nil
@@ -2654,10 +2676,9 @@ final class PlaybackController: ObservableObject {
             invalidateSchedule()   // also ends a pause's ramp, pausing the node
             cuePrefetch()
         }
-        // From here iOS may suspend a paused Aloud, and a suspended app gets
-        // no memory warning to free the natural voice by: in the background
-        // it goes now, as at the move there. Play warms it again.
-        if PlatformTuning.releasesNeuralOnBackground, !isAppActive() { releaseNeuralEngineIfIdle() }
+        // From here iOS may suspend a paused Aloud: in the background the
+        // natural voice goes now, as at the move there.
+        releaseNeuralEngineIfBackgrounded()
         guard audioEngine.isRunning else { return }
         let engine = audioEngine
         withEngineHeld { engine.stop() }
@@ -2723,7 +2744,13 @@ final class PlaybackController: ObservableObject {
         switch event {
         case .began:
             // Stopping nothing, this interruption may resume nothing either.
-            guard isActive else { resumeAfterInterruption = false; return }
+            // It stops a paused Aloud's idle engine, though, with no idle
+            // stop to follow.
+            guard isActive else {
+                resumeAfterInterruption = false
+                releaseNeuralEngineIfBackgrounded()
+                return
+            }
             // An interrupted audition doesn't come back as playback. Set
             // after the stop, whose pause clears the flag.
             let auditioning = audition != nil
@@ -2761,6 +2788,7 @@ final class PlaybackController: ObservableObject {
                 invalidateSchedule()
                 cuePrefetch()
             }
+            releaseNeuralEngineIfBackgrounded()   // the engine stopped itself
         case .follow:
             followNewOutput()
         }

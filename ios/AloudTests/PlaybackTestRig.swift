@@ -100,9 +100,13 @@ final class PlaybackTestRig {
         private var failsNextWarmUp = false
         private var warmUps = 0
         private var log: [(text: String, voiceID: String)] = []
+        /// Each clip's length; short ones put a sentence boundary inside a
+        /// pause's 120 ms ramp.
+        private let clipDuration: TimeInterval
 
-        init(warm: Bool = false) {
+        init(warm: Bool = false, clipDuration: TimeInterval = 0.25) {
             self.warm = warm
+            self.clipDuration = clipDuration
         }
 
         var isWarm: Bool { lock.withLock { warm } }
@@ -155,7 +159,7 @@ final class PlaybackTestRig {
 
         func synthesize(_ text: String, voice: TtsVoice) async throws -> SynthesizedAudio {
             lock.withLock { log.append((text, voice.id)) }
-            return .silence(duration: 0.25, sampleRate: 24_000)
+            return .silence(duration: clipDuration, sampleRate: 24_000)
         }
 
         var requests: [(text: String, voiceID: String)] { lock.withLock { log } }

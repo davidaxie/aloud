@@ -138,15 +138,22 @@ final class PlatformSeamTests: XCTestCase {
         XCTAssertEqual(received, [.warning, .critical])
     }
 
-    /// UIKit's own warning names no level: with nothing from the relay it is
-    /// critical, once the window has passed (and at once with no window).
+    /// UIKit's own warning names no level, and may come just before this
+    /// app's jetsam: it acts at once as a `.warning` (a load in flight is
+    /// cancelled), then with nothing from the relay turns critical once the
+    /// window has passed (and is critical at once with no window).
     @MainActor
-    func testUIKitsWarningAloneIsCritical() async {
-        let waited = await pressures(window: 0.2) { center in
-            PlatformLifecycle.post(.memoryWarning, to: center)
-            await self.elapse(0.5)
-        }
-        XCTAssertEqual(waited, [.critical])
+    func testUIKitsWarningAloneActsAtOnceThenTurnsCritical() async {
+        let center = NotificationCenter()
+        var received: [PlatformLifecycle.MemoryPressure] = []
+        let subscription = PlatformLifecycle.memoryPressure(in: center, window: 0.2)
+            .sink { received.append($0) }
+        PlatformLifecycle.post(.memoryWarning, to: center)
+        XCTAssertEqual(received, [.warning], "at once, never a second's wait")
+        await elapse(0.5)
+        XCTAssertEqual(received, [.warning, .critical])
+        subscription.cancel()
+
         let atOnce = await pressures(window: 0) { center in
             PlatformLifecycle.post(.memoryWarning, to: center)
         }
@@ -170,6 +177,13 @@ final class PlatformSeamTests: XCTestCase {
             await self.elapse(0.6)
         }
         XCTAssertEqual(uiKitFirst, [.warning])
+        let uiKitThenCritical = await pressures(window: 0.3) { center in
+            PlatformLifecycle.post(.memoryWarning, to: center)
+            await self.elapse(0.05)
+            MemoryPressureRelay.deliver(.critical, to: center)
+            await self.elapse(0.6)
+        }
+        XCTAssertEqual(uiKitThenCritical, [.warning, .critical], "the relay's level replaces the escalation")
     }
 
     /// The default center's observer starts the kernel's pressure source on
@@ -194,9 +208,11 @@ final class PlatformSeamTests: XCTestCase {
                                       + "        playback.releaseNeuralEngineIfIdle()"),
                        "never at once while the idle engine runs")
         XCTAssertTrue(controller.contains("guard !isAudioEngineRunning else { return }"))
-        // P009 and P010: the strain and the heat reach the controller and the pre-warm.
+        // P009 and P010: the strain and the heat reach the controller and the
+        // pre-warm. The heat gate holds on both apps (AppModel is shared), as
+        // R11's heat policy does: never a platform flag around it.
         XCTAssertTrue(model.contains("playback.isUnderStrain = "))
-        XCTAssertTrue(model.contains("heat: thermalGuard.$isHot"))
+        XCTAssertTrue(model.contains("heat: thermalGuard.$isHot.eraseToAnyPublisher()"))
     }
 
     func testActivityHoldsNothingOnTheIPhone() {

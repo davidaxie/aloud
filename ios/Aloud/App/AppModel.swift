@@ -189,6 +189,8 @@ final class AppModel: ObservableObject {
             // the reader LaunchRestore reopens, where no card ever shows.
             loadedBook: playback.$document.map { $0?.id }.eraseToAnyPublisher(),
             isModelInstalled: { [unowned modelManager] in modelManager.isInstalled },
+            // No warm-up while hot, on both apps: R11's heat policy, which
+            // is shared, swaps the natural voice out at `.serious` anyway.
             heat: thermalGuard.$isHot.eraseToAnyPublisher())
 
         let defaults = UserDefaults.standard

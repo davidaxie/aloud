@@ -212,6 +212,56 @@ final class IdleEngineStopTests: XCTestCase {
         XCTAssertFalse(neural.isWarm, "nothing keeps the app running now: it goes at once")
     }
 
+    /// P011: paused in the background with the idle engine still running,
+    /// the system stopping that engine first (another app's audio
+    /// interrupting, an output change that stops) leaves no idle stop to
+    /// free the voice before iOS suspends the app, so it goes then.
+    func testTheSystemStoppingTheIdleEngineInTheBackgroundFreesTheVoice() async throws {
+        for cause in ["interruption", "output change"] {
+            let neural = PlaybackTestRig.FakeNeuralEngine(warm: true)
+            let rig = PlaybackTestRig(sentences: 40, clipDuration: 1, neural: neural)
+            let clock = IdleStopClock()
+            clock.drive(rig.controller)
+            rig.controller.voice = PlaybackTestRig.michael
+            rig.loadDefault(at: 3)
+            rig.controller.play()
+            try await rig.waitUntilPlayingOrSkip()
+            rig.controller.pause()
+            try XCTSkipUnless(rig.controller.isAudioEngineRunning, "the host's engine stopped with the pause")
+
+            rig.appActive = false
+            rig.controller.releaseNeuralEngineOnBackground()
+            XCTAssertTrue(neural.isWarm, "\(cause): paused with the idle engine running, still warm")
+
+            if cause == "interruption" {
+                rig.audioSession.onInterruption?(.began)
+            } else {
+                rig.audioSession.decision = .stop(.headphonesDisconnected)
+                rig.controller.outputConfigurationChanged()
+            }
+            XCTAssertEqual(neural.isWarm, !PlatformTuning.releasesNeuralOnBackground,
+                           "\(cause): no idle stop follows, so it goes where the platform frees memory there")
+            XCTAssertEqual(rig.controller.status, .paused, cause)
+        }
+    }
+
+    /// The same stop on screen keeps the voice: the move to the background
+    /// frees it then, the engine having stopped.
+    func testTheSystemStoppingTheIdleEngineOnScreenKeepsTheVoice() async throws {
+        let neural = PlaybackTestRig.FakeNeuralEngine(warm: true)
+        let rig = PlaybackTestRig(sentences: 40, clipDuration: 1, neural: neural)
+        let clock = IdleStopClock()
+        clock.drive(rig.controller)
+        rig.controller.voice = PlaybackTestRig.michael
+        rig.loadDefault(at: 3)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        rig.controller.pause()
+
+        rig.audioSession.onInterruption?(.began)
+        XCTAssertTrue(neural.isWarm, "on screen Play comes back to a warm voice")
+    }
+
     /// G023: once the idle stop has given the session back, iOS tells it
     /// nothing about a call. A Play refused by that call is an
     /// interruption, but no end will come to resume it: nothing is

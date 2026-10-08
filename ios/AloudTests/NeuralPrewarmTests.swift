@@ -54,15 +54,16 @@ final class NeuralPrewarmTests: XCTestCase {
     /// Michael is the voice unless `neuralVoice` is false; no book is loaded.
     /// The scene starts as `sceneActive` says, never as the test host's
     /// app happens to be. Only the card asks for a warm-up unless `rules`
-    /// say otherwise. Never hot until `heat` says so.
+    /// say otherwise. Hot from the start only when `hot`, otherwise not
+    /// until `heat` says so.
     private func makeHarness(neuralVoice: Bool = true, sceneActive: Bool = true,
-                             rules: Rules = .cardOnly) -> Harness {
+                             rules: Rules = .cardOnly, hot: Bool = false) -> Harness {
         let neural = FakeNeuralEngine()
         let rig = PlaybackTestRig(neural: neural)
         if neuralVoice { rig.controller.voice = PlaybackTestRig.michael }
         let card = PassthroughSubject<Bool, Never>()
         let book = PassthroughSubject<UUID?, Never>()
-        let heat = CurrentValueSubject<Bool, Never>(false)
+        let heat = CurrentValueSubject<Bool, Never>(hot)
         let conditions = Conditions()
         let center = NotificationCenter()
         let prewarm = NeuralPrewarm(playback: rig.controller,
@@ -368,20 +369,24 @@ final class NeuralPrewarmTests: XCTestCase {
         }
     }
 
-    /// The heat gate: no warm-up while hot; cooling down asks again, and
-    /// heating up never releases a warm engine.
+    /// The heat gate, on both apps (P010; R11's heat policy is shared): no
+    /// warm-up while hot, whatever asks (the card, an iPhone's or a Mac's
+    /// loaded book, a Mac's launch); cooling down asks again, and heating
+    /// up never releases a warm engine.
     func testHeatHoldsTheWarmUpUntilItCools() async {
-        let harness = makeHarness()
-        harness.heat.send(true)
-        harness.card.send(true)
-        await elapse(0.3)
-        XCTAssertEqual(harness.neural.warmUpCalls, 0)
+        for (name, rules) in [("card", Rules.cardOnly), ("iPhone", Rules.iPhone), ("Mac", Rules.mac)] {
+            let harness = makeHarness(rules: rules, hot: true)
+            harness.card.send(true)
+            harness.book.send(UUID())
+            await elapse(0.3)
+            XCTAssertEqual(harness.neural.warmUpCalls, 0, name)
 
-        harness.heat.send(false)
-        await warm(harness)
-        harness.heat.send(true)
-        await elapse(0.2)
-        XCTAssertTrue(harness.neural.isWarm, "heat alone never releases")
+            harness.heat.send(false)
+            await warm(harness)
+            harness.heat.send(true)
+            await elapse(0.2)
+            XCTAssertTrue(harness.neural.isWarm, "\(name): heat alone never releases")
+        }
     }
 
     /// P013: on an iPhone the app coming back to the foreground ends a
@@ -501,13 +506,19 @@ final class NeuralPrewarmTests: XCTestCase {
 
     /// P013: the relay's `.warning` keeps a paused book's voice warm, so
     /// Play never pays the load again; `.critical` frees it, and so does
-    /// UIKit's own warning, which names no level.
+    /// UIKit's own warning, which names no level. The levels come as the
+    /// kernel's relay posts them (its own notification on both apps), the
+    /// level-less one as UIKit's (the relay's, bare, on a Mac).
     func testEachLevelAndAPausedEngine() async throws {
         for (pressure, frees) in [(PlatformLifecycle.MemoryPressure?.some(.warning), false),
                                   (.some(.critical), true),
                                   (nil, true)] {
             let harness = try await pausedOnAWarmEngine()
-            PlatformLifecycle.post(.memoryWarning, to: harness.center, pressure: pressure)
+            if let pressure {
+                MemoryPressureRelay.deliver(pressure, to: harness.center)
+            } else {
+                PlatformLifecycle.post(.memoryWarning, to: harness.center)
+            }
             let released = await harness.rig.waitUntil(frees ? 2 : 0.5) { !harness.neural.isWarm }
             XCTAssertEqual(released, frees, "\(pressure.map(\.rawValue) ?? "UIKit's")")
             XCTAssertEqual(harness.rig.controller.status, .paused)
