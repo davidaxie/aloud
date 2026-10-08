@@ -174,7 +174,7 @@ final class MacKeyRouter {
     static func isUndoKey(_ event: NSEvent) -> Bool {
         if MacCommand.command(for: event) == .undoJump { return true }
         guard event.type == .keyDown else { return false }
-        return isUndoKey(commandLayer: event.charactersByApplyingModifiers(.command),
+        return isUndoKey(commandLayer: event.characters(byApplyingModifiers: .command),
                          modifiers: event.modifierFlags)
     }
 

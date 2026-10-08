@@ -159,15 +159,9 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         }
         .buttonStyle(AccentCircleButtonStyle(diameter: Theme.PlayCircle.compactDiameter))
-        #if os(macOS)
         // Return on the focused circle plays or pauses in place, as Space
-        // does: a Mac button leaves Return to its ancestors, and the Mac
-        // card's own Return opens the book (L015).
-        .onKeyPress(.return) {
-            onTogglePlayback()
-            return .handled
-        }
-        #endif
+        // does; the Mac card's own Return opens the book (L015).
+        .returnKeyActsOnMac(onTogglePlayback)
         .accessibilityLabel(playState.label)
         .accessibilityValue(playState.value)
         .accessibilityIdentifier("library.continue.play")

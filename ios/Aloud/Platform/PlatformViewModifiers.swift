@@ -36,6 +36,12 @@ extension View {
     func menuOrderNearestFirst() -> some View {
         menuOrder(.priority)
     }
+
+    /// Return on a focused control acts on it. iOS sends no Return to a
+    /// focused button this way, so this is the Mac's alone.
+    func returnKeyActsOnMac(_ action: @escaping () -> Void) -> some View {
+        self
+    }
 }
 #elseif os(macOS)
 extension View {
@@ -71,6 +77,15 @@ extension View {
     /// A Mac menu always lists top-down, whichever way it opens.
     func menuOrderNearestFirst() -> some View {
         self
+    }
+
+    /// Return on the focused control runs `action` instead of bubbling to
+    /// its ancestors: a Mac button leaves Return to them (L015).
+    func returnKeyActsOnMac(_ action: @escaping () -> Void) -> some View {
+        onKeyPress(.return) {
+            action()
+            return .handled
+        }
     }
 }
 #endif

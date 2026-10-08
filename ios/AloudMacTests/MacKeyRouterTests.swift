@@ -351,7 +351,7 @@ final class MacKeyRouterTests: XCTestCase {
 
         // ⌘я: the Russian layout's Z key, with ⌘.
         let russian = MacShortcutsTests.key("я", code: 6, flags: .command)
-        guard russian.charactersByApplyingModifiers(.command) == "z" else {
+        guard russian.characters(byApplyingModifiers: .command) == "z" else {
             throw XCTSkip("This host's layout puts no Z on key code 6")
         }
         XCTAssertNil(MacCommand.command(for: russian), "the shortcut table never sees ⌘Z here")

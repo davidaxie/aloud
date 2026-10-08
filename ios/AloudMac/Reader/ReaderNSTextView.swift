@@ -375,14 +375,27 @@ final class ReaderNSTextView: NSTextView {
     /// A selection key extends the selection from the caret, and scrolls
     /// to wherever that lands. A caret the reader can't see (each build
     /// leaves it at the text's start; following carries the page far from
-    /// a click's) first moves to the first character on screen, so the
-    /// selection starts in the passage shown and the page stays (L021).
+    /// a click's) first moves to the first word on screen, so the selection
+    /// starts in the passage shown and the page stays (L021). The first
+    /// word, not the first character: the range shown can open on the line
+    /// break that ends a part-visible line, where ⌘⇧→ would select nothing.
     private func bringCaretOnScreen() {
         let caret = selectedRange()
         guard caret.length == 0,
               let shown = MacReaderAccessibility.visibleCharacterRange(of: self, in: visibleRect),
               caret.location < shown.location || caret.location > NSMaxRange(shown) else { return }
-        setSelectedRange(NSRange(location: shown.location, length: 0))
+        // Downstream: a caret at the start of a wrapped line otherwise
+        // counts as the end of the line above, where ⌘⇧→ selects nothing.
+        setSelectedRange(NSRange(location: Self.firstWord(in: string as NSString, within: shown), length: 0),
+                         affinity: .downstream, stillSelecting: false)
+    }
+
+    /// The first character in `range` that is neither white space nor a
+    /// rule paragraph's attachment; the range's start when there is none.
+    static func firstWord(in text: NSString, within range: NSRange) -> Int {
+        let skipped = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: attachmentMark))
+        let found = text.rangeOfCharacter(from: skipped.inverted, options: [], range: range)
+        return found.location == NSNotFound ? range.location : found.location
     }
 
     /// The keys that extend a selection (⇧ with the arrows and their

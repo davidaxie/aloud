@@ -685,6 +685,16 @@ final class ReaderColumnViewTests: XCTestCase {
     /// start. The first ⇧↓ (or ⌘⇧→, ⇧Page Down) selects from the passage
     /// on screen instead, never jumping the page back to the book's first
     /// lines: ⇧↓ and ⌘⇧→ keep the page, and following too (L021).
+    /// L021: the caret goes to the first word shown, past a line break or
+    /// a rule paragraph the visible range can open on.
+    func testTheCaretGoesToTheFirstWordShown() {
+        let text = "end.\n\u{FFFC}\n  Next line" as NSString
+        XCTAssertEqual(ReaderNSTextView.firstWord(in: text, within: NSRange(location: 4, length: text.length - 4)), 9)
+        XCTAssertEqual(ReaderNSTextView.firstWord(in: text, within: NSRange(location: 0, length: text.length)), 0)
+        XCTAssertEqual(ReaderNSTextView.firstWord(in: text, within: NSRange(location: 4, length: 3)), 4,
+                       "no word in range: its start")
+    }
+
     func testASelectionKeyStartsFromThePassageOnScreen() throws {
         let page = try makePage(sentences: 300, active: 150, size: NSSize(width: 800, height: 500))
         let coordinator = page.coordinator

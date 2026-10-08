@@ -202,18 +202,26 @@ final class LibraryLintTests: XCTestCase {
     /// Return, which opens the reader.
     func testReturnOnTheMacContinueCircleTogglesInPlace() throws {
         let path = "Library/ContinueListeningCard.swift"
-        let sources = try SourceTree.sources(only: [path])
+        let seamPath = "Platform/PlatformViewModifiers.swift"
+        let sources = try SourceTree.sources(only: [path, seamPath])
         let card = try XCTUnwrap(sources[path])
         let start = try XCTUnwrap(card.range(of: "private var circle: some View {"))
         let circle = card[start.upperBound...].prefix(1200)
-        let mac = try XCTUnwrap(circle.range(of: "#if os(macOS)"))
-        let key = try XCTUnwrap(circle.range(of: ".onKeyPress(.return) {"))
-        let end = try XCTUnwrap(circle.range(of: "#endif"))
-        XCTAssertLessThan(mac.lowerBound, key.lowerBound)
-        XCTAssertLessThan(key.lowerBound, end.lowerBound, "the Mac's alone: the iPhone has no card Return")
-        let handler = circle[key.upperBound..<end.lowerBound]
-        XCTAssertTrue(handler.contains("onTogglePlayback()"), String(handler))
-        XCTAssertTrue(handler.contains("return .handled"), "the card's Return never sees it")
+        XCTAssertTrue(circle.contains(".returnKeyActsOnMac(onTogglePlayback)"), "the circle takes Return itself")
+
+        // The seam: a no-op on the iPhone (no card Return there), the key
+        // handled on the Mac so the card's Return never sees it.
+        let seam = try XCTUnwrap(sources[seamPath])
+        let mac = try XCTUnwrap(seam.range(of: "#elseif os(macOS)"))
+        let macHalf = seam[mac.upperBound...]
+        let macFunc = try XCTUnwrap(macHalf.range(of: "func returnKeyActsOnMac("))
+        let macBody = macHalf[macFunc.upperBound...].prefix(200)
+        XCTAssertTrue(macBody.contains("onKeyPress(.return)"), String(macBody))
+        XCTAssertTrue(macBody.contains("action()"), String(macBody))
+        XCTAssertTrue(macBody.contains("return .handled"), "the card's Return never sees it")
+        let iosHalf = seam[..<mac.lowerBound]
+        let iosFunc = try XCTUnwrap(iosHalf.range(of: "func returnKeyActsOnMac("))
+        XCTAssertFalse(iosHalf[iosFunc.upperBound...].prefix(160).contains("onKeyPress"), "the iPhone's is a no-op")
     }
 
     /// J020: the bar caps its text size, so the Library's title, like every

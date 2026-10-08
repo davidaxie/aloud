@@ -151,9 +151,13 @@ final class DocumentCardLayoutTests: XCTestCase {
         let width = Self.twoColumns
         let title = Theme.font(.headline)
         for size in [DynamicTypeSize.large, .xxxLarge] {
+            // From xxLarge the two columns wrap in full (L016); below, two
+            // lines of title and one of author.
+            let wraps = DocumentCardView.wrapsInFull(at: size)
             XCTAssertEqual(cardExtra(width: width, size: size),
-                           textExtra(titleLimit: 2, authorLimit: 1, width: width, size: size),
-                           accuracy: 1, "\(size): two lines of title and one of author")
+                           textExtra(titleLimit: wraps ? nil : 2, authorLimit: wraps ? nil : 1,
+                                     width: width, size: size),
+                           accuracy: 1, "\(size): \(wraps ? "the whole title and author" : "two lines of title and one of author")")
             XCTAssertGreaterThan(textHeight(Self.title, font: title, lineLimit: nil, width: width, size: size),
                                  textHeight(Self.title, font: title, lineLimit: 2, width: width, size: size) + 10,
                                  "\(size) fixture: the title should need more than two lines")
