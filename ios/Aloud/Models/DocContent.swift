@@ -245,15 +245,37 @@ extension DocContent {
     /// the common Gutenberg chapter style ("I", "XVII", "3"). The roman test
     /// demands well-formed numerals rather than merely roman-numeral letters,
     /// so real one-word titles built from those letters ("CIVIL", "MILD",
-    /// "VIVID") are left alone.
-    private static func isBareNumeral(_ title: String) -> Bool {
+    /// "VIVID") are left alone. Shared with speech (`SpokenNumerals`), so a
+    /// heading the list shows as a chapter is the one said as one.
+    static func isBareNumeral(_ title: String) -> Bool {
         guard !title.isEmpty, title.count <= 7 else { return false }
         if title.allSatisfy({ $0.isNumber }) { return true }
         let upper = title.uppercased()
         return upper.wholeMatch(of: Self.romanNumeral) != nil
     }
 
-    private static let romanNumeral = /M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})/
+    /// A well-formed roman numeral in capitals, I to MMMCMXCIX. It also
+    /// matches the empty string: callers check for one character first.
+    static let romanNumeral = /M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})/
+}
+
+// MARK: - Chapter openers (speech)
+
+extension DocContent {
+
+    /// The sentences that open a chapter, for speech (`SpokenNumerals`): the
+    /// first sentence of each chapter Contents lists. A text book's chapters
+    /// are its page runs (`chapters`, or `navigationIndex()` when nil); a
+    /// PDF's are its chapter map's entries, and a PDF without a map that
+    /// found any has none, since its page runs are physical pages.
+    func chapterOpenerSentences(kind: DocKind, chapters: [DerivedChapter]? = nil) -> Set<Int> {
+        guard !sentences.isEmpty else { return [] }
+        if kind == .pdf {
+            guard let map = chapterMap, map.source != .none else { return [] }
+            return Set(map.sanitizedEntries(sentenceCount: sentences.count).map(\.sentence))
+        }
+        return Set((chapters ?? navigationIndex().chapters).map(\.startSentence))
+    }
 }
 
 // MARK: - Search

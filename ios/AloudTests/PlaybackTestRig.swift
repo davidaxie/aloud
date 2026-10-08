@@ -289,6 +289,8 @@ final class PlaybackTestRig {
 
         controller.announce = { [weak self] in self?.announcements.append($0) }
         controller.isAppActive = { [weak self] in self?.appActive ?? true }
+        // The host's VoiceOver never sets how long an Undo offer lasts.
+        controller.assistiveTechRunning = { false }
         controller.onAudioEdge = { [weak self] in self?.edges.append((MonotonicClock.now, $0)) }
         controller.onAudioScheduleEvent = { [weak self] in self?.events.append($0) }
         controller.onProgress = { [weak self] id, sentence, fraction in

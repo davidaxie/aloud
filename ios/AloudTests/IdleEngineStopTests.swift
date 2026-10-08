@@ -307,4 +307,53 @@ final class IdleEngineStopTests: XCTestCase {
         rig.audioSession.onInterruption?(.ended(shouldResume: true))
         try await rig.waitUntilPlayingOrSkip(after: mark)
     }
+
+    /// R1-40: a cold start claims the session once; a resume inside the
+    /// idle window, the engine still running on the session Aloud holds,
+    /// claims nothing again.
+    func testAResumeInsideTheIdleWindowKeepsTheSession() async throws {
+        let (rig, clock) = try await startReading()
+        let offline = rig.controller.rendersOffline
+        XCTAssertEqual(rig.audioSession.activations, offline ? 0 : 1, "a cold start claims the session once")
+
+        rig.controller.pause()
+        XCTAssertEqual(clock.pendingCount, 1, "inside the idle window")
+        let mark = rig.statuses.count
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        XCTAssertTrue(rig.controller.isEngineRunning)
+        XCTAssertEqual(rig.audioSession.activations, offline ? 0 : 1, "the resume keeps the session it holds")
+    }
+
+    /// R1-40: the iPhone's session category is set once (at init, and again
+    /// only after a media-services reset takes it); a claim only activates,
+    /// still mapping a call's refusal to `AudioOutputHeldElsewhere`.
+    func testTheSessionCategoryIsSetOnceAndAClaimOnlyActivates() throws {
+        let path = "Playback/AudioSessionManager.swift"
+        let s = try SourceTree.sources(only: [path]).mapValues(SwiftLiterals.code(in:))
+        let source = try XCTUnwrap(s[path])
+        XCTAssertEqual(source.components(separatedBy: "setCategory(").count - 1, 1, "one place sets the category")
+        XCTAssertTrue(source.contains("mediaServicesWereResetNotification"), "a reset sets it again")
+        let activate = try XCTUnwrap(source.range(of: "func activate() throws {"))
+        let body = source[activate.upperBound...].prefix(320)
+        XCTAssertTrue(body.contains("setActive(true)"), String(body))
+        XCTAssertFalse(body.contains("setCategory("), String(body))
+        XCTAssertTrue(body.contains("throw AudioOutputHeldElsewhere()"), String(body))
+    }
+
+    /// R1-40: an interruption takes the session's activation though Aloud
+    /// keeps its hold for the end, so Play after it claims the session
+    /// again, even with the engine still running.
+    func testAResumeAfterAnInterruptionClaimsTheSessionAgain() async throws {
+        let (rig, _) = try await startReading()
+        try XCTSkipIf(rig.controller.rendersOffline, "offline there is no session to claim")
+        rig.audioSession.onInterruption?(.began)
+        XCTAssertEqual(rig.controller.status, .paused)
+        let activations = rig.audioSession.activations
+
+        let mark = rig.statuses.count
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip(after: mark)
+        XCTAssertEqual(rig.audioSession.activations, activations + 1)
+    }
 }

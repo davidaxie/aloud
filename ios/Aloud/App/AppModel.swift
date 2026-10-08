@@ -209,7 +209,12 @@ final class AppModel: ObservableObject {
         wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
         playback.wordHighlightEnabled = wordHighlight   // didSet doesn't fire in init
 
-        ReaderTextSize.seedIfNeeded(defaults, step: ReaderTextSize.platformDefaultStep)
+        ReaderTextSize.seedIfNeeded(defaults, step: ReaderTextSize.platformDefaultStep,
+                                    seedKey: ReaderTextSize.platformSeedKey)
+        // A size the listener never picked follows the system's (R1-38):
+        // changed while Aloud was closed, then live.
+        ReaderTextSize.followSystemIfUnchosen(defaults)
+        followSystemTextSize(defaults)
         restorePreferences(from: defaults)
         // A launch while hot is quietly System (no book is loaded yet).
         thermalGuard.thermalStateChanged(ProcessInfo.processInfo.thermalState)
@@ -445,6 +450,20 @@ final class AppModel: ObservableObject {
         PlatformLifecycle.publisher(for: .willTerminate)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.playback.applicationWillTerminate() }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Each live change of the system text size reaches a size the listener
+    /// never picked (`ReaderTextSize.followSystemIfUnchosen`); the reader
+    /// reflows through its stored size and keeps its place. Where there is
+    /// no system size (the Mac) nothing is observed.
+    private func followSystemTextSize(_ defaults: UserDefaults) {
+        guard let name = ReaderTextSize.systemTextSizeDidChange else { return }
+        NotificationCenter.default.publisher(for: name)
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+                MainActor.assumeIsolated { ReaderTextSize.followSystemIfUnchosen(defaults) }
             }
             .store(in: &cancellables)
     }

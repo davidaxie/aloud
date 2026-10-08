@@ -87,8 +87,7 @@ final class CritiqueCaptureTests: XCTestCase {
             if wait(app.descendants(matching: .any)["contents.title"].firstMatch, "Contents sheet") {
                 settle()
                 snap("11-contents-half")
-                app.descendants(matching: .any)["contents.title"].firstMatch.swipeUp()
-                settle()
+                openSheetFully(app, header: app.descendants(matching: .any)["contents.title"].firstMatch)
                 snap("12-contents-full")
                 closeSheet(app, header: app.descendants(matching: .any)["contents.title"].firstMatch)
             }
@@ -101,8 +100,15 @@ final class CritiqueCaptureTests: XCTestCase {
             if wait(title, "Voice & speed sheet") {
                 settle()
                 snap("13-voice-sheet")
-                title.swipeUp()
-                settle()
+                // A swipe on a voice row scrolls the list in place: the
+                // sheet stays at its opening detent (R1-22).
+                let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'voice.'")).firstMatch
+                if wait(row, "a voice row", timeout: 5) {
+                    row.swipeUp()
+                    settle()
+                    snap("13b-voice-sheet-row-swipe")
+                }
+                openSheetFully(app, header: title)
                 snap("14-voice-sheet-full")
                 closeSheet(app, header: title)
             }
@@ -183,8 +189,9 @@ final class CritiqueCaptureTests: XCTestCase {
                        "UICTContentSizeCategoryXXL"]) != nil {
             snap("24-reader-xxlarge")
         }
+        // AX3 is AccessibilityXL: AccessibilityL is AX2.
         if openReader(["-uitest-force-light", "-UIPreferredContentSizeCategoryName",
-                       "UICTContentSizeCategoryAccessibilityL"]) != nil {
+                       "UICTContentSizeCategoryAccessibilityXL"]) != nil {
             snap("25-reader-ax3")
         }
     }
@@ -240,6 +247,16 @@ final class CritiqueCaptureTests: XCTestCase {
         if element.waitForExistence(timeout: timeout) { return true }
         note("missing: \(what) in \(name)")
         return false
+    }
+
+    /// Drags the sheet's header to the top, as `closeSheet` drags it down:
+    /// a swipe on the header alone leaves a sheet at its opening detent.
+    private func openSheetFully(_ app: XCUIApplication, header: XCUIElement) {
+        guard header.exists else { return }
+        let start = header.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        settle()
     }
 
     private func closeSheet(_ app: XCUIApplication, header: XCUIElement) {

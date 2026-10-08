@@ -47,6 +47,19 @@ final class AudioSessionManager: AudioOutputMonitoring {
             guard Self.routeRequiresPause(note.userInfo) else { return }
             Task { @MainActor in self?.onRouteRequiresPause?() }
         })
+
+        // A media-services reset takes the category along with the session:
+        // the next claim sets it again.
+        observers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.categoryIsSet = false }
+        })
+
+        // Set once, never activated here: a claim then only activates.
+        setCategoryIfNeeded()
     }
 
     deinit {
@@ -55,14 +68,28 @@ final class AudioSessionManager: AudioOutputMonitoring {
         }
     }
 
-    /// Claims the audio. A call, or an app that outranks Aloud, holding it
-    /// throws `AudioOutputHeldElsewhere`, so playback pauses as interrupted
-    /// rather than failed.
-    func activate() throws {
-        let session = AVAudioSession.sharedInstance()
+    /// The spoken-audio playback category is on the session: set at init,
+    /// and again on the next claim after a reset (or a failed first set).
+    private var categoryIsSet = false
+
+    private func setCategoryIfNeeded() {
+        guard !categoryIsSet else { return }
         do {
-            try session.setCategory(.playback, mode: .spokenAudio)
-            try session.setActive(true)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
+            categoryIsSet = true
+        } catch {
+            // Tried again on the next claim.
+        }
+    }
+
+    /// Claims the audio: activation only, the category already set (R1-40).
+    /// A call, or an app that outranks Aloud, holding it throws
+    /// `AudioOutputHeldElsewhere`, so playback pauses as interrupted rather
+    /// than failed.
+    func activate() throws {
+        setCategoryIfNeeded()
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
         } catch where Self.isHeldElsewhere(error) {
             throw AudioOutputHeldElsewhere()
         }

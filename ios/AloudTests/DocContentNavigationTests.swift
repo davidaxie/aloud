@@ -299,4 +299,31 @@ final class DocContentNavigationTests: XCTestCase {
         let matches = moby.matches(of: "whale", isCancelled: { false })
         XCTAssertEqual(matches.map(\.sentenceID), [2, 3])
     }
+
+    // MARK: - Chapter openers (R1-37)
+
+    /// Speech says a bare numeral as a chapter where Contents starts one: a
+    /// text book's page runs.
+    func testATextBooksOpenersAreItsChapterStarts() {
+        XCTAssertEqual(twoChapters.chapterOpenerSentences(kind: .text), [0, 3])
+        XCTAssertEqual(twoChapters.chapterOpenerSentences(kind: .text, chapters: twoChapters.derivedChapters), [0, 3])
+        XCTAssertEqual(singlePage.chapterOpenerSentences(kind: .text), [0])
+        XCTAssertEqual(makeContent([]).chapterOpenerSentences(kind: .text), [])
+    }
+
+    /// A PDF's openers are its chapter map's entries; a PDF whose map found
+    /// nothing, or that has none yet, has no openers: its page runs are
+    /// physical pages.
+    func testAPDFsOpenersAreItsChapterMapsEntries() {
+        var pdf = makeContent([("IV", 1), ("Body text on the page.", 1), ("More body text.", 2),
+                               ("V", 2), ("The last chapter's text.", 3)])
+        XCTAssertEqual(pdf.chapterOpenerSentences(kind: .pdf), [], "no map yet")
+        pdf.chapterMap = ChapterMap(version: ChapterMap.currentVersion, source: .headings, entries: [
+            ChapterMap.Entry(title: "Chapter IV", sentence: 0, section: nil),
+            ChapterMap.Entry(title: "Chapter V", sentence: 3, section: nil),
+        ])
+        XCTAssertEqual(pdf.chapterOpenerSentences(kind: .pdf), [0, 3])
+        pdf.chapterMap = ChapterMap(version: ChapterMap.currentVersion, source: .none, entries: [])
+        XCTAssertEqual(pdf.chapterOpenerSentences(kind: .pdf), [], "a map that found nothing")
+    }
 }

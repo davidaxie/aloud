@@ -53,11 +53,14 @@ enum ReaderTextSize {
         return steps.indices.contains(next) ? next : nil
     }
 
-    /// First launch only: store the seeded step. Afterwards the user's own
-    /// choice on the stepper wins.
-    static func seedIfNeeded(_ defaults: UserDefaults, step: Int) {
+    /// First launch only: store the seeded step, and the same step under
+    /// `seedKey` where the platform keeps following the system size until
+    /// the listener picks one (the iPhone's `seededKey`; the Mac passes
+    /// nil). Afterwards the user's own choice on the stepper wins.
+    static func seedIfNeeded(_ defaults: UserDefaults, step: Int, seedKey: String? = nil) {
         guard defaults.object(forKey: prefKey) == nil else { return }
         defaults.set(step, forKey: prefKey)
+        if let seedKey { defaults.set(step, forKey: seedKey) }
     }
 }
 

@@ -283,3 +283,94 @@ enum SpokenYears {
         }
     }
 }
+
+/// How roman numerals that number a chapter are said. espeak-ng reads "XI"
+/// letter by letter and a lone "I" as the pronoun, so a heading came out as
+/// a string of letter names.
+///
+/// Spoken text only, like `SpokenYears`: display text, sentence ranges,
+/// `contentHash`, word timing and clip-cache keys never see it. Numerals are
+/// recognised by the matcher the chapter list uses (`DocContent.romanNumeral`),
+/// so real words built from roman letters stay words.
+enum SpokenNumerals {
+
+    /// The heading word a bare chapter numeral is said with (spoken copy).
+    static let chapterWord = "Chapter"
+
+    /// Headings that number what follows.
+    private static let keywordNumeral =
+        #/\b((?i:chapter|book|part|volume|stave|act|scene|canto|letter))(\h+)([IVXLCDMivxlcdm]+)\b/#
+
+    /// The keyword rule, for Kokoro (an English-only voice): a roman numeral
+    /// after a heading word becomes its cardinal, the heading word and the
+    /// punctuation kept as written. A lone letter must be I, V or X after a
+    /// capitalized heading word, with no lowercase word straight after it,
+    /// so the pronoun after "book" and lettered parts stay letters.
+    /// Lowercase numerals stop below 400, so short words spelled with roman
+    /// letters stay words.
+    static func apply(to text: String) -> String {
+        text.replacing(keywordNumeral) { match in
+            let (whole, keyword, gap, numeral) = match.output
+            guard let value = numeralValue(numeral) else { return String(whole) }
+            if numeral.count == 1 {
+                guard "IVX".contains(numeral), keyword.first?.isUppercase == true else { return String(whole) }
+                let rest = text[match.range.upperBound...].drop { $0 == " " || $0 == "\u{00A0}" }
+                if let next = rest.first, next.isLowercase { return String(whole) }
+            }
+            return String(keyword) + String(gap) + cardinal(value)
+        }
+    }
+
+    /// The bare-heading rule, for Kokoro and an English System voice: a
+    /// sentence that is nothing but a numeral (a trailing period allowed).
+    /// Opening a chapter it is said as one, the way Contents shows it;
+    /// elsewhere a roman numeral of two or more letters in one case and
+    /// below 400 (section numbers, not a word spelled in roman letters) is
+    /// said as its cardinal. A lone letter that opens nothing and an arabic
+    /// number are left as they are.
+    static func bareHeading(_ text: String, opensChapter: Bool) -> String {
+        var core = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if core.hasSuffix("."), !core.hasSuffix("..") { core.removeLast() }
+        guard DocContent.isBareNumeral(core) else { return text }
+        if opensChapter {
+            guard let value = Int(core) ?? romanValue(core) else { return text }
+            return chapterWord + " " + cardinal(value)
+        }
+        guard core.count > 1, let value = numeralValue(Substring(core)), value < 400 else { return text }
+        return cardinal(value)
+    }
+
+    /// A roman numeral in one case: any value in capitals, below 400 in
+    /// lowercase. nil for anything else.
+    private static func numeralValue(_ numeral: Substring) -> Int? {
+        let upper = numeral.uppercased()
+        if numeral != Substring(upper) {
+            guard numeral == Substring(numeral.lowercased()), !upper.contains(where: { "DM".contains($0) })
+            else { return nil }
+        }
+        return romanValue(upper)
+    }
+
+    /// The value of a well-formed roman numeral, any case; nil otherwise.
+    static func romanValue(_ numeral: String) -> Int? {
+        let upper = numeral.uppercased()
+        guard !upper.isEmpty, upper.wholeMatch(of: DocContent.romanNumeral) != nil else { return nil }
+        let values: [Character: Int] = ["I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000]
+        var total = 0, largest = 0
+        for letter in upper.reversed() {
+            guard let value = values[letter] else { return nil }
+            if value < largest { total -= value } else { total += value; largest = value }
+        }
+        return total
+    }
+
+    /// `value` in American English words, joined by spaces as `SpokenYears`
+    /// joins its words: "eleven", "twenty one", "one hundred four".
+    static func cardinal(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.numberStyle = .spellOut
+        let words = formatter.string(from: NSNumber(value: value)) ?? String(value)
+        return words.replacingOccurrences(of: "-", with: " ")
+    }
+}

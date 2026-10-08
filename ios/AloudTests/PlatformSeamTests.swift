@@ -445,6 +445,87 @@ final class PlatformSeamTests: XCTestCase {
         }
     }
 
+    // MARK: R1-38 · the page follows Dynamic Type until a size is picked
+
+    private func textSizeDefaults() throws -> UserDefaults {
+        let suite = "PlatformSeamTests.textSize.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    private func storedPoints(_ defaults: UserDefaults) -> CGFloat {
+        ReaderTextSize.points(forStep: defaults.integer(forKey: ReaderTextSize.prefKey))
+    }
+
+    func testAFreshInstallFollowsTheSystemTextSize() throws {
+        let defaults = try textSizeDefaults()
+        ReaderTextSize.seedIfNeeded(defaults, category: .large)
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .large)
+        XCTAssertEqual(storedPoints(defaults), 19)
+        XCTAssertEqual(defaults.object(forKey: ReaderTextSize.seededKey) as? Int, 2, "the seed is recorded")
+
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .accessibilityLarge)   // AX2
+        XCTAssertEqual(storedPoints(defaults), 30)
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .large)
+        XCTAssertEqual(storedPoints(defaults), 19, "and back down")
+    }
+
+    func testAPickedSizeIsNeverOverwritten() throws {
+        let defaults = try textSizeDefaults()
+        ReaderTextSize.seedIfNeeded(defaults, category: .large)
+        // One A+ tap: the stepper writes the size alone.
+        let tapped = try XCTUnwrap(ReaderTextSize.stepped(from: defaults.integer(forKey: ReaderTextSize.prefKey),
+                                                          bigger: true))
+        defaults.set(tapped, forKey: ReaderTextSize.prefKey)
+
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .accessibilityLarge)
+        XCTAssertEqual(defaults.integer(forKey: ReaderTextSize.prefKey), tapped)
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .extraSmall)
+        XCTAssertEqual(defaults.integer(forKey: ReaderTextSize.prefKey), tapped)
+    }
+
+    func testAnExistingInstallOffTheSeedKeepsItsSize() throws {
+        let defaults = try textSizeDefaults()
+        defaults.set(4, forKey: ReaderTextSize.prefKey)   // stored before the seed was recorded
+        ReaderTextSize.seedIfNeeded(defaults, category: .large)   // not a first launch
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .large)
+        XCTAssertEqual(defaults.integer(forKey: ReaderTextSize.prefKey), 4)
+        XCTAssertNil(defaults.object(forKey: ReaderTextSize.seededKey))
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .accessibilityLarge)
+        XCTAssertEqual(defaults.integer(forKey: ReaderTextSize.prefKey), 4, "the listener's size")
+    }
+
+    func testAnExistingInstallAtTheSeedStartsFollowing() throws {
+        let defaults = try textSizeDefaults()
+        defaults.set(2, forKey: ReaderTextSize.prefKey)   // stored before the seed was recorded
+        ReaderTextSize.seedIfNeeded(defaults, category: .large)
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .large)
+        XCTAssertEqual(defaults.object(forKey: ReaderTextSize.seededKey) as? Int, 2)
+        ReaderTextSize.followSystemIfUnchosen(defaults, category: .accessibilityLarge)
+        XCTAssertEqual(storedPoints(defaults), 30)
+    }
+
+    /// The seed is written only where the size is seeded and followed: the
+    /// stepper, the VoiceOver adjust and the pinch write the size alone, so
+    /// the listener's pick wins. AppModel follows at launch and live.
+    func testOnlyTheSeedWritesTheSeedAndAppModelFollows() throws {
+        let s = try SourceTree.appSources().mapValues(SwiftLiterals.code(in:))
+        XCTAssertEqual(SourceTree.files(containing: "seededKey", in: s), ["Platform/ReaderTextSizeSeed.swift"])
+        let model = try XCTUnwrap(s["App/AppModel.swift"])
+        XCTAssertTrue(model.contains("seedKey: ReaderTextSize.platformSeedKey"))
+        XCTAssertTrue(model.contains("ReaderTextSize.followSystemIfUnchosen(defaults)"))
+        XCTAssertTrue(model.contains("ReaderTextSize.systemTextSizeDidChange"))
+        XCTAssertEqual(ReaderTextSize.systemTextSizeDidChange, UIContentSizeCategory.didChangeNotification)
+    }
+
+    // MARK: R1-39 · assistive tech
+
+    func testAssistiveTechIsVoiceOverOrSwitchControl() {
+        XCTAssertEqual(PlatformAccessibility.assistiveTechRunning,
+                       UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning)
+    }
+
     // MARK: - Helpers
 
     private func solidImage(_ color: UIColor, size: CGSize, scale: CGFloat) -> UIImage {

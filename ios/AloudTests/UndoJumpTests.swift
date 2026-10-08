@@ -242,4 +242,56 @@ final class UndoJumpTests: XCTestCase {
         unloaded.controller.unload()
         XCTAssertNil(unloaded.controller.undoableJump)
     }
+
+    // MARK: - Assistive tech (R1-39)
+
+    private func offersAnnounced(_ rig: PlaybackTestRig) -> Int {
+        rig.announcements.filter { $0 == UndoJumpCopy.available }.count
+    }
+
+    /// A scrub that opens an offer says so once, after the scrub's own
+    /// value; scrubbing on extends that offer and says nothing more. A move
+    /// between jumps opens a new offer, said again.
+    func testAnOfferIsAnnouncedOnceWhenItOpens() throws {
+        let rig = pausedRig(wordsPerSentence: 10)
+        rig.clearRecordings()
+        rig.controller.jump(to: 20, origin: .scrub)
+        XCTAssertNotNil(rig.controller.undoableJump)
+        XCTAssertEqual(offersAnnounced(rig), 1, "\(rig.announcements)")
+
+        rig.controller.jump(to: 25, origin: .scrub)
+        XCTAssertEqual(rig.controller.undoableJump?.fromSentence, 10, "the same offer, extended")
+        XCTAssertEqual(offersAnnounced(rig), 1, "an extended offer says nothing more")
+
+        rig.controller.skip(seconds: 15)
+        rig.controller.jump(to: 35, origin: .chapter)
+        XCTAssertEqual(offersAnnounced(rig), 2, "a new place to go back to")
+    }
+
+    /// A nearby tap offers nothing, so it says nothing.
+    func testNoOfferNoAnnouncement() {
+        let rig = pausedRig()
+        rig.clearRecordings()
+        rig.controller.jump(to: 12, origin: .sentence)
+        XCTAssertNil(rig.controller.undoableJump)
+        XCTAssertEqual(offersAnnounced(rig), 0)
+    }
+
+    /// With VoiceOver or Switch Control running, the offer outlives the
+    /// usual 10 s (30 s in the app; both shortened here) and still expires.
+    func testAssistiveTechKeepsTheOfferUpLonger() async throws {
+        let rig = pausedRig()
+        XCTAssertEqual(rig.controller.undoJumpLifetime, UndoableJump.displaySeconds)
+        XCTAssertEqual(UndoableJump.displaySeconds, 10)
+        XCTAssertEqual(rig.controller.assistiveUndoJumpLifetime, 30)
+        rig.controller.undoJumpLifetime = 0.05
+        rig.controller.assistiveUndoJumpLifetime = 0.5
+        rig.controller.assistiveTechRunning = { true }
+
+        rig.controller.jump(to: 30, origin: .chapter)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertNotNil(rig.controller.undoableJump, "outlives the usual lifetime")
+        let expired = await rig.waitUntil(2) { rig.controller.undoableJump == nil }
+        XCTAssertTrue(expired, "and expires by its own")
+    }
 }

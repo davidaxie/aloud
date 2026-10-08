@@ -231,4 +231,115 @@ final class SpokenYearsTests: XCTestCase {
     func testTextNormalizerLeavesYearsAsDigits() {
         XCTAssertEqual(TextNormalizer.normalize("in 1915, 1914\u{2013}1918"), "in 1915, 1914 - 1918")
     }
+
+    // MARK: - Heading numerals (R1-37)
+
+    /// A bare numeral that opens a chapter is said as one, the way Contents
+    /// shows it; a trailing period goes with it.
+    func testAChapterOpeningNumeralIsSaidAsAChapter() {
+        XCTAssertEqual(SpokenNumerals.bareHeading("IV", opensChapter: true), "Chapter four")
+        XCTAssertEqual(SpokenNumerals.bareHeading("IV.", opensChapter: true), "Chapter four")
+        XCTAssertEqual(SpokenNumerals.bareHeading("I.", opensChapter: true), "Chapter one")
+        XCTAssertEqual(SpokenNumerals.bareHeading("XXI", opensChapter: true), "Chapter twenty one")
+        XCTAssertEqual(SpokenNumerals.bareHeading("3", opensChapter: true), "Chapter three")
+    }
+
+    /// Elsewhere a numeral of two or more letters is said as its number; a
+    /// lone letter, an arabic number and words stay as written.
+    func testABareNumeralElsewhere() {
+        XCTAssertEqual(SpokenNumerals.bareHeading("XIV.", opensChapter: false), "fourteen")
+        for text in ["I", "I.", "V", "3", "MIX", "Mix.", "CIVIL", "Henry V", "Li.", "It was I."] {
+            XCTAssertEqual(SpokenNumerals.bareHeading(text, opensChapter: false), text, text)
+        }
+    }
+
+    /// The keyword rule: a numeral after a heading word is its cardinal,
+    /// whatever the heading word's case, with the punctuation kept.
+    func testAHeadingWordsNumeralIsSaidAsANumber() {
+        XCTAssertEqual(SpokenNumerals.apply(to: "CHAPTER XI."), "CHAPTER eleven.")
+        XCTAssertEqual(SpokenNumerals.apply(to: "Chapter I"), "Chapter one")
+        XCTAssertEqual(SpokenNumerals.apply(to: "Act I, Scene II"), "Act one, Scene two")
+        XCTAssertEqual(SpokenNumerals.apply(to: "BOOK IV. CHAPTER XIV"), "BOOK four. CHAPTER fourteen")
+        XCTAssertEqual(SpokenNumerals.apply(to: "Stave III: The Second"), "Stave three: The Second")
+        XCTAssertEqual(SpokenNumerals.apply(to: "see chapter xi for more"), "see chapter eleven for more")
+        XCTAssertEqual(SpokenNumerals.apply(to: "LETTER I."), "LETTER one.")
+    }
+
+    /// The pronoun, kings, lettered parts and words built from roman
+    /// letters are never numbers.
+    func testWordsAndThePronounStayAsWritten() {
+        for text in ["I think I will go.", "Henry V was king.", "Stir the MIX well.", "a CIVIL war",
+                     "the book I read", "The Book I read", "See Part C.", "the part mix",
+                     "Counterpart II", "Chapter Xavier"] {
+            XCTAssertEqual(SpokenNumerals.apply(to: text), text, text)
+        }
+    }
+
+    /// Kokoro hears the keyword rule before the years, so a British voice
+    /// still says its years its way.
+    func testKokoroSpeaksHeadingNumeralsAndStillItsYears() {
+        XCTAssertEqual(KokoroSherpaEngine.spokenText("CHAPTER XI. In 2005.", lang: "en-GB"),
+                       "CHAPTER eleven. In two thousand and five.")
+        XCTAssertEqual(KokoroSherpaEngine.spokenText("Chapter I", lang: "en-US"), "Chapter one")
+        XCTAssertEqual(KokoroSherpaEngine.spokenText("I graduated in 1915.", lang: "en-US"),
+                       "I graduated in nineteen fifteen.")
+    }
+
+    /// Display and speech share one matcher: a heading Contents shows as a
+    /// chapter is the one said as one.
+    func testDisplayAndSpeechShareTheMatcher() {
+        for text in ["IV", "XVII", "3", "iv"] {
+            XCTAssertTrue(DocContent.isBareNumeral(text), text)
+            XCTAssertEqual(DocContent.cleanedChapterTitle(text), "Chapter \(text)")
+            XCTAssertTrue(SpokenNumerals.bareHeading(text, opensChapter: true).hasPrefix(SpokenNumerals.chapterWord))
+        }
+        XCTAssertFalse(DocContent.isBareNumeral("CIVIL"))
+    }
+}
+
+/// R1-37 through playback: synthesis is asked for the chapter, never the
+/// letters, while the display text stays as written. Muted; no audio plays.
+@MainActor
+final class SpokenNumeralPlaybackTests: XCTestCase {
+
+    /// Two chapters, each opened by a bare numeral heading (a text book's
+    /// chapters are its page runs).
+    private func chaptered(_ texts: [String], pages: [Int], hash: String) -> (LibraryDocument, DocContent) {
+        let sentences = texts.enumerated().map { Sentence(id: $0, text: $1, para: $0, page: pages[$0]) }
+        let content = DocContent(title: "Chapters", pageCount: (pages.max() ?? 0) + 1, sentences: sentences,
+                                 paragraphs: [], contentHash: hash)
+        return (PlaybackTestRig.makeDocument(hash: hash, sentences: texts.count), content)
+    }
+
+    func testAChapterOpeningNumeralIsRequestedAsAChapter() async {
+        let rig = PlaybackTestRig()
+        let (document, content) = chaptered(["I.", "It was a cold morning in the little town.",
+                                             "The wind came in off the grey sea.",
+                                             "II.", "She walked down to the harbour early.",
+                                             "The boats were already out."],
+                                            pages: [0, 0, 0, 1, 1, 1], hash: "numerals")
+        rig.controller.load(document: document, content: content)
+
+        // The load warms its first two sentences in the System voice.
+        let asked = await rig.waitUntil { rig.engineA.requestedTexts.contains("Chapter one") }
+        XCTAssertTrue(asked, "\(rig.engineA.requestedTexts)")
+        XCTAssertFalse(rig.engineA.requestedTexts.contains("I."))
+        XCTAssertEqual(rig.controller.synthesisText(at: 3), "Chapter two")
+        XCTAssertEqual(rig.controller.synthesisText(at: 1), "It was a cold morning in the little town.")
+        XCTAssertEqual(rig.controller.content?.sentences[0].text, "I.", "the page keeps its numeral")
+    }
+
+    /// The System voice reading a book in another language says its own
+    /// numbers: the rule is for English.
+    func testTheSystemVoiceInAnotherLanguageKeepsTheNumeral() {
+        let rig = PlaybackTestRig()
+        let (document, content) = chaptered(
+            ["I.", "Il était une fois une petite fille qui vivait au bord de la grande forêt.",
+             "Elle aimait beaucoup sa grand-mère, qui habitait de l'autre côté du bois.",
+             "II.", "Un matin, sa mère lui donna un panier de galettes et un petit pot de beurre."],
+            pages: [0, 0, 0, 1, 1], hash: "numerals-fr")
+        rig.controller.load(document: document, content: content)
+        XCTAssertNotNil(rig.controller.systemVoiceLanguage)
+        XCTAssertEqual(rig.controller.synthesisText(at: 0), "I.")
+    }
 }

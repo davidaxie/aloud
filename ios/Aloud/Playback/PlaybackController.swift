@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import os
 
 enum PlayerStatus: String, Sendable {
     case idle, buffering, playing, paused, ended, error
@@ -10,6 +11,12 @@ enum PlayerStatus: String, Sendable {
 struct SentenceEnd: Equatable, Sendable {
     let sentence: Int
     let secondsFromNow: TimeInterval
+}
+
+/// What the controller says about an Undo jump offer (R15, R1-39).
+enum UndoJumpCopy {
+    /// Announced, queued behind the scrub's new value, when an offer opens.
+    static let available = "Undo jump available"
 }
 
 /// The app's heart. Drives an AVAudioEngine → player → time-pitch graph with
@@ -212,6 +219,12 @@ final class PlaybackController: ObservableObject {
 
     /// How long an "Undo jump" offer stays up. Tests shorten it.
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
+    /// How long the offer stays up while VoiceOver or Switch Control runs:
+    /// reaching the chip takes longer than a glance. Tests shorten it.
+    var assistiveUndoJumpLifetime: TimeInterval = 30
+    /// Whether VoiceOver or Switch Control is running now
+    /// (`PlatformAccessibility.assistiveTechRunning`). Tests replace it.
+    var assistiveTechRunning: () -> Bool = { PlatformAccessibility.assistiveTechRunning }
 
     /// M19: how long the engine runs on once nothing plays before it stops
     /// (`PlatformTuning.idleEngineStopDelay`); nil keeps it running. Tests
@@ -336,6 +349,9 @@ final class PlaybackController: ObservableObject {
     /// there are sentences, the last the book's total. Built once per load,
     /// so each progress write is one division.
     private var wordsBefore: [Int] = []
+    /// The sentences of `content` that open a chapter, where a bare numeral
+    /// is said as a chapter (`synthesisText`). Found once per load.
+    private var chapterOpeners: Set<Int> = []
 
     /// Resume-rewind anchor: where and when playback last left an active
     /// state. Production writes go through `stampResumeAnchor` /
@@ -438,6 +454,10 @@ final class PlaybackController: ObservableObject {
     /// stop's release, an interruption's end and a media-services reset
     /// leave it unclaimed until the next Play claims it.
     private var holdsAudioSession = false
+    /// An interruption began: iOS took the session's activation, though
+    /// Aloud still holds it for the end. The next start claims it again
+    /// even where the engine (a test host's) kept running.
+    private var sessionClaimLapsed = false
     private var noticeTask: Task<Void, Never>?
     /// True for the length of a document switch, so the `.paused` cue of the
     /// INCOMING book can't be mistaken for the outgoing book's stop.
@@ -717,7 +737,9 @@ final class PlaybackController: ObservableObject {
         self.document = document
         self.content = content
         systemVoiceLanguage = AVSpeechEngine.readingLanguage(of: content.sentences.lazy.map(\.text))
-        wordsBefore = content.navigationIndex().wordsBefore   // before the cue's progress write
+        let navigation = content.navigationIndex()
+        wordsBefore = navigation.wordsBefore   // before the cue's progress write
+        chapterOpeners = content.chapterOpenerSentences(kind: document.kind, chapters: navigation.chapters)
         skippedSentences = []
         consecutiveFailures = 0
         failedRunSkips = []
@@ -795,6 +817,7 @@ final class PlaybackController: ObservableObject {
         content = nil
         systemVoiceLanguage = nil
         wordsBefore = []
+        chapterOpeners = []
         skippedSentences = []
         sleepStopAfter = nil
         pendingFadeIn = nil
@@ -1391,6 +1414,10 @@ final class PlaybackController: ObservableObject {
                                             fromStatus: listenerStatus,
                                             toSentence: target,
                                             serial: jumpSerial)
+                // A new place to go back to, said once (queued, after the
+                // scrub's new value); a jump that only extends the offer
+                // says nothing more.
+                announce(UndoJumpCopy.available)
             }
             restartUndoTimer()
         }
@@ -1441,7 +1468,7 @@ final class PlaybackController: ObservableObject {
 
     private func restartUndoTimer() {
         undoTask?.cancel()
-        let lifetime = max(undoJumpLifetime, 0)
+        let lifetime = max(assistiveTechRunning() ? assistiveUndoJumpLifetime : undoJumpLifetime, 0)
         undoTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(lifetime * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
@@ -1596,8 +1623,7 @@ final class PlaybackController: ObservableObject {
 
             let next = lastScheduled + 1
             let clipVoice = voiceForSentence(next)
-            let spoken = SentenceSegmenter.spokenText(content.sentences[next].text,
-                                                     skipBrackets: skipBrackets)
+            let spoken = synthesisText(at: next, voice: clipVoice)
             let clip: SynthesizedAudio
             if skippedSentences.contains(next)
                 || spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1704,6 +1730,21 @@ final class PlaybackController: ObservableObject {
     private func forgetSkips() {
         skippedSentences = []
         failedRunSkips = []
+    }
+
+    /// The text synthesis is handed for sentence `index` in `voice` (by
+    /// default the voice it is queued in): the sentence as read
+    /// (`SentenceSegmenter.spokenText`), with a bare numeral heading said
+    /// as a number (`SpokenNumerals.bareHeading`), as a chapter where one
+    /// opens. Kokoro speaks English only; the System voice gets the rule
+    /// only for an English book. Speech alone: the display text, sentence
+    /// ranges, word timing and clip keys never change. "" for no sentence.
+    func synthesisText(at index: Int, voice: TtsVoice? = nil) -> String {
+        guard let content, content.sentences.indices.contains(index) else { return "" }
+        let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skipBrackets)
+        let reading = voice ?? voiceForSentence(index)
+        guard reading.engine == .kokoro || systemVoiceLanguage == nil else { return spoken }
+        return SpokenNumerals.bareHeading(spoken, opensChapter: chapterOpeners.contains(index))
     }
 
     /// The voice sentence `index` is queued in: the handoff's from its splice
@@ -2005,7 +2046,7 @@ final class PlaybackController: ObservableObject {
     private func isClipReady(at index: Int, in voice: TtsVoice) -> Bool {
         guard let content, content.sentences.indices.contains(index) else { return false }
         if skippedSentences.contains(index) { return true }
-        let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skipBrackets)
+        let spoken = synthesisText(at: index, voice: voice)
         if spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         let key = AudioClipCache.key(voice: voice, skipBrackets: skipBrackets, contentHash: content.contentHash,
                                      nativeSpeed: nativePace(for: voice), sentenceID: index)
@@ -2406,7 +2447,7 @@ final class PlaybackController: ObservableObject {
         let pace = nativePace(for: voice)
         var warmUps: [(text: String, key: String)] = []
         for index in first...upper where !skippedSentences.contains(index) {
-            let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skip)
+            let spoken = synthesisText(at: index, voice: voice)
             guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             warmUps.append((text: spoken, key: AudioClipCache.key(voice: voice, skipBrackets: skip,
                                                                   contentHash: content.contentHash,
@@ -2660,11 +2701,18 @@ final class PlaybackController: ObservableObject {
     /// the warm resume's ramp). Throws `AudioOutputHeldElsewhere` when a
     /// call holds the audio.
     private func startAudioHardware() throws {
-        // Offline there is no session or device to claim.
-        if !rendersOffline {
+        // Offline there is no session or device to claim. A resume inside
+        // the idle window keeps the session it holds and its running
+        // engine: an interruption stops the engine (and lapses the claim),
+        // and a media-services reset drops the hold, so either way the
+        // next start claims it again.
+        if !rendersOffline, !(holdsAudioSession && audioEngine.isRunning && !sessionClaimLapsed) {
+            let claim = Self.audioStartSignposter.beginInterval("activate")
+            defer { Self.audioStartSignposter.endInterval("activate", claim) }
             do {
                 try audioOutput.activate()
                 holdsAudioSession = true
+                sessionClaimLapsed = false
             } catch let heldElsewhere as AudioOutputHeldElsewhere {
                 throw heldElsewhere
             } catch {
@@ -2678,12 +2726,20 @@ final class PlaybackController: ObservableObject {
             #if DEBUG
             try willStartEngine()
             #endif
+            let start = Self.audioStartSignposter.beginInterval("engineStart")
+            defer { Self.audioStartSignposter.endInterval("engineStart", start) }
             try audioEngine.start()
             #if DEBUG
             if rendersOffline { startRenderPump() }
             #endif
         }
     }
+
+    /// The session claim and the engine start inside M19's first-audio
+    /// interval, apart from its budget signposts, so a trace shows what a
+    /// cold start spends there.
+    private static let audioStartSignposter = OSSignposter(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.davidxie.Aloud", category: "AudioStart")
 
     /// Runs a graph change where no offline render is in flight (on the
     /// pump's queue), or in place when nothing renders offline.
@@ -2838,6 +2894,7 @@ final class PlaybackController: ObservableObject {
     private func handleInterruption(_ event: AudioInterruption) {
         switch event {
         case .began:
+            sessionClaimLapsed = true
             // Stopping nothing, this interruption may resume nothing either.
             // It stops a paused Aloud's idle engine, though, with no idle
             // stop to follow.

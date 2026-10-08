@@ -208,10 +208,11 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     }
 
     /// The exact string Kokoro is given: the display text normalized, with
-    /// years spelled as said (`SpokenYears`). British voices say "two
-    /// thousand and five".
+    /// heading numerals said as numbers (`SpokenNumerals`) and years spelled
+    /// as said (`SpokenYears`). British voices say "two thousand and five".
     static func spokenText(_ text: String, lang: String) -> String {
-        SpokenYears.apply(to: TextNormalizer.normalize(text), british: lang == "en-GB")
+        SpokenYears.apply(to: SpokenNumerals.apply(to: TextNormalizer.normalize(text)),
+                          british: lang == "en-GB")
     }
 
     // MARK: - The warm line
