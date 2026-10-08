@@ -45,9 +45,10 @@ extension View {
     }
 
     /// A shelf card's press: the paper plate under a finger
-    /// (`ShelfPlateButtonStyle`), its corners `radius`.
-    func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md) -> some View {
-        buttonStyle(ShelfPlateButtonStyle(radius: radius))
+    /// (`ShelfPlateButtonStyle`), its corners `radius`; with `scales` off,
+    /// the plate without the shrink.
+    func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md, scales: Bool = true) -> some View {
+        buttonStyle(ShelfPlateButtonStyle(radius: radius, scales: scales))
     }
 
     /// A long press lifts the card as a rounded paper card, not the square
@@ -101,9 +102,9 @@ extension View {
         }
     }
 
-    /// A plain button: the Mac card draws its own hover and press plate
-    /// around it (`MacHoverPlate`).
-    func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md) -> some View {
+    /// A plain button, whatever `radius` and `scales` ask: the Mac card
+    /// draws its own hover and press plate around it (`MacHoverPlate`).
+    func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md, scales: Bool = true) -> some View {
         buttonStyle(.plain)
     }
 

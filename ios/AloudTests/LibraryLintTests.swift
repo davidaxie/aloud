@@ -368,10 +368,12 @@ final class LibraryLintTests: XCTestCase {
     /// P019: books press onto a paper plate (the grid, the featured
     /// classic and, through the seam, the Continue card), never the plain
     /// style's fade; the Mac keeps its hover plate; long presses lift
-    /// rounded cards.
+    /// rounded cards. The Continue card takes the plate without the shrink:
+    /// its play circle is placed from outside the button and would stay
+    /// full size over a shrinking body.
     func testBooksPressOntoAPlate() throws {
         let paths = [Self.libraryFile, "Library/EmptyLibraryView.swift", "Library/ContinueListeningCard.swift",
-                     "Platform/PlatformViewModifiers.swift"]
+                     "Platform/PlatformViewModifiers.swift", "Theme/PressStyles.swift"]
         let s = try SourceTree.sources(only: paths)
         let library = try XCTUnwrap(s[paths[0]])
         XCTAssertTrue(library.contains(".buttonStyle(ShelfPlateButtonStyle())"))
@@ -386,15 +388,23 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(button.contains(".buttonStyle(ShelfPlateButtonStyle(radius: Theme.Radius.lg))"), String(button))
         XCTAssertTrue(button.contains("TransportHaptics.emit(.play)"), "the haptic stays")
         let card = try XCTUnwrap(s[paths[2]])
-        XCTAssertTrue(card.contains(".shelfCardPressStyle(radius: Theme.Radius.lg)"))
+        XCTAssertTrue(card.contains(".shelfCardPressStyle(radius: Theme.Radius.lg, scales: false)"))
         XCTAssertTrue(card.contains(".contextMenuPreviewCorners(Theme.Radius.lg)\n        .contextMenu { menu }"))
         let seam = try XCTUnwrap(s[paths[3]])
         let mac = try XCTUnwrap(seam.range(of: "#elseif os(macOS)"))
         let macPress = try XCTUnwrap(seam[mac.upperBound...].range(of: "func shelfCardPressStyle("))
-        XCTAssertTrue(seam[macPress.upperBound...].prefix(120).contains("buttonStyle(.plain)"),
+        XCTAssertTrue(seam[macPress.upperBound...].prefix(160).contains("buttonStyle(.plain)"),
                       "the Mac's card keeps its own hover plate")
         let iosPress = try XCTUnwrap(seam[..<mac.lowerBound].range(of: "func shelfCardPressStyle("))
-        XCTAssertTrue(seam[iosPress.upperBound...].prefix(160).contains("ShelfPlateButtonStyle(radius: radius)"))
+        let iosBody = seam[iosPress.upperBound...].prefix(200)
+        XCTAssertTrue(iosBody.contains("scales: Bool = true) -> some View {"), String(iosBody))
+        XCTAssertTrue(iosBody.contains("ShelfPlateButtonStyle(radius: radius, scales: scales)"), String(iosBody))
+        let pressSignature = "func shelfCardPressStyle(radius: CGFloat = Theme.Radius.md, scales: Bool = true)"
+        XCTAssertEqual(seam.components(separatedBy: pressSignature).count - 1, 2,
+                       "both halves of the seam take the same parameters")
+        let press = try XCTUnwrap(s[paths[4]])
+        XCTAssertTrue(press.contains("ShelfPlateButtonStyle.scale(isPressed: isPressed && scales,"),
+                      "a style with scales off draws the plate alone")
     }
 
     /// P020: the iPhone's shelf goes through the shared feed, so the
@@ -474,7 +484,9 @@ final class LibraryLintTests: XCTestCase {
 
     /// P022: after a Delete VoiceOver lands on a neighbour, read off the
     /// shelf before the book leaves it, and after Mark as finished on the
-    /// Continue card it follows the book to its grid card.
+    /// Continue card it follows the book to its grid card. The grid is
+    /// lazy, so the shelf scrolls the card in before focus moves: a card
+    /// it hasn't built yet can't take focus.
     func testVoiceOverFocusFollowsDeleteAndFinish() throws {
         let s = try SourceTree.sources(only: [Self.libraryFile])
         let text = try XCTUnwrap(s[Self.libraryFile])
@@ -487,6 +499,21 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertLessThan(neighbour.lowerBound, delete.lowerBound, "read before the book leaves the shelf")
         XCTAssertTrue(text[delete.upperBound...].prefix(160).contains("moveVoiceOverFocus(to: next)"))
         XCTAssertTrue(text.contains("if wasHero { moveVoiceOverFocus(to: document.id) }"))
+        XCTAssertTrue(text.contains("ScrollViewReader { proxy in"))
+        XCTAssertTrue(text.contains(".accessibilityFocused($voFocus, equals: document.id)\n"
+                                    + "                // What a VoiceOver hand-off scrolls to (`pendingFocus`).\n"
+                                    + "                .id(document.id)"), "every grid card is a scroll target")
+        XCTAssertTrue(text.contains("contextMenuActions(for: hero)\n                    }\n                    .id(hero.id)"),
+                      "the Continue card is one too")
+        let move = try XCTUnwrap(text.range(of: "private func moveVoiceOverFocus(to card: UUID?) {"))
+        let moveBody = text[move.upperBound...].prefix(220)
+        XCTAssertTrue(moveBody.contains("pendingFocus = card"), String(moveBody))
+        XCTAssertFalse(moveBody.contains("voFocus ="), "focus moves only after the scroll")
+        let handoff = try XCTUnwrap(text.range(of: ".onChange(of: pendingFocus) { _, id in"))
+        let handoffBody = text[handoff.upperBound...].prefix(400)
+        let scroll = try XCTUnwrap(handoffBody.range(of: "proxy.scrollTo(id, anchor: .center)"), String(handoffBody))
+        let focus = try XCTUnwrap(handoffBody.range(of: "voFocus = id"), String(handoffBody))
+        XCTAssertLessThan(scroll.lowerBound, focus.lowerBound, "scrolled in before VoiceOver lands")
         XCTAssertTrue(text.contains("PlaybackController.postAnnouncement(\"Marked as finished\""), "still said")
     }
 

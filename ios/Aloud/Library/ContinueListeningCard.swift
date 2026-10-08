@@ -138,9 +138,11 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
                     .anchorPreference(key: CircleSlotKey.self, value: .bounds) { $0 }
             }
         }
-        // The iPhone's paper plate under a finger, round the card's corners;
-        // the Mac's own hover plate.
-        .shelfCardPressStyle(radius: Theme.Radius.lg)
+        // The iPhone's paper plate under a finger, round the card's corners,
+        // without the shrink: the circle is placed from outside the button
+        // and would stay full size over a shrinking body. The Mac's own
+        // hover plate.
+        .shelfCardPressStyle(radius: Theme.Radius.lg, scales: false)
         // On the body alone: modifiers after the overlay would reach the circle too.
         .accessibilityLabel(ContinueListeningCopy.label(title: document.title, author: document.author))
         .accessibilityValue(ContinueListeningCopy.value(

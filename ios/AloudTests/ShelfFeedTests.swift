@@ -358,6 +358,9 @@ final class ShelfFeedTests: XCTestCase {
         XCTAssertEqual(ShelfPlateButtonStyle.scale(isPressed: true, reduceMotion: false), 0.98)
         XCTAssertEqual(ShelfPlateButtonStyle.scale(isPressed: true, reduceMotion: true), 1, "Reduce Motion: the plate alone")
         XCTAssertEqual(ShelfPlateButtonStyle.scale(isPressed: false, reduceMotion: false), 1)
+        XCTAssertTrue(ShelfPlateButtonStyle().scales, "a grid card draws a touch smaller")
+        XCTAssertFalse(ShelfPlateButtonStyle(radius: Theme.Radius.lg, scales: false).scales,
+                       "the Continue card can take the plate alone")
     }
 
     /// The plate never dims the card: no opacity anywhere in the style.

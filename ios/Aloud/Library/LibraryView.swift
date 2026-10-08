@@ -18,6 +18,7 @@ struct LibraryView: View {
     @EnvironmentObject private var importer: DocumentImporter
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     /// The import overlay is up (RootView reveals it only for a slow add):
     /// the shelf and its bar items leave VoiceOver and the bar only then.
     @Environment(\.importOverlayRevealed) private var overlayRevealed
@@ -49,6 +50,11 @@ struct LibraryView: View {
     /// finished on the Continue card (the book's grid card): lost, it
     /// jumped to the top of the screen.
     @AccessibilityFocusState private var voFocus: UUID?
+    /// The card a hand-off is bound for, once the dialog or menu has gone.
+    /// The shelf scrolls it into view before VoiceOver takes it: the grid
+    /// is lazy, and a card it hasn't built (a finished Continue book back
+    /// in its slot far below) can't take focus.
+    @State private var pendingFocus: UUID?
     /// The shelf's width, for the column gap (`PhoneShelfMetrics`).
     @State private var shelfWidth: CGFloat = 0
     /// Whether the clipboard holds text, for the paste item and link. Read
@@ -314,7 +320,25 @@ struct LibraryView: View {
 
     // MARK: Grid
 
+    /// The shelf, scrolled to a VoiceOver hand-off's card (`pendingFocus`)
+    /// before focus moves there. Only under VoiceOver: a sighted reader's
+    /// shelf stays where they left it.
     private var grid: some View {
+        ScrollViewReader { proxy in
+            shelfScroll
+                .onChange(of: pendingFocus) { _, id in
+                    guard let id else { return }
+                    if voiceOverEnabled { proxy.scrollTo(id, anchor: .center) }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: Self.scrollSettleDelay)
+                        voFocus = id
+                        pendingFocus = nil
+                    }
+                }
+        }
+    }
+
+    private var shelfScroll: some View {
         ScrollView {
             VStack(spacing: PhoneShelfMetrics.heroToGrid) {
                 if let hero = shelf.hero {
@@ -330,6 +354,7 @@ struct LibraryView: View {
                     } menu: {
                         contextMenuActions(for: hero)
                     }
+                    .id(hero.id)
                 }
                 documentGrid
             }
@@ -359,6 +384,8 @@ struct LibraryView: View {
                 .accessibilityIdentifier("library.card")
                 .accessibilityActions { documentActions(for: document) }
                 .accessibilityFocused($voFocus, equals: document.id)
+                // What a VoiceOver hand-off scrolls to (`pendingFocus`).
+                .id(document.id)
                 // The long press lifts a rounded card, not a square cell.
                 .contentShape(.contextMenuPreview,
                               RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
@@ -480,20 +507,23 @@ struct LibraryView: View {
     }
 
     /// Once the shelf has redrawn and the dialog or menu has gone (its
-    /// dismissal would otherwise put VoiceOver back where it was). Neither
-    /// says when it has gone, hence the wait, which the Library lint
-    /// sanctions (`LibraryEntryLintTests.sanctionedSleeps`): the Delete or
-    /// mark has already landed, and nothing is added or opened.
+    /// dismissal would otherwise put VoiceOver back where it was), the
+    /// grid scrolls the card in and VoiceOver lands on it (`grid`). Neither
+    /// the dialog nor the menu says when it has gone, hence the wait, which
+    /// the Library lint sanctions (`LibraryEntryLintTests.sanctionedSleeps`):
+    /// the Delete or mark has already landed, and nothing is added or opened.
     private func moveVoiceOverFocus(to card: UUID?) {
         guard let card else { return }
         Task { @MainActor in
             try? await Task.sleep(for: Self.focusHandoffDelay)
-            voFocus = card
+            pendingFocus = card
         }
     }
 
     /// Long enough for a confirmation dialog to finish leaving.
     private static let focusHandoffDelay: Duration = .milliseconds(300)
+    /// Long enough for the lazy grid to build the card it scrolled to.
+    private static let scrollSettleDelay: Duration = .milliseconds(100)
 }
 
 // MARK: - Title

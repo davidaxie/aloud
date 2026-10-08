@@ -9,10 +9,19 @@ import XCTest
 @MainActor
 final class DocumentCardLayoutTests: XCTestCase {
 
-    /// A 393pt phone's grid: the screen minus the 20pt gutters, one column
-    /// at the accessibility sizes and two below them (LibraryView.columns).
-    private static let oneColumn: CGFloat = 393 - 2 * Theme.Space.screenGutter
-    private static let twoColumns: CGFloat = (oneColumn - Theme.Space.md) / 2
+    /// A 393pt phone's grid as the shelf draws it (`PhoneShelfMetrics`):
+    /// one column at the accessibility sizes, two below them, the gap
+    /// between them the one above the narrowest phones.
+    private static let oneColumn = PhoneShelfMetrics(width: 393, isAccessibilitySize: true).columnWidth(forWidth: 393)
+    private static let twoColumns = PhoneShelfMetrics(width: 393, isAccessibilitySize: false).columnWidth(forWidth: 393)
+
+    /// The widths above are the real shelf's: 353 pt, and 166.5 pt with
+    /// the 20 pt gap (not the 16 pt gap of the narrowest phones).
+    func testTheModelledColumnsAreTheShelfs() {
+        XCTAssertEqual(Self.oneColumn, 393 - 2 * Theme.Space.screenGutter)
+        XCTAssertEqual(Self.twoColumns, (Self.oneColumn - Theme.Space.lg) / 2)
+        XCTAssertEqual(Self.twoColumns, 166.5)
+    }
 
     private static let title = "The Strange Case of Dr. Jekyll and Mr. Hyde"
     private static let author = "Emperor of Rome Marcus Aurelius"
@@ -191,5 +200,27 @@ final class DocumentCardLayoutTests: XCTestCase {
         XCTAssertGreaterThan(pressed.rgba(x: 24, y: 72).a, 200, "on the plate, 4 pt outside the card")
         XCTAssertEqual(resting.rgba(x: 24, y: 72).a, 0, "no plate at rest")
         XCTAssertEqual(pressed.rgba(x: 4, y: 72).a, 0, "the plate stops 8 pt out")
+    }
+
+    /// The Continue card's plate leaves the card full size (`scales: false`):
+    /// its play circle is placed from outside the button, so a shrinking
+    /// body would slide out from under it. A 100 pt red card padded 16 pt,
+    /// rendered at 2x: pixel x 33 is 16.5 pt in, on the card at full size
+    /// and on the plate once the card draws at 0.98 (1 pt in on each side).
+    func testANonScalingPlateKeepsTheCardFullSize() throws {
+        func edge(scales: Bool) throws -> (r: Int, g: Int, b: Int, a: Int) {
+            let view = ShelfPlateButtonStyle.Plated(isPressed: true, scales: scales) {
+                Color(red: 1, green: 0, blue: 0).frame(width: 100, height: 100)
+            }
+            .padding(16)
+            return try XCTUnwrap(RenderedPixels(view, size: CGSize(width: 132, height: 132))).rgba(x: 33, y: 132)
+        }
+        let full = try edge(scales: false)
+        XCTAssertGreaterThan(full.r, 200, "the card's own edge")
+        XCTAssertLessThan(full.g, 60, "the card's own edge")
+        // The plate is a near-grey paper in both appearances; the card is red.
+        let scaled = try edge(scales: true)
+        XCTAssertGreaterThan(scaled.a, 200, "on the plate")
+        XCTAssertLessThan(abs(scaled.r - scaled.g), 60, "a grid card still draws in, off its own edge")
     }
 }
