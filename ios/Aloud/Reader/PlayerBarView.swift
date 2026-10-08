@@ -59,8 +59,9 @@ struct PlayerBarView: View {
 
     /// The skip glyphs read a step lighter than Play.
     private static let skipGlyphFont = Font.title3.weight(.medium)
-    /// The scrub line's offset from the top of its 44pt touch row.
-    nonisolated static let trackInset: CGFloat = 14
+    /// The scrub line's centre, down from the top of its 44pt touch row:
+    /// resting and held alike (`ScrubLineSeat`).
+    nonisolated static let trackCentre: CGFloat = 16
 
     var body: some View {
         // Line, track and transport are each at least a 44pt-tall hit row,
@@ -156,10 +157,10 @@ struct PlayerBarView: View {
             }
             .animation(.easeOut(duration: Theme.Motion.press), value: isTouchingScrub)
             // The line sits high in its 44pt row, near the chapter line it
-            // describes; the pressed thumb and the Reduce Motion ring still
-            // fit inside the row.
-            .padding(.top, Self.trackInset)
-            .frame(maxHeight: .infinity, alignment: .top)
+            // describes, seated by its centre: a press thickens it evenly
+            // and the thumb stays under the finger. The pressed thumb and
+            // the Reduce Motion ring still fit inside the row.
+            .modifier(ScrubLineSeat())
             .overlay(alignment: .topLeading) {
                 if let drag {
                     dragPreview(for: drag, width: width)
@@ -502,5 +503,21 @@ struct PlayerBarView: View {
     private func backFiveMinutes() {
         TransportHaptics.emit(.play)
         playback.backFiveMinutes()
+    }
+}
+
+/// Seats the scrub line in its 44pt touch row by its centre,
+/// `PlayerBarView.trackCentre` down from the row's top. The line and the
+/// thumb centred on it sit in a fixed box as tall as the held line, so the
+/// resting and the held line share that centre: a press thickens the line
+/// evenly (the resting line spans 14 to 18pt, the held one 12 to 20pt) and
+/// the thumb never moves under the finger. Pinned by its top edge, the held
+/// line grew downward only and its thumb dropped 2pt.
+struct ScrubLineSeat: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .frame(height: ScrubThumb.pressedTrackHeight)
+            .padding(.top, PlayerBarView.trackCentre - ScrubThumb.pressedTrackHeight / 2)
+            .frame(maxHeight: .infinity, alignment: .top)
     }
 }

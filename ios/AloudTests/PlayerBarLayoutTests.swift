@@ -113,25 +113,56 @@ final class PlayerBarLayoutTests: XCTestCase {
         XCTAssertGreaterThan(long, short + 20, "the AX3 chapter line should wrap the long title")
     }
 
-    /// R1-44: the scrub's line sits `trackInset` from the top of its 44pt
-    /// row, by the chapter line it describes, and the row itself is
-    /// unchanged: the resting and pressed thumbs and the Reduce Motion
-    /// ring (on the resting track) all stay inside it.
-    func testTheScrubLineSitsHighInItsRowAndEveryThumbStillFits() {
+    /// R1-44: the scrub's line sits high in its 44pt row, by the chapter
+    /// line it describes, seated by its centre: resting (4pt) and held (8pt)
+    /// it centres `trackCentre` down the row, so a press thickens it evenly
+    /// and the thumb centred on it never moves under the finger. Pinned by
+    /// its top edge, the held line grew downward only and its thumb dropped
+    /// 2pt. The resting and pressed thumbs and the Reduce Motion ring (on the
+    /// resting line) all stay inside the row. Measured as drawn through the
+    /// bar's own seat.
+    func testTheScrubLineSitsHighInItsRowAndEveryThumbStillFits() throws {
         let row: CGFloat = 44
-        XCTAssertEqual(PlayerBarView.trackInset, 14)
+        XCTAssertEqual(PlayerBarView.trackCentre, 16)
+        XCTAssertLessThan(PlayerBarView.trackCentre, row / 2,
+                          "the line sits above the row's middle, nearer the chapter line")
+        let scale: CGFloat = 2
+        /// The drawn mark's top, foot and centre in points, down the
+        /// render's middle column.
+        func drawn(_ mark: some View) throws -> (top: CGFloat, foot: CGFloat, centre: CGFloat) {
+            let pixels = try XCTUnwrap(RenderedPixels(mark.modifier(ScrubLineSeat()),
+                                                      size: CGSize(width: 40, height: row), scale: scale))
+            let column = pixels.width / 2
+            let inked = (0..<pixels.height).filter { pixels.rgba(x: column, y: $0).a > 127 }
+            let first = try XCTUnwrap(inked.first), last = try XCTUnwrap(inked.last)
+            let top = CGFloat(first) / scale, foot = CGFloat(last + 1) / scale
+            return (top, foot, (top + foot) / 2)
+        }
+
+        let resting = try drawn(Color.black.frame(height: ScrubThumb.trackHeight))
+        let pressed = try drawn(Color.black.frame(height: ScrubThumb.pressedTrackHeight))
+        XCTAssertEqual(resting.top, 14, "the resting line keeps its place")
+        XCTAssertEqual(resting.foot, 18)
+        XCTAssertEqual(pressed.top, 12, "held, the line thickens upward as much as downward")
+        XCTAssertEqual(pressed.foot, 20)
+        XCTAssertEqual(resting.centre, pressed.centre, "a press never moves the line's centre")
+        XCTAssertEqual(resting.centre, PlayerBarView.trackCentre)
+
         let cases: [(track: CGFloat, mark: CGFloat)] = [
             (ScrubThumb.trackHeight, ScrubThumb.diameter),
             (ScrubThumb.pressedTrackHeight, ScrubThumb.pressedDiameter),
             (ScrubThumb.trackHeight, ScrubThumb.ringDiameter),
         ]
         for (track, mark) in cases {
-            let centre = PlayerBarView.trackInset + track / 2
-            XCTAssertGreaterThanOrEqual(centre - mark / 2, 0, "a \(mark) pt mark clears the row's top")
-            XCTAssertLessThanOrEqual(centre + mark / 2, row, "a \(mark) pt mark clears the row's foot")
+            // As the bar draws it: the mark overlaid on the line's centre.
+            let thumb = try drawn(Color.clear.frame(height: track).overlay {
+                Circle().fill(Color.black).frame(width: mark, height: mark)
+            })
+            XCTAssertEqual(thumb.centre, PlayerBarView.trackCentre, accuracy: 0.5,
+                           "a \(mark) pt mark stays on the line's centre")
+            XCTAssertGreaterThanOrEqual(thumb.centre - mark / 2, 0, "a \(mark) pt mark clears the row's top")
+            XCTAssertLessThanOrEqual(thumb.centre + mark / 2, row, "a \(mark) pt mark clears the row's foot")
         }
-        XCTAssertLessThan(PlayerBarView.trackInset + ScrubThumb.trackHeight / 2, row / 2,
-                          "the line sits above the row's middle, nearer the chapter line")
     }
 
     /// The scrub drag (chapter line, track fill, preview) must end with the

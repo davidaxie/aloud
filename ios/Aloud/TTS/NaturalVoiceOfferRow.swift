@@ -14,15 +14,24 @@ struct NaturalVoiceOfferRow: View {
     @Environment(\.chromeScale) private var chromeScale
 
     private let onOpenContents: () -> Void
+    /// Where the copy's and buttons' ink sits in their 44pt rows: the chapter
+    /// line's own `rowAlignment` (the iPhone bar's `.bottom`), so a crossfade
+    /// to or from the line it replaces never moves the ink. Only the ink
+    /// moves; the rows and their hit areas stay as they are.
+    private let rowAlignment: VerticalAlignment
 
     @State private var isConfirmingCellular = false
     /// Names this row to the manager, so a cellular question answered after
     /// the first path lands opens this row's prompt and no other surface's.
     @State private var promptAsker = UUID()
 
-    init(onOpenContents: @escaping () -> Void) {
+    init(onOpenContents: @escaping () -> Void, rowAlignment: VerticalAlignment = .center) {
         self.onOpenContents = onOpenContents
+        self.rowAlignment = rowAlignment
     }
+
+    /// Each 44pt row's frame alignment: centred across, on `rowAlignment`.
+    private var inkAlignment: Alignment { Alignment(horizontal: .center, vertical: rowAlignment) }
 
     var body: some View {
         // One line only while the whole copy fits beside the buttons;
@@ -30,7 +39,7 @@ struct NaturalVoiceOfferRow: View {
         // ("Natural voice · 353 M…") cut the size and the "once" promise from
         // xLarge on 375 and 390pt phones, and earlier at larger sizes.
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: Theme.Space.xs) {
+            HStack(alignment: rowAlignment, spacing: Theme.Space.xs) {
                 offerText(wraps: false)
                 Spacer(minLength: Theme.Space.xs)
                 buttons
@@ -60,7 +69,8 @@ struct NaturalVoiceOfferRow: View {
                 // only picks this form when that fits), else wrapped.
                 .fixedSize(horizontal: !wraps, vertical: wraps)
                 .multilineTextAlignment(.leading)
-                .frame(minHeight: 44)
+                .rowInk(rowAlignment)
+                .frame(minHeight: 44, alignment: inkAlignment)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -71,7 +81,7 @@ struct NaturalVoiceOfferRow: View {
     }
 
     private var buttons: some View {
-        HStack(spacing: Theme.Space.xs) {
+        HStack(alignment: rowAlignment, spacing: Theme.Space.xs) {
             Button {
                 // Checks the space again; still too little keeps the line.
                 if manager.requestDownload(asker: promptAsker) == .needsCellularConfirmation {
@@ -82,7 +92,8 @@ struct NaturalVoiceOfferRow: View {
                 Text(NaturalVoiceCopy.download)
                     .font(Theme.font(.callout, scale: chromeScale).weight(.semibold))
                     .foregroundStyle(Theme.accentStrong)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .rowInk(rowAlignment)
+                    .frame(minWidth: 44, minHeight: 44, alignment: inkAlignment)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -97,7 +108,8 @@ struct NaturalVoiceOfferRow: View {
                 Text(NaturalVoiceCopy.notNow)
                     .font(Theme.font(.callout, scale: chromeScale))
                     .foregroundStyle(Theme.textMuted)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .rowInk(rowAlignment)
+                    .frame(minWidth: 44, minHeight: 44, alignment: inkAlignment)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

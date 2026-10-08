@@ -29,16 +29,20 @@ final class NaturalVoiceOfferRowLayoutTests: XCTestCase {
         super.tearDown()
     }
 
-    private func rowHeight(width: CGFloat, size: DynamicTypeSize) -> CGFloat {
+    private func makeRow(size: DynamicTypeSize, rowAlignment: VerticalAlignment = .center) -> some View {
         // An expensive path and an empty directory: a tap could only ask.
         manager = ModelManager(pathSource: FixedNetworkPath(isExpensiveOrConstrained: true),
                                installDirectory: directory)
         offer = NaturalVoiceOffer(defaults: UserDefaults(suiteName: suite)!, deviceSupported: true, now: { 0 })
-        let row = NaturalVoiceOfferRow(onOpenContents: {})
+        return NaturalVoiceOfferRow(onOpenContents: {}, rowAlignment: rowAlignment)
             .environmentObject(offer)
             .environmentObject(manager)
             .environment(\.dynamicTypeSize, size)
-        return UIHostingController(rootView: row)
+    }
+
+    private func rowHeight(width: CGFloat, size: DynamicTypeSize,
+                           rowAlignment: VerticalAlignment = .center) -> CGFloat {
+        UIHostingController(rootView: makeRow(size: size, rowAlignment: rowAlignment))
             .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
             .height
     }
@@ -67,5 +71,32 @@ final class NaturalVoiceOfferRowLayoutTests: XCTestCase {
     /// Where everything fits, the row keeps the one-line form.
     func testDefaultSizeOnAWideLineStaysOneRow() {
         XCTAssertEqual(rowHeight(width: 500, size: .large), Self.oneRow, accuracy: 0.5)
+    }
+
+    /// R1-44: on the iPhone bar's `.bottom` row the one-line offer sets its
+    /// ink on the row's foot, lifted as the position line it replaces is, so
+    /// the crossfade between them never moves the ink. Centred, as it was,
+    /// it sat ~9pt higher. The row stays one 44pt row, and the ink moves
+    /// whole: drawn, not just laid out.
+    func testOnABottomRowTheOfferInkSitsOnTheRowsFoot() throws {
+        XCTAssertEqual(rowHeight(width: 500, size: .large, rowAlignment: .bottom), Self.oneRow, accuracy: 0.5)
+        let scale: CGFloat = 2
+        /// The topmost and lowest inked rows of the one-line form, in points.
+        func ink(_ rowAlignment: VerticalAlignment) throws -> (top: CGFloat, foot: CGFloat) {
+            let pixels = try XCTUnwrap(RenderedPixels(makeRow(size: .large, rowAlignment: rowAlignment),
+                                                      size: CGSize(width: 500, height: Self.oneRow), scale: scale))
+            let inked = (0..<pixels.height).filter { y in
+                (0..<pixels.width).contains { pixels.rgba(x: $0, y: y).a > 100 }
+            }
+            let first = try XCTUnwrap(inked.first, "the offer draws"), last = try XCTUnwrap(inked.last)
+            return (CGFloat(first) / scale, CGFloat(last + 1) / scale)
+        }
+        let centred = try ink(.center)
+        let footed = try ink(.bottom)
+        XCTAssertGreaterThanOrEqual(footed.foot - centred.foot, 6, "the ink moves down to the row's foot")
+        XCTAssertEqual(footed.top - centred.top, footed.foot - centred.foot, accuracy: 1,
+                       "the ink moves whole; nothing grows")
+        XCTAssertLessThanOrEqual(footed.foot, Self.oneRow - ReaderMessageLine.footInset,
+                                 "lifted off the foot as the position line is")
     }
 }

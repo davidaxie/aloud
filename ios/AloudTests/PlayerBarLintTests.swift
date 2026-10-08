@@ -259,8 +259,17 @@ final class PlayerBarLintTests: XCTestCase {
         XCTAssertTrue(line.contains("rowAlignment: .bottom"), "the iPhone line sits by its scrub")
         XCTAssertTrue(line.contains("onUndoJump: playback.undoableJump != nil ? undoJump : nil"),
                       "Undo jump only while it is offered")
-        XCTAssertTrue(compact(bar).contains(".padding(.top, Self.trackInset) .frame(maxHeight: .infinity, alignment: .top)"),
-                      "the track sits high in its unchanged row")
+        // Seated by its centre, never its top edge: a press thickens the
+        // line evenly and its thumb holds still under the finger.
+        XCTAssertTrue(compact(bar).contains(
+            ".animation(.easeOut(duration: Theme.Motion.press), value: isTouchingScrub) .modifier(ScrubLineSeat())"),
+                      "the line and its thumb sit in the seat, high in their unchanged row")
+        let seat = compact(try XCTUnwrap(Self.closure(after: "struct ScrubLineSeat: ViewModifier", in: bar)))
+        XCTAssertTrue(seat.contains(".frame(height: ScrubThumb.pressedTrackHeight) "
+                                    + ".padding(.top, PlayerBarView.trackCentre - ScrubThumb.pressedTrackHeight / 2) "
+                                    + ".frame(maxHeight: .infinity, alignment: .top)"),
+                      "a box as tall as the held line, centred trackCentre down the row")
+        XCTAssertFalse(bar.contains(".padding(.top, Self.trackInset)"), "never pinned by its top edge")
         XCTAssertFalse(bar.contains(".frame(maxHeight: .infinity, alignment: .center)"))
         let representation = compact(try XCTUnwrap(Self.closure(after: ".accessibilityRepresentation", in: bar)))
         XCTAssertTrue(representation.contains(".accessibilityActions { if playback.undoableJump != nil {"),
@@ -269,6 +278,31 @@ final class PlayerBarLintTests: XCTestCase {
             .dropFirst().first))
         XCTAssertTrue(macLine.contains("rowAlignment: .center"), "the Mac line stays centred")
         XCTAssertTrue(macLine.contains("onUndoJump: nil"), "the Mac's Undo jump is ⌘Z")
+    }
+
+    /// R1-44: the natural-voice offer takes the chapter line's slot, so it
+    /// sets its ink where the line it replaces does. The line hands the
+    /// offer its `rowAlignment`, and the copy and both buttons sit on it with
+    /// the line's foot lift, so a crossfade never moves the ink: centred on
+    /// the iPhone's `.bottom` row, the offer sat ~9pt above the position
+    /// line. Unless told, the offer stays centred, as the Mac's line is.
+    func testTheOfferSetsItsInkWhereTheLineItReplacesDoes() throws {
+        let s = try SourceTree.sources(only: ["Reader/ReaderMessageLine.swift", "TTS/NaturalVoiceOfferRow.swift"])
+        let line = Self.code(try XCTUnwrap(s["Reader/ReaderMessageLine.swift"]))
+        let row = Self.code(try XCTUnwrap(s["TTS/NaturalVoiceOfferRow.swift"]))
+        let compact = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+
+        XCTAssertTrue(line.contains("NaturalVoiceOfferRow(onOpenContents: onOpenContents, rowAlignment: rowAlignment)"),
+                      "the line hands the offer its alignment")
+        XCTAssertTrue(row.contains("rowAlignment: VerticalAlignment = .center"), "centred unless told")
+        let body = compact(row)
+        XCTAssertEqual(body.components(separatedBy: ".rowInk(rowAlignment) .frame(").count - 1, 3,
+                       "the copy, Download and Not now each lift their ink on the row")
+        XCTAssertEqual(body.components(separatedBy: "minHeight: 44, alignment: inkAlignment)").count - 1, 3,
+                       "every 44pt row seats its ink on the line's alignment")
+        XCTAssertFalse(body.contains("minHeight: 44)"), "no 44pt row left centred by default")
+        XCTAssertEqual(body.components(separatedBy: "HStack(alignment: rowAlignment,").count - 1, 2,
+                       "the one-line row and its buttons align on it too")
     }
 
     /// P007: native checkmark items over the shared rule, on both apps.

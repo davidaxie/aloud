@@ -69,8 +69,9 @@ struct ReaderMessageLine: View {
         case .some(.stopped(let reason)):
             stoppedLine(reason)
         case .some(.naturalVoiceOffer):
-            // Carries its own identifiers; its text still opens Contents.
-            NaturalVoiceOfferRow(onOpenContents: onOpenContents)
+            // Carries its own identifiers; its text still opens Contents,
+            // and its ink sits on `rowAlignment` like every other arm's.
+            NaturalVoiceOfferRow(onOpenContents: onOpenContents, rowAlignment: rowAlignment)
         case .some(let message):
             statusLine(message)
         }
@@ -317,10 +318,11 @@ extension ReaderMessageLine {
     }
 }
 
-private extension View {
+extension View {
     /// On a `.bottom` row, sets the ink `ReaderMessageLine.footLift` above
     /// the row's foot (an alignment guide, so no frame or hit area changes).
-    /// Nothing on a centred row.
+    /// Nothing on a centred row. The natural-voice offer's row takes it too,
+    /// so its ink sits where the line it replaces put it.
     func rowInk(_ alignment: VerticalAlignment) -> some View {
         alignmentGuide(.bottom) { dimensions in
             guard alignment == .bottom else { return dimensions[.bottom] }
