@@ -1086,18 +1086,35 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
     }
 
-    /// The menu takes the press: the tap that would end it plays nothing,
-    /// and the next touch is a tap again.
+    /// The menu takes the press only once it shows: UIKit asks for the
+    /// configuration as the lift highlight starts, and a finger lifting
+    /// then gets its tap back, which still plays. Once the menu shows, the
+    /// tap that would end it plays nothing; the next touch taps again.
     func testTheMenuTakesThePressFromTheTap() throws {
-        let (coordinator, textView) = try makeColumn()
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
         let viewport = try XCTUnwrap(coordinator.viewport())
         let point = CGPoint(x: textView.textContainerInset.left + 8, y: viewport.minY + 0.3 * viewport.height)
+        let tap = try XCTUnwrap(textView.gestureRecognizers?.first {
+            $0 is UITapGestureRecognizer && $0.delegate === coordinator
+        })
         coordinator.touchLanded()
         let interaction = UIContextMenuInteraction(delegate: coordinator)
-        XCTAssertNotNil(coordinator.contextMenuInteraction(interaction, configurationForMenuAtLocation: point))
-        XCTAssertTrue(coordinator.menuOwnsTouch)
+        let configuration = try XCTUnwrap(coordinator.contextMenuInteraction(interaction,
+                                                                            configurationForMenuAtLocation: point))
+        XCTAssertFalse(coordinator.menuOwnsTouch, "asking for the menu takes nothing from the tap")
+        XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(tap), "a lift before the menu commits still taps")
+        coordinator.handleTap(at: point, isDecelerating: false)
+        XCTAssertEqual(taps.sentences.count, 1, "and that tap plays")
+        let target = try XCTUnwrap(coordinator.menuTarget(at: point))
+        XCTAssertEqual(taps.sentences, [target.sentence])
+
+        coordinator.contextMenuInteraction(interaction, willDisplayMenuFor: configuration, animator: nil)
+        XCTAssertTrue(coordinator.menuOwnsTouch, "the menu showing takes the press")
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(tap))
         coordinator.touchLanded()
         XCTAssertFalse(coordinator.menuOwnsTouch, "a new touch taps again")
+        XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(tap))
     }
 
     /// On moving text a long press only stops it, as a tap does: no menu.
@@ -1166,7 +1183,7 @@ extension ReaderFollowCoordinatorTests {
         let third = lines[2]
         let point = CGPoint(x: third.frame.midX, y: third.frame.midY)
         XCTAssertEqual(coordinator.accessibilityLineNumber(at: point), 2)
-        // Outside a window, screen and view coordinates agree.
+        // A scroll view's own coordinates are its content coordinates.
         XCTAssertEqual(textView.accessibilityLineNumber(for: point), 2)
         let text = try XCTUnwrap(textView.accessibilityContent(forLineNumber: 2))
         XCTAssertEqual(text, third.text)
@@ -1184,6 +1201,81 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertTrue(coordinator.playFromHere())
         let played = try XCTUnwrap(taps.sentences.last)
         XCTAssertEqual(ReaderTypography.typeset(coordinator.parent.content.sentences[played].text), text)
+    }
+
+    /// The protocol's point is in the view's coordinate space, which for
+    /// this scroll view is content coordinates. In a window at a non-zero
+    /// origin, scrolled, a screen conversion would land it lines away.
+    func testVoiceOverFindsTheLineUnderTheFingerInAWindowScrolledDown() throws {
+        let (coordinator, textView) = try makeColumn()
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+        } else {
+            window = UIWindow()
+        }
+        defer { window.isHidden = true; textView.removeFromSuperview() }
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 900)
+        window.isHidden = false
+        window.addSubview(textView)
+        textView.frame = CGRect(x: 0, y: 64, width: 390, height: 800)
+        coordinator.userTookOverScroll()
+        textView.setContentOffset(CGPoint(x: 0, y: 1200), animated: false)
+        settleLayout(textView)
+        guard textView.window != nil, textView.contentOffset.y > 1000 else {
+            throw XCTSkip("This host doesn't scroll a text view in a window")
+        }
+
+        let lines = coordinator.readingLines()
+        XCTAssertGreaterThan(lines.count, 3)
+        let third = lines[2]
+        let point = CGPoint(x: third.frame.midX, y: third.frame.midY)
+        XCTAssertEqual(textView.accessibilityLineNumber(for: point), 2, "the third line on screen")
+        XCTAssertEqual(textView.accessibilityContent(forLineNumber: 2), third.text)
+    }
+
+    /// Read All (`causesPageTurn`) turns the page on line boundaries above
+    /// the player bar: each page starts where the last one's band stopped,
+    /// so no line under the bar is skipped and none is read twice; it
+    /// reports false at the end of the book, and back at its start.
+    func testReadAllTurnsThePageWithoutSkippingTheLinesUnderTheBar() throws {
+        let (coordinator, textView) = try makeColumn(obscuredBottom: 200)
+        let storage = textView.textStorage
+        var heard = coordinator.readingLines().map(\.text)
+        var turns = 0
+        while turns < 100 {
+            let before = coordinator.readingLines()
+            guard textView.accessibilityScroll(.next) else { break }
+            turns += 1
+            let after = coordinator.readingLines()
+            let last = try XCTUnwrap(before.last)
+            let first = try XCTUnwrap(after.first)
+            XCTAssertGreaterThanOrEqual(first.range.location, NSMaxRange(last.range), "page \(turns) repeats a line")
+            let between = NSRange(location: NSMaxRange(last.range),
+                                  length: max(first.range.location - NSMaxRange(last.range), 0))
+            XCTAssertEqual(ReaderColumnText.quote(of: between, in: storage)
+                .trimmingCharacters(in: .whitespacesAndNewlines), "", "page \(turns) skips words")
+            heard += after.map(\.text)
+        }
+        XCTAssertGreaterThan(turns, 3, "the book is several pages")
+        XCTAssertLessThan(turns, 100, "the last page turns no further")
+        let sentences = heard.filter { $0.hasPrefix("Line ") }
+        XCTAssertEqual(sentences, (0..<160).map { ReaderTypography.typeset("Line \($0) is short.") },
+                       "Read All hears every line once, in order")
+        let end = textView.contentOffset
+        XCTAssertFalse(textView.accessibilityScroll(.next))
+        XCTAssertEqual(textView.contentOffset, end, "at the end nothing moves")
+
+        let lastPage = coordinator.readingLines()
+        XCTAssertTrue(textView.accessibilityScroll(.previous))
+        let pageBefore = coordinator.readingLines()
+        let top = try XCTUnwrap(lastPage.first)
+        let bottom = try XCTUnwrap(pageBefore.last)
+        XCTAssertLessThanOrEqual(NSMaxRange(bottom.range), top.range.location, "back a page repeats nothing")
+        var backs = 1
+        while backs < 100, textView.accessibilityScroll(.previous) { backs += 1 }
+        XCTAssertLessThan(backs, 100)
+        XCTAssertEqual(coordinator.readingLines().first?.text, heard.first, "back at the start")
     }
 
     // MARK: A finger resting on the page (P047)

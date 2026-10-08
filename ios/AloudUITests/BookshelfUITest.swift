@@ -118,7 +118,10 @@ final class BookshelfUITest: XCTestCase {
         XCTAssertEqual(stringValue(of: row), "In library")
         row.tap()
 
-        XCTAssertTrue(app.navigationBars.staticTexts["My Gatsby"].firstMatch.waitForExistence(timeout: 15),
+        // The reader's title is one header, "Title, by Author" (P046).
+        let renamedTitle = app.navigationBars.staticTexts.matching(
+            NSPredicate(format: "identifier == 'reader.title' AND label BEGINSWITH %@", "My Gatsby, ")).firstMatch
+        XCTAssertTrue(renamedTitle.waitForExistence(timeout: 15),
                       "The row should open the renamed document, not a new copy")
 
         // Reader → Bookshelf → Library. An active search can hold the

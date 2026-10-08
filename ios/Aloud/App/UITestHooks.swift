@@ -34,6 +34,8 @@ import SwiftUI
 /// - `-uitest-low-disk` reports 100 MB free to the download's space check.
 /// - `-uitest-damaged-model` installs 1-byte model files in the temporary
 ///   model directory, which launch-time detection reads as damaged.
+/// - `-uitest-fail-reader-load` fails the reader's text load, so the
+///   reader shows its failure state.
 ///
 /// Phase 4 (R26): `-uitest-shortcut continue` or `-uitest-shortcut
 /// sleep-<raw>` runs that App Shortcut's action as the last launch step, the
@@ -189,6 +191,10 @@ enum UITestHooks {
     /// sizes are off, so launch-time detection reads them as damaged.
     static var damagedModel: Bool { arguments.contains("-uitest-damaged-model") }
 
+    /// The reader's text fails to load, as a damaged document's would: the
+    /// reader shows its failure state and the way back to the Library.
+    static var failReaderLoad: Bool { arguments.contains("-uitest-fail-reader-load") }
+
     /// `-uitest-shortcut <name>`: the shortcut action this launch runs.
     static var shortcut: UITestShortcut? { shortcut(in: arguments) }
 
@@ -333,6 +339,7 @@ enum UITestHooks {
     static var hapticLog: Bool { false }
     static var forceLowDiskSpace: Bool { false }
     static var damagedModel: Bool { false }
+    static var failReaderLoad: Bool { false }
     static var shortcut: UITestShortcut? { nil }
     static var windowSize: CGSize? { nil }
     static var offline: Bool { false }

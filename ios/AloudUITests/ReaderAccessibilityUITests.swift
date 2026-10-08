@@ -47,6 +47,45 @@ final class ReaderAccessibilityUITests: XCTestCase {
         XCTAssertEqual(sentenceProbe(app).identifier, before, "Dismissing the menu moves nothing")
     }
 
+    /// P050: a reader that can't load says so and offers one way back. In
+    /// VoiceOver's order the two lines come first, then the button; the
+    /// icon is hidden. The button returns to the Library.
+    func testAFailedLoadReadsItsLinesThenOffersTheWayBack() throws {
+        let app = XCUIApplication.aloud(["-uitest-seed-classic", "64317", "-uitest-reset-library",
+                                         "-uitest-open-first-doc", "-uitest-fail-reader-load"])
+        app.launch()
+        let back = app.buttons["reader.backToLibrary"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 15), "The failure state should offer the way back")
+        XCTAssertFalse(app.textViews["reader.text"].exists, "Nothing loaded")
+        XCTAssertGreaterThanOrEqual(back.frame.height, 44, "The way back is a 44 pt target")
+
+        let title = "Couldn't open this document"
+        let detail = "It may be damaged or a scanned document."
+        var order: [String] = []
+        func visit(_ element: XCUIElementSnapshot) {
+            if element.identifier == "reader.backToLibrary" {
+                order.append(element.identifier)
+                return
+            }
+            if element.elementType == .staticText, [title, detail].contains(element.label) {
+                order.append(element.label)
+            }
+            element.children.forEach(visit)
+        }
+        visit(try app.snapshot())
+        XCTAssertEqual(order, [title, detail, "reader.backToLibrary"], "The lines, then the way back")
+        let barBottom = app.navigationBars.firstMatch.frame.maxY
+        let icons = app.images.allElementsBoundByIndex.filter {
+            $0.frame.minY >= barBottom && $0.frame.maxY <= back.frame.minY
+        }
+        XCTAssertEqual(icons.map(\.label), [], "The icon is hidden from VoiceOver")
+
+        back.tap()
+        let shelf = app.buttons.matching(NSPredicate(format: "identifier IN %@", ["library.card", "library.continue"]))
+        XCTAssertTrue(shelf.firstMatch.waitForExistence(timeout: 10), "The button returns to the Library")
+        XCTAssertFalse(back.exists)
+    }
+
     func testTheScrubReadsThePositionLikeTheChapterLine() {
         let app = openGatsby()
         let chapterLine = app.buttons["reader.chapterLine"].firstMatch

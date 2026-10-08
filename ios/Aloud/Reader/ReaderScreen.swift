@@ -368,6 +368,9 @@ struct ReaderScreen: View {
         guard content == nil else { return }
 
         do {
+            // UI-test hook (no-op in Release): `-uitest-fail-reader-load`
+            // fails the load, for the failure state's way back.
+            if UITestHooks.failReaderLoad { throw CocoaError(.fileReadCorruptFile) }
             let loaded = try await store.content(for: document)
             // Popped or replaced while the text loaded: never load this book
             // over the one now showing.

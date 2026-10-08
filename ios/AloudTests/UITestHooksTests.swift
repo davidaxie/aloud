@@ -208,7 +208,7 @@ final class UITestHooksTests: XCTestCase {
     func testEveryPhase3HookMutesAndSuppressesAutoplay() {
         let flags = ["-uitest-fault", "-uitest-fault-after", "-uitest-sleep-one-minute",
                      "-uitest-seed-live-session", "-uitest-haptic-log", "-uitest-low-disk",
-                     "-uitest-damaged-model"]
+                     "-uitest-damaged-model", "-uitest-fail-reader-load"]
         for flag in flags {
             XCTAssertTrue(mute(["app", flag]), flag)
             XCTAssertTrue(UITestHooks.suppressAutoplay(in: ["app", flag]), flag)

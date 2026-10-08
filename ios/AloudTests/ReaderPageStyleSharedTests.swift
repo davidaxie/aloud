@@ -20,6 +20,19 @@ final class ReaderPageStyleSharedTests: XCTestCase {
         XCTAssertEqual(page.body(columnWidth: nil).firstLineIndent, page.firstLineIndent)
     }
 
+    /// A 375 pt phone (SE 2/3, 12/13 mini): the default column is 327 pt
+    /// (17.2 em at 19 pt), and it keeps the book's setting too; so does a
+    /// column of exactly the wide measure.
+    func testTheSmallestPhonesDefaultColumnKeepsTheBooksSetting() {
+        let page = ReaderPageStyle(fontSize: 19)
+        XCTAssertEqual(page.body(columnWidth: 375 - 2 * 24),
+                       ReaderPageStyle.BodySetting(firstLineIndent: 21, hyphenationFactor: 0.25),
+                       "19 pt in a 327 pt column is unchanged")
+        let twenty = ReaderPageStyle(fontSize: 20)
+        XCTAssertEqual(twenty.firstLineIndent(columnWidth: 360), 22, "18 em keeps round(1.1 x 20)")
+        XCTAssertEqual(twenty.firstLineIndent(columnWidth: 20 * ReaderPageStyle.wideColumnEms), 22)
+    }
+
     func testTheMacsNormalColumnIsUnchanged() {
         for size: CGFloat in [16, 19, 23, 26] {
             let page = ReaderPageStyle(fontSize: size)
@@ -44,7 +57,8 @@ final class ReaderPageStyleSharedTests: XCTestCase {
         XCTAssertEqual(ReaderPageStyle.hyphenationFactor(emsPerLine: ReaderPageStyle.wideColumnEms), 0.25)
         XCTAssertEqual(ReaderPageStyle.hyphenationFactor(emsPerLine: ReaderPageStyle.narrowColumnEms), 0.6)
         XCTAssertEqual(ReaderPageStyle.hyphenationFactor(emsPerLine: 5), 0.6)
-        XCTAssertEqual(ReaderPageStyle.hyphenationFactor(emsPerLine: 15), 0.425, accuracy: 0.001)
+        let middle = (ReaderPageStyle.wideColumnEms + ReaderPageStyle.narrowColumnEms) / 2
+        XCTAssertEqual(ReaderPageStyle.hyphenationFactor(emsPerLine: middle), 0.425, accuracy: 0.001)
         XCTAssertEqual(ReaderPageStyle.hyphenationFactor(emsPerLine: .infinity), 0.25)
     }
 

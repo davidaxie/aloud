@@ -228,6 +228,9 @@ struct ReaderTextView: UIViewRepresentable {
         /// Play from here plays from what was just heard (P045). Cleared on
         /// focus loss, a rotor stop, a scroll and after playing.
         private(set) var lastLineRead: Int?
+        /// Where the last Read All page turn left the text, and the
+        /// characters its page may read (`turnPage`).
+        private var turnedPage: (offsetY: CGFloat, characters: Range<Int>)?
 
         // A finger resting on the page (P047)
         /// A follow the voice wanted while a finger was down, run once it
@@ -359,6 +362,7 @@ struct ReaderTextView: UIViewRepresentable {
             }
             textView.onAccessibilityScroll = { [weak self] in self?.userTookOverScroll() }
             textView.onAccessibilityScrollIgnored = { [weak self] in self?.userScrollEnded() }
+            textView.onAccessibilityPageTurn = { [weak self] forward in self?.turnPage(forward: forward) ?? false }
 
             #if DEBUG
             if publishesProbe { ReaderFollowProbe.shared.reset() }
@@ -1377,7 +1381,9 @@ struct ReaderTextView: UIViewRepresentable {
         func readingLines() -> [(range: NSRange, frame: CGRect, text: String)] {
             guard let textView, let viewport = viewport(), let column else { return [] }
             let storage = textView.textStorage
+            let turned = turnedPage.flatMap { abs(textView.contentOffset.y - $0.offsetY) < 0.5 ? $0.characters : nil }
             return column.lines(in: viewport).compactMap { line in
+                if let turned, !turned.contains(line.range.location) { return nil }
                 let text = ReaderColumnText.quote(of: line.range, in: storage)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return text.isEmpty ? nil : (line.range, line.frame, text)
@@ -1394,6 +1400,43 @@ struct ReaderTextView: UIViewRepresentable {
                 return index
             }
             return lines.firstIndex { $0.frame.minY <= point.y && point.y < $0.frame.maxY } ?? NSNotFound
+        }
+
+        /// Read All's page turn (`causesPageTurn`): the next page starts at
+        /// the first line the band left unread, the one whose middle sat
+        /// below it (under the player bar or the chip), so no line falls
+        /// between two pages; back, the line before the page's first ends
+        /// the page. A turn clamped at either end of the text shows lines
+        /// the other page read, so those stay out of the new page's lines
+        /// while it rests there. False when nothing moves.
+        func turnPage(forward: Bool) -> Bool {
+            guard let textView, let viewport = viewport(), let column else { return false }
+            let top = textView.adjustedContentInset.top
+            let target: CGFloat
+            let characters: Range<Int>
+            if forward {
+                let below = column.lines(in: viewport.offsetBy(dx: 0, dy: viewport.height))
+                guard let next = below.first(where: { $0.frame.midY > viewport.maxY }) else { return false }
+                target = next.frame.minY - top
+                characters = next.range.location..<Int.max
+            } else {
+                guard let shown = readingLines().first?.range.location
+                        ?? column.lines(in: viewport).first?.range.location else { return false }
+                let above = column.lines(in: CGRect(x: viewport.minX, y: viewport.minY - viewport.height,
+                                                    width: viewport.width, height: 2 * viewport.height))
+                guard let previous = above.last(where: { $0.range.location < shown }) else { return false }
+                target = previous.frame.maxY - top - viewport.height
+                characters = 0..<shown
+            }
+            let range = restingOffsets()
+            let y = min(max(target, range.lowerBound), range.upperBound)
+            guard abs(y - textView.contentOffset.y) > 0.5 else { return false }
+            textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
+            turnedPage = (y, characters)
+            // Placed at once, so it ends here, as an animated scroll would.
+            userScrollEnded()
+            UIAccessibility.post(notification: .pageScrolled, argument: nil)
+            return true
         }
 
         /// Line `number`'s words; nil past the last line on screen.
@@ -1708,11 +1751,21 @@ extension ReaderTextView.Coordinator: UIContextMenuInteractionDelegate {
             userScrollEnded()
             return nil
         }
+        // No side effect for the tap here: UIKit asks as the lift highlight
+        // starts, and a finger lifting before the menu commits gets its tap
+        // back, which must still play (instant tap-to-play).
         guard let target = menuTarget(at: location) else { return nil }
-        menuOwnsTouch = true
         return UIContextMenuConfiguration(identifier: NSNumber(value: target.sentence),
                                           previewProvider: { [weak self] in self?.sentencePreview(target.sentence) },
                                           actionProvider: { [weak self] _ in self?.menu(for: target) })
+    }
+
+    /// The menu is showing: it owns this touch, and the tap that would end
+    /// it plays nothing. UIKit cancels the page's touches here too.
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                willDisplayMenuFor configuration: UIContextMenuConfiguration,
+                                animator: (any UIContextMenuInteractionAnimating)?) {
+        menuOwnsTouch = true
     }
 
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
@@ -1876,6 +1929,9 @@ final class ReaderUITextView: UITextView {
     /// A VoiceOver scroll that moved nothing (at an end of the text, or
     /// sideways): it ends at once.
     var onAccessibilityScrollIgnored: (@MainActor () -> Void)?
+    /// Read All's next or previous page (true is forward), turned on line
+    /// boundaries above the player bar; false when nothing moved.
+    var onAccessibilityPageTurn: (@MainActor (Bool) -> Bool)?
 
     /// The hint where it differs from the stored one: "" over the colophon
     /// (R24), whose double-tap does nothing; nil keeps the stored hint.
@@ -1921,9 +1977,20 @@ final class ReaderUITextView: UITextView {
     /// A three-finger scroll is the user taking over, like a drag. One that
     /// can't move the text gets no scroll-end callback, so it ends here:
     /// following comes back while the voice is in view, as after a drag.
+    /// Read All turns the page with next and previous (`causesPageTurn`):
+    /// those go to the coordinator, which knows what the bar hides. The
+    /// three-finger swipes keep UIKit's own scroll.
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
         onAccessibilityScroll?()
-        let scrolled = super.accessibilityScroll(direction)
+        let scrolled: Bool
+        switch direction {
+        case .next where onAccessibilityPageTurn != nil:
+            scrolled = onAccessibilityPageTurn?(true) ?? false
+        case .previous where onAccessibilityPageTurn != nil:
+            scrolled = onAccessibilityPageTurn?(false) ?? false
+        default:
+            scrolled = super.accessibilityScroll(direction)
+        }
         if !scrolled { onAccessibilityScrollIgnored?() }
         return scrolled
     }
@@ -1978,11 +2045,19 @@ final class ReaderUITextView: UITextView {
 
 /// VoiceOver reads the page by line, and Read All reads on and turns it
 /// (`causesPageTurn`, through `accessibilityScroll`, which counts as the
-/// reader taking the scroll). Points and frames are in screen coordinates.
+/// reader taking the scroll). A line's point comes in view coordinates;
+/// frames go out in screen coordinates.
 extension ReaderUITextView: UIAccessibilityReadingContent {
 
+    /// `point` is in this view's coordinate space, which for a scroll view
+    /// is already content coordinates (bounds.origin is the offset). Should
+    /// VoiceOver hand a screen point instead, one that lands off every line
+    /// is tried again converted from the screen.
     func accessibilityLineNumber(for point: CGPoint) -> Int {
-        readingLineNumber?(contentPoint(fromScreen: point)) ?? NSNotFound
+        guard let readingLineNumber else { return NSNotFound }
+        let line = readingLineNumber(point)
+        guard line == NSNotFound else { return line }
+        return readingLineNumber(contentPoint(fromScreen: point))
     }
 
     func accessibilityContent(forLineNumber lineNumber: Int) -> String? {

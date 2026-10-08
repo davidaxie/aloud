@@ -32,12 +32,13 @@ struct ReaderPageStyle {
     var firstLineIndent: CGFloat { (fontSize * 1.1).rounded() }
     var paragraphGap: CGFloat { (fontSize * 0.45).rounded() }
 
-    /// The indent in a column `columnWidth` points wide: 1.1 em, but never
-    /// more than 6% of the measure, so a phone column at the largest sizes
-    /// (9-10 em) doesn't open every paragraph with a 44 pt hole. Unchanged
-    /// in any column of 18 em or more.
+    /// The indent in a column `columnWidth` points wide: 1.1 em in a column
+    /// of `wideColumnEms` or more; narrower, never more than 6% of the
+    /// measure, so a phone column at the largest sizes (9-10 em) doesn't
+    /// open every paragraph with a 44 pt hole.
     func firstLineIndent(columnWidth: CGFloat) -> CGFloat {
-        min(firstLineIndent, (columnWidth * Self.narrowIndentShare).rounded(.down))
+        guard fontSize > 0, columnWidth / fontSize < Self.wideColumnEms else { return firstLineIndent }
+        return min(firstLineIndent, (columnWidth * Self.narrowIndentShare).rounded(.down))
     }
 
     /// The most of a column's width a first-line indent takes.
@@ -49,10 +50,12 @@ struct ReaderPageStyle {
     /// Hyphenation in a column of `narrowColumnEms` or fewer: a few words a
     /// line rag deeply unless long words may break.
     static let narrowHyphenationFactor: Float = 0.6
-    /// From this measure up, the wide factor. The iPhone's default column
-    /// (19 pt in 354 pt, 18.6 em) and every Mac column at its normal sizes
-    /// sit above it, so they keep the book's usual setting.
-    static let wideColumnEms: CGFloat = 18
+    /// From this measure up, the wide setting (factor and indent). The
+    /// iPhone's default column on every supported phone (19 pt in 327 pt on
+    /// a 375 pt phone, 17.2 em; in 354 pt on a 402 pt one, 18.6 em) and
+    /// every Mac column at its normal sizes sit above it, so they keep the
+    /// book's usual setting.
+    static let wideColumnEms: CGFloat = 17
     static let narrowColumnEms: CGFloat = 12
 
     /// Hyphenation for a column `emsPerLine` ems wide: `hyphenationFactor`

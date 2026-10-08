@@ -18,10 +18,11 @@ final class ListeningLoopUITests: XCTestCase {
     /// arrives answered, in the argument domain, so it never takes the
     /// chapter line's slot after a minute of listening: the band's bottom is
     /// read from the chapter line.
-    private func openGatsby(_ extra: [String] = [], allowAutoplay: Bool = false) -> XCUIApplication {
+    private func openGatsby(_ extra: [String] = [], textSize: Int = 2,
+                            allowAutoplay: Bool = false) -> XCUIApplication {
         let app = XCUIApplication.aloud(["-uitest-temp-model-dir", "-uitest-reset-library",
                                          "-aloud.naturalVoice.offerAnswer.v1", "notNow",
-                                         "-aloud.prefs.v1.textSize", "2",
+                                         "-aloud.prefs.v1.textSize", "\(textSize)",
                                          "-uitest-seed-classic", "64317", "-uitest-open-first-doc"] + extra,
                                         allowAutoplay: allowAutoplay)
         app.launch()
@@ -152,10 +153,22 @@ final class ListeningLoopUITests: XCTestCase {
             .withOffset(CGVector(dx: point.x - text.frame.minX, dy: point.y - text.frame.minY))
     }
 
-    func testTappingTheTextWhilePausedPlaysFromThere() throws {
-        // The seek hook cues the target, so its index and its place on the
-        // page are known from the app before any tap. Nothing here relies on
-        // a tap to say which sentence was hit.
+    /// Paused at chapter I's start with the tap target two or more
+    /// sentences below it on screen: `point` is on the target's first line.
+    private struct TapCue {
+        let app: XCUIApplication
+        let play: XCUIElement
+        let target: Int
+        let start: Int
+        let targetFrame: CGRect
+        let point: CGPoint
+        let startScrolls: Int
+    }
+
+    /// The seek hook cues the target, so its index and its place on the
+    /// page are known from the app before any tap. Nothing here relies on a
+    /// tap to say which sentence was hit.
+    private func cueTapTarget() throws -> TapCue {
         let app = openGatsby(["-uitest-seek-text", Self.tapTarget])
         let play = playButton(app)
         XCTAssertEqual(stringValue(of: play), "paused", "No autoplay in this launch")
@@ -202,7 +215,17 @@ final class ListeningLoopUITests: XCTestCase {
         let point = CGPoint(x: targetFrame.midX, y: targetFrame.minY + 10)
         XCTAssertTrue((top + 4...bottom - 4).contains(point.y),
                       "Sentence \(target)'s first line should be on screen, at \(targetFrame)")
-        textCoordinate(point, in: app).tap()
+        return TapCue(app: app, play: play, target: target, start: start, targetFrame: targetFrame,
+                      point: point, startScrolls: startScrolls)
+    }
+
+    func testTappingTheTextWhilePausedPlaysFromThere() throws {
+        let cue = try cueTapTarget()
+        let (app, play, target, start, targetFrame, startScrolls) =
+            (cue.app, cue.play, cue.target, cue.start, cue.targetFrame, cue.startScrolls)
+        let top = app.navigationBars.firstMatch.frame.maxY
+        let bottom = chapterLine(app).frame.minY
+        textCoordinate(cue.point, in: app).tap()
 
         // The first sentence after the tap is exactly the tapped one. Playing
         // from the playhead would show start + 1 first, and a jump to a
@@ -226,6 +249,46 @@ final class ListeningLoopUITests: XCTestCase {
         }
         XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 30),
                       "A tap plays in any state, got '\(stringValue(of: play))'")
+    }
+
+    // MARK: - The long-press menu (P042)
+
+    /// Play from Here plays exactly what a tap there would: the pressed
+    /// sentence, not the playhead's next one, through the tap's own path.
+    func testPlayFromHereInTheMenuPlaysThePressedSentence() throws {
+        let cue = try cueTapTarget()
+        let app = cue.app
+        textCoordinate(cue.point, in: app).press(forDuration: 1.2)
+        let playFromHere = app.buttons["Play from Here"].firstMatch
+        XCTAssertTrue(playFromHere.waitForExistence(timeout: 5), "The long press should open the menu")
+        XCTAssertEqual(currentSentence(app), cue.start, "Opening the menu moves nothing")
+        playFromHere.tap()
+        let played = try XCTUnwrap(waitForSentence(in: app, timeout: 5) { $0 != cue.start },
+                                   "Play from Here should move the playhead off \(cue.start)")
+        XCTAssertEqual(played, cue.target, "Play from Here starts at the pressed sentence \(cue.target), not \(played)")
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: cue.play, timeout: 30),
+                      "Play from Here plays, got '\(stringValue(of: cue.play))'")
+    }
+
+    /// The menu takes nothing from the taps that follow it: once it closes,
+    /// a plain tap on the same line plays that sentence at once.
+    func testAPlainTapStillPlaysAfterTheMenuCloses() throws {
+        let cue = try cueTapTarget()
+        let app = cue.app
+        textCoordinate(cue.point, in: app).press(forDuration: 1.2)
+        let lookUp = app.buttons["Look Up"].firstMatch
+        XCTAssertTrue(lookUp.waitForExistence(timeout: 5), "The long press should open the menu")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+        XCTAssertTrue(lookUp.waitForNonExistence(timeout: 5), "The menu should close")
+        XCTAssertEqual(currentSentence(app), cue.start, "Dismissing the menu moves nothing")
+        XCTAssertEqual(stringValue(of: cue.play), "paused")
+
+        textCoordinate(cue.point, in: app).tap()
+        let tapped = try XCTUnwrap(waitForSentence(in: app, timeout: 5) { $0 != cue.start },
+                                   "The tap should move the playhead off \(cue.start)")
+        XCTAssertEqual(tapped, cue.target, "The tap plays the tapped sentence \(cue.target), not \(tapped)")
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: cue.play, timeout: 30),
+                      "A tap after the menu still plays, got '\(stringValue(of: cue.play))'")
     }
 
     /// Below this the coast may end before XCUITest's tap lands: from
@@ -293,6 +356,44 @@ final class ListeningLoopUITests: XCTestCase {
         pickChapter(row: 5, in: app)
         XCTAssertTrue(holds(within: 0.5) { voiceIsInView(app) },
                       "The jump target should be in view, at \(String(describing: activeSentenceFrame(app)))")
+    }
+
+    /// P049: the Undo chip floats over the text, and the band counts it.
+    /// At 40 pt (step 8), playing, for the whole 10 s offer after a
+    /// Contents jump, the spoken sentence comes to rest above the chip; one
+    /// taller than the band keeps at least its first line clear of it.
+    func testTheUndoChipNeverCoversTheSpokenSentence() throws {
+        let app = openGatsby(textSize: 8)
+        let play = playButton(app)
+        play.tap()
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 30), "Play should start")
+        pickChapter(row: 3, in: app)
+        let undo = app.buttons["reader.undoJump"].firstMatch
+        XCTAssertTrue(undo.waitForExistence(timeout: 5), "A chapter jump offers Undo jump")
+        let top = app.navigationBars.firstMatch.frame.maxY
+
+        var rested = 0
+        var covered: [String] = []
+        var previous: (sentence: Int, frame: CGRect)?
+        while undo.exists {
+            let chipTop = undo.frame.minY
+            if let reading = steadySample(app) {
+                if let previous, previous.sentence == reading.sentence, previous.frame == reading.frame,
+                   chipTop > top {
+                    rested += 1
+                    let frame = reading.frame
+                    let tall = frame.height > (chipTop - top) * 0.52
+                    let clear = tall ? frame.minY + 20 <= chipTop : frame.maxY <= chipTop + 1
+                    if !clear { covered.append("sentence \(reading.sentence) at \(frame), chip from \(chipTop)") }
+                }
+                previous = reading
+            } else {
+                previous = nil
+            }
+            pause(0.3, "sample the text at rest")
+        }
+        XCTAssertGreaterThan(rested, 3, "The voice should come to rest while the chip shows")
+        XCTAssertEqual(covered, [], "The chip should never cover the spoken sentence")
     }
 
     // MARK: - Calm follow (R16)
