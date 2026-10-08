@@ -262,8 +262,10 @@ this only on a network you trust.
 The reader on port 5173 (or `ALOUD_UI_PORT`) only works on this Mac. For the other device, build
 the reader once with `cd frontend && npm run build`. The server then serves it
 itself, so open http://my-mac.local:8000 on the phone. No other setting is
-needed. For the extension on another computer, set *Local TTS server* in its
-popup to http://my-mac.local:8000. Any other page that calls the server from
+needed. The extension only talks to a server on its own computer: its
+*Local TTS server* accepts only `127.0.0.1`, `localhost` or `[::1]`, so the
+text of the pages it reads never leaves that computer. To use it on another
+computer, run the server there too. Any other page that calls the server from
 its own origin needs that origin in `ALOUD_CORS_ORIGINS`.
 
 ### The extension
