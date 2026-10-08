@@ -1260,8 +1260,6 @@ final class ReaderColumnViewTests: XCTestCase {
         }
     }
 
-    /// One page in its window, and the inputs it was last given.
-    @MainActor
     /// R1-19: at the end of the book the sentence fill and its mark fade
     /// out under the colophon, and are back at once when it clears; the
     /// highlighted sentence itself never moves.
@@ -1278,6 +1276,8 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(page.coordinator.highlightOpacity?.mark, 1)
     }
 
+    /// One page in its window, and the inputs it was last given.
+    @MainActor
     private final class Page {
         let window: NSWindow
         let scrollView: ReaderScrollView

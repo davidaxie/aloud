@@ -1381,6 +1381,48 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertEqual(coordinator.builtFontSize, ReaderTextSize.points(forStep: top))
     }
 
+    /// `parent` as the text-size store hands it over at `size`.
+    private func resized(_ parent: ReaderTextView, to size: CGFloat) -> ReaderTextView {
+        ReaderTextView(content: parent.content, isChapterBook: parent.isChapterBook, navigation: parent.navigation,
+                       fontSize: size, activeSentence: parent.activeSentence, activeWord: parent.activeWord,
+                       followWord: parent.followWord, obscuredBottom: parent.obscuredBottom,
+                       voiceOffscreen: parent.$voiceOffscreen, textUnderTopBar: parent.$textUnderTopBar,
+                       onTapSentence: parent.onTapSentence)
+    }
+
+    /// A stepper size change while the voice reads: every word tick
+    /// updates the view, each still seeing the old size built, and none
+    /// may push back the one reflow the step owes.
+    func testWordTicksNeverHoldBackATextSizeStep() throws {
+        let (coordinator, _) = try makeColumn()
+        let builds = coordinator.columnBuilds
+        coordinator.parent = resized(coordinator.parent, to: 23)
+        let start = Date()
+        // A tick every 40 ms for 0.6 s; as `updateUIView`, each asks for
+        // the reflow while the built size differs.
+        while Date().timeIntervalSince(start) < 0.6 {
+            if coordinator.builtFontSize != coordinator.parent.fontSize { coordinator.reflowSoon() }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+        }
+        XCTAssertEqual(coordinator.builtFontSize, 23, "the page took the new size while the ticks ran")
+        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "in one build")
+        XCTAssertNil(coordinator.pendingReflowSize)
+    }
+
+    /// A rebuild at the old size inside the wait (Bold Text, a new
+    /// measure) leaves the waiting size step to land when it is due.
+    func testARebuildAtTheOldSizeKeepsAWaitingSizeStep() throws {
+        let (coordinator, _) = try makeColumn()
+        let builds = coordinator.columnBuilds
+        coordinator.parent = resized(coordinator.parent, to: 23)
+        coordinator.reflowSoon()
+        coordinator.reflowKeepingPlace(fontSize: coordinator.builtFontSize)   // as Bold Text does
+        XCTAssertEqual(coordinator.builtFontSize, 19)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(coordinator.builtFontSize, 23, "the size step still lands")
+        XCTAssertEqual(coordinator.columnBuilds, builds + 2)
+    }
+
     func testACancelledPinchAppliesNothing() throws {
         let (coordinator, _) = try makeColumn()
         let stored = Stored()

@@ -244,6 +244,31 @@ final class ColophonColumnTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(last.minY, viewport.minY, "the last sentence still shows")
     }
 
+    /// R1-19: following again at the end (the Follow chip, a follow
+    /// request) puts the end block back on the chip line, as the live end
+    /// and a reopen do, even with the block already in the band.
+    func testResumingAtTheEndLandsTheColophonOnTheChip() throws {
+        let (coordinator, textView) = try makeColumn(height: 560, active: 159, colophon: colophon)
+        coordinator.placeActiveSentence()
+        settleLayout(textView)
+        let landed = textView.contentOffset.y
+
+        // The reader scrolls on until the block's top sits high in the band.
+        coordinator.userTookOverScroll()
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let block = try colophonRect(coordinator, textView)
+        let away = landed + block.minY - (viewport.minY + 0.25 * viewport.height)
+        textView.setContentOffset(CGPoint(x: 0, y: away), animated: false)
+        settleLayout(textView)
+
+        coordinator.resumeFollowing()
+        settleLayout(textView)
+        XCTAssertTrue(coordinator.isFollowing)
+        let resumed = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(try colophonRect(coordinator, textView).maxY, resumed.maxY, accuracy: 1,
+                       "the colophon's bottom back on the chip line")
+    }
+
     /// R1-19: the highlight fades out under the colophon and is back at
     /// once when it clears; the active sentence never moves.
     func testTheHighlightFadesUnderTheColophonAndComesBack() throws {

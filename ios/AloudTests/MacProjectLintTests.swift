@@ -130,6 +130,27 @@ final class MacProjectLintTests: XCTestCase {
         XCTAssertTrue(excluded("MacProjectLintTests.swift"), "lints read the checkout: iOS suite only")
     }
 
+    /// An attribute stays on the declaration it was written for. A doc
+    /// comment pasted between them hands it to whatever is pasted in: a
+    /// test once landed between `@MainActor` and the Mac page harness, the
+    /// harness lost its isolation, and the Mac test bundle stopped
+    /// compiling.
+    func testNoAttributeIsCutOffFromItsDeclarationByADocComment() throws {
+        var detached: [String] = []
+        for root in ["Aloud", "AloudMac", "AloudTests", "AloudMacTests"] {
+            let sources = try SourceTree.sources(in: SourceTree.iosRoot.appendingPathComponent(root))
+            for (path, text) in sources {
+                let lines = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                for index in lines.indices.dropLast()
+                where lines[index].range(of: #"^@[A-Za-z]+$"#, options: .regularExpression) != nil
+                    && lines[index + 1].hasPrefix("///") {
+                    detached.append("\(root)/\(path):\(index + 1)")
+                }
+            }
+        }
+        XCTAssertEqual(detached.sorted(), [], "a doc comment between an attribute and its declaration")
+    }
+
     func testDocumentTypesRankAlternate() throws {
         let spec = try Self.spec()
         let types = try XCTUnwrap(spec.block(["targets", "AloudMac", "info", "properties", "CFBundleDocumentTypes"]))

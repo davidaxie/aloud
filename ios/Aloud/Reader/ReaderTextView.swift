@@ -483,8 +483,9 @@ struct ReaderTextView: UIViewRepresentable {
                            colophon: ReaderColophon?) {
             guard let textView else { return }
             cancelGlide()
-            pendingReflow?.cancel()
-            pendingReflow = nil
+            // A size step still waiting (R1-15) survives a rebuild at
+            // another size (Bold Text, a new measure): it lands when due.
+            if pendingReflowSize == fontSize { cancelPendingReflow() }
             textView.attributedText = built.string
             sentenceRanges = built.sentenceRanges
             // A fresh column, a reopen included, shows the colophon in place:
@@ -614,18 +615,33 @@ struct ReaderTextView: UIViewRepresentable {
         /// step and the sheet's readout move at once.
         static let reflowDelay: Duration = .milliseconds(150)
         private var pendingReflow: Task<Void, Never>?
+        /// The size `pendingReflow` will lay the column out at.
+        private(set) var pendingReflowSize: CGFloat?
 
         /// The size changed: reflow once the steps stop (`reflowDelay`).
+        /// Only a new size restarts the wait: every word tick updates the
+        /// view, and those must never push the reflow back while the voice
+        /// reads on.
         func reflowSoon() {
+            let size = parent.fontSize
+            guard pendingReflow == nil || pendingReflowSize != size else { return }
             pendingReflow?.cancel()
+            pendingReflowSize = size
             pendingReflow = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: Self.reflowDelay)
                 guard let self, !Task.isCancelled else { return }
                 self.pendingReflow = nil
+                self.pendingReflowSize = nil
                 guard self.builtHash == self.parent.content.contentHash,
                       self.builtFontSize != self.parent.fontSize else { return }
                 self.reflowKeepingPlace(fontSize: self.parent.fontSize)
             }
+        }
+
+        private func cancelPendingReflow() {
+            pendingReflow?.cancel()
+            pendingReflow = nil
+            pendingReflowSize = nil
         }
 
         /// Rebuilds for a change that reflows the book (a text-size step,
@@ -994,8 +1010,16 @@ struct ReaderTextView: UIViewRepresentable {
                 rect = confirmed
             }
             let voice = followedRect(sentence: rect, in: viewport)
-            guard !FollowBand.contains(voice, in: viewport),
-                  let target = landingOffset(for: voice) else { return }
+            // The colophon always lands on the chip (R1-19), in the band or
+            // not, as `followIfNeeded` and a jump's re-aim put it.
+            let aim: CGFloat?
+            if shownColophon != nil {
+                aim = landingTarget()
+            } else {
+                guard !FollowBand.contains(voice, in: viewport) else { return }
+                aim = landingOffset(for: voice)
+            }
+            guard let target = aim else { return }
             switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
                                            animated: true, reaim: true) {
             case .none:
