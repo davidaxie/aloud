@@ -148,6 +148,26 @@ final class ReaderPageStyleTests: XCTestCase {
         XCTAssertEqual(body?.alignment, .natural)
     }
 
+    /// P043: at 40 pt in a phone's 370 pt column the body hyphenates more
+    /// and indents at most 6% of the column; at 19 pt in 354 pt nothing
+    /// changes. Layout only: the sentence ranges are the same.
+    @MainActor
+    func testTheBodySettingFollowsTheMeasure() {
+        let wide = ReaderColumnText.makeAttributedString(content: chaptered(), fontSize: 40, isChapterBook: true)
+        let narrow = ReaderColumnText.makeAttributedString(content: chaptered(), fontSize: 40, isChapterBook: true,
+                                                           columnWidth: 370)
+        let body = style(narrow, sentence: 2)
+        XCTAssertGreaterThanOrEqual(body?.hyphenationFactor ?? 0, 0.5)
+        XCTAssertLessThanOrEqual(body?.firstLineHeadIndent ?? .infinity, 0.06 * 370)
+        XCTAssertEqual(narrow.sentenceRanges, wide.sentenceRanges, "layout only")
+        XCTAssertEqual(narrow.string.string, wide.string.string)
+
+        let phone = ReaderColumnText.makeAttributedString(content: chaptered(), fontSize: 19, isChapterBook: true,
+                                                          columnWidth: 354)
+        XCTAssertEqual(style(phone, sentence: 2)?.hyphenationFactor, 0.25)
+        XCTAssertEqual(style(phone, sentence: 2)?.firstLineHeadIndent, 21)
+    }
+
     @MainActor
     func testParagraphAfterOpeningIsUnindentedWithSmallCapsLead() {
         let built = ReaderColumnText.makeAttributedString(

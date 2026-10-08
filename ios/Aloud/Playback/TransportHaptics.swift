@@ -18,7 +18,8 @@ import SwiftUI
 ///   tap when they pause (`emitToggle`).
 /// - detent (selection): the speed slider arriving at 1.0×, by drag or by
 ///   VoiceOver adjust (`SpeedScale.landsOnDetent`).
-/// - preset (selection): a speed preset tap that changes the speed.
+/// - preset (selection): a speed preset tap that changes the speed, and a
+///   pinch on the reader's page that steps the text size (P044).
 /// - scrubRelease (selection): once per completed scrub seek drag.
 /// - finished (success): once, when a book reaches its own end while the
 ///   app is active and the voice was at full level (R24); emitted by

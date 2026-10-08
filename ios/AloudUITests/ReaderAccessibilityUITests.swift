@@ -25,8 +25,26 @@ final class ReaderAccessibilityUITests: XCTestCase {
         let app = openGatsby()
         let title = app.staticTexts["reader.title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 10), "The title should be static text")
-        XCTAssertEqual(title.label, "The Great Gatsby")
+        // One header naming the book and its author (P046).
+        XCTAssertEqual(title.label, "The Great Gatsby, by F. Scott Fitzgerald")
         XCTAssertFalse(app.buttons["reader.title"].exists, "The title is not a button")
+    }
+
+    /// P042: a long press on a sentence offers exactly the page's menu and
+    /// moves nothing; dismissing it leaves the playhead where it was.
+    func testALongPressOffersThePagesMenuAndMovesNothing() {
+        let app = openGatsby()
+        let probe = sentenceProbe(app)
+        XCTAssertTrue(probe.waitForExistence(timeout: 10))
+        let before = probe.identifier
+        let text = app.textViews["reader.text"].firstMatch
+        text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).press(forDuration: 1.2)
+        for title in ["Play from Here", "Copy", "Look Up", "Share\u{2026}"] {
+            XCTAssertTrue(app.buttons[title].firstMatch.waitForExistence(timeout: 5), "The menu should offer \(title)")
+        }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+        XCTAssertTrue(app.buttons["Look Up"].firstMatch.waitForNonExistence(timeout: 5), "The menu should close")
+        XCTAssertEqual(sentenceProbe(app).identifier, before, "Dismissing the menu moves nothing")
     }
 
     func testTheScrubReadsThePositionLikeTheChapterLine() {

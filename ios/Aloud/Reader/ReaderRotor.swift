@@ -12,7 +12,13 @@ enum ReaderRotor: CaseIterable {
     case chapters, paragraphs, sentences
 
     static let playFromHere = "Play from here"
+    /// The column's other custom actions, beside Play from here (P042).
+    static let copySentence = "Copy sentence"
+    static let lookUp = "Look up"
     static let textHint = "Plays from this sentence"
+    /// The most of the book VoiceOver's page content holds: the passage on
+    /// screen, never the whole book (R12e; the Mac's value limit).
+    static let pageContentLimit = 6_000
 
     func name(for kind: DocKind) -> String {
         switch self {
@@ -101,4 +107,48 @@ enum ReaderRotor: CaseIterable {
         }
         return low - 1
     }
+}
+
+/// The page's menu: the Mac's context menu (M14) and the iPhone's long-press
+/// menu (P042), and the quote they share.
+enum ReaderMenuCopy {
+    static let playFromHere = "Play from Here"
+    static let copy = "Copy"
+    /// Look Up, quoting its term as AppKit's own item does.
+    static func lookUp(_ term: String?) -> String {
+        guard let term else { return "Look Up" }
+        return "Look Up \u{201C}\(term)\u{201D}"
+    }
+    /// The longest term the title quotes.
+    static let lookUpTermLimit = 24
+    static let share = "Share\u{2026}"
+
+    /// A shared quote and where it is from: the words, then an em dash, the
+    /// title and the author (the title alone without one).
+    static func sharedQuote(_ quote: String, title: String, author: String?) -> String {
+        let source = [title, author].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: ", ")
+        guard !source.isEmpty else { return quote }
+        return quote + "\n\u{2014} " + source
+    }
+
+    /// The text-size step a pinch lands on, spoken (P044).
+    static func textSize(points: CGFloat) -> String {
+        "\(points.formatted()) point"
+    }
+}
+
+/// The reader's title bar (P046).
+enum ReaderTitleCopy {
+    /// The title and author as one header label, or the title alone.
+    static func label(title: String, author: String?) -> String {
+        guard let author, !author.isEmpty else { return title }
+        return "\(title), by \(author)"
+    }
+}
+
+/// The reader's failure state (P050).
+enum ReaderFailureCopy {
+    static let title = "Couldn't open this document"
+    static let detail = "It may be damaged or a scanned document."
+    static let backToLibrary = "Back to Library"
 }

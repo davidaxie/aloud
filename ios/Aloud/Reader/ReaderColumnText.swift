@@ -49,10 +49,15 @@ enum ReaderColumnText {
     static func makeAttributedString(content: DocContent, fontSize: CGFloat,
                                      isChapterBook: Bool = false,
                                      colophon: ReaderColophon? = nil,
+                                     columnWidth: CGFloat? = nil,
                                      bold: Bool, ink: ReaderInk)
         -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
 
         let page = ReaderPageStyle(fontSize: fontSize)
+        // The indent and hyphenation follow the measure: a narrow column at
+        // a large size breaks long words rather than ragging deeply. Layout
+        // only; nil keeps the wide setting.
+        let setting = page.body(columnWidth: columnWidth)
         // Bold Text: body and headings take the serif's bold face.
         let bodyFont = ReaderPageStyle.serif(size: fontSize, bold: bold)
 
@@ -61,8 +66,8 @@ enum ReaderColumnText {
             style.minimumLineHeight = page.lineHeight
             style.maximumLineHeight = page.lineHeight
             style.paragraphSpacing = page.paragraphGap
-            style.firstLineHeadIndent = indent ? page.firstLineIndent : 0
-            style.hyphenationFactor = ReaderPageStyle.hyphenationFactor
+            style.firstLineHeadIndent = indent ? setting.firstLineIndent : 0
+            style.hyphenationFactor = setting.hyphenationFactor
             return style
         }
         func bodyAttributes(indent: Bool) -> [NSAttributedString.Key: Any] {
@@ -313,10 +318,12 @@ extension ReaderColumnText {
     static func makeAttributedString(content: DocContent, fontSize: CGFloat,
                                      isChapterBook: Bool = false,
                                      colophon: ReaderColophon? = nil,
+                                     columnWidth: CGFloat? = nil,
                                      traits: UITraitCollection = .current)
         -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
         makeAttributedString(content: content, fontSize: fontSize, isChapterBook: isChapterBook,
-                             colophon: colophon, bold: traits.legibilityWeight == .bold,
+                             colophon: colophon, columnWidth: columnWidth,
+                             bold: traits.legibilityWeight == .bold,
                              ink: ReaderInk(traits: traits))
     }
 
@@ -328,3 +335,77 @@ extension ReaderColumnText {
     }
 }
 #endif
+
+// MARK: - Quotes (Copy, Share, VoiceOver lines)
+
+extension ReaderColumnText {
+
+    /// `text`'s characters, less every run of the page's furniture
+    /// (`readerFurniture`): a PDF page's numeral, the end mark and the
+    /// colophon are never part of a quote (L023).
+    static func withoutFurniture(_ text: NSAttributedString) -> String {
+        let string = text.string as NSString
+        var words = ""
+        text.enumerateAttribute(.readerFurniture, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if value == nil { words += string.substring(with: range) }
+        }
+        return words
+    }
+
+    /// `text` without its attachment characters, and without the line each
+    /// rule paragraph (an attachment and its newline) stood on.
+    static func quotable(_ text: String) -> String {
+        text.replacingOccurrences(of: attachmentMark + "\n", with: "")
+            .replacingOccurrences(of: attachmentMark, with: "")
+    }
+
+    /// The words of `range` in the column's `text`, as Copy, Share and a
+    /// VoiceOver line quote them: no furniture, no rule lines. Empty for a
+    /// range past the end of the text.
+    static func quote(of range: NSRange, in text: NSAttributedString) -> String {
+        guard range.location >= 0, range.length > 0, NSMaxRange(range) <= text.length else { return "" }
+        return quotable(withoutFurniture(text.attributedSubstring(from: range)))
+    }
+
+    /// The longest term Look Up takes (the Mac's selection limit).
+    static let lookUpLimit = 256
+
+    /// The word at `offset` for Look Up, by the system's word boundaries
+    /// inside its paragraph; nil off a word (a space, punctuation, a rule,
+    /// the page's furniture) or past `lookUpLimit` characters.
+    static func lookUpRange(at offset: Int, in text: NSAttributedString) -> NSRange? {
+        let string = text.string as NSString
+        guard offset >= 0, offset < string.length,
+              text.attribute(.readerFurniture, at: offset, effectiveRange: nil) == nil else { return nil }
+        let paragraph = string.paragraphRange(for: NSRange(location: offset, length: 0))
+        var found: NSRange?
+        string.enumerateSubstrings(in: paragraph, options: [.byWords, .substringNotRequired]) { _, range, _, stop in
+            if NSLocationInRange(offset, range) {
+                found = range
+                stop.pointee = true
+            } else if range.location > offset {
+                stop.pointee = true
+            }
+        }
+        guard let found, found.length > 0, found.length <= lookUpLimit else { return nil }
+        let word = string.substring(with: found)
+        return word.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains) ? found : nil
+    }
+
+    /// The longest word of `sentence` (the first of equals), for a Look Up
+    /// asked of a whole sentence (VoiceOver's action), where no finger
+    /// points at a word: the rare word is usually the long one. nil for a
+    /// sentence without a word.
+    static func longestWord(in sentence: String) -> String? {
+        var best: String?
+        sentence.enumerateSubstrings(in: sentence.startIndex..<sentence.endIndex, options: .byWords) { word, _, _, _ in
+            guard let word, word.count <= lookUpLimit,
+                  word.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains) else { return }
+            if word.count > (best?.count ?? 0) { best = word }
+        }
+        return best
+    }
+
+    /// `NSTextAttachment.character`, as a string.
+    private static let attachmentMark = "\u{FFFC}"
+}

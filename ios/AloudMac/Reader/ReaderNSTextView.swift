@@ -275,32 +275,18 @@ final class ReaderNSTextView: NSTextView {
         if selectedRanges.count == 1, let storage = textStorage {
             let range = selectedRange()
             if range.length > 0, NSMaxRange(range) <= storage.length {
-                quote = Self.withoutFurniture(storage.attributedSubstring(from: range))
+                quote = ReaderColumnText.withoutFurniture(storage.attributedSubstring(from: range))
             }
         }
-        quote = Self.quotable(quote)
+        quote = ReaderColumnText.quotable(quote)
         if quote != text { pboard.setString(quote, forType: .string) }
         return true
     }
 
-    /// `text`'s characters, less every run of the page's furniture.
-    static func withoutFurniture(_ text: NSAttributedString) -> String {
-        let string = text.string as NSString
-        var words = ""
-        text.enumerateAttribute(.readerFurniture, in: NSRange(location: 0, length: text.length)) { value, range, _ in
-            if value == nil { words += string.substring(with: range) }
-        }
-        return words
-    }
+    // The quote's rules (`ReaderColumnText.withoutFurniture` and
+    // `quotable`) are shared with the iPhone's long-press Copy and Share.
 
-    /// `text` without its attachment characters, and without the line each
-    /// rule paragraph ("\u{FFFC}\n") stood on.
-    static func quotable(_ text: String) -> String {
-        text.replacingOccurrences(of: attachmentMark + "\n", with: "")
-            .replacingOccurrences(of: attachmentMark, with: "")
-    }
-
-    /// `NSTextAttachment.character`, as a string.
+    /// `NSTextAttachment.character`, as a string (`firstWord` skips it).
     private static let attachmentMark = "\u{FFFC}"
 
     /// Speech would read the selection through the system synthesizer, on
@@ -723,17 +709,6 @@ enum ReaderColumnMetrics {
 // MARK: - Copy
 
 /// The page's right-click menu, in the menus' title case (M14).
-enum ReaderMenuCopy {
-    static let playFromHere = "Play from Here"
-    static let copy = "Copy"
-    /// Look Up, quoting its term as AppKit's own item does.
-    static func lookUp(_ term: String?) -> String {
-        guard let term else { return "Look Up" }
-        return "Look Up \u{201C}\(term)\u{201D}"
-    }
-    /// The longest term the title quotes.
-    static let lookUpTermLimit = 24
-}
 
 // MARK: - Colors
 

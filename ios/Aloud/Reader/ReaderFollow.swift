@@ -109,6 +109,35 @@ enum FollowBand {
         max(obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY),
             obscuredBottom(textMaxY: windowTextMaxY, chromeMinY: sheetMinY))
     }
+
+    /// The same, with the chip slot floating over the text above the
+    /// chrome: while a chip shows, its reach (`chipReach`) and a small gap
+    /// count too, so the spoken line is never read under the chip. With no
+    /// chip, the chrome alone.
+    static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,
+                               chipReach: CGFloat, showsChip: Bool) -> CGFloat {
+        let chrome = obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY)
+        guard showsChip, chipReach > 0 else { return chrome }
+        return chrome + chipReach + Theme.Space.sm
+    }
+
+    /// How far the chip slot reaches above the chrome: the tallest chip it
+    /// has shown (`slotHeight`, 0 while empty) and the slot's padding below
+    /// it, kept as a running maximum, so chips swapping never makes the
+    /// band, and the page with it, jitter (the Mac's `chipReach`).
+    static func chipReach(previous: CGFloat, slotHeight: CGFloat) -> CGFloat {
+        guard slotHeight > 0 else { return previous }
+        return max(previous, (slotHeight + Theme.Space.sm).rounded(.up))
+    }
+
+    /// Both at once: the bar with the chip floating over it, and a sheet
+    /// resting over the page, whichever reaches further up the text.
+    static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,
+                               chipReach: CGFloat, showsChip: Bool,
+                               windowTextMaxY: CGFloat?, sheetMinY: CGFloat?) -> CGFloat {
+        max(obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY, chipReach: chipReach, showsChip: showsChip),
+            obscuredBottom(textMaxY: windowTextMaxY, chromeMinY: sheetMinY))
+    }
 }
 
 #if DEBUG

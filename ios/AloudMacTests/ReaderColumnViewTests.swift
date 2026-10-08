@@ -391,8 +391,8 @@ final class ReaderColumnViewTests: XCTestCase {
         defer { pasteboard.releaseGlobally() }
         XCTAssertTrue(textView.writeSelection(to: pasteboard, types: textView.writablePasteboardTypes))
         XCTAssertEqual(pasteboard.string(forType: .string), "Last sentence.\nChapter Two\nFirst line of chapter two.")
-        XCTAssertEqual(ReaderNSTextView.quotable("words\n\u{FFFC}"), "words\n", "a selection ending on the rule")
-        XCTAssertEqual(ReaderNSTextView.quotable("plain words"), "plain words")
+        XCTAssertEqual(ReaderColumnText.quotable("words\n\u{FFFC}"), "words\n", "a selection ending on the rule")
+        XCTAssertEqual(ReaderColumnText.quotable("plain words"), "plain words")
     }
 
     /// ⌘A then ⌘C on a finished PDF quotes its sentences only: no page

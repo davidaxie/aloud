@@ -103,9 +103,11 @@ final class ListeningUITests: XCTestCase {
         // alone can't tell the two books apart. The reader's title is B's
         // title, the start of "Title, Author".
         let title = app.staticTexts["reader.title"].firstMatch
-        XCTAssertTrue(wait(for: NSPredicate(format: "label != '' AND %@ BEGINSWITH label", prefixB), title, timeout: 20),
+        // The title bar reads "Title, by Author" (P046): the card's "Title, Author".
+        XCTAssertTrue(wait(for: NSPredicate(format: "label != ''"), title, timeout: 20),
                       "The reader should open book B, got '\(title.label)'")
-        XCTAssertTrue(prefixB.hasPrefix(title.label), "'\(prefixB)' should start with the reader's title '\(title.label)'")
+        let shown = title.label.replacingOccurrences(of: ", by ", with: ", ")
+        XCTAssertTrue(prefixB.hasPrefix(shown), "'\(prefixB)' should start with the reader's title '\(shown)'")
         let chip = app.buttons["player.listening"].firstMatch
         XCTAssertTrue(chip.waitForExistence(timeout: 20))
         XCTAssertTrue(wait(for: "label CONTAINS '1.5×'", chip),

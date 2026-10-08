@@ -102,7 +102,7 @@ final class ReaderTextAccessibilityTests: XCTestCase {
         XCTAssertNil(textView.accessibilityAttributedValue)
 
         let actions = textView.accessibilityCustomActions ?? []
-        XCTAssertEqual(actions.map(\.name), ["Play from here"])
+        XCTAssertEqual(actions.map(\.name), ["Play from here", "Copy sentence", "Look up"])
         let playFromHere = try XCTUnwrap(actions.first)
         XCTAssertEqual(playFromHere.actionHandler?(playFromHere), true)
         XCTAssertEqual(spy.played, [2], "plays the rotor's sentence")

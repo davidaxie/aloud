@@ -88,6 +88,44 @@ struct ReaderColumnLayout {
         return result
     }
 
+    /// The laid-out lines whose middles fall inside `rect` (content
+    /// coordinates), top to bottom: each line's UTF-16 range in the text and
+    /// its typographic frame. Starts at the fragment at the top of `rect`
+    /// and stops below it, so a screen deep in a long book lays out only
+    /// that screen's paragraphs (VoiceOver's lines, P045).
+    func lines(in rect: CGRect) -> [(range: NSRange, frame: CGRect)] {
+        guard let contentManager = textLayoutManager.textContentManager, rect.height > 0 else { return [] }
+        let top = rect.minY - origin.y
+        let bottom = rect.maxY - origin.y
+        // The top may sit in a paragraph gap: look a little lower.
+        var start: NSTextLayoutFragment?
+        var probe = max(top, 0)
+        while start == nil, probe < bottom {
+            start = textLayoutManager.textLayoutFragment(for: CGPoint(x: 1, y: probe))
+            probe += 4
+        }
+        guard let start else { return [] }
+        let documentStart = textLayoutManager.documentRange.location
+        var result: [(range: NSRange, frame: CGRect)] = []
+        textLayoutManager.enumerateTextLayoutFragments(from: start.rangeInElement.location,
+                                                       options: [.ensuresLayout]) { fragment in
+            let frame = fragment.layoutFragmentFrame
+            guard frame.minY < bottom else { return false }
+            let fragmentStart = contentManager.offset(from: documentStart, to: fragment.rangeInElement.location)
+            guard fragmentStart != NSNotFound, fragmentStart >= 0 else { return true }
+            for line in fragment.textLineFragments {
+                let bounds = line.typographicBounds.offsetBy(dx: frame.minX, dy: frame.minY)
+                guard bounds.midY >= top, bounds.midY <= bottom else { continue }
+                let local = line.characterRange
+                guard local.location != NSNotFound, local.length > 0 else { continue }
+                result.append((NSRange(location: fragmentStart + local.location, length: local.length),
+                               bounds.offsetBy(dx: origin.x, dy: origin.y)))
+            }
+            return true
+        }
+        return result
+    }
+
     // MARK: Layout
 
     /// One-shot layout from the document start into the paragraph after

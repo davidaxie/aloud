@@ -69,6 +69,17 @@ struct ReaderTextView: UIViewRepresentable {
     /// sentence.
     let onTapSentence: (Int) -> Void
     var onMagicTap: () -> Void = {}
+    /// The book's title and author, for the line under a shared quote
+    /// (P042); an empty title falls back on the content's own.
+    var bookTitle = ""
+    var bookAuthor: String? = nil
+    /// The page's width as the screen laid it out, so a first build, made
+    /// before the view has bounds, sets a large size for the measure it
+    /// will have (P043). nil until measured.
+    var pageWidth: CGFloat? = nil
+    /// A pinch on the page crossed a threshold: step the text size by this
+    /// many steps (P044).
+    var onPinchTextSize: (Int) -> Void = { _ in }
 
     func makeUIView(context: Context) -> ReaderUITextView {
         let textView = ReaderUITextView(usingTextLayoutManager: true)
@@ -213,6 +224,39 @@ struct ReaderTextView: UIViewRepresentable {
         /// The sentence the rotor is on; nil = the playhead's. Cleared on
         /// focus loss and after playing.
         private(set) var accessibilitySentence: Int?
+        /// Where the last line VoiceOver read starts (a UTF-16 offset), so
+        /// Play from here plays from what was just heard (P045). Cleared on
+        /// focus loss, a rotor stop, a scroll and after playing.
+        private(set) var lastLineRead: Int?
+
+        // A finger resting on the page (P047)
+        /// A follow the voice wanted while a finger was down, run once it
+        /// lifts: a touch that never drags gets no drag-end callback.
+        private(set) var followKeptBack = false
+        /// The same for a resume (Play, a jump, Undo, the Follow chip).
+        private(set) var resumeKeptBack = false
+        /// Test seam: whether a finger is down on the page.
+        var isTouching: (UIScrollView) -> Bool = { $0.isTracking }
+
+        // Long-press menu (P042)
+        private weak var tapRecognizer: UITapGestureRecognizer?
+        /// The menu took this touch: the tap that would end it plays nothing.
+        private(set) var menuOwnsTouch = false
+        /// Test seam: where Copy writes (the system pasteboard).
+        var writePasteboard: (String) -> Void = { UIPasteboard.general.string = $0 }
+        /// Test seam: how Look Up and Share are shown; nil presents from the
+        /// column's window.
+        var present: ((UIViewController) -> Void)?
+
+        // Pinch to size (P044)
+        /// The pinch scale at the last step.
+        private var pinchAnchor: CGFloat = 1
+        /// Test seam.
+        var isVoiceOverRunning: () -> Bool = { UIAccessibility.isVoiceOverRunning }
+
+        /// The column width the string was set for (P043); nil = unknown.
+        private(set) var builtColumnWidth: CGFloat?
+        private var remeasurePending = false
 
         #if DEBUG
         private let publishesProbe = UITestHooks.isUITestLaunch
@@ -256,6 +300,14 @@ struct ReaderTextView: UIViewRepresentable {
             let tap = UITapGestureRecognizer(target: self, action: #selector(Coordinator.handleTap(_:)))
             tap.delegate = self
             textView.addGestureRecognizer(tap)
+            tapRecognizer = tap
+            // Pinch to size (P044): alongside scrolling, never delaying a tap.
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(Coordinator.handlePinch(_:)))
+            pinch.delegate = self
+            textView.addGestureRecognizer(pinch)
+            // Long press (P042): a menu, with no double-tap wait on the tap.
+            textView.addInteraction(UIContextMenuInteraction(delegate: self))
+            textView.onTouchesEnded = { [weak self] in self?.touchesEnded() }
 
             self.textView = textView
             textView.onTraitChange = { [weak self] in self?.rebuildForTraitChange() }
@@ -270,7 +322,21 @@ struct ReaderTextView: UIViewRepresentable {
                 UIAccessibilityCustomAction(name: ReaderRotor.playFromHere) { [weak self] _ in
                     self?.playFromHere() ?? false
                 },
+                UIAccessibilityCustomAction(name: ReaderRotor.copySentence) { [weak self] _ in
+                    self?.copyFromHere() ?? false
+                },
+                UIAccessibilityCustomAction(name: ReaderRotor.lookUp) { [weak self] _ in
+                    self?.lookUpFromHere() ?? false
+                },
             ]
+            // Read All reads the page line by line and turns it (P045).
+            textView.accessibilityTraits.insert(.causesPageTurn)
+            textView.readingLineNumber = { [weak self] point in
+                self?.accessibilityLineNumber(at: point) ?? NSNotFound
+            }
+            textView.readingLineText = { [weak self] line in self?.accessibilityLineText(line) }
+            textView.readingLineFrame = { [weak self] line in self?.accessibilityLineFrame(line) }
+            textView.readingPageText = { [weak self] in self?.accessibilityPageText() }
             textView.accessibilitySentenceText = { [weak self] in self?.spokenSentence }
             textView.accessibilityHintText = { [weak self] in self?.colophonHint }
             // Over the colophon double-tap does nothing, and says it was
@@ -287,7 +353,10 @@ struct ReaderTextView: UIViewRepresentable {
                 self.parent.onMagicTap()
                 return true
             }
-            textView.onAccessibilityFocusLost = { [weak self] in self?.accessibilitySentence = nil }
+            textView.onAccessibilityFocusLost = { [weak self] in
+                self?.accessibilitySentence = nil
+                self?.lastLineRead = nil
+            }
             textView.onAccessibilityScroll = { [weak self] in self?.userTookOverScroll() }
             textView.onAccessibilityScrollIgnored = { [weak self] in self?.userScrollEnded() }
 
@@ -301,9 +370,15 @@ struct ReaderTextView: UIViewRepresentable {
         func rebuild(content: DocContent, fontSize: CGFloat) {
             guard let textView else { return }
             cancelGlide()
+            // The gutter follows the size (P043): set it before the text
+            // lays out, and set the text for the measure it leaves.
+            textView.readingFontSize = fontSize
+            textView.applyColumnInsets()
+            let width = columnWidth(fontSize: fontSize)
             let built = Self.makeAttributedString(content: content, fontSize: fontSize,
                                                   isChapterBook: parent.isChapterBook,
                                                   colophon: parent.colophon,
+                                                  columnWidth: width,
                                                   traits: textView.traitCollection)
             textView.attributedText = built.string
             sentenceRanges = built.sentenceRanges
@@ -314,6 +389,8 @@ struct ReaderTextView: UIViewRepresentable {
             removeColophonVeil()
             builtHash = content.contentHash
             builtFontSize = fontSize
+            builtColumnWidth = width
+            lastLineRead = nil
             builtLook = TraitLook(textView.traitCollection)
             columnBuilds += 1
             textView.highlightLayer.clearSentence()
@@ -334,6 +411,39 @@ struct ReaderTextView: UIViewRepresentable {
             if let rotorSentence = accessibilitySentence, !content.sentences.indices.contains(rotorSentence) {
                 accessibilitySentence = nil
             }
+        }
+
+        /// The column's measure at `fontSize`: the view's width once it has
+        /// one, else the page's as the screen measured it; nil if neither.
+        private func columnWidth(fontSize: CGFloat) -> CGFloat? {
+            guard let textView else { return nil }
+            let width = textView.bounds.width > 0 ? textView.bounds.width : (parent.pageWidth ?? 0)
+            guard width > 0 else { return nil }
+            return ReaderUITextView.columnWidth(viewWidth: width, fontSize: fontSize)
+        }
+
+        /// The page settled at a width the string wasn't set for (built
+        /// before the screen was measured): where the indent or hyphenation
+        /// depends on the measure (large sizes), it reflows once, keeping
+        /// the place. At the usual sizes the setting is the same and
+        /// nothing is rebuilt.
+        private func remeasureIfNeeded() {
+            guard !remeasurePending, measureChanged() else { return }
+            remeasurePending = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.remeasurePending = false
+                guard self.measureChanged() else { return }
+                self.reflowKeepingPlace(fontSize: self.builtFontSize)
+            }
+        }
+
+        private func measureChanged() -> Bool {
+            guard builtHash == parent.content.contentHash, builtFontSize > 0,
+                  let textView, textView.bounds.width > 0 else { return false }
+            let page = ReaderPageStyle(fontSize: builtFontSize)
+            return page.body(columnWidth: columnWidth(fontSize: builtFontSize))
+                != page.body(columnWidth: builtColumnWidth)
         }
 
         /// Times the column took a new look in place, with no rebuild
@@ -552,7 +662,9 @@ struct ReaderTextView: UIViewRepresentable {
                 segments(for: sentenceRanges[activeSentence]),
                 fill: UIColor(Theme.highlightBg).resolvedColor(with: traits),
                 mark: UIColor(Theme.accent).resolvedColor(with: traits),
-                gutterX: textView.textContainerInset.left,
+                // The mark follows the gutter, never nearer the screen's edge
+                // than 8 pt (P043's narrow gutter at the largest sizes).
+                gutterX: max(textView.textContainerInset.left, ReaderUITextView.minimumMarkGutter),
                 animated: animated)
         }
 
@@ -674,8 +786,13 @@ struct ReaderTextView: UIViewRepresentable {
         /// under Reduce Motion and past one viewport, jumps) to the landing
         /// line. Never moves under a finger.
         func followIfNeeded(animated: Bool) {
-            guard isFollowing, let textView, !textView.isTracking, !textView.isDragging,
-                  let sentence = activeSentenceRect(), let viewport = viewport() else { return }
+            guard isFollowing, let textView, !textView.isDragging else { return }
+            // Under a resting finger: held back, run once it lifts (P047).
+            guard !isTouching(textView) else {
+                followKeptBack = true
+                return
+            }
+            guard let sentence = activeSentenceRect(), let viewport = viewport() else { return }
             let rect = followedRect(sentence: sentence, in: viewport)
             guard !FollowBand.contains(rect, in: viewport),
                   let target = rect == sentence ? landingTarget() : landingOffset(for: rect) else { return }
@@ -703,7 +820,11 @@ struct ReaderTextView: UIViewRepresentable {
         func resumeFollowing() {
             follow.resume()   // the voice owns the scroll again
             defer { updateFollowChip() }
-            guard let textView, !textView.isTracking, !textView.isDragging else { return }
+            guard let textView, !textView.isDragging else { return }
+            guard !isTouching(textView) else {
+                resumeKeptBack = true
+                return
+            }
             // Following takes the scroll back from a flick still coasting.
             stopDeceleration()
             guard let viewport = viewport(), var rect = measureActiveSentenceRect() else { return }
@@ -738,7 +859,11 @@ struct ReaderTextView: UIViewRepresentable {
         /// Puts the active sentence on the landing line without motion (a
         /// fresh column, a reflow), then verifies on every layout pass.
         func placeActiveSentence() {
-            guard isFollowing, let textView, !textView.isTracking, !textView.isDragging else { return }
+            guard isFollowing, let textView, !textView.isDragging else { return }
+            guard !isTouching(textView) else {
+                followKeptBack = true
+                return
+            }
             follow.pendingReveal = nil
             ensureLayoutThroughActiveSentence()
             follow.startPlacementCheck()
@@ -887,6 +1012,9 @@ struct ReaderTextView: UIViewRepresentable {
 
         /// A drag, a scroll-to-top or a VoiceOver scroll: stop following.
         func userTookOverScroll() {
+            followKeptBack = false
+            resumeKeptBack = false
+            lastLineRead = nil
             stopGlideInPlace()
             follow.takeOver()   // and drops pending checks: don't fight the user
             updateFollowChip()
@@ -940,6 +1068,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// re-checks the band; either way the cached sentence rect is stale.
         func handleLayout() {
             guard let textView else { return }
+            remeasureIfNeeded()
             let height = textView.contentSize.height
             if height != lastContentHeight {
                 follow.cachedActiveRect = nil
@@ -1079,12 +1208,28 @@ struct ReaderTextView: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldReceive touch: UITouch) -> Bool {
-            touchLanded()
+            // Once per touch: the tap sees every touch on the page.
+            if gestureRecognizer === tapRecognizer { touchLanded() }
             return true
+        }
+
+        /// A tap the long-press menu took plays nothing; a pinch while
+        /// VoiceOver runs does nothing (its own gestures own the page).
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            if gestureRecognizer === tapRecognizer { return !menuOwnsTouch }
+            if gestureRecognizer is UIPinchGestureRecognizer { return !isVoiceOverRunning() }
+            return true
+        }
+
+        /// The pinch runs alongside scrolling; the tap keeps its own.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            gestureRecognizer is UIPinchGestureRecognizer || other is UIPinchGestureRecognizer
         }
 
         /// A finger is down on the text, before any tap or drag resolves.
         func touchLanded() {
+            menuOwnsTouch = false
             let gliding = isGliding
             touchBeganWhileScrolling = (textView.map(isCoasting) ?? false) || deceleratingAfterDrag || gliding
             if gliding {
@@ -1097,8 +1242,39 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let textView else { return }
+            guard let textView, !menuOwnsTouch else { return }
             tapEnded(at: gesture.location(in: textView))
+        }
+
+        /// Every finger is off the page (P047): runs the follow a resting
+        /// finger held back, once. A drag detaches as before: it took over
+        /// the scroll, which dropped what was held.
+        func touchesEnded() {
+            let resume = resumeKeptBack
+            let follows = followKeptBack
+            resumeKeptBack = false
+            followKeptBack = false
+            if resume {
+                resumeFollowing()
+            } else if follows {
+                followIfNeeded(animated: true)
+                updateFollowChip()
+            }
+        }
+
+        // MARK: Pinch to size (P044)
+
+        @objc func handlePinch(_ pinch: UIPinchGestureRecognizer) {
+            switch pinch.state {
+            case .began:
+                pinchAnchor = 1
+            case .changed:
+                let step = ReaderPinch.step(scale: pinch.scale, anchor: pinchAnchor)
+                pinchAnchor = step.anchor
+                if step.delta != 0 { parent.onPinchTextSize(step.delta) }
+            default:
+                pinchAnchor = 1
+            }
         }
 
         /// The tap recognizer fired for the touch that `touchLanded` saw.
@@ -1126,13 +1302,36 @@ struct ReaderTextView: UIViewRepresentable {
         /// True while the colophon is what VoiceOver reads (R12, R24): it
         /// shows and the rotor isn't on a sentence. A rotor step brings the
         /// sentence behaviour back.
-        private var readsColophon: Bool { shownColophon != nil && accessibilitySentence == nil }
+        private var readsColophon: Bool {
+            shownColophon != nil && accessibilitySentence == nil && colophonOnScreen
+        }
+
+        /// The end mark is drawn in the viewport (P048): scrolled back to
+        /// re-read, the page is what VoiceOver reads and plays again. The
+        /// mark's rect is the follow target's cached one while it shows.
+        private var colophonOnScreen: Bool {
+            guard let viewport = viewport(), let rect = activeSentenceRect() else { return true }
+            return rect.intersects(viewport)
+        }
+
+        /// What the label names and Play from here plays: the rotor's
+        /// sentence, else the one holding the last line VoiceOver read
+        /// (P045), else the resting one.
+        private func accessibilityTarget() -> Int {
+            if let accessibilitySentence { return accessibilitySentence }
+            if let lastLineRead,
+               let id = ReaderColumnLayout.sentence(containing: lastLineRead, in: sentenceRanges)
+                ?? ReaderColumnLayout.sentence(atOrAfter: lastLineRead, in: sentenceRanges) {
+                return id
+            }
+            return restingSentence()
+        }
 
         /// The column's label: the colophon as one label at the end, else the
         /// rotor's sentence, else the resting one (`restingSentence`).
         var spokenSentence: String? {
             if readsColophon, let shownColophon { return shownColophon.spokenText }
-            let id = accessibilitySentence ?? restingSentence()
+            let id = accessibilityTarget()
             let sentences = parent.content.sentences
             return sentences.indices.contains(id) ? sentences[id].text : nil
         }
@@ -1144,11 +1343,180 @@ struct ReaderTextView: UIViewRepresentable {
             // The colophon is no sentence: nothing to play from (Play reads
             // Listen again).
             guard !readsColophon else { return false }
-            let id = accessibilitySentence ?? restingSentence()
+            let id = accessibilityTarget()
             guard parent.content.sentences.indices.contains(id) else { return false }
             accessibilitySentence = nil
+            lastLineRead = nil
             parent.onTapSentence(id)
             return true
+        }
+
+        /// VoiceOver's Copy sentence: the sentence Play from here would
+        /// play, quoted as the long-press Copy quotes it (P042).
+        @discardableResult
+        func copyFromHere() -> Bool {
+            guard !readsColophon else { return false }
+            return copySentence(accessibilityTarget())
+        }
+
+        /// VoiceOver's Look up: no finger points at a word, so the
+        /// sentence's longest word (`ReaderColumnText.longestWord`).
+        @discardableResult
+        func lookUpFromHere() -> Bool {
+            guard !readsColophon, let term = ReaderColumnText.longestWord(in: sentenceQuote(accessibilityTarget()))
+            else { return false }
+            lookUp(term)
+            return true
+        }
+
+        // MARK: VoiceOver lines (P045)
+
+        /// The lines on screen as VoiceOver reads them, top to bottom: the
+        /// laid-out lines in the band's viewport that carry words, each
+        /// quoted without rules or furniture.
+        func readingLines() -> [(range: NSRange, frame: CGRect, text: String)] {
+            guard let textView, let viewport = viewport(), let column else { return [] }
+            let storage = textView.textStorage
+            return column.lines(in: viewport).compactMap { line in
+                let text = ReaderColumnText.quote(of: line.range, in: storage)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? nil : (line.range, line.frame, text)
+            }
+        }
+
+        /// The visible line at `point` (content coordinates): the one
+        /// holding the character there, else the one whose frame spans its
+        /// height; NSNotFound off every line.
+        func accessibilityLineNumber(at point: CGPoint) -> Int {
+            let lines = readingLines()
+            if let offset = characterOffset(at: point),
+               let index = lines.firstIndex(where: { NSLocationInRange(offset, $0.range) }) {
+                return index
+            }
+            return lines.firstIndex { $0.frame.minY <= point.y && point.y < $0.frame.maxY } ?? NSNotFound
+        }
+
+        /// Line `number`'s words; nil past the last line on screen.
+        func accessibilityLineText(_ number: Int) -> String? {
+            let lines = readingLines()
+            guard lines.indices.contains(number) else { return nil }
+            lastLineRead = lines[number].range.location
+            return lines[number].text
+        }
+
+        /// Line `number`'s frame in content coordinates.
+        func accessibilityLineFrame(_ number: Int) -> CGRect? {
+            let lines = readingLines()
+            return lines.indices.contains(number) ? lines[number].frame : nil
+        }
+
+        /// The passage on screen, at most `ReaderRotor.pageContentLimit`
+        /// characters: never the whole book (R12e).
+        func accessibilityPageText() -> String? {
+            let lines = readingLines()
+            guard let textView, let first = lines.first, let last = lines.last else { return nil }
+            let range = NSRange(location: first.range.location,
+                                length: NSMaxRange(last.range) - first.range.location)
+            let text = ReaderColumnText.quote(of: range, in: textView.textStorage)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : String(text.prefix(ReaderRotor.pageContentLimit))
+        }
+
+        // MARK: Long-press menu (P042)
+
+        /// The sentence under a long press, and the word there for Look Up;
+        /// nil off the text. Moves nothing.
+        func menuTarget(at point: CGPoint) -> (sentence: Int, word: NSRange?)? {
+            guard let textView, let offset = characterOffset(at: point),
+                  let id = ReaderColumnLayout.sentence(containing: offset, in: sentenceRanges) else { return nil }
+            return (id, ReaderColumnText.lookUpRange(at: offset, in: textView.textStorage))
+        }
+
+        /// Sentence `id` as Copy and Share quote it.
+        func sentenceQuote(_ id: Int) -> String {
+            guard let textView, sentenceRanges.indices.contains(id) else { return "" }
+            return ReaderColumnText.quote(of: sentenceRanges[id], in: textView.textStorage)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        /// The menu: Play from Here (the tap's path: Undo jump and the play
+        /// haptic as for a tap), Copy, Look Up and Share.
+        func menu(for target: (sentence: Int, word: NSRange?)) -> UIMenu {
+            let id = target.sentence
+            let term = target.word.flatMap(lookUpTerm)
+            let play = UIAction(title: ReaderMenuCopy.playFromHere, image: UIImage(systemName: "play")) {
+                [weak self] _ in self?.parent.onTapSentence(id)
+            }
+            let copy = UIAction(title: ReaderMenuCopy.copy, image: UIImage(systemName: "doc.on.doc")) {
+                [weak self] _ in self?.copySentence(id)
+            }
+            let lookUp = UIAction(title: ReaderMenuCopy.lookUp(nil), image: UIImage(systemName: "character.book.closed"),
+                                  attributes: term == nil ? .disabled : []) {
+                [weak self] _ in if let term { self?.lookUp(term) }
+            }
+            let share = UIAction(title: ReaderMenuCopy.share, image: UIImage(systemName: "square.and.arrow.up")) {
+                [weak self] _ in self?.shareSentence(id)
+            }
+            return UIMenu(children: [play, copy, lookUp, share])
+        }
+
+        private func lookUpTerm(_ range: NSRange) -> String? {
+            guard let textView, NSMaxRange(range) <= textView.textStorage.length else { return nil }
+            let term = (textView.textStorage.string as NSString).substring(with: range)
+            return term.isEmpty ? nil : term
+        }
+
+        @discardableResult
+        func copySentence(_ id: Int) -> Bool {
+            let quote = sentenceQuote(id)
+            guard !quote.isEmpty else { return false }
+            writePasteboard(quote)
+            return true
+        }
+
+        func lookUp(_ term: String) {
+            presentController(UIReferenceLibraryViewController(term: term))
+        }
+
+        func shareSentence(_ id: Int) {
+            let quote = sentenceQuote(id)
+            guard !quote.isEmpty else { return }
+            let title = parent.bookTitle.isEmpty ? parent.content.title : parent.bookTitle
+            let text = ReaderMenuCopy.sharedQuote(quote, title: title, author: parent.bookAuthor)
+            presentController(UIActivityViewController(activityItems: [text], applicationActivities: nil))
+        }
+
+        private func presentController(_ controller: UIViewController) {
+            if let present {
+                present(controller)
+                return
+            }
+            guard let textView, var top = textView.window?.rootViewController else { return }
+            while let next = top.presentedViewController { top = next }
+            controller.popoverPresentationController?.sourceView = textView
+            top.present(controller, animated: true)
+        }
+
+        /// The sentence lifted as the menu opens: its own lines, on the page.
+        fileprivate func sentenceTargetedPreview(_ configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
+            guard let textView, textView.window != nil,
+                  let id = (configuration.identifier as? NSNumber)?.intValue,
+                  sentenceRanges.indices.contains(id) else { return nil }
+            let rects = segments(for: sentenceRanges[id]).map { NSValue(cgRect: $0.frame.insetBy(dx: -4, dy: -2)) }
+            guard !rects.isEmpty else { return nil }
+            let parameters = UIPreviewParameters(textLineRects: rects)
+            parameters.backgroundColor = UIColor(Theme.bg).resolvedColor(with: textView.traitCollection)
+            return UITargetedPreview(view: textView, parameters: parameters)
+        }
+
+        /// The preview above the menu: the sentence in the reading serif on
+        /// the page's paper.
+        fileprivate func sentencePreview(_ id: Int) -> UIViewController? {
+            guard let textView, sentenceRanges.indices.contains(id) else { return nil }
+            let width = columnWidth(fontSize: builtFontSize) ?? textView.bounds.width
+            return ReaderSentencePreview(text: sentenceQuote(id), fontSize: builtFontSize,
+                                         bold: textView.traitCollection.legibilityWeight == .bold,
+                                         width: width)
         }
 
         /// The column's hint over the colophon: none, since double-tap does
@@ -1172,6 +1540,7 @@ struct ReaderTextView: UIViewRepresentable {
                                                   navigation: parent.navigation) else { return nil }
             accessibilitySentence = target
             reveal(sentence: target)
+            lastLineRead = nil
             return UIAccessibilityCustomRotorItemResult(targetElement: textView,
                                                         targetRange: textRange(forSentence: target))
         }
@@ -1304,10 +1673,12 @@ struct ReaderTextView: UIViewRepresentable {
         static func makeAttributedString(content: DocContent, fontSize: CGFloat,
                                          isChapterBook: Bool = false,
                                          colophon: ReaderColophon? = nil,
+                                         columnWidth: CGFloat? = nil,
                                          traits: UITraitCollection = .current)
             -> (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange) {
             ReaderColumnText.makeAttributedString(content: content, fontSize: fontSize,
                                                   isChapterBook: isChapterBook, colophon: colophon,
+                                                  columnWidth: columnWidth,
                                                   bold: traits.legibilityWeight == .bold,
                                                   ink: .live(traits: traits))
         }
@@ -1319,6 +1690,114 @@ struct ReaderTextView: UIViewRepresentable {
                                          bold: traits.legibilityWeight == .bold,
                                          ink: .live(traits: traits))
         }
+    }
+}
+
+// MARK: - Long-press menu (P042)
+
+extension ReaderTextView.Coordinator: UIContextMenuInteractionDelegate {
+
+    /// A long press on a sentence: Play from Here, Copy, Look Up, Share. On
+    /// moving text it only stops the scroll, as a tap does; it never moves
+    /// the playhead by itself.
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+        if touchBeganWhileScrolling {
+            // Pressed on moving text: the press only stopped it.
+            deceleratingAfterDrag = false
+            userScrollEnded()
+            return nil
+        }
+        guard let target = menuTarget(at: location) else { return nil }
+        menuOwnsTouch = true
+        return UIContextMenuConfiguration(identifier: NSNumber(value: target.sentence),
+                                          previewProvider: { [weak self] in self?.sentencePreview(target.sentence) },
+                                          actionProvider: { [weak self] _ in self?.menu(for: target) })
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                configuration: UIContextMenuConfiguration,
+                                highlightPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
+        sentenceTargetedPreview(configuration)
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                configuration: UIContextMenuConfiguration,
+                                dismissalPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
+        sentenceTargetedPreview(configuration)
+    }
+}
+
+/// The long-press menu's preview: a sentence in the reading serif on the
+/// page's paper, as wide as the column.
+final class ReaderSentencePreview: UIViewController {
+    private let text: String
+    private let fontSize: CGFloat
+    private let bold: Bool
+    private let width: CGFloat
+
+    init(text: String, fontSize: CGFloat, bold: Bool, width: CGFloat) {
+        self.text = text
+        self.fontSize = fontSize
+        self.bold = bold
+        self.width = width
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(Theme.bg)
+        let label = UILabel()
+        label.text = text
+        label.numberOfLines = 0
+        label.font = ReaderPageStyle.serif(size: fontSize, bold: bold)
+        label.textColor = UIColor(Theme.text)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        let pad = Theme.Space.md
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: pad),
+            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -pad),
+            label.topAnchor.constraint(equalTo: view.topAnchor, constant: pad),
+            label.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -pad),
+        ])
+        let fits = label.sizeThatFits(CGSize(width: max(width, 1), height: .greatestFiniteMagnitude))
+        preferredContentSize = CGSize(width: width + 2 * pad, height: ceil(fits.height) + 2 * pad)
+    }
+}
+
+// MARK: - Pinch to size (P044)
+
+/// The pinch's steps: one text-size step each time the pinch's scale moves
+/// past `threshold` (or its inverse) from where it last stepped.
+enum ReaderPinch {
+    static let threshold: CGFloat = 1.15
+
+    /// The steps `scale` has crossed since `anchor` (the scale at the last
+    /// step), and the new anchor. Several thresholds in one move are
+    /// several steps.
+    static func step(scale: CGFloat, anchor: CGFloat) -> (delta: Int, anchor: CGFloat) {
+        guard scale.isFinite, scale > 0, anchor.isFinite, anchor > 0 else { return (0, anchor) }
+        var delta = 0
+        var anchor = anchor
+        let limit = ReaderTextSize.steps.count
+        while scale >= anchor * threshold, delta < limit {
+            anchor *= threshold
+            delta += 1
+        }
+        while scale <= anchor / threshold, delta > -limit {
+            anchor /= threshold
+            delta -= 1
+        }
+        return (delta, anchor)
+    }
+
+    /// `current` moved `delta` steps, clamped to the stepper's range.
+    static func clamped(_ current: Int, by delta: Int) -> Int {
+        min(max(current + delta, 0), ReaderTextSize.steps.count - 1)
     }
 }
 
@@ -1338,6 +1817,53 @@ final class ReaderUITextView: UITextView {
     /// Fired after every layout pass; the coordinator uses it to finish a
     /// placement once insets/bounds have actually settled.
     var onLayout: (@MainActor () -> Void)?
+    /// Every finger lifted or was cancelled (P047).
+    var onTouchesEnded: (@MainActor () -> Void)?
+    /// The size the column is set at; the gutter follows it (P043).
+    var readingFontSize: CGFloat = 0
+
+    // VoiceOver's lines (P045), answered by the coordinator in content
+    // coordinates.
+    var readingLineNumber: (@MainActor (CGPoint) -> Int)?
+    var readingLineText: (@MainActor (Int) -> String?)?
+    var readingLineFrame: (@MainActor (Int) -> CGRect?)?
+    var readingPageText: (@MainActor () -> String?)?
+
+    /// The horizontal gutter at `fontSize`: the sheet gutter below 26 pt,
+    /// narrower at the largest sizes, where a phone column holds only 9-10
+    /// em (P043).
+    static func gutter(fontSize: CGFloat) -> CGFloat {
+        if fontSize >= 35 { return Theme.Space.md }
+        if fontSize >= 26 { return Theme.Space.lg }
+        return Theme.Space.sheetGutter
+    }
+
+    /// The measure's cap, centered in a wider view.
+    static let maximumMeasure: CGFloat = 640
+
+    static func horizontalInset(viewWidth: CGFloat, fontSize: CGFloat) -> CGFloat {
+        max(gutter(fontSize: fontSize), (viewWidth - maximumMeasure) / 2)
+    }
+
+    static func columnWidth(viewWidth: CGFloat, fontSize: CGFloat) -> CGFloat {
+        max(viewWidth - 2 * horizontalInset(viewWidth: viewWidth, fontSize: fontSize), 0)
+    }
+
+    /// The least gutter the margin mark is drawn for: it sits 8 pt from the
+    /// screen's edge at the narrowest gutter.
+    static let minimumMarkGutter: CGFloat = 8 + HighlightLayers.markGap + HighlightLayers.markWidth
+
+    /// The text container inset for the bounds and size as they stand: the
+    /// gutter either side and a deep bottom inset, so the last lines can
+    /// reach the landing line.
+    func applyColumnInsets() {
+        let horizontal = Self.horizontalInset(viewWidth: bounds.width, fontSize: readingFontSize)
+        let inset = UIEdgeInsets(top: Theme.Space.xl, left: horizontal,
+                                 bottom: bounds.height * 0.45, right: horizontal)
+        if textContainerInset != inset {
+            textContainerInset = inset
+        }
+    }
 
     // VoiceOver: the whole column is one element.
     /// The label: the sentence the rotor is on, never the whole book.
@@ -1404,13 +1930,7 @@ final class ReaderUITextView: UITextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let horizontal = max(Theme.Space.sheetGutter, (bounds.width - 640) / 2)
-        let bottom = UIScreen.main.bounds.height * 0.45
-        let inset = UIEdgeInsets(top: Theme.Space.xl, left: horizontal,
-                                 bottom: bottom, right: horizontal)
-        if textContainerInset != inset {
-            textContainerInset = inset
-        }
+        applyColumnInsets()
         if highlightLayer.superview !== self {
             insertSubview(highlightLayer, at: 0)
         } else if subviews.first !== highlightLayer {
@@ -1424,6 +1944,24 @@ final class ReaderUITextView: UITextView {
         onLayout?()
     }
 
+    /// After UIKit's own handling, so tracking has ended by the time the
+    /// coordinator looks.
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        notifyTouchesEnded(event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        notifyTouchesEnded(event)
+    }
+
+    private func notifyTouchesEnded(_ event: UIEvent?) {
+        let stillDown = event?.allTouches?.contains { $0.phase != .ended && $0.phase != .cancelled } ?? false
+        guard !stillDown else { return }
+        Task { @MainActor [weak self] in self?.onTouchesEnded?() }
+    }
+
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         // Light/dark and Increase Contrast both change resolved colors;
@@ -1433,6 +1971,38 @@ final class ReaderUITextView: UITextView {
             || previousTraitCollection?.legibilityWeight != traitCollection.legibilityWeight {
             onTraitChange?()
         }
+    }
+}
+
+// MARK: - VoiceOver's lines (P045)
+
+/// VoiceOver reads the page by line, and Read All reads on and turns it
+/// (`causesPageTurn`, through `accessibilityScroll`, which counts as the
+/// reader taking the scroll). Points and frames are in screen coordinates.
+extension ReaderUITextView: UIAccessibilityReadingContent {
+
+    func accessibilityLineNumber(for point: CGPoint) -> Int {
+        readingLineNumber?(contentPoint(fromScreen: point)) ?? NSNotFound
+    }
+
+    func accessibilityContent(forLineNumber lineNumber: Int) -> String? {
+        readingLineText?(lineNumber)
+    }
+
+    func accessibilityFrame(forLineNumber lineNumber: Int) -> CGRect {
+        guard let frame = readingLineFrame?(lineNumber) else { return .zero }
+        return UIAccessibility.convertToScreenCoordinates(frame, in: self)
+    }
+
+    func accessibilityPageContent() -> String? {
+        readingPageText?()
+    }
+
+    /// A screen point in this view's (content) coordinates; outside a
+    /// window, the point as given.
+    func contentPoint(fromScreen point: CGPoint) -> CGPoint {
+        guard let screen = window?.windowScene?.screen else { return point }
+        return convert(point, from: screen.coordinateSpace)
     }
 }
 

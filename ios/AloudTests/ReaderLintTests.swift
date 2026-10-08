@@ -44,6 +44,34 @@ final class ReaderLintTests: XCTestCase {
                        "no bar height measured on its own")
     }
 
+    /// P046: the reader's principal item names the author under the title,
+    /// one header for VoiceOver.
+    func testTheTitleBarNamesTheAuthor() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let s = try SourceTree.sources(only: [path])
+        let screen = try XCTUnwrap(s[path])
+        XCTAssertTrue(screen.contains("ReaderTitleCopy.label(title: liveDocument.title, author:"),
+                      "the title bar's header names the author")
+        XCTAssertTrue(screen.contains("Text(author)"), "the author's line under the title")
+        XCTAssertTrue(screen.contains("isAccessibilitySize"), "the title alone at the accessibility sizes")
+    }
+
+    /// P050: the reader's type comes from the theme's tokens: no raw
+    /// `.font(.title)` anywhere in the reader. The failure state offers a
+    /// way back and keeps its icon out of VoiceOver's order.
+    func testTheReaderUsesTheTypeTokens() throws {
+        let s = try SourceTree.sources()
+        for (path, text) in s where path.hasPrefix("Reader/") {
+            for line in codeLines(text) {
+                XCTAssertFalse(line.contains(".font(.title)"), "\(path): \(line)")
+            }
+        }
+        let screen = try XCTUnwrap(s["Reader/ReaderScreen.swift"])
+        XCTAssertTrue(screen.contains("reader.backToLibrary"))
+        XCTAssertTrue(screen.contains("router.popToRoot()"))
+        XCTAssertTrue(screen.contains("ReaderFailureCopy.backToLibrary"))
+    }
+
     /// iOS 26: a hard scroll edge on a pushed screen turns the bar's glass
     /// buttons light in dark mode.
     func testNoHardScrollEdges() throws {

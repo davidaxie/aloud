@@ -24,6 +24,8 @@ struct ReaderScreen: View {
     /// Carries the in-app Appearance override (and `-uitest-force-dark`);
     /// the nav bar is resolved and pinned from it (see `Theme.bgResolved`).
     @Environment(\.colorScheme) private var colorScheme
+    /// At the accessibility sizes the bar shows the title alone (P046).
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @AppStorage(ReaderTextSize.prefKey) private var textSizeStep = ReaderTextSize.defaultStep
 
@@ -52,6 +54,12 @@ struct ReaderScreen: View {
     /// (P034); nil once the sheet closes, and the band is the bar's again.
     @State private var listeningSheetTop: CGFloat?
     @State private var textBottomInWindow: CGFloat?
+    /// How far the chip slot reaches above the bar: the tallest chip seen
+    /// and its padding, a running maximum (`FollowBand.chipReach`, P049).
+    @State private var chipReach: CGFloat = 0
+    /// The page's width, measured before the text loads, so the column's
+    /// first build is set for its real measure (P043).
+    @State private var pageWidth: CGFloat?
     private static let space = "reader.screen"
 
     var body: some View {
@@ -73,14 +81,22 @@ struct ReaderScreen: View {
                     // Following resumes on a user Play, every jump and Undo,
                     // and the Follow chip: never by itself.
                     followRequest: playback.userPlayAction &+ playback.jumpSerial &+ followChipTaps,
+                    // The bar's reach, the chip's while one floats over the
+                    // text, and a resting sheet's, so the spoken line is
+                    // never under any of them.
                     obscuredBottom: FollowBand.obscuredBottom(textMaxY: textBottom, chromeMinY: barTop,
+                                                              chipReach: chipReach, showsChip: chip != nil,
                                                               windowTextMaxY: textBottomInWindow,
                                                               sheetMinY: listeningSheetTop),
                     colophon: colophon(for: content, navigation: navigation),
                     voiceOffscreen: $voiceOffscreen,
                     textUnderTopBar: $textUnderTopBar,
                     onTapSentence: tapSentence,
-                    onMagicTap: togglePlayback)
+                    onMagicTap: togglePlayback,
+                    bookTitle: liveDocument.title,
+                    bookAuthor: liveDocument.author,
+                    pageWidth: pageWidth,
+                    onPinchTextSize: pinchTextSize)
                 .ignoresSafeArea(edges: .bottom)
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .named(Self.space)).maxY
@@ -103,6 +119,11 @@ struct ReaderScreen: View {
             }
             // While the cached text decodes the paper stays bare: a system
             // spinner would keep turning under Reduce Motion (R20).
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.frame(in: .local).width
+        } action: { width in
+            pageWidth = width
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let content, let navigation {
@@ -164,15 +185,16 @@ struct ReaderScreen: View {
         // line at the bottom. The bar is hosted apart from the screen, so
         // its items take magic tap themselves.
         ToolbarItem(placement: .principal) {
-            Text(liveDocument.title)
-                .font(Theme.font(.headline))
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            titleLines
+                // One header naming the book and its author (P046).
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(ReaderTitleCopy.label(title: liveDocument.title, author: shownAuthor))
                 .accessibilityAddTraits(.isHeader)
                 // The bar caps its text size and truncates a long title;
-                // long-press shows it whole and large.
-                .accessibilityShowsLargeContentViewer()
+                // long-press shows both lines whole and large.
+                .accessibilityShowsLargeContentViewer {
+                    Text([liveDocument.title, shownAuthor].compactMap { $0 }.joined(separator: "\n"))
+                }
                 .accessibilityIdentifier("reader.title")
                 .accessibilityAction(.magicTap) { togglePlayback() }
         }
@@ -193,6 +215,38 @@ struct ReaderScreen: View {
             .accessibilityIdentifier("reader.appearance")
             .accessibilityAction(.magicTap) { togglePlayback() }
         }
+    }
+
+    /// The author, when the record has one.
+    private var shownAuthor: String? {
+        guard let author = liveDocument.author, !author.isEmpty else { return nil }
+        return author
+    }
+
+    /// The title over the author, as the Mac's window names both; the title
+    /// alone at the accessibility sizes, where two lines crowd the bar.
+    @ViewBuilder
+    private var titleLines: some View {
+        if let author = shownAuthor, !dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 0) {
+                titleText
+                Text(author)
+                    .font(Theme.font(.caption))
+                    .foregroundStyle(Theme.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        } else {
+            titleText
+        }
+    }
+
+    private var titleText: some View {
+        Text(liveDocument.title)
+            .font(Theme.font(.headline))
+            .foregroundStyle(Theme.text)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     #if DEBUG
@@ -248,6 +302,12 @@ struct ReaderScreen: View {
             ReaderChipView(chip: chip) { handle(chip) }
                 .id(chip.slotKey)
                 .messageTransition()
+                // The tallest chip seen counts toward the band (P049).
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.frame(in: .local).height
+                } action: { height in
+                    chipReach = FollowBand.chipReach(previous: chipReach, slotHeight: height)
+                }
         }
     }
 
@@ -277,15 +337,28 @@ struct ReaderScreen: View {
     private var failureState: some View {
         VStack(spacing: Theme.Space.sm) {
             Image(systemName: "doc.questionmark")
-                .font(.title)
+                .font(Theme.font(.title))
+                .imageScale(.large)
                 .foregroundStyle(Theme.textFaint)
-            Text("Couldn't open this document")
+                .accessibilityHidden(true)
+            Text(ReaderFailureCopy.title)
                 .font(Theme.font(.headline))
                 .foregroundStyle(Theme.text)
-            Text("It may be damaged or a scanned document.")
+            Text(ReaderFailureCopy.detail)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
+            // A way back that isn't only the bar's chevron (P050).
+            Button { router.popToRoot() } label: {
+                Text(ReaderFailureCopy.backToLibrary)
+                    .font(Theme.font(.headline))
+                    .foregroundStyle(Theme.accentStrong)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("reader.backToLibrary")
         }
+        .multilineTextAlignment(.center)
         .padding(Theme.Space.xxl)
     }
 
@@ -349,6 +422,17 @@ struct ReaderScreen: View {
         let plays = playback.userPlayAction
         playback.jump(to: id, origin: .sentence)
         if playback.userPlayAction != plays { TransportHaptics.emit(.play) }
+    }
+
+    /// A pinch on the page stepped the size (P044): stored like the Aa
+    /// sheet's stepper, so the column reflows keeping the place, with the
+    /// selection tick and the new size spoken.
+    private func pinchTextSize(_ delta: Int) {
+        let next = ReaderPinch.clamped(textSizeStep, by: delta)
+        guard next != textSizeStep else { return }
+        textSizeStep = next
+        TransportHaptics.emit(.preset)
+        A11yAnnounce.post(ReaderMenuCopy.textSize(points: ReaderTextSize.points(forStep: next)))
     }
 
     /// Magic tap (R12b), from anywhere on the screen.

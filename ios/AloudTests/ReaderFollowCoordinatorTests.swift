@@ -1058,3 +1058,235 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(try sentenceAtTop() - before), 1, "the same passage is at the top")
     }
 }
+
+// MARK: - iPhone parity (B6): the reader page
+
+extension ReaderFollowCoordinatorTests {
+
+    // MARK: Long-press menu (P042)
+
+    /// A long press names the sentence under the finger and the word there,
+    /// and moves nothing: no tap, no playhead change, no scroll.
+    func testALongPressFindsTheSentenceAndMovesNothing() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        let scrolls = coordinator.programmaticScrollCount
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let point = CGPoint(x: textView.textContainerInset.left + 8, y: viewport.minY + 0.3 * viewport.height)
+        let target = try XCTUnwrap(coordinator.menuTarget(at: point))
+
+        coordinator.handleTap(at: point, isDecelerating: false)
+        XCTAssertEqual(taps.sentences, [target.sentence], "the press lands on the sentence a tap there plays")
+        taps.sentences.removeAll()
+
+        let menu = coordinator.menu(for: target)
+        XCTAssertEqual(menu.children.map(\.title), ["Play from Here", "Copy", "Look Up", "Share\u{2026}"])
+        XCTAssertEqual(taps.sentences, [], "building the menu plays nothing")
+        XCTAssertEqual(coordinator.activeSentence, 0, "the playhead stays")
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
+    }
+
+    /// The menu takes the press: the tap that would end it plays nothing,
+    /// and the next touch is a tap again.
+    func testTheMenuTakesThePressFromTheTap() throws {
+        let (coordinator, textView) = try makeColumn()
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let point = CGPoint(x: textView.textContainerInset.left + 8, y: viewport.minY + 0.3 * viewport.height)
+        coordinator.touchLanded()
+        let interaction = UIContextMenuInteraction(delegate: coordinator)
+        XCTAssertNotNil(coordinator.contextMenuInteraction(interaction, configurationForMenuAtLocation: point))
+        XCTAssertTrue(coordinator.menuOwnsTouch)
+        coordinator.touchLanded()
+        XCTAssertFalse(coordinator.menuOwnsTouch, "a new touch taps again")
+    }
+
+    /// On moving text a long press only stops it, as a tap does: no menu.
+    func testALongPressOnMovingTextOnlyStopsIt() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let point = CGPoint(x: textView.textContainerInset.left + 8, y: viewport.minY + 0.3 * viewport.height)
+        coordinator.isCoasting = { _ in true }
+        coordinator.touchLanded()
+        coordinator.isCoasting = { _ in false }
+        let interaction = UIContextMenuInteraction(delegate: coordinator)
+        XCTAssertNil(coordinator.contextMenuInteraction(interaction, configurationForMenuAtLocation: point))
+        XCTAssertFalse(coordinator.menuOwnsTouch)
+        XCTAssertEqual(taps.sentences, [])
+    }
+
+    /// Copy quotes the sentence as the page sets it; VoiceOver's Copy
+    /// sentence and Look up act on the sentence Play from here would play.
+    func testCopyQuotesTheSentenceAndVoiceOverCanCopyAndLookUp() throws {
+        let (coordinator, textView) = try makeColumn()
+        var copied: [String] = []
+        var shown: [UIViewController] = []
+        coordinator.writePasteboard = { copied.append($0) }
+        coordinator.present = { shown.append($0) }
+
+        XCTAssertTrue(coordinator.copySentence(3))
+        XCTAssertEqual(copied, [ReaderTypography.typeset(coordinator.parent.content.sentences[3].text)])
+        XCTAssertFalse(copied[0].contains("\u{FFFC}"))
+
+        let actions = textView.accessibilityCustomActions ?? []
+        XCTAssertEqual(actions.map(\.name), [ReaderRotor.playFromHere, ReaderRotor.copySentence, ReaderRotor.lookUp])
+        XCTAssertEqual(actions[1].actionHandler?(actions[1]), true)
+        XCTAssertEqual(copied.count, 2, "Copy sentence copies the sentence VoiceOver rests on")
+        XCTAssertEqual(actions[2].actionHandler?(actions[2]), true)
+        XCTAssertTrue(shown.last is UIReferenceLibraryViewController, "Look up shows the dictionary")
+
+        coordinator.shareSentence(3)
+        XCTAssertTrue(shown.last is UIActivityViewController, "Share shows the share sheet")
+    }
+
+    // MARK: Pinch to size (P044)
+
+    func testAPinchStepsOncePerThresholdAndClampsAtTheEnds() {
+        XCTAssertEqual(ReaderPinch.step(scale: 1.2, anchor: 1).delta, 1)
+        XCTAssertEqual(ReaderPinch.step(scale: 0.8, anchor: 1).delta, -1)
+        XCTAssertEqual(ReaderPinch.step(scale: 1.1, anchor: 1).delta, 0, "under the threshold, no step")
+        XCTAssertEqual(ReaderPinch.step(scale: 1.6, anchor: 1).delta, 3, "three thresholds in one move")
+        let first = ReaderPinch.step(scale: 1.2, anchor: 1)
+        XCTAssertEqual(ReaderPinch.step(scale: 1.25, anchor: first.anchor).delta, 0, "measured from the last step")
+        XCTAssertEqual(ReaderPinch.step(scale: 1.35, anchor: first.anchor).delta, 1)
+        let last = ReaderTextSize.steps.count - 1
+        XCTAssertEqual(ReaderPinch.clamped(last, by: 1), last)
+        XCTAssertEqual(ReaderPinch.clamped(0, by: -2), 0)
+        XCTAssertEqual(ReaderPinch.clamped(2, by: 1), 3)
+        XCTAssertEqual(ReaderMenuCopy.textSize(points: 21), "21 point")
+    }
+
+    // MARK: VoiceOver's lines (P045)
+
+    func testVoiceOverReadsThePageLineByLine() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        let lines = coordinator.readingLines()
+        XCTAssertGreaterThan(lines.count, 3)
+        let third = lines[2]
+        let point = CGPoint(x: third.frame.midX, y: third.frame.midY)
+        XCTAssertEqual(coordinator.accessibilityLineNumber(at: point), 2)
+        // Outside a window, screen and view coordinates agree.
+        XCTAssertEqual(textView.accessibilityLineNumber(for: point), 2)
+        let text = try XCTUnwrap(textView.accessibilityContent(forLineNumber: 2))
+        XCTAssertEqual(text, third.text)
+        XCTAssertFalse(text.contains("\u{FFFC}"))
+        XCTAssertTrue(coordinator.parent.content.sentences.contains { ReaderTypography.typeset($0.text) == text })
+        XCTAssertNil(textView.accessibilityContent(forLineNumber: lines.count), "nothing past the screen")
+
+        let page = try XCTUnwrap(textView.accessibilityPageContent())
+        XCTAssertLessThanOrEqual(page.count, ReaderRotor.pageContentLimit)
+        XCTAssertTrue(page.contains(text))
+        XCTAssertNil(textView.accessibilityValue, "the value never carries the book (R12e)")
+        XCTAssertTrue(textView.accessibilityTraits.contains(.causesPageTurn), "Read All turns the page")
+
+        // Play from here plays the line just heard.
+        XCTAssertTrue(coordinator.playFromHere())
+        let played = try XCTUnwrap(taps.sentences.last)
+        XCTAssertEqual(ReaderTypography.typeset(coordinator.parent.content.sentences[played].text), text)
+    }
+
+    // MARK: A finger resting on the page (P047)
+
+    /// Twin of the Mac's held-button case: while a finger rests on the page
+    /// the voice moving past the band scrolls nothing; the touch ending
+    /// glides once, landing the voice in the band near the landing line.
+    func testAFollowHeldBackUnderARestingFingerRunsOnceItLifts() throws {
+        let (coordinator, textView) = try makeColumn()
+        let scrolls = coordinator.programmaticScrollCount
+        coordinator.isTouching = { _ in true }
+        coordinator.setActiveSentence(40, scroll: true)
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "never under a finger")
+        XCTAssertTrue(coordinator.followKeptBack)
+        XCTAssertFalse(isInBand(coordinator))
+
+        coordinator.isTouching = { _ in false }
+        coordinator.touchesEnded()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "exactly one glide")
+        XCTAssertFalse(coordinator.followKeptBack)
+        settleLayout(textView)
+        XCTAssertTrue(isInBand(coordinator))
+        let rect = try XCTUnwrap(coordinator.measureActiveSentenceRect())
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertEqual(rect.minY - viewport.minY, 0.28 * viewport.height, accuracy: 30, "on the landing line")
+
+        coordinator.touchesEnded()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "nothing held, nothing runs")
+    }
+
+    func testAHeldTouchEndingWithTheVoiceInTheBandScrollsNothing() throws {
+        let (coordinator, _) = try makeColumn()
+        let scrolls = coordinator.programmaticScrollCount
+        coordinator.isTouching = { _ in true }
+        coordinator.setActiveSentence(2, scroll: true)
+        coordinator.isTouching = { _ in false }
+        coordinator.touchesEnded()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
+    }
+
+    /// A resume (Play, a jump) under a resting finger waits for it too.
+    func testAResumeHeldBackUnderAFingerRunsOnceItLifts() throws {
+        let (coordinator, textView) = try makeColumn()
+        coordinator.scrollViewWillBeginDragging(textView)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+        coordinator.setActiveSentence(80, scroll: false)
+        let scrolls = coordinator.programmaticScrollCount
+        coordinator.isTouching = { _ in true }
+        coordinator.resumeFollowing()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
+        XCTAssertTrue(coordinator.resumeKeptBack)
+        coordinator.isTouching = { _ in false }
+        coordinator.touchesEnded()
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1)
+        settleLayout(textView)
+        XCTAssertTrue(isInBand(coordinator))
+    }
+
+    // MARK: The colophon, scrolled back from (P048)
+
+    /// Twin of the Mac's testScrolledBackFromTheColophonThePageIsTheLabelAgain.
+    func testScrolledBackFromTheColophonThePageIsTheLabelAgain() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        let colophon = ReaderColophon(title: "Lines", author: "A. Writer", words: 165 * 72, rate: 1)
+        coordinator.setActiveSentence(159, scroll: false)
+        coordinator.resumeFollowing()
+        settleLayout(textView)
+        coordinator.setColophon(colophon, animated: false)
+        coordinator.resumeFollowing()
+        settleLayout(textView)
+        XCTAssertEqual(textView.accessibilityLabel, colophon.spokenText, "at the end the colophon is the label")
+
+        coordinator.scrollViewWillBeginDragging(textView)
+        let up = max(textView.contentOffset.y - textView.bounds.height, 0)
+        textView.setContentOffset(CGPoint(x: 0, y: up), animated: false)
+        runLayoutPasses(textView)
+        coordinator.scrollViewDidEndDragging(textView, willDecelerate: false)
+
+        let label = try XCTUnwrap(textView.accessibilityLabel)
+        XCTAssertNotEqual(label, colophon.spokenText, "scrolled back, the page is the label")
+        XCTAssertTrue(textView.accessibilityActivate())
+        let played = try XCTUnwrap(taps.sentences.last, "a double-tap plays the page")
+        XCTAssertEqual(coordinator.parent.content.sentences[played].text, label)
+        XCTAssertLessThan(played, 159)
+    }
+
+    // MARK: Large type on a phone (P043)
+
+    /// The gutter narrows at the largest sizes, the mark stays 8 pt in, and
+    /// the bottom inset is the view's own.
+    func testTheGutterNarrowsAtTheLargestSizes() throws {
+        XCTAssertEqual(ReaderUITextView.gutter(fontSize: 19), Theme.Space.sheetGutter)
+        XCTAssertEqual(ReaderUITextView.gutter(fontSize: 30), Theme.Space.lg)
+        XCTAssertEqual(ReaderUITextView.gutter(fontSize: 40), Theme.Space.md)
+        XCTAssertEqual(ReaderUITextView.columnWidth(viewWidth: 402, fontSize: 19), 402 - 2 * Theme.Space.sheetGutter)
+        XCTAssertEqual(ReaderUITextView.columnWidth(viewWidth: 1_024, fontSize: 40), 640, "the measure's cap")
+        XCTAssertGreaterThanOrEqual(ReaderUITextView.minimumMarkGutter - HighlightLayers.markGap - HighlightLayers.markWidth, 8)
+
+        let (coordinator, textView) = try makeColumn()
+        XCTAssertEqual(textView.textContainerInset.bottom, textView.bounds.height * 0.45, accuracy: 0.5)
+        coordinator.reflowKeepingPlace(fontSize: 40)
+        textView.layoutIfNeeded()
+        XCTAssertEqual(textView.textContainerInset.left, Theme.Space.md)
+    }
+}

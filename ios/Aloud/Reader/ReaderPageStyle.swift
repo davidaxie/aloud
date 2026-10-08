@@ -32,8 +32,54 @@ struct ReaderPageStyle {
     var firstLineIndent: CGFloat { (fontSize * 1.1).rounded() }
     var paragraphGap: CGFloat { (fontSize * 0.45).rounded() }
 
-    /// Layout-only hyphenation (no soft hyphens are inserted into the text).
+    /// The indent in a column `columnWidth` points wide: 1.1 em, but never
+    /// more than 6% of the measure, so a phone column at the largest sizes
+    /// (9-10 em) doesn't open every paragraph with a 44 pt hole. Unchanged
+    /// in any column of 18 em or more.
+    func firstLineIndent(columnWidth: CGFloat) -> CGFloat {
+        min(firstLineIndent, (columnWidth * Self.narrowIndentShare).rounded(.down))
+    }
+
+    /// The most of a column's width a first-line indent takes.
+    static let narrowIndentShare: CGFloat = 0.06
+
+    /// Layout-only hyphenation (no soft hyphens are inserted into the text),
+    /// in a column of `wideColumnEms` or more.
     static let hyphenationFactor: Float = 0.25
+    /// Hyphenation in a column of `narrowColumnEms` or fewer: a few words a
+    /// line rag deeply unless long words may break.
+    static let narrowHyphenationFactor: Float = 0.6
+    /// From this measure up, the wide factor. The iPhone's default column
+    /// (19 pt in 354 pt, 18.6 em) and every Mac column at its normal sizes
+    /// sit above it, so they keep the book's usual setting.
+    static let wideColumnEms: CGFloat = 18
+    static let narrowColumnEms: CGFloat = 12
+
+    /// Hyphenation for a column `emsPerLine` ems wide: `hyphenationFactor`
+    /// at `wideColumnEms` or more, rising linearly to
+    /// `narrowHyphenationFactor` at `narrowColumnEms` or fewer.
+    static func hyphenationFactor(emsPerLine: CGFloat) -> Float {
+        guard emsPerLine.isFinite, emsPerLine < wideColumnEms else { return hyphenationFactor }
+        guard emsPerLine > narrowColumnEms else { return narrowHyphenationFactor }
+        let t = Float((wideColumnEms - emsPerLine) / (wideColumnEms - narrowColumnEms))
+        return hyphenationFactor + (narrowHyphenationFactor - hyphenationFactor) * t
+    }
+
+    /// The body's measure-dependent setting.
+    struct BodySetting: Equatable {
+        let firstLineIndent: CGFloat
+        let hyphenationFactor: Float
+    }
+
+    /// The setting for a column `columnWidth` points wide; nil (a host that
+    /// doesn't know its measure yet) is the wide setting.
+    func body(columnWidth: CGFloat?) -> BodySetting {
+        guard let columnWidth, columnWidth > 0, fontSize > 0 else {
+            return BodySetting(firstLineIndent: firstLineIndent, hyphenationFactor: Self.hyphenationFactor)
+        }
+        return BodySetting(firstLineIndent: firstLineIndent(columnWidth: columnWidth),
+                           hyphenationFactor: Self.hyphenationFactor(emsPerLine: columnWidth / fontSize))
+    }
 
     // MARK: Chapter openings
 
