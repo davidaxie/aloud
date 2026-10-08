@@ -512,11 +512,11 @@ enum ImportOverlayReveal {
     /// Waits out the delay and says whether the overlay should then show:
     /// only when the add is still running, and the wait wasn't cancelled
     /// (the add ended, or another began). False at once when idle. `sleep`
-    /// is the clock, a fake one in tests.
+    /// is the clock: RootView's real one, as the Mac's overlay keeps its
+    /// own, so the add path (this file) holds no timer; a fake one in tests.
     @MainActor
     static func revealsAfterDelay(isBusy: () -> Bool,
-                                  sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
-        async -> Bool {
+                                  sleep: (Duration) async throws -> Void) async -> Bool {
         guard isBusy() else { return false }
         do {
             try await sleep(delay)

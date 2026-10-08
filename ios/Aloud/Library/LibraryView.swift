@@ -480,7 +480,10 @@ struct LibraryView: View {
     }
 
     /// Once the shelf has redrawn and the dialog or menu has gone (its
-    /// dismissal would otherwise put VoiceOver back where it was).
+    /// dismissal would otherwise put VoiceOver back where it was). Neither
+    /// says when it has gone, hence the wait, which the Library lint
+    /// sanctions (`LibraryEntryLintTests.sanctionedSleeps`): the Delete or
+    /// mark has already landed, and nothing is added or opened.
     private func moveVoiceOverFocus(to card: UUID?) {
         guard let card else { return }
         Task { @MainActor in

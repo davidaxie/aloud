@@ -96,10 +96,13 @@ struct RootView: View {
     }
 
     /// A display delay only: the add itself never waits on it. Hidden at
-    /// once when the add ends.
+    /// once when the add ends. The wait is the root's, as the Mac overlay's
+    /// is its own: the add path itself holds no timer (LibraryEntryLintTests).
     private func revealOnceSlow() async {
         let importer = importer
-        let reveals = await ImportOverlayReveal.revealsAfterDelay(isBusy: { importer.isImporting })
+        let reveals = await ImportOverlayReveal.revealsAfterDelay(isBusy: { importer.isImporting }) {
+            try await Task.sleep(for: $0)
+        }
         guard !Task.isCancelled else { return }
         isOverlayRevealed = reveals
     }

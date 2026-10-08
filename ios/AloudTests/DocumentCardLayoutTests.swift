@@ -170,20 +170,24 @@ final class DocumentCardLayoutTests: XCTestCase {
     /// past the card on every side; at rest nothing is drawn round it. A
     /// 40 pt label padded 16 pt, rendered at 2x: pixel x 24 is 12 pt in,
     /// 4 pt outside the label and inside the plate; pixel x 4 is 2 pt in,
-    /// past the plate's edge at 8 pt. Here, not in ShelfFeedTests, because
+    /// past the plate's edge at 8 pt; pixel x 72 is the label's centre.
+    /// The label is opaque: ImageRenderer hands back the previous render's
+    /// bitmap for content that draws nothing at all, so a clear label at
+    /// rest read the pressed plate. Here, not in ShelfFeedTests, because
     /// RenderedPixels is UIKit and the Mac host leaves it out.
     func testThePressedPlateDrawsOnlyWhilePressed() throws {
         XCTAssertEqual(ShelfPlateButtonStyle().outset, Theme.Space.xs)
         XCTAssertEqual(Theme.Space.xs, 8, "the pixels below assume an 8 pt plate")
         func render(pressed: Bool) throws -> RenderedPixels {
             let view = ShelfPlateButtonStyle.Plated(isPressed: pressed) {
-                Color.clear.frame(width: 40, height: 40)
+                Color.black.frame(width: 40, height: 40)
             }
             .padding(16)
             return try XCTUnwrap(RenderedPixels(view, size: CGSize(width: 72, height: 72)))
         }
         let pressed = try render(pressed: true)
         let resting = try render(pressed: false)
+        XCTAssertEqual(resting.rgba(x: 72, y: 72).a, 255, "the card itself draws at rest")
         XCTAssertGreaterThan(pressed.rgba(x: 24, y: 72).a, 200, "on the plate, 4 pt outside the card")
         XCTAssertEqual(resting.rgba(x: 24, y: 72).a, 0, "no plate at rest")
         XCTAssertEqual(pressed.rgba(x: 4, y: 72).a, 0, "the plate stops 8 pt out")

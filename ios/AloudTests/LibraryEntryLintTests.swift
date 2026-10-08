@@ -80,10 +80,17 @@ final class LibraryEntryLintTests: XCTestCase {
 
     // MARK: - Fixed waits
 
-    /// The one sanctioned sleep in these folders: DocumentStore's 2 s throttle
-    /// of the index write, which is persistence and never holds up an add or
-    /// an open. App/UITestLaunchActions.swift (DEBUG only) is outside the scan.
-    private static let sanctionedSleeps: Set<String> = ["Library/DocumentStore.swift#scheduleDebouncedSave"]
+    /// The sanctioned sleeps in these folders, neither of which holds up an
+    /// add or an open:
+    /// - DocumentStore's 2 s throttle of the index write, which is persistence.
+    /// - LibraryView's VoiceOver handoff after a Delete or a Mark as finished
+    ///   (P022): SwiftUI's confirmation dialog and context menu say nothing
+    ///   when they have finished leaving, and VoiceOver's own return of focus
+    ///   as they go would undo an earlier move. The shelf has already changed.
+    /// App/UITestLaunchActions.swift (DEBUG only) is outside the scan, and so
+    /// is RootView, which owns the import overlay's display delay (P015).
+    private static let sanctionedSleeps: Set<String> = ["Library/DocumentStore.swift#scheduleDebouncedSave",
+                                                        "Library/LibraryView.swift#moveVoiceOverFocus"]
 
     func testNoFixedWaitsInAddOrOpenPaths() throws {
         let scanned = try sources(in: Self.appRoot,
