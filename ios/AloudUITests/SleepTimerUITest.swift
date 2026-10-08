@@ -3,10 +3,11 @@ import XCTest
 /// R19 (and R1's promise that the timer outlives the reader), end to end: a
 /// 1 min timer (`-uitest-sleep-one-minute`) offers "+15 min" from 45 s, stops
 /// by 60 ± 5 s with the stopped line, "Back 5 min" and the announcement;
-/// "+15 min" keeps it playing; leaving the reader doesn't disarm it; and a
-/// book without chapters offers End of book.
+/// "+15 min" keeps it playing; leaving the reader doesn't disarm it; a book
+/// without chapters offers End of book; and End of book and End of chapter
+/// each say how long that is (R1-27).
 ///
-/// Every launch is muted (`XCUIApplication.aloud`). All but the last let
+/// Every launch is muted (`XCUIApplication.aloud`). All but the last two let
 /// autoplay run for a minute or more: never run them without the user's OK.
 final class SleepTimerUITest: XCTestCase {
 
@@ -155,5 +156,33 @@ final class SleepTimerUITest: XCTestCase {
                 $0.label.range(of: spoken, options: .regularExpression) != nil
             }
         XCTAssertTrue(subtitled, "End of book shows the book's remaining time: '\(endOfBook.label)'")
+    }
+
+    // MARK: - End of chapter
+
+    /// R1-27's main case: in a chaptered book (The Great Gatsby, opened
+    /// muted, nothing playing) End of chapter says how long the rest of the
+    /// chapter is, spelled out.
+    func testEndOfChapterShowsHowLongTheChapterIs() {
+        let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-seed-first-classic",
+                                         "-uitest-open-first-doc"])
+        app.launch()
+        // The chapter line shows once the book's chapters are read.
+        XCTAssertTrue(app.buttons["reader.chapterLine"].firstMatch.waitForExistence(timeout: 20),
+                      "The chaptered book opens")
+        let chip = element("player.sleep", in: app)
+        XCTAssertTrue(chip.waitForExistence(timeout: 10))
+        chip.tap()
+
+        // Found by its title's start, as the item may carry its subtitle in its label.
+        let endOfChapter = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "End of chapter"))
+            .firstMatch
+        XCTAssertTrue(endOfChapter.waitForExistence(timeout: 5), "A chaptered book offers End of chapter")
+        let spoken = #"\d+ (minute|hour)"#
+        let subtitled = endOfChapter.label.range(of: spoken, options: .regularExpression) != nil
+            || endOfChapter.staticTexts.allElementsBoundByIndex.contains {
+                $0.label.range(of: spoken, options: .regularExpression) != nil
+            }
+        XCTAssertTrue(subtitled, "End of chapter shows the chapter's remaining time: '\(endOfChapter.label)'")
     }
 }

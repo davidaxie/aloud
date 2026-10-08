@@ -174,14 +174,16 @@ final class ReaderLintTests: XCTestCase {
         }
     }
 
-    /// J027: under Bold Text the Aa sample sets in the column's own bold
-    /// face (`ReaderPageStyle.serif(size:bold:)`), not the regular one.
-    func testTheAaSampleFollowsBoldText() throws {
+    /// J027: under Bold Text the stepper's serif A glyphs set in the
+    /// column's own bold face (`ReaderPageStyle.serif(size:bold:)`), not the
+    /// regular one.
+    func testTheStepperGlyphsFollowBoldText() throws {
         let path = "Reader/AppearanceSheet.swift"
-        let sheet = try XCTUnwrap(try SourceTree.sources(only: [path])[path])
-        let sample = try XCTUnwrap(sheet.range(of: "Text(\"Aa\")"))
-        XCTAssertTrue(sheet[sample.upperBound...].prefix(300)
-            .contains("weight: legibilityWeight == .bold ? .bold : .regular"))
+        let s = try SourceTree.sources(only: [path])
+        let sheet = try XCTUnwrap(s[path])
+        let glyph = try XCTUnwrap(sheet.range(of: "Text(verbatim: \"A\")"))
+        let following = sheet[glyph.upperBound...].prefix(300)
+        XCTAssertTrue(following.contains("weight: legibilityWeight == .bold ? .bold : .regular"), String(following))
         XCTAssertTrue(sheet.contains("@Environment(\\.legibilityWeight) private var legibilityWeight"))
     }
 

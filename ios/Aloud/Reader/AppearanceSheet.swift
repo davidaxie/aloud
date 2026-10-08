@@ -39,8 +39,6 @@ struct AppearanceView: View {
     @ScaledMetric(relativeTo: .body) private var largerGlyph: CGFloat = 24
     private static let smallerGlyphMax: CGFloat = 20
     private static let largerGlyphMax: CGFloat = 32
-    /// The readout's caption line, scaled with it (its hit region's overhang).
-    @ScaledMetric(relativeTo: .caption) private var readoutLine: CGFloat = 16
 
     var body: some View {
         ScrollView {
@@ -96,9 +94,10 @@ struct AppearanceView: View {
 
     /// The size in points on the eyebrow's baseline, trailing. VoiceOver
     /// hears it as the one adjustable size, so a swipe up or down steps it
-    /// without hunting for the buttons. Its 44 pt hit region overhangs the
-    /// row by the difference from its caption line, so the row stays the
-    /// eyebrow's height.
+    /// without hunting for the buttons. The element wraps its whole 44 pt
+    /// frame, laid out at full height: no overhang shrinks the row, so its
+    /// hit region and accessibility frame are that 44 pt and reach no
+    /// further than the header, clear of the stepper's halves below.
     private var textSizeReadout: some View {
         Text(AppearanceCopy.points(currentPoints))
             .font(Theme.font(.caption))
@@ -107,7 +106,6 @@ struct AppearanceView: View {
             .lineLimit(1)
             .fixedSize()
             .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
-            .padding(.vertical, -max(0, (44 - readoutLine) / 2))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(AppearanceCopy.textSize)
             .accessibilityValue(AppearanceCopy.spokenPoints(currentPoints))

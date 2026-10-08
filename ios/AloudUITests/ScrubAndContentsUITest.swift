@@ -295,8 +295,9 @@ final class ScrubAndContentsUITest: XCTestCase {
     func testContentsOpensOnTheCurrentChapterAfterAListen() {
         let app = openReader(classic: 2600, ["-uitest-seed-places", "4", "-uitest-playhead-at-newest-place"])
         openContents(app)
-        let header = app.staticTexts["places.header"].firstMatch
-        XCTAssertTrue(header.waitForExistence(timeout: 10), "The stops still lead the list")
+        // No check on the stops' header here: it leads the lazy list, now
+        // scrolled far past it, so whether it is still in the tree is up to
+        // SwiftUI. The half-height test above pins that the stops lead.
         let current = chapterRows(app).matching(NSPredicate(format: "selected == true")).firstMatch
         XCTAssertTrue(current.waitForExistence(timeout: 10), "The current chapter carries .isSelected")
         let firstRow = chapterRows(app).firstMatch

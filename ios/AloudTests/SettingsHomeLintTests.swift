@@ -232,4 +232,24 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertFalse(sheet.contains("Text(\"Aa\")"), "the separate sample is gone")
         XCTAssertFalse(sheet.contains("scaleEffect"), "the halves never scale on press")
     }
+
+    /// R1-28: the size readout is one adjustable element over its whole
+    /// 44 pt frame. The accessibility block follows the frame directly, and
+    /// no negative padding shrinks the row under it, so the element's
+    /// frame is the 44 pt the audit's hit-region check reads, clear of the
+    /// stepper below.
+    func testTheTextSizeReadoutIsOneFull44PointElement() throws {
+        let path = "Reader/AppearanceSheet.swift"
+        let s = try SourceTree.sources(only: [path])
+        let sheet = try XCTUnwrap(s[path])
+        let start = try XCTUnwrap(sheet.range(of: "private var textSizeReadout: some View {"))
+        let end = try XCTUnwrap(sheet.range(of: "private var textSizeHeader: some View {",
+                                            range: start.upperBound..<sheet.endIndex))
+        let readout = sheet[start.upperBound..<end.lowerBound]
+        let frame = ".frame(minWidth: 44, minHeight: 44, alignment: .trailing)"
+        XCTAssertTrue(readout.contains(frame + "\n            .accessibilityElement(children: .ignore)"),
+                      "the element wraps the 44 pt frame: \(String(readout))")
+        XCTAssertFalse(readout.contains(".padding(.vertical, -"), "no overhang: \(String(readout))")
+        XCTAssertFalse(sheet.contains("readoutLine"), "the overhang's metric is gone")
+    }
 }

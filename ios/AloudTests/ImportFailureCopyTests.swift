@@ -191,4 +191,23 @@ final class ImportFailureCopyTests: XCTestCase {
         XCTAssertEqual(ImportCopy.addedBooks(1), "Added 1 book")
         XCTAssertEqual(ImportCopy.booksAlreadyInLibrary, "These books are already in your library")
     }
+
+    /// R1-26: the import card's eyebrow and its spoken label come from one
+    /// constant on both apps, so the two can't drift apart.
+    func testTheAddingEyebrowReadsOneConstant() throws {
+        XCTAssertEqual(ImportCopy.adding, "Adding")
+        let phonePath = "Import/DocumentImporter.swift"
+        let macPath = "Library/MacImportOverlay.swift"
+        let s = try SourceTree.sources(only: [phonePath])
+        let m = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
+        let phone = try XCTUnwrap(s[phonePath])
+        let mac = try XCTUnwrap(m[macPath])
+        for (path, text) in [(phonePath, phone), (macPath, mac)] {
+            XCTAssertTrue(text.contains("Text(ImportCopy.adding)\n                .font(Theme.font(.eyebrow))"),
+                          "\(path): the eyebrow reads ImportCopy.adding")
+            XCTAssertTrue(text.contains(".accessibilityLabel(Text(ImportCopy.adding))"),
+                          "\(path): the spoken label reads ImportCopy.adding")
+            XCTAssertFalse(text.contains("Text(\"Adding\")"), "\(path): no second copy of the word")
+        }
+    }
 }

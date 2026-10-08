@@ -190,12 +190,21 @@ final class ListeningUITests: XCTestCase {
                           "The 1x preset shows with voice.\(id)")
             if id == ids[0] {
                 // A swipe on the list scrolls it inside the 60% sheet; the
-                // sheet doesn't grow.
+                // sheet doesn't grow. How far a flick carries the list
+                // varies, so the check is only that some voice below the
+                // opening fold came into view, wherever the list stopped.
                 let title = app.staticTexts["listening.title"].firstMatch
                 let opened = settledFrame(of: title)
-                app.buttons["voice.\(id)"].firstMatch.swipeUp()
-                XCTAssertTrue(wait(for: "hittable == true", app.buttons["voice.kokoro:af_heart"].firstMatch,
-                                   timeout: 5), "The list scrolled to a voice further down")
+                let shown: (String) -> Bool = { voice in
+                    let row = app.buttons["voice.\(voice)"].firstMatch
+                    return row.exists && row.isHittable
+                }
+                let belowTheFold = ids.filter { !shown($0) }
+                XCTAssertFalse(belowTheFold.isEmpty, "The pinned list opens with voices below its fold")
+                app.buttons["voice.\(id)"].firstMatch.swipeUp(velocity: .slow)
+                let revealed = NSPredicate { _, _ in belowTheFold.contains(where: shown) }
+                XCTAssertTrue(wait(for: revealed, app, timeout: 10),
+                              "The list scrolled a voice from below the fold into view")
                 XCTAssertEqual(settledFrame(of: title).minY, opened.minY, accuracy: 0.5,
                                "The sheet stays at its opening height")
             }

@@ -119,8 +119,12 @@ enum ImportFailure: Equatable, CaseIterable {
     }
 }
 
-/// VoiceOver-only completion announcements for an add (R10).
+/// An add's words: the import card's eyebrow while it runs (shown in
+/// capitals, spoken as written), and the VoiceOver-only completion
+/// announcements (R10).
 enum ImportCopy {
+    /// The import card's eyebrow, and its spoken label, while an add runs.
+    static let adding = "Adding"
     static func added(_ title: String) -> String { "Added \(title)" }
     static func alreadyInLibrary(_ title: String) -> String { "\(title) is already in your library" }
     /// Several files at once, announced once when the last ends (M8): the

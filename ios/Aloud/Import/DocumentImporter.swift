@@ -605,11 +605,11 @@ struct ImportProgressOverlay: View {
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
             // R25: one word for an add in progress, as on the Bookshelf row
             // ("Adding…"). "Preparing" means only "Preparing voice…".
-            Text("Adding")
+            Text(ImportCopy.adding)
                 .font(Theme.font(.eyebrow))
                 .eyebrowTracking()
                 .textCase(.uppercase)
-                .accessibilityLabel(Text("Adding"))
+                .accessibilityLabel(Text(ImportCopy.adding))
                 .foregroundStyle(Theme.textFaint)
             Text(fileName)
                 .font(Theme.font(.callout))
