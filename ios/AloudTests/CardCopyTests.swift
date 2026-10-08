@@ -72,6 +72,59 @@ final class CardCopyTests: XCTestCase {
                        "The Cask of Amontillado, by Edgar Allan Poe, about 14 minutes")
     }
 
+    /// R1-36: a finished library copy reads Finished and the copy the player
+    /// is voicing reads Playing, in one order: the add in progress, then
+    /// playing, then finished, then the library copy, then the length. The
+    /// spoken value says the same, and the playing row only opens its reader.
+    func testClassicsRowsSayFinishedAndPlaying() {
+        let cask = BookshelfBook(gutenbergID: 1063, title: "The Cask of Amontillado",
+                                 author: "Edgar Allan Poe", year: nil,
+                                 file: "1063-the-cask-of-amontillado.txt", words: 2317)
+        func status(inLibrary: Bool = true, adding: Bool = false, finished: Bool = false,
+                    playing: Bool = false) -> String {
+            BookshelfView.rowStatus(for: cask, rate: 1, inLibrary: inLibrary, adding: adding,
+                                    finished: finished, playing: playing)
+        }
+        func value(inLibrary: Bool = true, adding: Bool = false, finished: Bool = false,
+                   playing: Bool = false) -> String {
+            BookshelfView.rowValue(inLibrary: inLibrary, adding: adding, finished: finished, playing: playing)
+        }
+        XCTAssertEqual(status(finished: true), "Finished")
+        XCTAssertEqual(status(playing: true), "Playing")
+        XCTAssertEqual(status(finished: true, playing: true), "Playing", "playing outranks finished")
+        XCTAssertEqual(status(adding: true, finished: true, playing: true), "Adding\u{2026}", "an add outranks all")
+        XCTAssertEqual(status(), "In library")
+        XCTAssertEqual(status(inLibrary: false), "14 min")
+        XCTAssertEqual(BookshelfView.rowStatus(for: cask, rate: 1, inLibrary: true, adding: false), "In library",
+                       "the defaults leave the old calls as they were")
+
+        XCTAssertEqual(value(finished: true), "Finished")
+        XCTAssertEqual(value(playing: true), "Playing")
+        XCTAssertEqual(value(finished: true, playing: true), "Playing")
+        XCTAssertEqual(value(adding: true, playing: true), "Adding")
+        XCTAssertEqual(value(), "In library")
+        XCTAssertEqual(value(inLibrary: false), "")
+
+        XCTAssertEqual(BookshelfView.rowHint(finished: false, playing: true), "Opens the reader")
+        XCTAssertEqual(BookshelfView.rowHint(finished: true, playing: true), "Opens the reader")
+        XCTAssertEqual(BookshelfView.rowHint(finished: true), "")
+    }
+
+    /// R1-36: a row shows Playing only while the player voices its classic
+    /// (playing, or synthesizing ahead), never when paused, ended, or for a
+    /// book that is not a classic.
+    func testOnlyTheClassicBeingVoicedIsPlaying() {
+        var classic = doc(wordCount: 2317)
+        classic.gutenbergID = 1063
+        XCTAssertEqual(BookshelfCatalog.playingClassicID(of: classic, status: .playing), 1063)
+        XCTAssertEqual(BookshelfCatalog.playingClassicID(of: classic, status: .buffering), 1063)
+        for status: PlayerStatus in [.idle, .paused, .ended, .error] {
+            XCTAssertNil(BookshelfCatalog.playingClassicID(of: classic, status: status), status.rawValue)
+        }
+        XCTAssertNil(BookshelfCatalog.playingClassicID(of: doc(wordCount: 100), status: .playing), "not a classic")
+        XCTAssertNil(BookshelfCatalog.playingClassicID(of: nil, status: .playing))
+    }
+
     /// P052: the trailing column fits its widest status at every text size
     /// below the accessibility sizes (where the row stacks instead), so no
     /// length is ever cut short. With tabular digits every three-digit hour
@@ -84,7 +137,10 @@ final class CardCopyTests: XCTestCase {
             BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: false, adding: false),
             BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: true, adding: false),
             BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: false, adding: true),
+            BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: true, adding: false, finished: true),
+            BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: true, adding: false, playing: true),
         ]
+        XCTAssertEqual(Array(statuses.suffix(2)), ["Finished", "Playing"])
         XCTAssertEqual(statuses[0].filter(\.isNumber).count, 5, "a three-digit hour count: \(statuses[0])")
         let sizes: [UIContentSizeCategory] = [.extraSmall, .small, .medium, .large,
                                               .extraLarge, .extraExtraLarge, .extraExtraExtraLarge]
@@ -104,8 +160,13 @@ final class CardCopyTests: XCTestCase {
                     UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
                 ]]])
                 let font = UIFont(descriptor: tabular, size: points)
+                // R1-36: Playing draws behind the speaker glyph, a spacing apart.
+                let glyph = UIImage(systemName: "speaker.wave.2.fill",
+                                    withConfiguration: UIImage.SymbolConfiguration(font: font))?.size.width
+                    ?? points * 1.5
                 for status in statuses {
-                    let width = (status as NSString).size(withAttributes: [.font: font]).width
+                    let text = (status as NSString).size(withAttributes: [.font: font]).width
+                    let width = status == "Playing" ? glyph + Theme.Space.xxs + text : text
                     XCTAssertLessThanOrEqual(width.rounded(.up), column,
                                              "'\(status)' at \(size.rawValue), weight \(weight.rawValue), "
                                              + "needs \(width) pt of \(column)")
@@ -125,10 +186,10 @@ final class CardCopyTests: XCTestCase {
         }
         let documents = [copy(1063, progress: 1), copy(64317, progress: 0.4), copy(64317, progress: 1),
                          copy(nil, progress: 1), copy(1342, progress: 0)]
-        XCTAssertEqual(BookshelfView.finishedClassicIDs(in: documents), [1063])
+        XCTAssertEqual(BookshelfCatalog.finishedClassicIDs(in: documents), [1063])
         XCTAssertEqual(DocumentStore.existingClassic(gutenbergID: 64317, in: documents)?.isFinished, false,
                        "the row opens the unfinished copy, so it still promises reading")
-        XCTAssertEqual(BookshelfView.finishedClassicIDs(in: []), [])
+        XCTAssertEqual(BookshelfCatalog.finishedClassicIDs(in: []), [])
         XCTAssertEqual(BookshelfView.rowHint(finished: true), "")
         XCTAssertEqual(BookshelfView.rowHint(finished: false), "Opens and starts reading aloud")
     }
@@ -395,7 +456,7 @@ final class ClassicsRowAccessibilityTests: XCTestCase {
     func testAFinishedCopyPromisesNothing() async throws {
         let row = try await hostRow(inLibrary: true, finished: true, stacked: false)
         XCTAssertEqual(row.accessibilityLabel, Self.label)
-        XCTAssertEqual(row.accessibilityValue, "In library")
+        XCTAssertEqual(row.accessibilityValue, "Finished", "R1-36: the value says what the column shows")
         XCTAssertTrue(row.accessibilityHint?.isEmpty ?? true,
                       "a finished copy opens paused, so no hint: \(row.accessibilityHint ?? "")")
     }
@@ -406,14 +467,26 @@ final class ClassicsRowAccessibilityTests: XCTestCase {
         XCTAssertEqual(row.accessibilityHint, Self.hint)
     }
 
+    /// R1-36: the copy the player is voicing says so, and its row only
+    /// brings up the reader, stacked or side by side.
+    func testAPlayingCopyOpensTheReader() async throws {
+        for stacked in [false, true] {
+            let row = try await hostRow(inLibrary: true, finished: false, stacked: stacked, playing: true)
+            XCTAssertEqual(row.accessibilityLabel, Self.label, "stacked: \(stacked)")
+            XCTAssertEqual(row.accessibilityValue, "Playing", "stacked: \(stacked)")
+            XCTAssertEqual(row.accessibilityHint, "Opens the reader", "stacked: \(stacked)")
+        }
+    }
+
     // MARK: Hosting
 
     /// The row alone in a real window, then its element in the tree SwiftUI
     /// builds for it.
-    private func hostRow(inLibrary: Bool, finished: Bool, stacked: Bool) async throws -> NSObject {
+    private func hostRow(inLibrary: Bool, finished: Bool, stacked: Bool,
+                         playing: Bool = false) async throws -> NSObject {
         closeWindow()
         let row = ClassicsRowButton(book: Self.cask, rate: 1, inLibrary: inLibrary, adding: false,
-                                    finished: finished, stacked: stacked) {}
+                                    finished: finished, stacked: stacked, playing: playing) {}
         let controller = UIHostingController(rootView: VStack(spacing: 0) { row; Spacer() }.background(Theme.bg))
         let window: UIWindow
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {

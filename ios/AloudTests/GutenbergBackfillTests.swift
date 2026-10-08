@@ -79,6 +79,98 @@ final class GutenbergBackfillTests: XCTestCase {
         XCTAssertEqual(linked.author, "P. G. Wodehouse")
     }
 
+    // MARK: - Display titles (library.json v2 → v3)
+
+    private let frankenstein = BookshelfBook(
+        gutenbergID: 84, title: "Frankenstein", author: "Mary Wollstonecraft Shelley", year: nil,
+        file: "84-frankenstein.txt", words: 75_042,
+        headerTitle: "Frankenstein; or, the modern prometheus",
+        fullTitle: "Frankenstein; or, The Modern Prometheus")
+
+    private func retitle(_ document: LibraryDocument) -> LibraryDocument {
+        DocumentStore.retitlingClassics(in: [document], catalog: [callOfTheWild, frankenstein])[0]
+    }
+
+    /// R1-35: a classic added under the catalog's full title, or the
+    /// Gutenberg header's, takes the shelf's shorter title once.
+    func testAClassicUnderItsFullTitleTakesTheShelfsTitle() {
+        let added = record(title: "Frankenstein; or, The Modern Prometheus",
+                           author: "Mary Wollstonecraft Shelley", wordCount: 75_042, gutenbergID: 84)
+        let retitled = retitle(added)
+        XCTAssertEqual(retitled.title, "Frankenstein")
+        XCTAssertEqual(retitled.id, added.id)
+        XCTAssertEqual(retitled.gutenbergID, 84)
+        XCTAssertEqual(retitle(record(title: "Frankenstein; or, the modern prometheus",
+                                      author: "Mary Wollstonecraft Shelley", gutenbergID: 84)).title,
+                       "Frankenstein", "the header's spelling too")
+    }
+
+    /// R1-35: any other title is the listener's own, and stays.
+    func testAUsersRenameIsKept() {
+        let renamed = record(title: "Mary's Monster", author: "Mary Wollstonecraft Shelley", gutenbergID: 84)
+        XCTAssertEqual(retitle(renamed).title, "Mary's Monster")
+        let current = record(title: "Frankenstein", author: "Mary Wollstonecraft Shelley", gutenbergID: 84)
+        XCTAssertEqual(retitle(current).title, "Frankenstein")
+    }
+
+    /// Only a linked record is retitled, by its own id.
+    func testAnUnlinkedOrOtherRecordIsNotRetitled() {
+        let unlinked = record(title: "Frankenstein; or, The Modern Prometheus",
+                              author: "Mary Wollstonecraft Shelley")
+        XCTAssertEqual(retitle(unlinked).title, "Frankenstein; or, The Modern Prometheus")
+        let other = record(title: "Frankenstein; or, The Modern Prometheus", gutenbergID: 215)
+        XCTAssertEqual(retitle(other).title, "Frankenstein; or, The Modern Prometheus",
+                       "another classic's record keeps its title")
+        let gone = record(title: "Frankenstein; or, The Modern Prometheus", gutenbergID: 99_999)
+        XCTAssertEqual(retitle(gone).title, "Frankenstein; or, The Modern Prometheus", "no catalog entry")
+    }
+
+    /// A v1 record titled with the full title is linked and retitled too.
+    func testTheV1BackfillAcceptsTheFullTitle() {
+        let linked = backfill(record(title: "Frankenstein; or, The Modern Prometheus",
+                                     author: "Mary Wollstonecraft Shelley", wordCount: 1),
+                              catalog: [callOfTheWild, frankenstein])
+        XCTAssertEqual(linked.gutenbergID, 84)
+        XCTAssertEqual(linked.title, "Frankenstein")
+    }
+
+    /// The pass runs once, from the launch's backfill: a v2 library is
+    /// retitled and stamped v3, a user's rename kept, and a second launch
+    /// leaves a title the listener sets afterwards alone.
+    @MainActor
+    func testTheV3PassRunsOnceOnAV2Library() throws {
+        let indexURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-v3-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: indexURL) }
+        let full = record(title: "Frankenstein; or, The Modern Prometheus",
+                          author: "Mary Wollstonecraft Shelley", wordCount: 75_042, gutenbergID: 84)
+        let renamed = record(title: "My Wild Book", gutenbergID: 215)
+        let index: [String: Any] = [
+            "version": 2,
+            "documents": try [full, renamed].map { try JSONSerialization.jsonObject(with: Self.encoder.encode($0)) },
+        ]
+        try JSONSerialization.data(withJSONObject: index).write(to: indexURL)
+
+        let store = DocumentStore(indexURL: indexURL, notifications: NotificationCenter())
+        store.backfillGutenbergIDsIfNeeded(catalog: [callOfTheWild, frankenstein])
+        XCTAssertEqual(store.documents.first { $0.id == full.id }?.title, "Frankenstein")
+        XCTAssertEqual(store.documents.first { $0.id == renamed.id }?.title, "My Wild Book")
+        let written = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+        XCTAssertEqual(written["version"] as? Int, 3)
+
+        // A later launch: the pass is spent.
+        var later = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+        var records = try XCTUnwrap(later["documents"] as? [[String: Any]])
+        let index84 = try XCTUnwrap(records.firstIndex { ($0["gutenbergID"] as? Int) == 84 })
+        records[index84]["title"] = "Frankenstein; or, The Modern Prometheus"
+        later["documents"] = records
+        try JSONSerialization.data(withJSONObject: later).write(to: indexURL)
+        let relaunched = DocumentStore(indexURL: indexURL, notifications: NotificationCenter())
+        relaunched.backfillGutenbergIDsIfNeeded(catalog: [callOfTheWild, frankenstein])
+        XCTAssertEqual(relaunched.documents.first { $0.id == full.id }?.title,
+                       "Frankenstein; or, The Modern Prometheus", "a v3 library is never retitled again")
+    }
+
     // MARK: - Lookup
 
     func testExistingClassicFindsARenamedRecord() {

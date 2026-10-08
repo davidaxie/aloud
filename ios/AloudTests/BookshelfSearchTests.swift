@@ -166,6 +166,33 @@ final class BookshelfSearchTests: XCTestCase {
         }
     }
 
+    /// R1-34: a shelf opens with its ranked books, by rank, at any speed;
+    /// the rest follow in catalog order, and a shelf with no ranked book
+    /// keeps catalog order. Search ignores the rank.
+    func testRankedBooksOpenTheirShelf() {
+        var cask = book(1063, "The Cask of Amontillado", "Edgar Allan Poe", words: 2_317)
+        cask.rank = 1
+        var rabbit = book(14838, "The Tale of Peter Rabbit", "Beatrix Potter", words: 1_012)
+        rabbit.rank = 2
+        let ranked = BookshelfIndex(books: [
+            book(10, "A Short Pamphlet", "A. Writer", words: 3_000),
+            rabbit,
+            book(11, "Another Short Piece", "B. Writer", words: 4_000),
+            book(1342, "Pride and Prejudice", "Jane Austen", words: 127_359),
+            cask,
+            book(158, "Emma", "Jane Austen", words: 160_000),
+        ])
+        for rate in [0.75, 1, 2] {
+            let shelves = ranked.shelves(rate: rate)
+            XCTAssertEqual(shelves.first?.section, .underAnHour, "\(rate)×")
+            XCTAssertEqual(shelves.first?.books.map(\.gutenbergID), [1063, 14838, 10, 11],
+                           "ranked first, by rank, then catalog order, at \(rate)×")
+        }
+        XCTAssertEqual(ranked.shelves.last?.books.map(\.gutenbergID), [1342, 158],
+                       "an unranked shelf keeps catalog order")
+        XCTAssertEqual(ranked.search("short")?.map(\.gutenbergID), [10, 11], "search is unchanged")
+    }
+
     func testEmptySectionsAreOmitted() {
         let short = BookshelfIndex(books: [book(1063, "The Cask of Amontillado",
                                                 "Edgar Allan Poe", words: 2_317)])
@@ -257,6 +284,31 @@ final class BookshelfSearchTests: XCTestCase {
         }
         if shipped.book(gutenbergID: 69700) != nil {
             XCTAssertTrue(shipped.search("casebook")?.contains { $0.gutenbergID == 69700 } ?? false)
+        }
+    }
+
+    /// R1-34: Under an hour opens with The Cask of Amontillado and the other
+    /// ranked short classics, in the catalog's order of rank; the other
+    /// shelves have no rank and keep catalog order. The counts are those of
+    /// the 442-book catalog this was written against; a top-up changes them.
+    func testTheShippedShortShelfOpensWithRecognisableClassics() throws {
+        let books = BookshelfCatalog.load(from: .main)
+        try XCTSkipIf(books.isEmpty, "no bundled catalog in this build")
+        let shelves = BookshelfIndex(books: books).shelves(rate: 1)
+        XCTAssertEqual(shelves.first?.section, .underAnHour)
+        XCTAssertEqual(shelves.first?.books.first?.gutenbergID, 1063)
+        let short = try XCTUnwrap(shelves.first).books
+        let ranks = short.compactMap(\.rank)
+        XCTAssertEqual(ranks, ranks.sorted(), "ranked books lead, by rank")
+        XCTAssertEqual(short.prefix(ranks.count).map(\.rank), ranks.map { Optional($0) },
+                       "every ranked book comes before every unranked one")
+        for shelf in shelves.dropFirst() {
+            XCTAssertTrue(shelf.books.allSatisfy { $0.rank == nil }, "\(shelf.section.title) is unranked")
+            let order = shelf.books.map { book in books.firstIndex { $0.gutenbergID == book.gutenbergID } ?? -1 }
+            XCTAssertEqual(order, order.sorted(), "\(shelf.section.title) keeps catalog order")
+        }
+        if books.count == 442 {
+            XCTAssertEqual(shelves.map(\.books.count), [15, 93, 334])
         }
     }
 }

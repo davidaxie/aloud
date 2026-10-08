@@ -6,8 +6,12 @@ the wild", ". G. Wodehouse"); the fetcher and books/ stay raw. This step,
 run by ios/sync_bookshelf.sh, writes the bundled copy with title case and
 repaired authors, keeping the raw spelling in header_title / header_author
 whenever it changed, so the app's backfill can still match libraries made
-before normalization. tools/catalog_overrides.json holds the fixes no rule
-can make; an override wins, verbatim.
+before normalization. The shelf shows a display title (display_title: no
+alternative title, no generic subtitle); when that shortens the normalized
+title, the normalized one is kept in full_title, so libraries made before
+the shortening are renamed to match. tools/catalog_overrides.json holds the
+fixes no rule can make; an override wins, verbatim, and may give a book a
+"rank", its place at the head of its shelf.
 
 Usage:
     python3 tools/catalog_normalize.py books/catalog.json --out DST/catalog.json
@@ -112,7 +116,50 @@ def normalize_title(title: str) -> str:
     return "".join(pieces)
 
 
+# The longest title the shelf shows; a longer one is a lint violation.
+MAX_TITLE_LENGTH = 60
+
+# An alternative title: "Frankenstein; or, The Modern Prometheus",
+# "The Knights of the Cross, or, Krzyzacy", "A Christmas Carol in Prose;
+# Being a Ghost Story of Christmas".
+ALTERNATIVE_TITLE_RE = re.compile(r"\s*(?:[;,]\s*or,\s|;\s*Being\b).*$")
+# A trailing subtitle that says only what kind of book it is.
+GENERIC_SUBTITLE_RES = (
+    re.compile(r"\s*[:;]\s*(?:A|An) (?:Novel|Romance|Tale|Narrative|Autobiography|New Translation)\b.*$"),
+    re.compile(r"\s*:\s*(?:Literally )?Translated\b.*$"),
+    re.compile(r"\s*:\s*Illustrated\b.*$"),
+    re.compile(r"\s*:\s*With\b.*$"),
+    re.compile(r"\s*:\s.*\sEdition$"),
+)
+# A title longer than this is cut at its first ": ".
+LONG_TITLE_LENGTH = 45
+
+
+def display_title(title: str) -> str:
+    """The title the shelf shows, from a normalized one: without an
+    alternative title or a generic subtitle, and a long title cut at its
+    first colon when what comes before is at least two words. Conservative:
+    anything else is left as it is."""
+    shortened = ALTERNATIVE_TITLE_RE.sub("", title)
+    for pattern in GENERIC_SUBTITLE_RES:
+        shortened = pattern.sub("", shortened)
+    if len(shortened) > LONG_TITLE_LENGTH and ": " in shortened:
+        head = shortened.split(": ", 1)[0]
+        if len(head.split()) >= 2:
+            shortened = head
+    shortened = shortened.rstrip(" ,;:")
+    return shortened or title
+
+
 def normalize_author(author: str) -> str:
+    # "Emperor of Rome Marcus Aurelius" -> "Marcus Aurelius": the title of
+    # rank before the name.
+    author = re.sub(r"^(?:Emperor|King|Queen|Sultan) of \S+ ", "", author)
+    # "C. Collodi--Pseudonym of Carlo Lorenzini" -> "C. Collodi": the name on
+    # the book; the real one stays in header_author, where search finds it.
+    author = re.sub(r"\s*--\s*Pseudonym of\b.*$", "", author)
+    # "George Gordon Byron, Baron Byron" -> "George Gordon Byron".
+    author = re.sub(r",\s*Baron \w+\s*$", "", author)
     # "T. (Tobias) Smollett" -> "Tobias Smollett": the bare initial is the name.
     author = re.sub(r"^([A-Z])\.\s*\(([^)\s]+)\)\s*", r"\2 ", author)
     # Expansions and pseudonyms: "(Howard Phillips)", "(AKA Laurence Hope)".
@@ -130,23 +177,33 @@ def normalize_author(author: str) -> str:
     return author
 
 
+DERIVED_KEYS = ("header_title", "header_author", "full_title", "rank")
+
+
 def normalize_book(book: dict, overrides: dict | None = None) -> dict:
-    """The book with its title and author normalized, every other field and
+    """The book with its display title and author, every other field and
     the key order kept. Starts from the header spelling when present, so a
-    re-run over an already-built catalog gives the same result."""
+    re-run over an already-built catalog gives the same result. The
+    normalized title goes in full_title when the display title is shorter
+    (or overridden), and an override's rank is copied in."""
     raw_title = book.get("header_title", book["title"])
     raw_author = book.get("header_author", book["author"])
     override = (overrides or {}).get(str(book["gutenberg_id"]), {})
-    title = override.get("title", normalize_title(raw_title))
+    full_title = normalize_title(raw_title)
+    title = override.get("title", display_title(full_title))
     author = override.get("author", normalize_author(raw_author))
 
-    out = {k: v for k, v in book.items() if k not in ("header_title", "header_author")}
+    out = {k: v for k, v in book.items() if k not in DERIVED_KEYS}
     out["title"] = title
     out["author"] = author
     if title != raw_title:
         out["header_title"] = raw_title
     if author != raw_author:
         out["header_author"] = raw_author
+    if title != full_title:
+        out["full_title"] = full_title
+    if "rank" in override:
+        out["rank"] = override["rank"]
     return out
 
 
@@ -163,6 +220,8 @@ def title_violations(title: str) -> list[str]:
             problems.append(f"lowercase major word '{word.text}' in '{title}'")
         elif word.text[:1].islower() and word.starts_segment:
             problems.append(f"lowercase word '{word.text}' starts a segment in '{title}'")
+    if len(title) > MAX_TITLE_LENGTH:
+        problems.append(f"longer than {MAX_TITLE_LENGTH} characters ({len(title)}): '{title}'")
     return problems
 
 
@@ -170,7 +229,7 @@ def author_violations(author: str) -> list[str]:
     problems: list[str] = []
     if not author[:1].isupper():
         problems.append(f"does not start with an uppercase letter: '{author}'")
-    found = [m for m in ("(", ")", "AKA", ", active", ", et al") if m in author]
+    found = [m for m in ("(", ")", "AKA", ", active", ", et al", "--", "Pseudonym") if m in author]
     if found:
         problems.append(f"contains {', '.join(repr(m) for m in found)}: '{author}'")
     return problems
@@ -196,7 +255,8 @@ def lint(books: list[dict]) -> list[str]:
     return lines
 
 
-def load_overrides(path: Path = OVERRIDES_PATH) -> dict:
+def load_overrides(path: Path | None = None) -> dict:
+    path = path or OVERRIDES_PATH
     try:
         overrides = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -211,6 +271,9 @@ def load_overrides(path: Path = OVERRIDES_PATH) -> dict:
         for key in ("title", "author"):
             if key in override and (not isinstance(override[key], str) or not override[key].strip()):
                 raise ValueError(f"{path}: #{book_id} {key} must be a non-empty string")
+        rank = override.get("rank")
+        if "rank" in override and (not isinstance(rank, int) or isinstance(rank, bool) or rank < 1):
+            raise ValueError(f"{path}: #{book_id} rank must be a positive integer")
     return overrides
 
 

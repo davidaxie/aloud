@@ -21,6 +21,11 @@ struct MacClassicsView: View {
     /// than observed: the store republishes on every progress save, and only
     /// this set matters here.
     @State private var libraryIDs: Set<Int> = []
+    /// The classics whose library copy (the one a row opens) is finished.
+    @State private var finishedIDs: Set<Int> = []
+    /// The classic the player is voicing, if any: one value followed, not
+    /// the controller, which republishes many times a second.
+    @State private var playingClassicID: Int?
     @State private var isSearchFocused = false
     @FocusState private var focusedRow: Int?
     /// Whose ↓ handoff is offered: this screen's, until it goes.
@@ -88,6 +93,11 @@ struct MacClassicsView: View {
         .onReceive(model.documentStore.$documents) { documents in
             let ids = Set(documents.compactMap(\.gutenbergID))
             if ids != libraryIDs { libraryIDs = ids }
+            let finished = BookshelfCatalog.finishedClassicIDs(in: documents)
+            if finished != finishedIDs { finishedIDs = finished }
+        }
+        .onReceive(BookshelfCatalog.playingClassicIDs(of: model.playback)) { id in
+            if id != playingClassicID { playingClassicID = id }
         }
         // ⌘F (Edit ▸ Find) names this field; the request is spent once read.
         .onChange(of: ui.searchFocus, initial: true) { _, target in
@@ -142,9 +152,12 @@ struct MacClassicsView: View {
     private func row(_ book: BookshelfBook) -> some View {
         let inLibrary = libraryIDs.contains(book.id)
         let adding = importer.addingClassicID == book.id
+        let finished = finishedIDs.contains(book.id)
+        let playing = playingClassicID == book.id
         let label = Self.rowLabel(for: book, rate: model.globalRate)
         return Button { listen(to: book) } label: {
-            MacClassicsRow(book: book, rate: model.globalRate, inLibrary: inLibrary, adding: adding)
+            MacClassicsRow(book: book, rate: model.globalRate, inLibrary: inLibrary, adding: adding,
+                           finished: finished, playing: playing)
         }
         .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.sm))
         .focused($focusedRow, equals: book.id)
@@ -153,7 +166,8 @@ struct MacClassicsView: View {
             return .handled
         }
         .accessibilityLabel(label)
-        .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
+        .accessibilityValue(Self.rowValue(inLibrary: inLibrary, adding: adding,
+                                          finished: finished, playing: playing))
         .accessibilityHint("Opens and starts reading aloud")
         .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
     }
@@ -174,13 +188,28 @@ struct MacClassicsView: View {
             + ListeningEstimate.aboutPhrase(minutes: rowMinutes(of: book, rate: rate))
     }
 
-    /// The row's trailing column: "Adding…", "In library", else the length
-    /// at the app-wide speed ("7 min" at 2×).
+    /// The row's trailing column, in the iPhone's order: the add in
+    /// progress, the copy the player is voicing, a finished copy, the
+    /// library copy, else the length at the app-wide speed (7 min at 2×).
     nonisolated static func rowStatus(for book: BookshelfBook, rate: Double,
-                                      inLibrary: Bool, adding: Bool) -> String {
+                                      inLibrary: Bool, adding: Bool,
+                                      finished: Bool = false, playing: Bool = false) -> String {
         if adding { return "Adding\u{2026}" }
+        if playing { return "Playing" }
+        if finished { return "Finished" }
         if inLibrary { return "In library" }
         return ListeningEstimate.phrase(minutes: rowMinutes(of: book, rate: rate))
+    }
+
+    /// The row's spoken value: its status, and nothing for a book not yet
+    /// added (the label already says its length).
+    nonisolated static func rowValue(inLibrary: Bool, adding: Bool,
+                                     finished: Bool = false, playing: Bool = false) -> String {
+        if adding { return "Adding" }
+        if playing { return "Playing" }
+        if finished { return "Finished" }
+        if inLibrary { return "In library" }
+        return ""
     }
 
     /// The only add path. The importer adds the book if needed (or finds the
@@ -231,6 +260,10 @@ private struct MacClassicsRow: View {
     let rate: Double
     let inLibrary: Bool
     let adding: Bool
+    let finished: Bool
+    /// The player is voicing the library copy: the status reads in the
+    /// accent text colour behind a speaker glyph VoiceOver skips.
+    let playing: Bool
 
     /// Fits "In library" and "13 hr 20 min" in the caption style.
     private static let statusWidth: CGFloat = 96
@@ -246,9 +279,8 @@ private struct MacClassicsRow: View {
                     .foregroundStyle(Theme.textMuted)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(status)
+            statusLine
                 .font(Theme.font(.caption))
-                .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
                 .frame(width: Self.statusWidth, alignment: .trailing)
         }
@@ -265,7 +297,23 @@ private struct MacClassicsRow: View {
     }
 
     private var status: String {
-        MacClassicsView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding)
+        MacClassicsView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding,
+                                  finished: finished, playing: playing)
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        if playing && !adding {
+            HStack(spacing: Theme.Space.xxs) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .accessibilityHidden(true)
+                Text(status)
+            }
+            .foregroundStyle(Theme.accentStrong)
+        } else {
+            Text(status)
+                .foregroundStyle(Theme.textMuted)
+        }
     }
 }
 

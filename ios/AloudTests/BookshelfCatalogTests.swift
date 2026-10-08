@@ -39,6 +39,46 @@ final class BookshelfCatalogTests: XCTestCase {
         }
     }
 
+    /// R1-35, tools/catalog_normalize.py MAX_TITLE_LENGTH: the shelf shows a
+    /// display title, never a subtitle-long one.
+    func testNoTitleIsLongerThanTheShelfShows() {
+        let long = books.filter { $0.title.count > Self.maxTitleLength }
+            .map { "#\($0.gutenbergID) (\($0.title.count)) '\($0.title)'" }
+        XCTAssertEqual(long, [], long.joined(separator: "\n"))
+    }
+
+    /// R1-35, tools/catalog_normalize.py author_violations: no pen name's
+    /// gloss in the display author.
+    func testNoAuthorCarriesAPseudonymGloss() {
+        let glossed = books.filter { $0.author.contains("--") || $0.author.contains("Pseudonym") }
+            .map { "#\($0.gutenbergID) '\($0.author)'" }
+        XCTAssertEqual(glossed, [], glossed.joined(separator: "\n"))
+    }
+
+    /// R1-35: the critique's titles and authors read as a curated shelf,
+    /// where the shipped catalog has those books.
+    func testTheCuratedTitlesAndAuthorsShip() {
+        let expected: [(id: Int, title: String?, author: String?)] = [
+            (84, "Frankenstein", nil), (1063, "The Cask of Amontillado", nil),
+            (41537, "The Inferno", nil), (24739, "Bidwell's Travels", nil),
+            (15399, "The Interesting Narrative of the Life of Olaudah Equiano", nil),
+            (44646, "The Memoirs of the Duchesse de Dino", nil),
+            (500, nil, "Carlo Collodi"), (2680, nil, "Marcus Aurelius"), (44608, nil, "Babur"),
+        ]
+        let byID = Dictionary(books.map { ($0.gutenbergID, $0) }, uniquingKeysWith: { first, _ in first })
+        for item in expected {
+            guard let book = byID[item.id] else { continue }
+            if let title = item.title { XCTAssertEqual(book.title, title, "#\(item.id)") }
+            if let author = item.author { XCTAssertEqual(book.author, author, "#\(item.id)") }
+        }
+        if let frankenstein = byID[84] {
+            XCTAssertEqual(frankenstein.fullTitle, "Frankenstein; or, The Modern Prometheus")
+        }
+    }
+
+    /// tools/catalog_normalize.py MAX_TITLE_LENGTH; the two must match.
+    private static let maxTitleLength = 60
+
     func testSectionsPartitionCatalog() {
         let shelves = BookshelfIndex(books: books).shelves
         let shelved = shelves.flatMap(\.books).map(\.gutenbergID)

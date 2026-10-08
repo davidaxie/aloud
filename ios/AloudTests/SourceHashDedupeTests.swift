@@ -447,6 +447,61 @@ final class SourceHashDedupeTests: XCTestCase {
         XCTAssertEqual(cached.extractorVersion, DocContent.currentExtractorVersion)
     }
 
+    /// R1-33: an open reads its cache off the main actor. A refresh that
+    /// commits while that read is out (the same file added again) wrote a
+    /// newer cache and carried the place; the open returns the newer
+    /// content, so the reconcile after keeps the place instead of resetting
+    /// the book to the old text's start.
+    func testACacheWriteDuringTheOffMainReadReturnsTheNewerContentAndKeepsThePlace() async throws {
+        let store = makeStore()
+        let picked = try file(Data(novel.utf8), name: "\(UUID().uuidString)-novel.txt")
+        let added = try await store.importText(title: "Nineteen", from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        let current = try await store.content(for: added)
+        // As an older build shelved it: its cache unstamped, its place in
+        // the older text.
+        try Self.encoder.encode(content(olderSentences, hash: "older-extractor"))
+            .write(to: DocumentStore.contentCacheURL(for: added.id))
+        _ = try await store.content(for: added)
+        store.saveProgress(id: added.id, sentence: 2, fraction: 0.5)
+        // The same file added again, committing while the open's read is out.
+        var refreshed = false
+        store.didReadContentCache = { [store] in
+            store.didReadContentCache = {}
+            _ = try? await store.importText(title: "Nineteen", from: picked)
+            refreshed = true
+        }
+
+        let opened = try await store.content(for: try XCTUnwrap(store.documents.first { $0.id == added.id }))
+
+        XCTAssertTrue(refreshed, "fixture: the refresh landed during the read")
+        XCTAssertEqual(opened.contentHash, current.contentHash, "the open gets the newer cache")
+        let live = try XCTUnwrap(store.documents.first { $0.id == added.id })
+        XCTAssertEqual(live.contentHash, current.contentHash, "the refresh stands")
+        let winston = try XCTUnwrap(current.sentences.firstIndex { $0.text.hasPrefix("Winston") })
+        XCTAssertEqual(live.progressSentence, winston, "its carried place too, not the start")
+        XCTAssertGreaterThan(live.progressFraction, 0)
+    }
+
+    /// R1-33: an open with no cache extracts, and writes the cache off the
+    /// main actor before it returns; the next open reads it.
+    func testAnOpenWithoutACacheWritesOneBeforeItReturns() async throws {
+        let store = makeStore()
+        let picked = try file(Data(novel.utf8), name: "\(UUID().uuidString)-novel.txt")
+        let added = try await store.importText(title: "Nineteen", from: picked)
+        addTeardownBlock { @MainActor in try? store.delete(added) }
+        let cacheURL = DocumentStore.contentCacheURL(for: added.id)
+        try FileManager.default.removeItem(at: cacheURL)
+
+        let opened = try await store.content(for: added)
+
+        let cached = try Self.decoder.decode(DocContent.self, from: Data(contentsOf: cacheURL))
+        XCTAssertEqual(cached.contentHash, opened.contentHash)
+        XCTAssertEqual(cached.extractorVersion, DocContent.currentExtractorVersion)
+        let reopened = try await store.content(for: added)
+        XCTAssertEqual(reopened.contentHash, opened.contentHash)
+    }
+
     /// K023: a refresh declined because the place isn't in the new text
     /// left the cache unstamped, so every later add of the same file
     /// extracted the whole book again only to keep the old one. Now the old

@@ -12,21 +12,64 @@ final class ClassicsLintTests: XCTestCase {
 
     private static let path = "Bookshelf/BookshelfView.swift"
 
-    /// P051: the Search key goes through the row's own path, so the play
-    /// haptic and the importer's busy guard apply, and nothing happens
-    /// without a result.
-    func testTheSearchKeyTakesTheTopResultThroughTheRowsPath() throws {
+    /// P051, R1-32: the Search key plays a search's only book through the
+    /// row's own path, so the play haptic and the importer's busy guard
+    /// apply. Several books, or none, only lower the keyboard: never the
+    /// first of a list the listener hasn't seen, and never a dismissed
+    /// search or a title-prefix guess.
+    func testTheSearchKeyPlaysOnlyASearchsOnlyBook() throws {
         let s = try SourceTree.sources(only: [Self.path])
         let view = try XCTUnwrap(s[Self.path])
         let searchable = try XCTUnwrap(view.range(of: ".searchable(text: $query"))
         let submit = try XCTUnwrap(view.range(of: ".onSubmit(of: .search) { openTopResult() }"),
-                                   "the Search key should open the top result")
+                                   "the Search key should go through openTopResult")
         XCTAssertLessThan(searchable.lowerBound, submit.lowerBound, "the submit follows the search field")
+        XCTAssertTrue(view.contains(".modifier(SearchKeyboardDismissal(requests: keyboardDismissals))"),
+                      "the field's keyboard can be lowered")
 
-        let body = try region(of: view, from: "private func openTopResult() {", length: 200)
-        XCTAssertTrue(body.contains("guard let first = results?.first else { return }"),
-                      "no results (or the shelves) do nothing: \(body)")
-        XCTAssertTrue(body.contains("listen(to: first)"), "the tap's path, with its haptic and guard: \(body)")
+        let body = try region(of: view, from: "private func openTopResult() {", length: 260)
+        XCTAssertTrue(body.contains("guard let results, results.count == 1, let only = results.first else {"),
+                      "only a single result plays: \(String(body))")
+        XCTAssertTrue(body.contains("keyboardDismissals += 1"), "otherwise the keyboard goes: \(String(body))")
+        XCTAssertTrue(body.contains("listen(to: only)"), "the tap's path, with its haptic and guard: \(String(body))")
+        XCTAssertFalse(body.contains("results?.first"), "never the first of several: \(String(body))")
+        XCTAssertFalse(view.contains("dismissSearch"), "the query and its results stay")
+        XCTAssertFalse(view.contains("hasPrefix"), "no title-prefix rule picks a book")
+
+        let dismissal = try region(of: view, from: "private struct SearchKeyboardDismissal: ViewModifier {", length: 900)
+        XCTAssertTrue(dismissal.contains("if #available(iOS 18.0, *) {"), String(dismissal))
+        XCTAssertTrue(dismissal.contains(".searchFocused($focused)"), String(dismissal))
+        XCTAssertTrue(dismissal.contains("focused = false"), String(dismissal))
+        XCTAssertTrue(dismissal.contains("#selector(UIResponder.resignFirstResponder)"), String(dismissal))
+    }
+
+    /// R1-36: VoiceOver's magic tap on Classics plays or pauses the loaded
+    /// book, with the Library's haptic, and does nothing with none loaded.
+    func testMagicTapTogglesTheLoadedBook() throws {
+        let s = try SourceTree.sources(only: [Self.path])
+        let view = try XCTUnwrap(s[Self.path])
+        XCTAssertTrue(view.contains(".accessibilityAction(.magicTap) { magicTap() }"))
+        let body = try region(of: view, from: "private func magicTap() {", length: 300)
+        XCTAssertTrue(body.contains("guard playback.document != nil else { return }"), String(body))
+        XCTAssertTrue(body.contains("TransportHaptics.emitToggle(isActive: playback.isActive)"), String(body))
+        XCTAssertTrue(body.contains("playback.togglePlayPause()"), String(body))
+        let haptic = try XCTUnwrap(body.range(of: "emitToggle"))
+        let toggle = try XCTUnwrap(body.range(of: "togglePlayPause"))
+        XCTAssertLessThan(haptic.lowerBound, toggle.lowerBound, "the haptic is chosen before the toggle")
+    }
+
+    /// R1-36: the rows follow one value, the classic being voiced, through
+    /// the shared publisher; the screen never observes the controller, which
+    /// would redraw every row many times a second.
+    func testTheRowsFollowThePlayingClassicNotTheController() throws {
+        let s = try SourceTree.sources(only: [Self.path])
+        let view = try XCTUnwrap(s[Self.path])
+        XCTAssertTrue(view.contains(".onReceive(BookshelfCatalog.playingClassicIDs(of: model.playback))"))
+        XCTAssertTrue(view.contains("playing: playingClassicID == book.id"))
+        XCTAssertFalse(view.contains("@ObservedObject"), "no controller observed")
+        XCTAssertFalse(view.contains("model.playback.$"), "only the shared, de-duplicated publisher")
+        XCTAssertTrue(view.contains("finished = BookshelfCatalog.finishedClassicIDs(in: documents)"),
+                      "the finished rule is the shared one")
     }
 
     /// P052: the headings draw in capitals, like the shelf's other eyebrows,
@@ -49,11 +92,21 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertTrue(view.contains("@ScaledMetric(relativeTo: .caption) private var statusWidth = BookshelfView.statusColumnWidth"))
         let column = try region(of: view, from: "HStack(alignment: .firstTextBaseline", length: 800)
         XCTAssertTrue(column.contains("detail(BookshelfView.rowByline(for: book))"), "the author under the title: \(column)")
-        XCTAssertTrue(column.contains("Text(BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding))"),
-                      "the trailing column always holds a status: \(column)")
+        XCTAssertTrue(column.contains("statusLine"), "the trailing column always holds a status: \(column)")
         XCTAssertTrue(column.contains(".font(Theme.font(.caption))"), String(column))
-        XCTAssertTrue(column.contains(".foregroundStyle(Theme.textMuted)"), String(column))
         XCTAssertTrue(column.contains(".frame(width: statusWidth, alignment: .trailing)"), String(column))
+        // R1-36: the status, muted, or Playing in the accent text colour
+        // behind a speaker glyph VoiceOver skips.
+        let status = try region(of: view, from: "private var status: String {", length: 900)
+        XCTAssertTrue(status.contains("BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding,"),
+                      String(status))
+        XCTAssertTrue(status.contains("finished: finished, playing: playing)"), String(status))
+        let line = try region(of: view, from: "private var statusLine: some View {", length: 500)
+        let glyph = try XCTUnwrap(line.range(of: "Image(systemName: \"speaker.wave.2.fill\")"), String(line))
+        XCTAssertTrue(line[glyph.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                        .hasPrefix(".accessibilityHidden(true)"), "the glyph is hidden: \(String(line))")
+        XCTAssertTrue(line.contains(".foregroundStyle(Theme.accentStrong)"), String(line))
+        XCTAssertTrue(line.contains(".foregroundStyle(Theme.textMuted)"), String(line))
         XCTAssertTrue(view.contains("stacked: dynamicTypeSize.isAccessibilitySize"), "the row stacks at AX sizes")
         XCTAssertTrue(view.contains(".buttonStyle(ShelfRowButtonStyle())"), "rows keep their surface2 press")
     }
@@ -70,7 +123,7 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertEqual(BookshelfView.rowHint(finished: true), "", "a finished copy opens paused")
         XCTAssertTrue(grid.contains(".accessibilityHint(document.isFinished ? \"\" : \"\(hint)\")"),
                       "the grid card's hint should match the Classics row's")
-        XCTAssertTrue(view.contains(".accessibilityHint(BookshelfView.rowHint(finished: finished))"))
+        XCTAssertTrue(view.contains(".accessibilityHint(BookshelfView.rowHint(finished: finished, playing: playing))"))
         XCTAssertTrue(view.contains("finished: finishedIDs.contains(book.id)"), "the row knows its copy is finished")
     }
 

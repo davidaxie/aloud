@@ -127,6 +127,71 @@ final class BookshelfUITest: XCTestCase {
         XCTAssertEqual(libraryCount(app), 1, "Opening an added classic must not add a second copy")
     }
 
+    /// R1-32: with several books found the Search key plays none of them.
+    /// It lowers the keyboard and leaves the query and every result on
+    /// screen, so the listener picks one; nothing is added. Muted, and
+    /// autoplay stays suppressed.
+    func testTheSearchKeyWithSeveralResultsOnlyLowersTheKeyboard() {
+        let app = XCUIApplication.aloud(["-uitest-seed-classic", "64317", "-uitest-reset-library"])
+        app.launch()
+        let seeded = app.buttons.matching(NSPredicate(format: "identifier IN %@",
+                                                      ["library.card", "library.continue"])).firstMatch
+        XCTAssertTrue(seeded.waitForExistence(timeout: 15), "The seeded Great Gatsby should be on the shelf")
+        let before = libraryCount(app)
+        openBookshelfFromAddMenu(app)
+
+        search(app, for: "holmes")
+        let found = rows(app)
+        XCTAssertTrue(found.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "fixture: the keyboard is up while typing")
+        pressSearchKey(app)
+
+        XCTAssertFalse(app.staticTexts["reader.title"].firstMatch.waitForExistence(timeout: 2),
+                       "With several results the Search key opens nothing")
+        XCTAssertTrue(waitForNonExistence(of: app.keyboards.firstMatch, timeout: 5),
+                      "The Search key lowers the keyboard")
+        XCTAssertEqual(found.count, 4, "Every Sherlock Holmes book stays listed")
+        for index in 0..<found.count {
+            XCTAssertTrue(found.element(boundBy: index).isHittable, "Row \(index) should be reachable")
+        }
+        XCTAssertEqual(app.searchFields.firstMatch.value as? String, "holmes", "The query stays, to refine")
+        XCTAssertTrue(app.scrollViews["bookshelf.list"].firstMatch.exists, "Classics stays on screen")
+
+        for _ in 0..<3 where !seeded.waitForExistence(timeout: 2) {
+            tapSystemBack(app)
+        }
+        XCTAssertTrue(seeded.waitForExistence(timeout: 10), "The Library should show again")
+        XCTAssertEqual(libraryCount(app), before, "Nothing was added")
+    }
+
+    /// R1-36: back on Classics from the reader of the book playing, its row
+    /// says so. Muted; allowAutoplay so it reaches playing, and the temp
+    /// model dir keeps the System voice, which starts fast. Keeps a
+    /// screenshot of the row.
+    func testThePlayingClassicsRowSaysPlaying() {
+        let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-temp-model-dir"],
+                                        allowAutoplay: true)
+        app.launch()
+        openBookshelfFromEmptyLibrary(app)
+        search(app, for: "pride")
+        let row = app.buttons["bookshelf.row.1342"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        let play = app.buttons["player.play"].firstMatch
+        XCTAssertTrue(play.waitForExistence(timeout: 15), "The reader should open")
+        XCTAssertTrue(waitForValue("playing", of: play, timeout: 60),
+                      "One tap should add, open and play, got '\(stringValue(of: play))'")
+
+        tapSystemBack(app)
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "Classics should show again")
+        XCTAssertTrue(waitForValue("Playing", of: row, timeout: 5),
+                      "The row of the book playing should say so, got '\(stringValue(of: row))'")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "classics-playing-row"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     func testSearchPrideOneTapPlays() {
         // allowAutoplay: one tap must reach playing (still muted). The temp
         // model dir keeps a seeded Kokoro model out, so the System voice starts fast.

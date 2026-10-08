@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import os
 
@@ -14,6 +15,14 @@ struct BookshelfBook: Codable, Identifiable, Hashable {
     /// against these.
     var headerTitle: String? = nil
     var headerAuthor: String? = nil
+    /// The normalized title before the catalog shortened it for the shelf
+    /// (no alternative title, no generic subtitle), present only when it
+    /// did; libraries made before the shortening are renamed from it once
+    /// (`DocumentStore.retitlingClassics`).
+    var fullTitle: String? = nil
+    /// The book's place at the head of its shelf, 1 first; unranked books
+    /// follow in catalog order (`BookshelfIndex.shelves(rate:)`).
+    var rank: Int? = nil
 
     var id: Int { gutenbergID }
 
@@ -34,6 +43,8 @@ struct BookshelfBook: Codable, Identifiable, Hashable {
         case title, author, year, file, words
         case headerTitle = "header_title"
         case headerAuthor = "header_author"
+        case fullTitle = "full_title"
+        case rank
     }
 }
 
@@ -76,9 +87,9 @@ struct BookshelfShelf: Identifiable {
 struct BookshelfIndex {
 
     let books: [BookshelfBook]
-    /// Sections in enum order, books in catalog order, empty sections
-    /// omitted, at 1×; the screens shelve at the app-wide speed
-    /// (`shelves(rate:)`).
+    /// Sections in enum order, ranked books first, then the rest in catalog
+    /// order, empty sections omitted, at 1×; the screens shelve at the
+    /// app-wide speed (`shelves(rate:)`).
     let shelves: [BookshelfShelf]
 
     private let keys: [SearchKey]
@@ -154,14 +165,20 @@ struct BookshelfIndex {
         rate == 1 ? shelves : Self.shelve(books, rate: rate)
     }
 
+    /// Each shelf opens with its ranked books, by rank (the recognisable
+    /// classics the catalog puts first), then the rest in catalog order.
     private static func shelve(_ books: [BookshelfBook], rate: Double) -> [BookshelfShelf] {
-        // Dictionary(grouping:) keeps each group in sequence order.
-        let grouped = Dictionary(grouping: books) {
-            BookshelfSection.section(forMinutes: $0.listeningMinutes(rate: rate))
+        let grouped = Dictionary(grouping: books.indices) {
+            BookshelfSection.section(forMinutes: books[$0].listeningMinutes(rate: rate))
         }
         return BookshelfSection.allCases.compactMap { section in
-            guard let books = grouped[section], !books.isEmpty else { return nil }
-            return BookshelfShelf(section: section, books: books)
+            guard let indices = grouped[section], !indices.isEmpty else { return nil }
+            let ordered = indices.sorted { (a: Int, b: Int) -> Bool in
+                let first: (rank: Int, index: Int) = (books[a].rank ?? Int.max, a)
+                let second: (rank: Int, index: Int) = (books[b].rank ?? Int.max, b)
+                return first < second
+            }
+            return BookshelfShelf(section: section, books: ordered.map { books[$0] })
         }
     }
 
@@ -336,5 +353,42 @@ enum BookshelfCatalog {
     /// Any one entry, read as nothing.
     private struct Skipped: Decodable {
         init(from decoder: Decoder) throws {}
+    }
+}
+
+// MARK: - The library's copies
+
+/// What a Classics row knows of the book's library copy, the same on both
+/// apps: whether the copy a row opens is finished, and whether the player
+/// is voicing it.
+extension BookshelfCatalog {
+
+    /// The classics whose library copy is finished. The copy is the one a
+    /// row opens: the first in store order, as `DocumentStore` finds it.
+    static func finishedClassicIDs(in documents: [LibraryDocument]) -> Set<Int> {
+        var seen: Set<Int> = []
+        var finished: Set<Int> = []
+        for document in documents {
+            guard let id = document.gutenbergID, seen.insert(id).inserted else { continue }
+            if document.isFinished { finished.insert(id) }
+        }
+        return finished
+    }
+
+    /// The classic the player is voicing: its loaded book's, while it plays
+    /// or synthesizes ahead; nil when paused, stopped, or not a classic.
+    static func playingClassicID(of document: LibraryDocument?, status: PlayerStatus) -> Int? {
+        status == .playing || status == .buffering ? document?.gutenbergID : nil
+    }
+
+    /// `playingClassicID` as it changes, and only then: a Classics screen
+    /// follows this one value, never the controller itself, which
+    /// republishes many times a second and would redraw every row.
+    @MainActor
+    static func playingClassicIDs(of playback: PlaybackController) -> AnyPublisher<Int?, Never> {
+        playback.$document.combineLatest(playback.$status)
+            .map { playingClassicID(of: $0, status: $1) }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
     }
 }

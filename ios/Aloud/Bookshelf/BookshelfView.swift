@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The bundled classics (R9), pushed full height on the Library's stack.
 /// Rows are the action: one tap adds the book if needed, opens it and plays
@@ -19,6 +20,12 @@ struct BookshelfView: View {
     /// The classics whose library copy is finished: those rows open paused,
     /// so their hint promises nothing, as a finished grid card's doesn't.
     @State private var finishedIDs: Set<Int> = []
+    /// The classic the player is voicing, if any. One value followed, not
+    /// the controller, which republishes many times a second.
+    @State private var playingClassicID: Int?
+    /// Bumped by a Search key that opened nothing: the keyboard goes, the
+    /// query and its results stay.
+    @State private var keyboardDismissals = 0
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,17 +46,22 @@ struct BookshelfView: View {
             .accessibilityIdentifier("bookshelf.list")
             // Each keystroke reshapes the list; start it from the top.
             .onChange(of: query) { proxy.scrollTo("top", anchor: .top) }
+            // The loaded book plays or pauses from anywhere on the list,
+            // as on the Library (R12b).
+            .accessibilityAction(.magicTap) { magicTap() }
         }
         .background(Theme.bg.ignoresSafeArea())
         .scrollDismissesKeyboard(.immediately)
         .modifier(ShelfScrollEdge(showsScrollRule: true))
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                     prompt: Text("Title or author"))
+        .modifier(SearchKeyboardDismissal(requests: keyboardDismissals))
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
-        // The keyboard's Search key takes the top result, as a tap on it
-        // would: the same haptic and busy guard. With nothing found it does
-        // nothing; the no-results line already says why.
+        // The keyboard's Search key plays a search's only book, as a tap on
+        // its row would: the same haptic and busy guard. With several books
+        // found, or none, it only lowers the keyboard, so the list it hid can
+        // be read and the query stays to refine.
         .onSubmit(of: .search) { openTopResult() }
         .onChange(of: query, initial: true) {
             let found = model.bookshelfIndex.search(query)
@@ -63,8 +75,11 @@ struct BookshelfView: View {
         .onReceive(model.documentStore.$documents) { documents in
             let ids = Set(documents.compactMap(\.gutenbergID))
             if ids != libraryIDs { libraryIDs = ids }
-            let finished = Self.finishedClassicIDs(in: documents)
+            let finished = BookshelfCatalog.finishedClassicIDs(in: documents)
             if finished != finishedIDs { finishedIDs = finished }
+        }
+        .onReceive(BookshelfCatalog.playingClassicIDs(of: model.playback)) { id in
+            if id != playingClassicID { playingClassicID = id }
         }
         .navigationTitle("Classics")
         .navigationBarTitleDisplayMode(.inline)
@@ -135,7 +150,8 @@ struct BookshelfView: View {
                           inLibrary: libraryIDs.contains(book.id),
                           adding: importer.addingClassicID == book.id,
                           finished: finishedIDs.contains(book.id),
-                          stacked: dynamicTypeSize.isAccessibilitySize) { listen(to: book) }
+                          stacked: dynamicTypeSize.isAccessibilitySize,
+                          playing: playingClassicID == book.id) { listen(to: book) }
     }
 
     // MARK: Row copy
@@ -161,13 +177,29 @@ struct BookshelfView: View {
     }
 
     /// The side-by-side row's trailing column, never empty, so the lengths
-    /// line up down the list: the add in progress, else the library copy,
-    /// else the length at the app-wide speed.
+    /// line up down the list: the add in progress, else the copy the player
+    /// is voicing, else a finished copy, else the library copy, else the
+    /// length at the app-wide speed.
     nonisolated static func rowStatus(for book: BookshelfBook, rate: Double,
-                                      inLibrary: Bool, adding: Bool) -> String {
+                                      inLibrary: Bool, adding: Bool,
+                                      finished: Bool = false, playing: Bool = false) -> String {
         if adding { return "Adding\u{2026}" }
+        if playing { return "Playing" }
+        if finished { return "Finished" }
         if inLibrary { return "In library" }
         return ListeningEstimate.phrase(minutes: rowMinutes(of: book, rate: rate))
+    }
+
+    /// The row's spoken value: the trailing column's status, in the same
+    /// order, and nothing for a book not yet added (its length is already
+    /// in the label).
+    nonisolated static func rowValue(inLibrary: Bool, adding: Bool,
+                                     finished: Bool = false, playing: Bool = false) -> String {
+        if adding { return "Adding" }
+        if playing { return "Playing" }
+        if finished { return "Finished" }
+        if inLibrary { return "In library" }
+        return ""
     }
 
     /// The trailing column's width at the default text size; it scales with
@@ -178,21 +210,11 @@ struct BookshelfView: View {
     nonisolated static let statusColumnWidth: CGFloat = 98
 
     /// What the row does, as the grid cards say it. A finished library copy
-    /// opens paused at its end, so it promises nothing.
-    nonisolated static func rowHint(finished: Bool) -> String {
-        finished ? "" : "Opens and starts reading aloud"
-    }
-
-    /// The classics whose library copy is finished. The copy is the one a
-    /// row opens: the first in store order, as `DocumentStore` finds it.
-    nonisolated static func finishedClassicIDs(in documents: [LibraryDocument]) -> Set<Int> {
-        var seen: Set<Int> = []
-        var finished: Set<Int> = []
-        for document in documents {
-            guard let id = document.gutenbergID, seen.insert(id).inserted else { continue }
-            if document.isFinished { finished.insert(id) }
-        }
-        return finished
+    /// opens paused at its end, so it promises nothing; the copy already
+    /// playing goes on as it is, so the row only brings up its reader.
+    nonisolated static func rowHint(finished: Bool, playing: Bool = false) -> String {
+        if playing { return "Opens the reader" }
+        return finished ? "" : "Opens and starts reading aloud"
     }
 
     /// "The Cask of Amontillado, by Edgar Allan Poe, about 7 minutes" at 2×.
@@ -216,10 +238,46 @@ struct BookshelfView: View {
         importer.addClassic(book)
     }
 
-    /// The keyboard's Search key: the top result, through the tap's path.
+    /// The keyboard's Search key: a search's only book, through the tap's
+    /// path. Several books, or none, keep the query and the list, and only
+    /// lower the keyboard.
     private func openTopResult() {
-        guard let first = results?.first else { return }
-        listen(to: first)
+        guard let results, results.count == 1, let only = results.first else {
+            keyboardDismissals += 1
+            return
+        }
+        listen(to: only)
+    }
+
+    /// VoiceOver's two-finger double tap: the loaded book plays or pauses,
+    /// with the Library's haptic. Nothing when no book is loaded.
+    private func magicTap() {
+        let playback = model.playback
+        guard playback.document != nil else { return }
+        TransportHaptics.emitToggle(isActive: playback.isActive)
+        playback.togglePlayPause()
+    }
+}
+
+/// Lowers the search field's keyboard each time `requests` changes, keeping
+/// its text: through the search field's focus where SwiftUI offers it, else
+/// by resigning the first responder.
+private struct SearchKeyboardDismissal: ViewModifier {
+    let requests: Int
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .searchFocused($focused)
+                .onChange(of: requests) { focused = false }
+        } else {
+            content
+                .onChange(of: requests) {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                    to: nil, from: nil, for: nil)
+                }
+        }
     }
 }
 
@@ -237,16 +295,20 @@ struct ClassicsRowButton: View {
     /// The library copy is finished, so the row opens it paused.
     let finished: Bool
     let stacked: Bool
+    /// The player is voicing the library copy, so the row only opens it.
+    var playing: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            BookshelfRow(book: book, rate: rate, inLibrary: inLibrary, adding: adding, stacked: stacked)
+            BookshelfRow(book: book, rate: rate, inLibrary: inLibrary, adding: adding,
+                         finished: finished, playing: playing, stacked: stacked)
         }
         .buttonStyle(ShelfRowButtonStyle())
         .accessibilityLabel(BookshelfView.rowLabel(for: book, rate: rate))
-        .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
-        .accessibilityHint(BookshelfView.rowHint(finished: finished))
+        .accessibilityValue(BookshelfView.rowValue(inLibrary: inLibrary, adding: adding,
+                                                   finished: finished, playing: playing))
+        .accessibilityHint(BookshelfView.rowHint(finished: finished, playing: playing))
         .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
     }
 }
@@ -254,16 +316,18 @@ struct ClassicsRowButton: View {
 // MARK: - Row
 
 /// Text only: the title over the author, and a trailing column that always
-/// holds one status (the length, the library copy or the add in progress),
-/// so the lengths line up down the list. At accessibility sizes, where a
-/// trailing column would squeeze the title, the row stacks: the author and
-/// length share a line, and any status drops under them.
+/// holds one status (the length, the library copy, finished, playing, or the
+/// add in progress), so the lengths line up down the list. At accessibility
+/// sizes, where a trailing column would squeeze the title, the row stacks:
+/// the author and length share a line, and any status drops under them.
 private struct BookshelfRow: View {
     let book: BookshelfBook
     /// The app-wide speed the length is shown at.
     let rate: Double
     let inLibrary: Bool
     let adding: Bool
+    let finished: Bool
+    let playing: Bool
     let stacked: Bool
 
     @ScaledMetric(relativeTo: .caption) private var statusWidth = BookshelfView.statusColumnWidth
@@ -284,9 +348,8 @@ private struct BookshelfRow: View {
                         detail(BookshelfView.rowByline(for: book))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding))
+                    statusLine
                         .font(Theme.font(.caption))
-                        .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                         .frame(width: statusWidth, alignment: .trailing)
                 }
@@ -317,15 +380,37 @@ private struct BookshelfRow: View {
             .foregroundStyle(Theme.textMuted)
     }
 
+    private var status: String {
+        BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding,
+                                finished: finished, playing: playing)
+    }
+
+    /// The status in words, muted; the copy the player is voicing reads in
+    /// the accent text colour behind a speaker glyph, which VoiceOver skips
+    /// (the row's value already says it).
+    @ViewBuilder
+    private var statusLine: some View {
+        if playing && !adding {
+            HStack(spacing: Theme.Space.xxs) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .accessibilityHidden(true)
+                Text(status)
+            }
+            .foregroundStyle(Theme.accentStrong)
+        } else {
+            Text(status)
+                .foregroundStyle(Theme.textMuted)
+        }
+    }
+
     /// Words, not a spinner: it holds still under Reduce Motion and says
     /// what the row's spoken value says. The length is already on the line
     /// above it, so only a status shows here.
     @ViewBuilder
     private var stackedStatus: some View {
-        if adding || inLibrary {
-            Text(BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding))
+        if adding || playing || finished || inLibrary {
+            statusLine
                 .font(Theme.font(.subhead))
-                .foregroundStyle(Theme.textMuted)
                 .fixedSize()
         }
     }

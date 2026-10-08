@@ -19,7 +19,9 @@ final class DocumentStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     // v2: classics carry gutenbergID; v1 libraries are backfilled once.
-    private static let indexVersion = 2
+    // v3: classics added under a catalog title since shortened for the
+    // shelf take the shorter one, once (`retitlingClassics`).
+    private static let indexVersion = 3
     /// The version the loaded library.json carries, written back by every
     /// persist, so a v1 library is never stamped v2 before its backfill runs.
     private var schemaVersion = DocumentStore.indexVersion
@@ -52,8 +54,12 @@ final class DocumentStore: ObservableObject {
     /// Awaited just before a chapter backfill writes its cache
     /// (`backfillChapters`): the unit tests land a refresh there.
     var willWriteBackfill: @MainActor () async -> Void = {}
-    /// Bumped by each cache write a chapter backfill under way must not
-    /// undo: a refresh's, or a declined one's stamp.
+    /// Awaited just after an open reads its cache off the main actor
+    /// (`content(for:)`): the unit tests land a refresh there.
+    var didReadContentCache: @MainActor () async -> Void = {}
+    /// Bumped by each cache write a read under way off the main actor, or a
+    /// chapter backfill under way, must not undo: a refresh's, a declined
+    /// one's stamp, or a backfill's chapter map (`settledContentCache`).
     private var cacheWrites: [UUID: Int] = [:]
 
     /// `indexURL`, `saveInterval` and `notifications` are for the unit
@@ -288,23 +294,29 @@ final class DocumentStore: ObservableObject {
         return documents[index]
     }
 
-    // MARK: - Gutenberg backfill (library.json v1 → v2)
+    // MARK: - Gutenberg backfill (library.json v1 → v2 → v3)
 
-    /// One-shot migration: links classics added before v2 to their catalog
-    /// entry, then stamps the library v2. A no-op on v2, and with an empty
-    /// catalog (the library stays v1 and is retried next launch).
+    /// One-shot migrations, each once: links classics added before v2 to
+    /// their catalog entry, then gives classics added under a title the
+    /// catalog has since shortened the shelf's title (v3), and stamps the
+    /// library v3. A no-op on v3, and with an empty catalog (the library
+    /// keeps its version and is retried next launch).
     func backfillGutenbergIDsIfNeeded(catalog: [BookshelfBook]) {
-        guard schemaVersion < 2, !catalog.isEmpty else { return }
-        documents = Self.backfillingGutenbergIDs(in: documents, catalog: catalog)
-        schemaVersion = 2
+        guard schemaVersion < Self.indexVersion, !catalog.isEmpty else { return }
+        if schemaVersion < 2 {
+            documents = Self.backfillingGutenbergIDs(in: documents, catalog: catalog)
+        }
+        documents = Self.retitlingClassics(in: documents, catalog: catalog)
+        schemaVersion = Self.indexVersion
         try? persistIndex()
     }
 
     /// Links each unlinked text record with an author to the first catalog
     /// book whose author matches (catalog or Gutenberg-header spelling) and
-    /// whose title matches either spelling, or, for a renamed record, whose
-    /// word count matches. Only records still carrying the header spelling
-    /// get the normalized title or author; a user's rename is kept.
+    /// whose title matches any of its spellings, or, for a renamed record,
+    /// whose word count matches. Only records still carrying the header or
+    /// the full spelling get the shelf's title or author; a user's rename
+    /// is kept.
     nonisolated static func backfillingGutenbergIDs(in documents: [LibraryDocument],
                                                     catalog: [BookshelfBook]) -> [LibraryDocument] {
         documents.map { document in
@@ -314,14 +326,31 @@ final class DocumentStore: ObservableObject {
                 (author == book.author || author == book.headerAuthor)
                     && (document.title == book.title
                         || document.title == book.headerTitle
+                        || document.title == book.fullTitle
                         || (document.wordCount > 0 && document.wordCount == book.words))
             }
             guard let book = match else { return document }
             var linked = document
             linked.gutenbergID = book.gutenbergID
-            if document.title == book.headerTitle { linked.title = book.title }
+            if document.title == book.headerTitle || document.title == book.fullTitle { linked.title = book.title }
             if author == book.headerAuthor { linked.author = book.author }
             return linked
+        }
+    }
+
+    /// v3: each linked classic still titled as an earlier catalog had it
+    /// (its full title, before the shelf shortened it, or the Gutenberg
+    /// header's) takes the catalog's title now. Any other title is the
+    /// listener's own rename, and is kept.
+    nonisolated static func retitlingClassics(in documents: [LibraryDocument],
+                                              catalog: [BookshelfBook]) -> [LibraryDocument] {
+        let books = Dictionary(catalog.map { ($0.gutenbergID, $0) }, uniquingKeysWith: { first, _ in first })
+        return documents.map { document in
+            guard let id = document.gutenbergID, let book = books[id], document.title != book.title,
+                  document.title == book.fullTitle || document.title == book.headerTitle else { return document }
+            var retitled = document
+            retitled.title = book.title
+            return retitled
         }
     }
 
@@ -385,8 +414,13 @@ final class DocumentStore: ObservableObject {
 
     /// Returns extracted content, from cache when valid, re-extracting otherwise.
     /// A content-hash mismatch resets stored progress rather than misplacing it.
+    /// The cache is read and decoded off the main actor (a long book's is
+    /// megabytes); a refresh that wrote it meanwhile (`cacheWrites`) is read
+    /// again, so the reconcile after weighs the newer content and keeps the
+    /// place the refresh carried.
     func content(for document: LibraryDocument) async throws -> DocContent {
-        if var cached = Self.readContentCache(for: document.id) {
+        let id = document.id
+        if var cached = await settledContentCache(for: id) {
             if Self.needsChapterMap(cached, kind: document.kind) {
                 cached = await backfillChapters(cached, for: document)
             }
@@ -404,11 +438,20 @@ final class DocumentStore: ObservableObject {
         case .text:
             content = try await pipeline.extractText(fileURL: fileURL, title: document.title, progress: nil)
         }
-        // Best-effort: a book that extracted opens, on a full disk too, and
-        // is extracted again on its next open.
-        try? Self.writeContentCache(content, for: document.id)
+        // Best-effort, encoded and written off the main actor: a book that
+        // extracted opens, on a full disk too, and is extracted again on
+        // its next open.
+        await Task.detached(priority: .userInitiated) {
+            try? Self.writeContentCache(content, for: id)
+        }.value
         reconcile(document, against: content)
         return content
+    }
+
+    /// The cached content, read and decoded off the main actor; nil when
+    /// there is none or it doesn't decode.
+    private nonisolated static func loadContentCache(for id: UUID) async -> DocContent? {
+        await Task.detached(priority: .userInitiated) { readContentCache(for: id) }.value
     }
 
     /// A PDF whose cached content has no chapter map, or one from an older
@@ -439,11 +482,27 @@ final class DocumentStore: ObservableObject {
         }.value
         await willWriteBackfill()
         guard cacheWrites[document.id, default: 0] == writes else {
-            return Self.readContentCache(for: document.id) ?? content
+            return await settledContentCache(for: document.id) ?? content
         }
         guard let data, documents.contains(where: { $0.id == document.id }) else { return content }
         try? data.write(to: Self.contentCacheURL(for: document.id), options: .atomic)
+        cacheWrites[document.id, default: 0] += 1
         return content
+    }
+
+    /// The cache, read and decoded off the main actor, as it stands once no
+    /// tracked write (`cacheWrites`) landed while it was read: one that did
+    /// is read again, so a refresh's newer content is never weighed as the
+    /// old one, nor written back over it.
+    private func settledContentCache(for id: UUID) async -> DocContent? {
+        var writes = cacheWrites[id, default: 0]
+        var loaded = await Self.loadContentCache(for: id)
+        await didReadContentCache()
+        while cacheWrites[id, default: 0] != writes {
+            writes = cacheWrites[id, default: 0]
+            loaded = await Self.loadContentCache(for: id)
+        }
+        return loaded
     }
 
     // MARK: - Extraction fixes for books on the shelf
@@ -462,7 +521,7 @@ final class DocumentStore: ObservableObject {
     private func refreshingExtraction(of document: LibraryDocument,
                                       progress: (@Sendable (Double) -> Void)?) async throws -> LibraryDocument {
         guard isIndexReadable,
-              let cached = Self.readContentCache(for: document.id),
+              let cached = await settledContentCache(for: document.id),
               (cached.extractorVersion ?? 0) < DocContent.currentExtractorVersion else { return document }
         let fileURL = Self.fileURL(for: document)
         let fresh: DocContent
@@ -476,7 +535,7 @@ final class DocumentStore: ObservableObject {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            keepingOldExtraction(cached, of: document.id)
+            await keepingOldExtraction(cached, of: document.id)
             return documents.first { $0.id == document.id } ?? document
         }
         try Task.checkCancellation()
@@ -491,7 +550,7 @@ final class DocumentStore: ObservableObject {
         // Off the main actor: the whole text of both, for a long book.
         var place = await Self.carriedPlaceOffMain(of: live, from: cached, to: fresh)
         guard place != nil else {
-            keepingOldExtraction(cached, of: document.id)
+            await keepingOldExtraction(cached, of: document.id)
             return live
         }
         guard mayReplaceContent(document.id),
@@ -532,12 +591,13 @@ final class DocumentStore: ObservableObject {
     /// A refresh declined for a reason the same file added again won't
     /// change (its new extraction failed, or its place isn't in the new
     /// text): the old cache is stamped as it is, so later adds don't extract
-    /// the whole book again only to keep it. Read again, so a chapter map a
-    /// backfill gave it meanwhile stays; one deleted or refreshed meanwhile
-    /// is left alone.
-    private func keepingOldExtraction(_ cached: DocContent, of id: UUID) {
-        guard documents.contains(where: { $0.id == id }),
-              let current = Self.readContentCache(for: id),
+    /// the whole book again only to keep it. Read again (off the main
+    /// actor, settled against `cacheWrites`), so a chapter map a backfill
+    /// gave it meanwhile stays; one deleted or refreshed meanwhile is left
+    /// alone.
+    private func keepingOldExtraction(_ cached: DocContent, of id: UUID) async {
+        guard let current = await settledContentCache(for: id),
+              documents.contains(where: { $0.id == id }),
               current.contentHash == cached.contentHash,
               (current.extractorVersion ?? 0) < DocContent.currentExtractorVersion else { return }
         cacheWrites[id, default: 0] += 1
@@ -860,7 +920,7 @@ final class DocumentStore: ObservableObject {
 
     // MARK: - Paths
 
-    static var libraryDir: URL {
+    nonisolated static var libraryDir: URL {
         let dir = PlatformPaths.libraryRoot
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -882,7 +942,7 @@ final class DocumentStore: ObservableObject {
         thumbnailsDir.appendingPathComponent("\(id.uuidString).png")
     }
 
-    static func contentCacheURL(for id: UUID) -> URL {
+    nonisolated static func contentCacheURL(for id: UUID) -> URL {
         libraryDir.appendingPathComponent("\(id.uuidString).content.json")
     }
 
@@ -1091,7 +1151,7 @@ final class DocumentStore: ObservableObject {
     /// Stamped with this build's extractor (`DocContent.extractorVersion`):
     /// every cache written here was just extracted, or kept by a refresh
     /// that declined it for good (`keepingOldExtraction`).
-    private static func writeContentCache(_ content: DocContent, for id: UUID) throws {
+    nonisolated private static func writeContentCache(_ content: DocContent, for id: UUID) throws {
         var stamped = content
         stamped.extractorVersion = DocContent.currentExtractorVersion
         let data = try encoder.encode(stamped)
@@ -1105,7 +1165,7 @@ final class DocumentStore: ObservableObject {
         try? fm.removeItem(at: thumbnailURL(for: id))
     }
 
-    private static func readContentCache(for id: UUID) -> DocContent? {
+    nonisolated private static func readContentCache(for id: UUID) -> DocContent? {
         guard let data = try? Data(contentsOf: contentCacheURL(for: id)) else { return nil }
         return try? decoder.decode(DocContent.self, from: data)
     }
@@ -1123,13 +1183,13 @@ final class DocumentStore: ObservableObject {
         }.value
     }
 
-    private static let encoder: JSONEncoder = {
+    nonisolated private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }()
 
-    private static let decoder: JSONDecoder = {
+    nonisolated private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder

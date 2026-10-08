@@ -28,6 +28,39 @@ final class MacShelfFeedTests: XCTestCase {
         }
     }
 
+    /// R1-36: the Mac's rows say Finished and Playing as the iPhone's do, in
+    /// the same order, from the shared rules: the finished copy is the one a
+    /// row opens, and Playing follows the classic the player voices.
+    func testClassicsRowsSayFinishedAndPlayingAsOnTheIPhone() {
+        let cask = BookshelfBook(gutenbergID: 1063, title: "The Cask of Amontillado",
+                                 author: "Edgar Allan Poe", year: nil,
+                                 file: "1063-the-cask-of-amontillado.txt", words: 2317)
+        func status(adding: Bool = false, finished: Bool = false, playing: Bool = false) -> String {
+            MacClassicsView.rowStatus(for: cask, rate: 1, inLibrary: true, adding: adding,
+                                      finished: finished, playing: playing)
+        }
+        XCTAssertEqual(status(finished: true), "Finished")
+        XCTAssertEqual(status(playing: true), "Playing")
+        XCTAssertEqual(status(finished: true, playing: true), "Playing")
+        XCTAssertEqual(status(adding: true, finished: true, playing: true), "Adding\u{2026}")
+        XCTAssertEqual(status(), "In library")
+        XCTAssertEqual(MacClassicsView.rowValue(inLibrary: true, adding: false, finished: true), "Finished")
+        XCTAssertEqual(MacClassicsView.rowValue(inLibrary: true, adding: false, playing: true), "Playing")
+        XCTAssertEqual(MacClassicsView.rowValue(inLibrary: false, adding: false), "")
+
+        func copy(_ id: Int?, progress: Double) -> LibraryDocument {
+            LibraryDocument(id: UUID(), title: "Title", fileName: "doc.txt", addedAt: Date(timeIntervalSince1970: 0),
+                            pageCount: 1, sentenceCount: 100, progressSentence: Int(progress * 99),
+                            progressFraction: progress, contentHash: UUID().uuidString, kind: .text,
+                            wordCount: 2_317, gutenbergID: id)
+        }
+        let documents = [copy(1063, progress: 1), copy(64317, progress: 0.4), copy(64317, progress: 1)]
+        XCTAssertEqual(BookshelfCatalog.finishedClassicIDs(in: documents), [1063],
+                       "the copy a row opens, the first in store order")
+        XCTAssertEqual(BookshelfCatalog.playingClassicID(of: documents[1], status: .playing), 64317)
+        XCTAssertNil(BookshelfCatalog.playingClassicID(of: documents[1], status: .paused))
+    }
+
     /// L019: the Mac's Classics headings and the rows under them are one
     /// measure: a row's time is the one its shelf is chosen by, at any speed.
     /// At 0.5× a 56-minute book reads 1 hr 52 min, under An evening.
