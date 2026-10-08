@@ -341,19 +341,93 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(library[appear.upperBound...].prefix(200).contains("refreshClipboard()"))
         XCTAssertEqual(items.components(separatedBy: "Button {").count - 1, 2, "exactly the ForEach's and Paste's")
         let tap = try XCTUnwrap(library.range(of: "private func pasteText() {"))
-        let body = library[tap.upperBound...].prefix(260)
+        let body = library[tap.upperBound...].prefix(600)
         XCTAssertTrue(body.contains("UIPasteboard.general.string"), String(body))
         XCTAssertTrue(body.contains("importer.importText(text)"), String(body))
 
+        // R1-06: the empty Library pastes through the system's control,
+        // which needs no prompt; the iPhone hands it the importer only
+        // while the clipboard holds text.
         let emptyView = try XCTUnwrap(sources[empty])
-        XCTAssertTrue(emptyView.contains("var onPasteText: (() -> Void)? = nil"))
-        XCTAssertTrue(emptyView.contains("if let onPasteText {\n            link(PasteTextAction.linkTitle"))
+        XCTAssertTrue(emptyView.contains("var onPaste: (([String]) -> Void)? = nil"))
+        XCTAssertTrue(emptyView.contains("ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, idPrefix: \"library\")"))
+        XCTAssertTrue(emptyView.contains("PasteButton(payloadType: String.self)"))
+        XCTAssertTrue(library.contains("onPaste: clipboardHasText\n                                    ? { importer.importText($0.joined(separator: \"\\n\\n\")) } : nil"))
         XCTAssertFalse(emptyView.contains("import UIKit"))
         XCTAssertFalse(SwiftLiterals.code(in: emptyView).contains("UIPasteboard"))
     }
 
+    /// R1-06: a + > Paste Text that reads nothing although the clipboard held
+    /// text was declined, and says so with a way to Settings; text that
+    /// has gone says nothing. `hasStrings`, which never asks, is read first.
+    func testADeclinedPasteExplainsItself() throws {
+        let librarySources = try SourceTree.sources(only: [Self.libraryFile])
+        let library = try XCTUnwrap(librarySources[Self.libraryFile])
+        let tap = try XCTUnwrap(library.range(of: "private func pasteText() {"))
+        let body = String(library[tap.upperBound...].prefix(600))
+        let had = try XCTUnwrap(body.range(of: "let hadStrings = UIPasteboard.general.hasStrings"), body)
+        let read = try XCTUnwrap(body.range(of: "PasteTextAction.outcome(hadStrings: hadStrings, string: UIPasteboard.general.string)"), body)
+        XCTAssertLessThan(had.lowerBound, read.lowerBound, "hasStrings before the read that asks")
+        let declined = try XCTUnwrap(body.range(of: "case .declined:"), body)
+        let gone = try XCTUnwrap(body.range(of: "case .gone:"), body)
+        XCTAssertTrue(body[declined.upperBound..<gone.lowerBound].contains("pasteDeclined = true"), body)
+        XCTAssertFalse(body[gone.upperBound...].prefix(60).contains("pasteDeclined"), body)
+        let alert = try XCTUnwrap(library.range(of: ".alert(PasteTextAction.declinedTitle, isPresented: $pasteDeclined) {"))
+        let buttons = String(library[alert.upperBound...].prefix(300))
+        XCTAssertTrue(buttons.contains("Button(PasteTextAction.openSettings) { openSettings() }"), buttons)
+        XCTAssertTrue(buttons.contains("Text(PasteTextAction.declinedMessage)"), buttons)
+        let open = try XCTUnwrap(library.range(of: "private func openSettings() {"))
+        XCTAssertTrue(library[open.upperBound...].prefix(200).contains("UIApplication.openSettingsURLString"))
+    }
+
+    /// R1-05: a shelf that holds books keeps the empty Library's links at
+    /// its foot, without Paste or the privacy line, on both apps.
+    func testTheShelfKeepsItsLinksAtItsFoot() throws {
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: [Self.macLibraryFile])
+        let librarySources = try SourceTree.sources(only: [Self.libraryFile])
+        let library = try XCTUnwrap(librarySources[Self.libraryFile])
+        let scroll = try XCTUnwrap(library.range(of: "private var shelfScroll: some View {"))
+        let scrollBody = String(library[scroll.upperBound...].prefix(1400))
+        let grid = try XCTUnwrap(scrollBody.range(of: "documentGrid"), scrollBody)
+        let links = try XCTUnwrap(scrollBody.range(of: "ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: nil,"), scrollBody)
+        XCTAssertLessThan(grid.lowerBound, links.lowerBound, "under the grid")
+        XCTAssertTrue(scrollBody[links.upperBound...].prefix(60).contains("idPrefix: \"library.shelf\")"), scrollBody)
+        XCTAssertFalse(scrollBody.contains("PrivacyCopy"), scrollBody)
+
+        let mac = try XCTUnwrap(macSources[Self.macLibraryFile])
+        let content = try XCTUnwrap(mac.range(of: "private func shelfContent("))
+        let shelf = String(mac[content.upperBound...].prefix(2600))
+        let macGrid = try XCTUnwrap(shelf.range(of: "grid(metrics)"), shelf)
+        let macLinks = try XCTUnwrap(shelf.range(of: "MacShelfLinks(idPrefix: \"library.shelf\")"), shelf)
+        XCTAssertLessThan(macGrid.lowerBound, macLinks.lowerBound, "under the Mac grid")
+        XCTAssertTrue(mac.contains("MacShelfLinks(idPrefix: \"library\")"), "the empty Mac Library's links are the same view")
+        XCTAssertTrue(body(ofStruct: "MacShelfLinks", in: mac).contains(".buttonStyle(MacTextLinkStyle())"))
+    }
+
+    /// R1-09: both featured buttons answer Voice Control by the title, as
+    /// every card does, though their labels lead with the eyebrow.
+    func testBothFeaturedButtonsAnswerToTheirTitle() throws {
+        let empty = "Library/EmptyLibraryView.swift"
+        let iosSources = try SourceTree.sources(only: [empty])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: [Self.macLibraryFile])
+        let ios = try XCTUnwrap(iosSources[empty])
+        let mac = try XCTUnwrap(macSources[Self.macLibraryFile])
+        for (name, text) in [("iPhone", ios), ("Mac", mac)] {
+            let button = try XCTUnwrap(text.range(of: "private func featuredButton(for book: BookshelfBook) -> some View {"), name)
+            let modifiers = String(text[button.upperBound...].prefix(1200))
+            XCTAssertTrue(modifiers.contains(".accessibilityInputLabels(FeaturedClassic.inputLabels(title: book.title))"),
+                          "\(name): \(modifiers)")
+            XCTAssertTrue(modifiers.contains(".accessibilityIdentifier(\"library.featured\")"), name)
+            XCTAssertTrue(modifiers.contains(".accessibilityHint("), name)
+            XCTAssertTrue(modifiers.contains(".disabled(importer.addingClassicID != nil)"), name)
+        }
+        XCTAssertTrue(ios.contains("ShelfHeroCard(eyebrow: FeaturedClassic.eyebrow,"), "the card draws the eyebrow")
+    }
+
     /// P018: the shelf's gaps are PhoneShelfMetrics', so captions stand
     /// clear of the next row's covers; the gutter and the AX column stay.
+    /// R1-01: covers in a row share a top edge, so a one-line title's card
+    /// lines up with its two-line neighbour instead of centring beside it.
     func testTheShelfKeepsItsRhythm() throws {
         let s = try SourceTree.sources(only: [Self.libraryFile])
         let text = try XCTUnwrap(s[Self.libraryFile])
@@ -361,7 +435,8 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(text.contains("VStack(spacing: PhoneShelfMetrics.heroToGrid)"))
         XCTAssertTrue(text.contains(".padding(.top, PhoneShelfMetrics.topPadding)"))
         XCTAssertTrue(text.contains(".padding(.horizontal, PhoneShelfMetrics.gutter)"))
-        XCTAssertTrue(text.contains("GridItem(.flexible(), spacing: metrics.columnSpacing), count: metrics.columns)"))
+        XCTAssertTrue(text.contains("GridItem(.flexible(), spacing: metrics.columnSpacing, alignment: .top), count: metrics.columns)"))
+        XCTAssertFalse(text.contains("reservesSpace"), "no reserved title lines")
         XCTAssertTrue(text.contains("isAccessibilitySize: dynamicTypeSize.isAccessibilitySize"))
     }
 
@@ -373,15 +448,23 @@ final class LibraryLintTests: XCTestCase {
     /// full size over a shrinking body.
     func testBooksPressOntoAPlate() throws {
         let paths = [Self.libraryFile, "Library/EmptyLibraryView.swift", "Library/ContinueListeningCard.swift",
-                     "Platform/PlatformViewModifiers.swift", "Theme/PressStyles.swift"]
+                     "Platform/PlatformViewModifiers.swift", "Theme/PressStyles.swift", "Library/DocumentCardView.swift"]
         let s = try SourceTree.sources(only: paths)
         let library = try XCTUnwrap(s[paths[0]])
         XCTAssertTrue(library.contains(".buttonStyle(ShelfPlateButtonStyle())"))
         XCTAssertFalse(library.contains(".buttonStyle(.plain)"))
+        // R1-08: the long press lifts the cover alone, at the size the card
+        // draws it (the hero's at the accessibility sizes), by one rule.
         let preview = try XCTUnwrap(library.range(of: ".contentShape(.contextMenuPreview,"))
-        let lift = library[preview.lowerBound...].prefix(200)
-        XCTAssertTrue(lift.contains("RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))"), String(lift))
-        XCTAssertTrue(lift.contains(".contextMenu {"), String(lift))
+        let lift = library[preview.lowerBound...].prefix(340)
+        XCTAssertTrue(lift.contains("CoverLiftShape(fixedSize: DocumentCardView.usesHeroCover(at: dynamicTypeSize)"),
+                      String(lift))
+        XCTAssertTrue(lift.contains("? CoverGeometry.heroSize : nil))"), String(lift))
+        XCTAssertTrue(lift.contains(".contextMenu { contextMenuActions(for: document) }"), String(lift))
+        XCTAssertFalse(library.contains("RoundedRectangle(cornerRadius: Theme.Radius.md"), "no card-sized lift")
+        let cardSource = try XCTUnwrap(s[paths[5]])
+        XCTAssertTrue(cardSource.contains("if Self.usesHeroCover(at: dynamicTypeSize) {"),
+                      "the card draws its cover by the rule the lift reads")
         let empty = try XCTUnwrap(s[paths[1]])
         let featured = try XCTUnwrap(empty.range(of: "private func featuredButton(for book: BookshelfBook) -> some View {"))
         let button = empty[featured.upperBound...].prefix(900)
@@ -531,6 +614,30 @@ final class LibraryLintTests: XCTestCase {
         let body = text[menu.upperBound...].prefix(300)
         XCTAssertTrue(body.contains("ForEach(DocumentAction.menuSections(for: document)"), String(body))
         XCTAssertTrue(body.contains("Section {"), String(body))
+    }
+
+    /// R1-07: the long-press menu leads with the card's own tap, in a
+    /// section of its own: Play when the open will start the voice, by the
+    /// rule the soft haptic follows, else Open. It opens as the tap does,
+    /// and is no DocumentAction (those are VoiceOver's and the Mac's).
+    func testTheMenuLeadsWithTheCardsOwnTap() throws {
+        let actionsSources = try SourceTree.sources(only: ["Models/LibraryActions.swift"])
+        let textSources = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(textSources[Self.libraryFile])
+        let menu = try XCTUnwrap(text.range(of: "private func contextMenuActions(for document: LibraryDocument) -> some View {"))
+        let lead = try XCTUnwrap(text[menu.upperBound...].range(of: "Section { openMenuItem(for: document) }"))
+        let sections = try XCTUnwrap(text[menu.upperBound...].range(of: "ForEach(DocumentAction.menuSections(for: document)"))
+        XCTAssertLessThan(lead.lowerBound, sections.lowerBound, "first, before the actions")
+        let item = try XCTUnwrap(text.range(of: "private func openMenuItem(for document: LibraryDocument) -> some View {"))
+        let body = String(text[item.upperBound...].prefix(400))
+        XCTAssertTrue(body.contains("let plays = model.playback.opensPlaying(document)"), body)
+        XCTAssertTrue(body.contains("open(document)"), body)
+        XCTAssertTrue(body.contains("Label(OpenMenuItem.title(plays: plays), systemImage: OpenMenuItem.systemImage(plays: plays))"), body)
+        let open = try XCTUnwrap(text.range(of: "private func open(_ document: LibraryDocument) {"))
+        XCTAssertTrue(text[open.upperBound...].prefix(120).contains("if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }"),
+                      "the label and the haptic read one predicate")
+        let actions = try XCTUnwrap(actionsSources["Models/LibraryActions.swift"])
+        XCTAssertTrue(actions.contains("case rename, markFinished, delete\n"), "no open case in DocumentAction")
     }
 
     /// F045: every shelf the Library derives hears the controller's

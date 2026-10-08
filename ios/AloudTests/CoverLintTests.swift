@@ -38,6 +38,33 @@ final class CoverLintTests: XCTestCase {
                       "the hero frames its cover with CoverGeometry.heroSize")
     }
 
+    /// R1-03: the cover's author draws at full size and wraps onto up to
+    /// three centred lines; it never shrinks a long name onto one line
+    /// (no scale factor below 0.9) and stays small caps, not uppercased.
+    /// On a short cover the title keeps its lines and the author gives way.
+    func testTheCoverAuthorWrapsInsteadOfShrinking() throws {
+        let path = "Library/BookCover.swift"
+        let textSources = try SourceTree.sources(only: [path])
+        let text = try XCTUnwrap(textSources[path])
+        let face = body(ofStruct: "TypographicFace", in: text)
+        let start = try XCTUnwrap(face.range(of: "Text(author)"))
+        let end = try XCTUnwrap(face[start.upperBound...].range(of: ".padding(.bottom, Theme.Space.md)"))
+        let author = String(face[start.upperBound..<end.upperBound])
+        let scale = try NSRegularExpression(pattern: #"\.minimumScaleFactor\(([0-9.]+)\)"#)
+        for match in scale.matches(in: author, range: NSRange(author.startIndex..., in: author)) {
+            let factor = Double((author as NSString).substring(with: match.range(at: 1))) ?? 0
+            XCTAssertGreaterThanOrEqual(factor, 0.9, "the author shrinks: \(author)")
+        }
+        XCTAssertTrue(author.contains(".lineLimit(3)"), author)
+        XCTAssertTrue(author.contains(".multilineTextAlignment(.center)"), author)
+        XCTAssertTrue(author.contains(".font(Theme.font(.eyebrow))"), author)
+        XCTAssertFalse(author.contains(".textCase(.uppercase)"), author)
+        XCTAssertFalse(author.contains(".fixedSize"), author)
+        let title = try XCTUnwrap(face.range(of: "Text(title)"))
+        XCTAssertTrue(face[title.upperBound..<start.lowerBound].contains(".layoutPriority(1)"),
+                      "the title keeps its lines before the author")
+    }
+
     /// Covers draw through `Image(platformImage:)` since the seam (S1);
     /// `Image(uiImage` stays banned too, so neither spelling slips in.
     func testBookshelfRowsCarryNoCover() throws {

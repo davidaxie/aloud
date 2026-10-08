@@ -399,6 +399,7 @@ final class ShelfFeedTests: XCTestCase {
                        ["Classics", "From Files\u{2026}", "Paste Text"])
         XCTAssertEqual(LibraryAddMenuItem.allCases.count, 2, "the Mac's + menu")
         XCTAssertEqual(PasteTextAction.systemImage, "doc.on.clipboard")
-        XCTAssertEqual(PasteTextAction.linkTitle, "Paste text")
+        // The empty Library pastes through the system's control, which labels
+        // itself, so there is no link title of our own (R1-06).
     }
 }

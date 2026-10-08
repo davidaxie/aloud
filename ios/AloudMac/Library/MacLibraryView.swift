@@ -4,7 +4,8 @@ import SwiftUI
 /// The Library, the window's root (M6, mac-ux §3.1-3.3). With no books: the
 /// featured classic in the Continue card's shape, the links "More classics"
 /// and "Add a file", and the privacy line once. With books: the shared
-/// Continue card over an adaptive grid of 2:3 covers (`MacGridMetrics`).
+/// Continue card over an adaptive grid of 2:3 covers (`MacGridMetrics`),
+/// with the same two links at the grid's foot.
 /// Every card opens through the router, and the reader starts it speaking
 /// (R4); the Continue card's circle plays and pauses in place (R18). The
 /// toolbar's "+" appears once a book exists. ⌘V adds what was copied.
@@ -148,7 +149,7 @@ struct MacLibraryView: View {
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
-            Text("This removes the document and its listening progress.")
+            Text(deleteTarget.map(DocumentAction.deleteMessage(for:)) ?? "")
         }
         // Fixed copy only, as an add's failure (R10). A failed Rename or
         // Mark as Finished shows here too, on the Delete failure's slot.
@@ -252,6 +253,10 @@ struct MacLibraryView: View {
                 // The cells carry the plates: pull them out by a
                 // plate so the covers line up with the card above.
                 .padding(.horizontal, -MacGridMetrics.plateOutset)
+            // The empty Library's links stay at the shelf's foot, centred,
+            // so the next book is in reach without the toolbar's +.
+            MacShelfLinks(idPrefix: "library.shelf")
+                .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, gutter)
         .padding(.top, Theme.Space.lg)
@@ -385,7 +390,6 @@ struct MacLibraryView: View {
 /// screen's one accent fill. Deleting every book comes back here.
 private struct MacEmptyLibrary: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var router: LibraryRouter
     @EnvironmentObject private var importer: DocumentImporter
 
     var body: some View {
@@ -395,7 +399,7 @@ private struct MacEmptyLibrary: View {
                     if let book = FeaturedClassic.resolve(in: model.bookshelf) {
                         featuredButton(for: book)
                     }
-                    links
+                    MacShelfLinks(idPrefix: "library")
                     Text(PrivacyCopy.line)
                         .font(Theme.font(.aside))
                         .foregroundStyle(Theme.textMuted)
@@ -425,20 +429,32 @@ private struct MacEmptyLibrary: View {
             return .handled
         }
         .accessibilityLabel(FeaturedClassic.accessibilityLabel(for: book, rate: model.globalRate))
+        .accessibilityInputLabels(FeaturedClassic.inputLabels(title: book.title))
         .accessibilityHint("Opens and starts reading aloud")
         .accessibilityIdentifier("library.featured")
     }
+}
 
-    private var links: some View {
+/// The shelf's two text links, Classics (while there is a catalog) and the
+/// Files picker: under the empty Library's featured classic (`library.*`)
+/// and at the foot of a shelf that holds books (`library.shelf.*`).
+private struct MacShelfLinks: View {
+    /// Each link's identifier is the prefix and its name.
+    let idPrefix: String
+
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var router: LibraryRouter
+
+    var body: some View {
         HStack(spacing: Theme.Space.xl) {
             if !model.bookshelf.isEmpty {
                 Button("More classics") { router.showBookshelf() }
                     .buttonStyle(MacTextLinkStyle())
-                    .accessibilityIdentifier("library.moreClassics")
+                    .accessibilityIdentifier("\(idPrefix).moreClassics")
             }
             Button("Add a file") { router.rootPresentation = .filePicker }
                 .buttonStyle(MacTextLinkStyle())
-                .accessibilityIdentifier("library.addFile")
+                .accessibilityIdentifier("\(idPrefix).addFile")
         }
     }
 }

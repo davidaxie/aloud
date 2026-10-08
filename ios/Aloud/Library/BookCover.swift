@@ -7,15 +7,21 @@ import SwiftUI
 enum CoverGeometry {
     /// Width over height: every cover is a 2:3 book.
     static let aspectRatio: CGFloat = 2.0 / 3.0
-    /// Narrower than this, type would fall below legibility, so a cover
-    /// draws only its ground and rule.
+    /// Narrower than this, type would fall below legibility, so a
+    /// typographic cover draws only its ground and rule. A PDF's page is a
+    /// picture, not type, and draws at every width.
     static let minimumTextWidth: CGFloat = 80
     /// The Continue card's cover, beside its own title. Fixed, never scaled
     /// with Dynamic Type: the title next to it is the text that grows.
     static let heroSize = CGSize(width: 64, height: 96)
     static let progressBarHeight: CGFloat = 3
-    /// Where the plain face's rule sits, as a fraction of the height.
+    /// Where the plain face's rule sits, as a fraction of the height: where
+    /// a grid cover's rule sits under a two-line title.
     static let plainRuleTop: CGFloat = 1.0 / 3.0
+    /// The plain face's rule, as a fraction of the cover's width: the grid
+    /// cover's rule scaled down with it, so a 64pt cover reads as a small
+    /// book rather than an empty tile.
+    static let plainRuleWidthFraction: CGFloat = 0.4
     /// The lock-screen square, in points, and the scale it renders at.
     static let artworkSide: CGFloat = 300
     static let artworkScale: CGFloat = 3
@@ -27,7 +33,8 @@ enum CoverGeometry {
     static func height(forWidth width: CGFloat) -> CGFloat { width / aspectRatio }
 
     static func ruleSize(forWidth width: CGFloat) -> CGSize {
-        showsText(width: width) ? CGSize(width: 26, height: 1.5) : CGSize(width: 14, height: 1)
+        showsText(width: width) ? CGSize(width: 26, height: 1.5)
+            : CGSize(width: width * plainRuleWidthFraction, height: 1.5)
     }
 
     static func cornerRadius(forWidth width: CGFloat) -> CGFloat {
@@ -42,13 +49,29 @@ enum CoverGeometry {
     }
 }
 
+/// What a long press lifts from a shelf cell: the cover alone, by its own
+/// corners, never the cover plus a slab of caption. The cover sits at the
+/// cell's top leading corner, as wide as the cell, or at `fixedSize` where
+/// the card keeps the hero's cover (`DocumentCardView.usesHeroCover`).
+struct CoverLiftShape: Shape {
+    var fixedSize: CGSize?
+
+    func path(in rect: CGRect) -> Path {
+        let size = fixedSize ?? CGSize(width: rect.width, height: CoverGeometry.height(forWidth: rect.width))
+        return RoundedRectangle(cornerRadius: CoverGeometry.cornerRadius(forWidth: size.width), style: .continuous)
+            .path(in: CGRect(origin: rect.origin, size: size))
+    }
+}
+
 // MARK: - The cover
 
 /// The app's one cover design (R22): a 2:3 book with a serif title, an
 /// accent rule and a small-caps author, or a PDF's first page in the same
 /// frame. It fits the largest 2:3 rect inside whatever it is offered, so a
 /// caller sizes it with a width or a frame and never sets an aspect itself.
-/// Below 80pt wide every kind draws only the ground and the rule.
+/// Below 80pt wide a typographic or loading cover draws only the ground and
+/// the rule, never shrunken type; a PDF's page draws at every width, so the
+/// Continue card's 64pt cover shows it too.
 ///
 /// A cover is a picture: its type is pinned to the default size so it
 /// composes the same at every Dynamic Type setting, Smart Invert leaves it
@@ -89,20 +112,21 @@ struct BookCover: View {
         .accessibilityHidden(true)
     }
 
+    /// The art first: a page is a picture and draws at any width; type
+    /// draws only from 80pt (R22); a loading page is always plain.
     @ViewBuilder
     private func face(in size: CGSize) -> some View {
-        if !CoverGeometry.showsText(width: size.width) {
-            // Too small for type or a legible page, whatever the art.
-            PlainFace(size: size)
-        } else {
-            switch art {
-            case .page(let image):
-                Color.clear.overlay(Image(platformImage: image).resizable().scaledToFill())
-            case .typographic:
+        switch art {
+        case .page(let image):
+            Color.clear.overlay(Image(platformImage: image).resizable().scaledToFill())
+        case .typographic:
+            if CoverGeometry.showsText(width: size.width) {
                 TypographicFace(title: title, author: author, width: size.width)
-            case .pending:
+            } else {
                 PlainFace(size: size)
             }
+        case .pending:
+            PlainFace(size: size)
         }
     }
 
@@ -144,17 +168,26 @@ private struct CoverRule: View {
     }
 }
 
-/// The ground and a centred rule a third of the way down: the cover below
-/// 80pt, and a PDF's while its page loads.
+/// The ground and a centred rule a third of the way down: a typographic
+/// cover below 80pt, and a PDF's while its page loads. Below 80pt one more
+/// accentSoft wash over the ground stands the small tile off the card's
+/// surface, so it reads as a book in miniature rather than an image that
+/// failed to load; a grid-size cover still loading keeps the plain ground
+/// its face will have.
 private struct PlainFace: View {
     let size: CGSize
 
     var body: some View {
-        CoverGround()
-            .overlay(alignment: .top) {
-                CoverRule(size: CoverGeometry.ruleSize(forWidth: size.width))
-                    .padding(.top, size.height * CoverGeometry.plainRuleTop)
+        ZStack {
+            CoverGround()
+            if !CoverGeometry.showsText(width: size.width) {
+                Theme.accentSoft
             }
+        }
+        .overlay(alignment: .top) {
+            CoverRule(size: CoverGeometry.ruleSize(forWidth: size.width))
+                .padding(.top, size.height * CoverGeometry.plainRuleTop)
+        }
     }
 }
 
@@ -176,17 +209,22 @@ private struct TypographicFace: View {
                     .multilineTextAlignment(.center)
                     .minimumScaleFactor(0.8)
                     .padding(.top, Theme.Space.xl)
+                    // On a short cover the author's lines give way first:
+                    // the caption below repeats the author.
+                    .layoutPriority(1)
                 CoverRule(size: CoverGeometry.ruleSize(forWidth: width))
                     .padding(.top, Theme.Space.sm)
                 Spacer(minLength: Theme.Space.xs)
                 if let author, !author.isEmpty {
+                    // At full size, wrapping onto up to three centred lines
+                    // rather than shrinking or cutting a long name short.
                     Text(author)
                         .font(Theme.font(.eyebrow))
                         .eyebrowTracking()
                         // textMuted, not textFaint: the ground is accentSoft.
                         .foregroundStyle(Theme.textMuted)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
                         .padding(.bottom, Theme.Space.md)
                 }
             }
@@ -201,23 +239,22 @@ private struct TypographicFace: View {
 /// The cover of a library record: typographic for text books, the first
 /// page for PDFs (typographic when the page can't be drawn), and a plain
 /// face while that page loads. The shelf card and the Continue card both
-/// draw it; the featured classic, with no record yet, draws BookCover.
+/// draw it, with the record's progress bar (hidden at 0%); the featured
+/// classic, with no record yet, draws BookCover.
 struct DocumentCoverView: View {
     private let document: LibraryDocument
-    private let showsProgress: Bool
 
     @State private var cover = CoverPage()
 
-    init(document: LibraryDocument, showsProgress: Bool = true) {
+    init(document: LibraryDocument) {
         self.document = document
-        self.showsProgress = showsProgress
     }
 
     var body: some View {
         BookCover(title: document.title,
                   author: document.author,
                   art: cover.art(for: document),
-                  progress: showsProgress ? document.progressFraction : 0)
+                  progress: document.progressFraction)
             // Runs again on every reappear (back from the reader, scrolled
             // back on screen): `begin` keeps a page already in hand, so the
             // cover never drops to its plain face for the same record.

@@ -2,7 +2,7 @@ import XCTest
 
 /// R12f/R12g/R25 on the shelf: card and featured labels name the author and
 /// spell out durations in one of three forms, and every card (the hero too)
-/// offers Rename, Mark as finished and Delete. Muted through
+/// offers Rename, Mark as Finished and Delete. Muted through
 /// XCUIApplication.aloud; no launch allows autoplay and nothing taps Play.
 final class LibraryAccessibilityUITests: XCTestCase {
 
@@ -101,10 +101,15 @@ final class LibraryAccessibilityUITests: XCTestCase {
         let card = caskCard(app)
         XCTAssertTrue(card.waitForExistence(timeout: 15))
         card.press(forDuration: 1.2)
-        let finish = menuItem("Mark as finished", in: app)
-        XCTAssertTrue(finish.waitForExistence(timeout: 10), "Long-press offers Mark as finished")
+        let finish = menuItem("Mark as Finished", in: app)
+        XCTAssertTrue(finish.waitForExistence(timeout: 10), "Long-press offers Mark as Finished")
         XCTAssertTrue(menuItem("Rename", in: app).exists)
         XCTAssertTrue(menuItem("Delete", in: app).exists)
+        // R1-07: the menu leads with the card's own tap. UI tests suppress
+        // autoplay, so the open promises no playback: Open, not Play.
+        let open = menuItem("Open", in: app)
+        XCTAssertTrue(open.exists, "the menu leads with Open")
+        XCTAssertFalse(menuItem("Play", in: app).exists, "no Play where the open won't start the voice")
         finish.tap()
 
         XCTAssertTrue(waitForNonExistence(of: finish, timeout: 10))
@@ -117,7 +122,8 @@ final class LibraryAccessibilityUITests: XCTestCase {
         let rename = menuItem("Rename", in: app)
         XCTAssertTrue(rename.waitForExistence(timeout: 10))
         XCTAssertTrue(menuItem("Delete", in: app).exists)
-        XCTAssertFalse(menuItem("Mark as finished", in: app).exists, "A Finished book has nothing to mark")
+        XCTAssertFalse(menuItem("Mark as Finished", in: app).exists, "A Finished book has nothing to mark")
+        XCTAssertTrue(menuItem("Open", in: app).exists, "a Finished book opens paused: Open")
         dismissMenu(app, waitingFor: rename)
     }
 
@@ -135,8 +141,8 @@ final class LibraryAccessibilityUITests: XCTestCase {
         XCTAssertTrue(hero.waitForExistence(timeout: 10), "The loaded book is the hero")
 
         hero.press(forDuration: 1.2)
-        let finish = menuItem("Mark as finished", in: app)
-        XCTAssertTrue(finish.waitForExistence(timeout: 10), "The hero offers Mark as finished too")
+        let finish = menuItem("Mark as Finished", in: app)
+        XCTAssertTrue(finish.waitForExistence(timeout: 10), "The hero offers Mark as Finished too")
         finish.tap()
 
         XCTAssertTrue(waitForNonExistence(of: hero, timeout: 10), "A Finished book is no longer the hero")
@@ -150,6 +156,45 @@ final class LibraryAccessibilityUITests: XCTestCase {
 
         let featured = app.buttons["library.featured"].firstMatch
         XCTAssertTrue(featured.waitForExistence(timeout: 15), "The empty Library shows the featured classic")
-        XCTAssertEqual(featured.label, "The Cask of Amontillado, Edgar Allan Poe, 14 minutes")
+        XCTAssertEqual(featured.label,
+                       "Start with a classic, The Cask of Amontillado, Edgar Allan Poe, 14 minutes")
+    }
+
+    // MARK: - Covers in a row (R1-01)
+
+    /// Five classics: row 2 sets The Adventures of Sherlock Holmes (a
+    /// two-line title) beside Pride and Prejudice (one line). Every row's
+    /// cards share one top edge, so their covers and captions line up, at
+    /// the default size and at xxLarge (still two columns).
+    func testCoversInARowShareATopEdge() {
+        for size in ["UICTContentSizeCategoryL", "UICTContentSizeCategoryXXL"] {
+            let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-seed-classics", "5",
+                                             "-uitest-reset-voice-pref", "-uitest-temp-model-dir",
+                                             "-UIPreferredContentSizeCategoryName", size])
+            app.launch()
+            let cards = app.buttons.matching(identifier: "library.card")
+            XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 20), "\(size): the shelf")
+            let deadline = Date().addingTimeInterval(10)
+            while cards.count < 4, Date() < deadline { usleep(200_000) }
+            let frames = cards.allElementsBoundByIndex.map(\.frame).filter { !$0.isEmpty }
+            XCTAssertGreaterThanOrEqual(frames.count, 4, "\(size): two rows of cards")
+            // A cover is 1.5 times a card's width; half of it separates rows.
+            let tolerance = (frames.map(\.width).max() ?? 0) * 0.75
+            var rows: [[CGRect]] = []
+            for frame in frames.sorted(by: { $0.minY < $1.minY }) {
+                if let first = rows.last?.first, abs(first.minY - frame.minY) < tolerance {
+                    rows[rows.count - 1].append(frame)
+                } else {
+                    rows.append([frame])
+                }
+            }
+            let paired = rows.filter { $0.count > 1 }
+            XCTAssertGreaterThanOrEqual(paired.count, 2, "\(size): rows \(rows)")
+            for row in paired {
+                let tops = row.map(\.minY)
+                XCTAssertLessThanOrEqual((tops.max() ?? 0) - (tops.min() ?? 0), 0.5, "\(size): row tops \(tops)")
+            }
+            app.terminate()
+        }
     }
 }

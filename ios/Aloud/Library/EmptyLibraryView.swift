@@ -57,6 +57,10 @@ enum FeaturedClassic {
     /// read out before the story starts.
     static let gutenbergID = 1063
 
+    /// The card's eyebrow, drawn uppercased as the Continue card's is: it
+    /// says what the card is before the title says which book.
+    static let eyebrow = "Start with a classic"
+
     /// The featured book, else the shortest one with a known length, so a
     /// catalog without 1063 still shows a card.
     static func resolve(in catalog: [BookshelfBook]) -> BookshelfBook? {
@@ -69,10 +73,18 @@ enum FeaturedClassic {
         "\(book.author) · \(ListeningEstimate.phrase(minutes: minutes(of: book, rate: rate)))"
     }
 
-    /// "The Cask of Amontillado, Edgar Allan Poe, 14 minutes": commas, not
-    /// middle dots, so VoiceOver pauses, and the duration spelled out.
+    /// The eyebrow, then "The Cask of Amontillado, Edgar Allan Poe, 14
+    /// minutes": the visible text in order, commas, not middle dots, so
+    /// VoiceOver pauses, and the duration spelled out.
     static func accessibilityLabel(for book: BookshelfBook, rate: Double) -> String {
-        "\(book.title), \(book.author), \(ListeningEstimate.spokenPhrase(minutes: minutes(of: book, rate: rate)))"
+        "\(eyebrow), \(book.title), \(book.author), \(ListeningEstimate.spokenPhrase(minutes: minutes(of: book, rate: rate)))"
+    }
+
+    /// What Voice Control answers to: the title, as on every card, or the
+    /// eyebrow. The label leads with the eyebrow, so the title alone would
+    /// match nothing otherwise.
+    static func inputLabels(title: String) -> [String] {
+        [title, eyebrow]
     }
 
     /// Whole-book length at the app-wide speed, like every shelf estimate.
@@ -83,13 +95,14 @@ enum FeaturedClassic {
 }
 
 /// The featured classic in the Continue card's shape: it is the card the
-/// book becomes once it has been listened to.
+/// book becomes once it has been listened to, with its own eyebrow.
 struct FeaturedClassicCard: View {
     let book: BookshelfBook
     let rate: Double
 
     var body: some View {
-        ShelfHeroCard(title: book.title, subtitle: FeaturedClassic.subtitle(for: book, rate: rate)) {
+        ShelfHeroCard(eyebrow: FeaturedClassic.eyebrow, title: book.title,
+                      subtitle: FeaturedClassic.subtitle(for: book, rate: rate)) {
             BookCover(title: book.title, author: book.author)
         } accessory: {
             PlayCircleGlyph()
@@ -97,18 +110,17 @@ struct FeaturedClassicCard: View {
     }
 }
 
-/// The Library with no books: the featured classic, its text links and the
-/// privacy line, centered while it fits and scrolling once it doesn't
-/// (AX5). No heading and no other copy; the play circle is the screen's
-/// only accent-filled element.
+/// The Library with no books: the featured classic under its eyebrow, the
+/// shelf's text links and the privacy line, centered while it fits and
+/// scrolling once it doesn't (AX5). No heading; the play circle is the
+/// screen's only accent-filled element.
 struct EmptyLibraryView: View {
     let onAddFile: () -> Void
-    /// Adds the clipboard's text as a book; its link shows only when set
-    /// (the iPhone, while there is text to paste).
-    var onPasteText: (() -> Void)? = nil
+    /// Adds the clipboard's text as a book; its paste control shows only
+    /// when set (the iPhone, while there is text to paste).
+    var onPaste: (([String]) -> Void)? = nil
 
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var router: LibraryRouter
     @EnvironmentObject private var importer: DocumentImporter
 
     var body: some View {
@@ -118,9 +130,9 @@ struct EmptyLibraryView: View {
                     if let book = FeaturedClassic.resolve(in: model.bookshelf) {
                         featuredButton(for: book)
                     }
-                    links
+                    ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, idPrefix: "library")
                     Text(PrivacyCopy.line)
-                        .font(Theme.font(.footnote))
+                        .font(Theme.font(.aside))
                         .foregroundStyle(Theme.textMuted)
                         .multilineTextAlignment(.center)
                 }
@@ -152,12 +164,29 @@ struct EmptyLibraryView: View {
         .buttonStyle(ShelfPlateButtonStyle(radius: Theme.Radius.lg))
         .disabled(importer.addingClassicID != nil)
         .accessibilityLabel(FeaturedClassic.accessibilityLabel(for: book, rate: model.globalRate))
+        .accessibilityInputLabels(FeaturedClassic.inputLabels(title: book.title))
         .accessibilityHint("Opens and starts reading aloud")
         .accessibilityIdentifier("library.featured")
     }
+}
+
+/// The shelf's quiet text links: to Classics (while there is a catalog), to
+/// the Files picker and, when `onPaste` is set, the system's paste control.
+/// Under the empty Library's featured classic (`library.*`), and at the foot
+/// of a shelf that holds books (`library.shelf.*`), so the way to the next
+/// book stays in reach without the + menu.
+struct ShelfLinks: View {
+    let onAddFile: () -> Void
+    /// Takes the pasted strings; the paste control shows only when set.
+    let onPaste: (([String]) -> Void)?
+    /// Each link's identifier is the prefix and its name.
+    let idPrefix: String
+
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var router: LibraryRouter
 
     /// Side by side while they fit, stacked at the large text sizes.
-    private var links: some View {
+    var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Theme.Space.xl) { linkButtons }
             VStack(spacing: Theme.Space.xs) { linkButtons }
@@ -167,11 +196,11 @@ struct EmptyLibraryView: View {
     @ViewBuilder
     private var linkButtons: some View {
         if !model.bookshelf.isEmpty {
-            link("More classics", identifier: "library.moreClassics") { router.showBookshelf() }
+            link("More classics", identifier: "\(idPrefix).moreClassics") { router.showBookshelf() }
         }
-        link("Add a file", identifier: "library.addFile", action: onAddFile)
-        if let onPasteText {
-            link(PasteTextAction.linkTitle, identifier: "library.pasteText", action: onPasteText)
+        link("Add a file", identifier: "\(idPrefix).addFile", action: onAddFile)
+        if let onPaste {
+            pasteControl(onPaste)
         }
     }
 
@@ -189,5 +218,22 @@ struct EmptyLibraryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(identifier)
+    }
+
+    /// The system's paste control, which reads the clipboard with no
+    /// prompt. Dressed as a link: its fill is the page's own ground, so the
+    /// featured card's play circle stays the screen's one accent fill.
+    private func pasteControl(_ onPaste: @escaping ([String]) -> Void) -> some View {
+        PasteButton(payloadType: String.self) { strings in
+            // Handed to the main actor, whichever thread the control
+            // delivers its payload on: the add publishes to the shelf.
+            Task { @MainActor in onPaste(strings) }
+        }
+        .labelStyle(.titleOnly)
+        .buttonBorderShape(.capsule)
+        .tint(Theme.bg)
+        .foregroundStyle(Theme.accentStrong)
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("\(idPrefix).pasteText")
     }
 }

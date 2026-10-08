@@ -148,7 +148,7 @@ enum ReaderTitleCopy {
 
 /// The reader's failure state (P050).
 enum ReaderFailureCopy {
-    static let title = "Couldn't open this document"
+    static let title = "Couldn't open this book"
     static let detail = "It may be damaged or a scanned document."
     static let backToLibrary = "Back to Library"
 }

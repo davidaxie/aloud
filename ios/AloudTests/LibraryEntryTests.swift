@@ -46,10 +46,65 @@ final class LibraryEntryTests: XCTestCase {
         XCTAssertNil(FeaturedClassic.resolve(in: [book(2, words: 0)]))
     }
 
-    /// The duration spelled out: VoiceOver reads "min" poorly (R12f).
-    func testAccessibilityLabelStartsWithTitle() {
+    /// The duration spelled out: VoiceOver reads "min" poorly (R12f). R1-09:
+    /// the eyebrow first, so the name starts with the visible text, as the
+    /// Continue card's does.
+    func testAccessibilityLabelStartsWithTheEyebrow() {
+        XCTAssertEqual(FeaturedClassic.eyebrow, "Start with a classic")
         XCTAssertEqual(FeaturedClassic.accessibilityLabel(for: cask, rate: 1),
-                       "The Cask of Amontillado, Edgar Allan Poe, 14 minutes")
+                       "Start with a classic, The Cask of Amontillado, Edgar Allan Poe, 14 minutes")
+    }
+
+    /// R1-09: Voice Control still answers to the title, or the eyebrow.
+    func testTheFeaturedClassicAnswersToItsTitle() {
+        XCTAssertEqual(FeaturedClassic.inputLabels(title: cask.title),
+                       ["The Cask of Amontillado", "Start with a classic"])
+    }
+
+    // MARK: - Delete's message (R1-11)
+
+    private func record(gutenbergID: Int?) -> LibraryDocument {
+        LibraryDocument(id: UUID(), title: "Book", fileName: "book.txt", addedAt: Date(timeIntervalSince1970: 0),
+                        pageCount: 1, sentenceCount: 10, contentHash: "hash", kind: .text,
+                        gutenbergID: gutenbergID)
+    }
+
+    /// Says book, and for a bundled classic that it can come back.
+    func testDeleteSaysBookAndThatAClassicCanComeBack() {
+        XCTAssertEqual(DocumentAction.deleteMessage(for: record(gutenbergID: nil)),
+                       "This removes the book and your place in it.")
+        XCTAssertEqual(DocumentAction.deleteMessage(for: record(gutenbergID: 1063)),
+                       "This removes the book and your place in it. You can add it again from Classics.")
+    }
+
+    // MARK: - Paste (R1-06)
+
+    /// Text read is added; an empty read from a clipboard that held text was
+    /// declined, and says so; an empty read from one that had none says
+    /// nothing.
+    func testAPasteThatReadsNothingWasDeclinedOnlyIfTextWasThere() {
+        XCTAssertEqual(PasteTextAction.outcome(hadStrings: true, string: "An article"), .text("An article"))
+        XCTAssertEqual(PasteTextAction.outcome(hadStrings: false, string: "An article"), .text("An article"))
+        XCTAssertEqual(PasteTextAction.outcome(hadStrings: true, string: nil), .declined)
+        XCTAssertEqual(PasteTextAction.outcome(hadStrings: false, string: nil), .gone)
+    }
+
+    /// The declined paste's alert names the prompt's button and the
+    /// setting, and offers Settings.
+    func testTheDeclinedPasteCopy() {
+        XCTAssertEqual(PasteTextAction.declinedTitle, "Aloud wasn't allowed to paste.")
+        XCTAssertTrue(PasteTextAction.declinedMessage.contains("Allow Paste"))
+        XCTAssertTrue(PasteTextAction.declinedMessage.contains("Paste from Other Apps in Settings > Aloud"))
+        XCTAssertEqual(PasteTextAction.openSettings, "Open Settings")
+    }
+
+    // MARK: - The long-press menu's lead (R1-07)
+
+    func testTheMenuLeadIsPlayOnlyWhenTheOpenPlays() {
+        XCTAssertEqual(OpenMenuItem.title(plays: true), "Play")
+        XCTAssertEqual(OpenMenuItem.systemImage(plays: true), "play.fill")
+        XCTAssertEqual(OpenMenuItem.title(plays: false), "Open")
+        XCTAssertEqual(OpenMenuItem.systemImage(plays: false), "book")
     }
 
     // MARK: - Add menu

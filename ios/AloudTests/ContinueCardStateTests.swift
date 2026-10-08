@@ -10,13 +10,14 @@ final class ContinueCardStateTests: XCTestCase {
     private let hero = UUID()
     private let other = UUID()
 
-    private func book(progress: Double = 0.43, wordCount: Int = 20_842) -> LibraryDocument {
+    private func book(progress: Double = 0.43, wordCount: Int = 20_842,
+                      author: String? = "F. Scott Fitzgerald") -> LibraryDocument {
         LibraryDocument(id: hero, title: "Gatsby", fileName: "gatsby.txt",
                         addedAt: Date(timeIntervalSince1970: 0),
                         lastOpenedAt: Date(timeIntervalSince1970: 1_000_000),
                         pageCount: 1, sentenceCount: 100, progressSentence: 43,
                         progressFraction: progress, contentHash: "hash", kind: .text,
-                        author: "F. Scott Fitzgerald", wordCount: wordCount)
+                        author: author, wordCount: wordCount)
     }
 
     private let allStatuses: [PlayerStatus] = [.idle, .buffering, .playing, .paused, .ended, .error]
@@ -297,11 +298,13 @@ final class ContinueCardStateTests: XCTestCase {
 
     func testEstimateWhenNothingOutranksIt() {
         let document = book()
-        // No offer: the estimate, whatever the model is doing.
+        // No offer: the author and the estimate, whatever the model is
+        // doing (R1-02), as the featured classic's line reads. VoiceOver
+        // hears the estimate alone: the label already ends with the author.
         for state in [ModelManager.ModelState.notInstalled, .failed(.notEnoughSpace), .installed] {
             XCTAssertEqual(ContinueListeningCopy.subtitle(for: document, rate: 1, stop: nil,
                                                           offersNaturalVoice: false, modelState: state),
-                           "1 hr 12 min left")
+                           "F. Scott Fitzgerald \u{00B7} 1 hr 12 min left")
             XCTAssertEqual(ContinueListeningCopy.spokenSubtitle(for: document, rate: 1, stop: nil,
                                                                 offersNaturalVoice: false, modelState: state),
                            "1 hour 12 minutes left")
@@ -309,7 +312,45 @@ final class ContinueCardStateTests: XCTestCase {
         // Every estimate runs at the app-wide speed.
         XCTAssertEqual(ContinueListeningCopy.subtitle(for: document, rate: 2, stop: nil, offersNaturalVoice: false,
                                                       modelState: .notInstalled),
-                       document.listeningSubtitle(rate: 2))
+                       "F. Scott Fitzgerald \u{00B7} " + document.listeningSubtitle(rate: 2))
+    }
+
+    /// R1-02: the line joins only the parts it has, so it never ends or
+    /// starts on a dot: no author, an empty one, an unknown length, both.
+    func testTheAuthorLineNeverDangles() {
+        func line(_ document: LibraryDocument) -> String {
+            ContinueListeningCopy.subtitle(for: document, rate: 1, stop: nil, offersNaturalVoice: false,
+                                           modelState: .notInstalled)
+        }
+        XCTAssertEqual(line(book(author: nil)), "1 hr 12 min left")
+        XCTAssertEqual(line(book(author: "")), "1 hr 12 min left")
+        XCTAssertEqual(line(book(wordCount: 0)), "F. Scott Fitzgerald", "an unknown length")
+        XCTAssertEqual(line(book(wordCount: 0, author: nil)), "", "nothing to say, no stray dot")
+        XCTAssertEqual(line(book(progress: 1)), "F. Scott Fitzgerald \u{00B7} Finished")
+        let unstarted = book(progress: 0, wordCount: 48_208)
+        XCTAssertEqual(line(unstarted), "F. Scott Fitzgerald \u{00B7} " + unstarted.listeningSubtitle(rate: 1))
+        for document in [book(author: nil), book(author: ""), book(wordCount: 0), book(wordCount: 0, author: nil)] {
+            let text = line(document)
+            XCTAssertFalse(text.hasPrefix("\u{00B7}") || text.hasSuffix("\u{00B7}") || text.hasPrefix(" "), text)
+        }
+        // A stop or the offer still replaces the whole line, author and all.
+        XCTAssertEqual(ContinueListeningCopy.subtitle(for: book(), rate: 1, stop: .sleepTimer,
+                                                      offersNaturalVoice: false, modelState: .notInstalled),
+                       StopReason.sleepTimer.text)
+        XCTAssertEqual(ContinueListeningCopy.subtitle(for: book(), rate: 1, stop: nil,
+                                                      offersNaturalVoice: true, modelState: .notInstalled),
+                       NaturalVoiceCopy.offer)
+    }
+
+    /// R1-02: VoiceOver's line keeps to the estimate, never the author,
+    /// which the card's label already ends with.
+    func testTheSpokenLineLeavesTheAuthorToTheLabel() {
+        for document in [book(), book(progress: 1), book(wordCount: 0), book(author: nil)] {
+            let spoken = ContinueListeningCopy.spokenSubtitle(for: document, rate: 1, stop: nil,
+                                                              offersNaturalVoice: false, modelState: .notInstalled)
+            XCTAssertEqual(spoken, document.spokenListeningSubtitle(rate: 1))
+            XCTAssertFalse(spoken.contains("Fitzgerald"), spoken)
+        }
     }
 
     /// The whole value as VoiceOver reads it while the book speaks (R18).

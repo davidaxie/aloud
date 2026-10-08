@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Aloud
 
@@ -23,11 +24,39 @@ final class CoverGeometryTests: XCTestCase {
         XCTAssertTrue(CoverGeometry.showsText(width: 160))
     }
 
+    /// R1-04: below 80pt the rule scales with the cover (40% of its width,
+    /// 1.5pt, as thick as a grid cover's), so the hero reads as a small book.
     func testRuleAndCornerFollowTheTextRule() {
-        XCTAssertEqual(CoverGeometry.ruleSize(forWidth: 64), CGSize(width: 14, height: 1))
+        let small = CoverGeometry.ruleSize(forWidth: 64)
+        XCTAssertEqual(small.width, 25.6, accuracy: 0.01)
+        XCTAssertEqual(small.height, 1.5)
+        XCTAssertEqual(CoverGeometry.ruleSize(forWidth: 44).width, 17.6, accuracy: 0.01)
         XCTAssertEqual(CoverGeometry.ruleSize(forWidth: 160), CGSize(width: 26, height: 1.5))
         XCTAssertEqual(CoverGeometry.cornerRadius(forWidth: 64), Theme.Radius.sm)
         XCTAssertEqual(CoverGeometry.cornerRadius(forWidth: 160), Theme.Radius.md)
+    }
+
+    /// R1-08: a long press lifts the cover alone: the cell's width at 2:3
+    /// from its top, or the hero's fixed cover at the accessibility sizes,
+    /// whatever caption hangs below it. The card draws its cover by the
+    /// same rule.
+    func testTheLiftIsTheCoverAlone() {
+        func assertBounds(_ shape: CoverLiftShape, in rect: CGRect, _ expected: CGRect,
+                          line: UInt = #line) {
+            let bounds = shape.path(in: rect).boundingRect
+            for (got, want) in [(bounds.minX, expected.minX), (bounds.minY, expected.minY),
+                                (bounds.width, expected.width), (bounds.height, expected.height)] {
+                XCTAssertEqual(got, want, accuracy: 0.01, "\(bounds)", line: line)
+            }
+        }
+        assertBounds(CoverLiftShape(fixedSize: nil), in: CGRect(x: 0, y: 0, width: 160, height: 330),
+                     CGRect(x: 0, y: 0, width: 160, height: 240))
+        assertBounds(CoverLiftShape(fixedSize: CoverGeometry.heroSize), in: CGRect(x: 0, y: 0, width: 335, height: 260),
+                     CGRect(origin: .zero, size: CoverGeometry.heroSize))
+        XCTAssertFalse(DocumentCardView.usesHeroCover(at: .large))
+        XCTAssertFalse(DocumentCardView.usesHeroCover(at: .xxxLarge))
+        XCTAssertTrue(DocumentCardView.usesHeroCover(at: .accessibility1))
+        XCTAssertTrue(DocumentCardView.usesHeroCover(at: .accessibility5))
     }
 
     func testTheArtworkCoverIsCentredInItsSquare() {

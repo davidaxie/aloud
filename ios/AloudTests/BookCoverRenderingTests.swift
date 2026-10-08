@@ -3,7 +3,8 @@ import XCTest
 @testable import Aloud
 
 /// R22 measured on the real component: every cover lays out at 2:3 inside
-/// whatever it is offered, nothing narrower than 80pt draws type or a page,
+/// whatever it is offered, nothing narrower than 80pt draws type (a page
+/// draws at any width), a long author wraps at full size,
 /// and the progress bar stays in its 3pt. Hosted sizeThatFits and
 /// ImageRenderer pixels only: no window, no controller, no sound.
 @MainActor
@@ -41,7 +42,7 @@ final class BookCoverRenderingTests: XCTestCase {
         let covers: [(name: String, view: AnyView)] = [
             ("BookCover", AnyView(BookCover(title: "T"))),
             ("a text record", AnyView(DocumentCoverView(document: Self.record(kind: .text)))),
-            ("a PDF record", AnyView(DocumentCoverView(document: Self.record(kind: .pdf), showsProgress: false))),
+            ("a PDF record", AnyView(DocumentCoverView(document: Self.record(kind: .pdf)))),
         ]
         for proposal in Self.proposals {
             for cover in covers {
@@ -58,23 +59,45 @@ final class BookCoverRenderingTests: XCTestCase {
 
     // MARK: - No type below 80pt
 
-    /// Below 80pt every cover is the same ground and rule: the title, the
-    /// author, a page and a loading page all draw nothing of their own.
-    func testNoTextOrPageBelowEightyPoints() throws {
+    /// Below 80pt a typographic cover is the same ground and rule whatever
+    /// its title and author, and a loading page matches it: no shrunken
+    /// type (R22).
+    func testNoTextBelowEightyPoints() throws {
         for size in [CGSize(width: 44, height: 66), CGSize(width: 64, height: 96),
                      CGSize(width: 79, height: 118.5), CoverGeometry.heroSize] {
             let label = "\(size.width)×\(size.height)"
             let full = try XCTUnwrap(RenderedPixels(BookCover(title: "The Cask of Amontillado",
                                                               author: "Edgar Allan Poe"), size: size), label)
             let short = try XCTUnwrap(RenderedPixels(BookCover(title: "I"), size: size), label)
-            let page = try XCTUnwrap(RenderedPixels(BookCover(title: "The Cask of Amontillado",
-                                                              art: .page(Self.red)), size: size), label)
             let pending = try XCTUnwrap(RenderedPixels(BookCover(title: "The Cask of Amontillado",
                                                                  art: .pending), size: size), label)
             XCTAssertLessThanOrEqual(full.maxChannelDifference(to: short), 1, "\(label): a title was drawn")
-            XCTAssertLessThanOrEqual(full.maxChannelDifference(to: page), 1, "\(label): a page was drawn")
             XCTAssertLessThanOrEqual(full.maxChannelDifference(to: pending), 1, "\(label): pending differs")
         }
+    }
+
+    /// R1-04: a PDF's page is a picture, not type, so the Continue card's
+    /// 64pt cover shows it rather than a blank tile.
+    func testAPageDrawsAtTheHerosSize() throws {
+        let page = try XCTUnwrap(RenderedPixels(BookCover(title: "Doc", art: .page(Self.red)),
+                                                size: CoverGeometry.heroSize))
+        let centre = page.rgba(x: page.width / 2, y: page.height / 2)
+        XCTAssertTrue(centre.r > 200 && centre.g < 60 && centre.b < 60, "centre pixel \(centre)")
+    }
+
+    /// R1-04: the small face stands off the card: its ground carries one
+    /// more accentSoft wash than a grid cover's, so the hero's 64pt cover
+    /// reads as a book in miniature, not an image that failed to load.
+    func testTheSmallFaceStandsOffTheCard() throws {
+        let small = try XCTUnwrap(RenderedPixels(BookCover(title: "I"), size: CoverGeometry.heroSize))
+        let grid = try render(BookCover(title: "I"), width: 160)
+        // Low on each cover, clear of the rule, the title and the border.
+        let smallGround = small.rgba(x: small.width / 2, y: small.height * 4 / 5)
+        let gridGround = grid.rgba(x: grid.width / 2, y: grid.height * 4 / 5)
+        let difference = max(abs(smallGround.r - gridGround.r), abs(smallGround.g - gridGround.g),
+                             abs(smallGround.b - gridGround.b))
+        XCTAssertGreaterThan(difference, 4, "small \(smallGround) vs grid \(gridGround)")
+        XCTAssertLessThan(smallGround.b, gridGround.b, "a warmer, deeper ground, not a new hue")
     }
 
     func testTitlesAreDrawnFromEightyPoints() throws {
@@ -90,6 +113,68 @@ final class BookCoverRenderingTests: XCTestCase {
         let cask = try render(BookCover(title: "The Cask of Amontillado", art: .pending), width: 160)
         let pride = try render(BookCover(title: "Pride and Prejudice", art: .pending), width: 160)
         XCTAssertLessThanOrEqual(cask.maxChannelDifference(to: pride), 1)
+    }
+
+    // MARK: - The author
+
+    /// R1-03: a long author draws at full size, wrapping onto up to three
+    /// centred lines, never shrunk or cut short. The phone's covers run
+    /// from 155pt; MacGridMetricsTests checks the Mac's 136-168 with the
+    /// Mac's own type.
+    func testALongAuthorWrapsAtFullSize() throws {
+        let title = "Frankenstein; or, The Modern Prometheus"
+        let author = "Mary Wollstonecraft Shelley"
+        for width: CGFloat in [155, 160, 169] {
+            let face = width - 2 * Theme.Space.md
+            let lines = Self.eyebrowLines(author, width: face)
+            XCTAssertLessThanOrEqual(lines.count, 3, "\(width)pt: \(lines)")
+            for word in author.split(separator: " ") {
+                XCTAssertLessThanOrEqual(Self.eyebrowWidth(String(word)), face, "\(width)pt: '\(word)' is cut")
+            }
+            // The cover draws each of those lines: the rows that differ from
+            // the same cover with no author fall into one band a line.
+            let named = try render(BookCover(title: title, author: author), width: width)
+            let bare = try render(BookCover(title: title), width: width)
+            XCTAssertEqual(Self.inkBands(named, against: bare), lines.count, "\(width)pt: \(lines)")
+        }
+    }
+
+    /// A name that fits on one line draws as one line, as before.
+    func testAShortAuthorStaysOnOneLine() throws {
+        let named = try render(BookCover(title: "Emma", author: "Jane Austen"), width: 160)
+        let bare = try render(BookCover(title: "Emma"), width: 160)
+        XCTAssertEqual(Self.inkBands(named, against: bare), 1)
+    }
+
+    /// One line of the cover's author type, as wide as it draws.
+    private static func eyebrowWidth(_ text: String) -> CGFloat {
+        let line = Text(text).font(Theme.font(.eyebrow)).eyebrowTracking().fixedSize().dynamicTypeSize(.large)
+        return UIHostingController(rootView: line).sizeThatFits(in: CGSize(width: unbounded, height: unbounded)).width
+    }
+
+    /// `text` broken greedily into lines no wider than `width`.
+    private static func eyebrowLines(_ text: String, width: CGFloat) -> [String] {
+        var lines: [String] = []
+        for word in text.split(separator: " ").map(String.init) {
+            if let last = lines.last, eyebrowWidth(last + " " + word) <= width {
+                lines[lines.count - 1] = last + " " + word
+            } else {
+                lines.append(word)
+            }
+        }
+        return lines
+    }
+
+    /// Runs of rows where `pixels` differs from `reference`.
+    private static func inkBands(_ pixels: RenderedPixels, against reference: RenderedPixels) -> Int {
+        var bands = 0
+        var inBand = false
+        for row in 0..<pixels.height {
+            let ink = pixels.maxChannelDifference(to: reference, row: row) > 24
+            if ink && !inBand { bands += 1 }
+            inBand = ink
+        }
+        return bands
     }
 
     func testAPageFillsTheCover() throws {

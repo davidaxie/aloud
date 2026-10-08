@@ -23,6 +23,15 @@ struct DocumentCardView: View {
         .accessibilityLabel(Self.accessibilityLabel(for: document, rate: rate))
     }
 
+    /// Whether the card keeps the Continue card's fixed cover
+    /// (`CoverGeometry.heroSize`) instead of filling its column: at the
+    /// accessibility sizes, where the grid is one column. The shelf's long
+    /// press lifts the same cover (`CoverLiftShape`), so the two read this
+    /// one rule.
+    static func usesHeroCover(at size: DynamicTypeSize) -> Bool {
+        size.isAccessibilitySize
+    }
+
     /// Whether a card's title and author wrap in full rather than stop at
     /// two lines and one: from xxLarge, the largest sizes below the
     /// accessibility range, where a phone's two columns cut a long author's
@@ -58,7 +67,7 @@ struct DocumentCardView: View {
     /// scaled with Dynamic Type: the text below it is what grows.
     @ViewBuilder
     private var cover: some View {
-        if dynamicTypeSize.isAccessibilitySize {
+        if Self.usesHeroCover(at: dynamicTypeSize) {
             DocumentCoverView(document: document)
                 .frame(width: CoverGeometry.heroSize.width, height: CoverGeometry.heroSize.height)
         } else {

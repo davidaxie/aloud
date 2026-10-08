@@ -17,7 +17,7 @@ final class FirstRunUITest: XCTestCase {
 
         let featured = app.buttons["library.featured"].firstMatch
         XCTAssertTrue(featured.waitForExistence(timeout: 15), "The empty Library should feature a classic")
-        XCTAssertTrue(featured.label.hasPrefix("The Cask of Amontillado, Edgar Allan Poe, "),
+        XCTAssertTrue(featured.label.hasPrefix("Start with a classic, The Cask of Amontillado, Edgar Allan Poe, "),
                       "Featured label: \(featured.label)")
         XCTAssertFalse(app.buttons["library.add"].exists, "+ appears only once the library holds a book")
         XCTAssertEqual(app.alerts.count, 0, "Nothing stands between launch and the first sentence")

@@ -64,7 +64,9 @@ extension DocumentAction {
     var menuTitle: String {
         switch self {
         case .rename: return "Rename\u{2026}"
-        case .markFinished: return MacMenuCopy.markFinished
+        // The shared title, already in Apple's title case: the iPhone's card
+        // menu, this one and the menu bar (`MacMenuCopy.markFinished`) agree.
+        case .markFinished: return title
         case .delete: return "Delete\u{2026}"
         }
     }

@@ -63,12 +63,12 @@ final class ShelfAccessibilityTests: XCTestCase {
 
     func testUnfinishedBookOffersAllThree() {
         XCTAssertEqual(DocumentAction.available(for: doc()).map(\.title),
-                       ["Rename", "Mark as finished", "Delete"])
+                       ["Rename", "Mark as Finished", "Delete"])
         // Past 0.99 with 20 minutes left (333,333 words), a book is in
         // progress, so it can still be marked.
         XCTAssertEqual(DocumentAction.available(for: doc(progress: LibraryDocument.finishedThreshold,
                                                          wordCount: 333_333)).map(\.title),
-                       ["Rename", "Mark as finished", "Delete"], "the shelf's one Finished rule")
+                       ["Rename", "Mark as Finished", "Delete"], "the shelf's one Finished rule")
     }
 
     func testFinishedBookHasNothingToMark() {

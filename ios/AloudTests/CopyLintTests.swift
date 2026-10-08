@@ -90,6 +90,24 @@ final class CopyLintTests: XCTestCase {
         XCTAssertEqual(spelled.map(\.path), ["Library/EmptyLibraryView.swift"],
                        "PrivacyCopy.line is spelled once:\n" + Self.located(spelled))
 
+        // R1-10: one voice for the promise, the serif aside, wherever it
+        // shows on either app.
+        let mac = SourceTree.exists(SourceTree.macRoot) ? try SourceTree.sources(in: SourceTree.macRoot) : [:]
+        let prefixed = Dictionary(uniqueKeysWithValues: mac.map { (SourceTree.macPrefix + $0.key, $0.value) })
+        let shown = tree.sources.merging(prefixed) { first, _ in first }
+            .filter { $0.value.contains("Text(PrivacyCopy.line)") }
+        XCTAssertGreaterThanOrEqual(shown.count, 3, "the empty Library, Settings and the Mac's: \(shown.keys.sorted())")
+        for (path, text) in shown {
+            var rest = text[...]
+            while let use = rest.range(of: "Text(PrivacyCopy.line)") {
+                let after = rest[use.upperBound...]
+                let next = after.range(of: "Text(")?.lowerBound ?? after.endIndex
+                XCTAssertTrue(after[..<next].contains(".font(Theme.font(.aside))"),
+                              "\(path): the privacy line is set in the aside: \(String(after.prefix(160)))")
+                rest = after
+            }
+        }
+
         let echoes = ["stays on your device", "on this device only", "entirely offline",
                       "everything offline", "All offline"]
         let restated = tree.literals.filter { literal in
@@ -210,6 +228,25 @@ final class CopyLintTests: XCTestCase {
         // means something.
         XCTAssertFalse(named.filter { $0.path == Self.deviceCopyHome }.isEmpty,
                        "\(Self.deviceCopyHome) should spell the iPhone's words")
+    }
+
+    // MARK: - Book, not document
+
+    /// R1-11: what people read calls a book a book, on both apps. The one
+    /// exception is the open error's guess at a scanned document, which is
+    /// what such a file is.
+    func testCopySaysBookNotDocument() throws {
+        let tree = try Tree()
+        let macSources = SourceTree.exists(SourceTree.macRoot) ? try SourceTree.sources(in: SourceTree.macRoot) : [:]
+        let mac = SwiftLiterals.literals(in: macSources, excluding: []).filter { SwiftLiterals.isCopy($0.text) }
+        let allowed = "scanned document"
+        let hits = (tree.copy + mac).filter { literal in
+            let text = literal.readable.replacingOccurrences(of: allowed, with: "")
+            return Self.matches(#"(?i)\bdocuments?\b"#, text)
+        }
+        assertNone(hits, "Copy says book, not document")
+        XCTAssertTrue(Self.matches(#"(?i)\bdocuments?\b"#, "Couldn't open this document"), "the pattern bites")
+        XCTAssertFalse(Self.matches(#"(?i)\bdocuments?\b"#, "documentation"), "only the word")
     }
 
     // MARK: - Helpers

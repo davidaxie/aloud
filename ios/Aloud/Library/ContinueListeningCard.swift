@@ -25,15 +25,25 @@ enum ContinueListeningCopy {
     /// estimate: the card mirrors the chapter line's precedence. The offer
     /// reads the offer row's line, so after a failed space check the card
     /// says so instead of advertising the download that just failed (R21).
+    /// Either replaces the whole line.
+    ///
+    /// Otherwise the author and the estimate, joined by a middle dot as the
+    /// featured classic's line is, with either part left out when it is
+    /// missing, so no dot ever dangles.
     static func subtitle(for document: LibraryDocument, rate: Double, stop: StopReason?,
                          offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
                          spaceNeeded: Int64 = ModelManager.requiredFreeBytes) -> String {
         if let stop { return stop.text }
         if offersNaturalVoice { return NaturalVoiceCopy.offerLine(modelState: modelState, need: spaceNeeded) }
-        return document.listeningSubtitle(rate: rate)
+        var parts: [String] = []
+        if let author = document.author, !author.isEmpty { parts.append(author) }
+        let estimate = document.listeningSubtitle(rate: rate)
+        if !estimate.isEmpty { parts.append(estimate) }
+        return parts.joined(separator: " · ")
     }
 
-    /// The same line as VoiceOver says it.
+    /// The same line as VoiceOver says it, without the author: the label
+    /// already ends with it, and VoiceOver would say it twice.
     static func spokenSubtitle(for document: LibraryDocument, rate: Double, stop: StopReason?,
                                offersNaturalVoice: Bool, modelState: ModelManager.ModelState,
                                spaceNeeded: Int64 = ModelManager.requiredFreeBytes) -> String {
@@ -131,7 +141,7 @@ struct ContinueListeningCard<Actions: View, MenuItems: View>: View {
                                                                    offersNaturalVoice: offersNaturalVoice,
                                                                    modelState: modelState,
                                                                    spaceNeeded: spaceNeeded)) {
-                DocumentCoverView(document: document, showsProgress: false)
+                DocumentCoverView(document: document)
             } accessory: {
                 Color.clear
                     .frame(width: Theme.PlayCircle.compactDiameter, height: Theme.PlayCircle.compactDiameter)
@@ -231,11 +241,12 @@ private struct CircleSlotKey: PreferenceKey {
 
 // MARK: - Hero card shape
 
-/// The shelf's one hero shape (cover, an optional eyebrow, serif title over a
+/// The shelf's one hero shape (cover, an eyebrow, serif title over a
 /// subtitle, and a trailing accessory on a bordered surface), shared by the
 /// Continue Listening card and the empty Library's featured classic, so the
-/// first book a new listener taps looks like the card it becomes. The
-/// featured classic has no eyebrow.
+/// first book a new listener taps looks like the card it becomes. Each
+/// names what it is in its eyebrow (`ContinueListeningCopy.eyebrow`,
+/// `FeaturedClassic.eyebrow`), drawn uppercased.
 struct ShelfHeroCard<Cover: View, Accessory: View>: View {
     private let eyebrow: String?
     private let title: String

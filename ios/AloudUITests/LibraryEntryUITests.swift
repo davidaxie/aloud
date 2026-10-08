@@ -325,6 +325,52 @@ final class LibraryEntryUITests: XCTestCase {
         return false
     }
 
+    // MARK: - The shelf's foot (R1-05)
+
+    /// Once a book is on the shelf, the empty Library's links stay at its
+    /// foot: More classics is a 44pt link that pushes Classics, and the
+    /// featured classic is gone.
+    func testTheShelfKeepsItsLinksAtItsFoot() {
+        let app = XCUIApplication.aloud([reset, seed])
+        app.launch()
+
+        XCTAssertTrue(anyCard(app).waitForExistence(timeout: 15), "the seeded book")
+        XCTAssertFalse(app.buttons["library.featured"].exists, "no featured classic once there is a book")
+        let more = app.buttons["library.shelf.moreClassics"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "More classics at the shelf's foot")
+        XCTAssertGreaterThanOrEqual(more.frame.height, 44, "a 44pt target")
+        XCTAssertTrue(app.buttons["library.shelf.addFile"].firstMatch.exists, "Add a file beside it")
+        XCTAssertFalse(app.descendants(matching: .any)["library.shelf.pasteText"].exists, "no Paste there")
+        more.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["bookshelf.list"].firstMatch.waitForExistence(timeout: 10),
+                      "More classics pushes Classics")
+    }
+
+    // MARK: - The empty Library's paste control (R1-06)
+
+    /// With text on the clipboard the empty Library shows the system's
+    /// paste control, a 44pt link that reads the text without a prompt and
+    /// adds it as a book.
+    func testTheEmptyLibraryPastesThroughTheSystemControl() {
+        UIPasteboard.general.string = """
+            A Pasted Note
+
+            One paragraph to listen to, long enough to be a book of its own.
+            """
+        addTeardownBlock { UIPasteboard.general.items = [] }
+        let app = XCUIApplication.aloud([reset, systemVoice])
+        app.launch()
+
+        let paste = app.descendants(matching: .any)["library.pasteText"].firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 15), "the paste control shows while the clipboard has text")
+        XCTAssertTrue(paste.isHittable)
+        XCTAssertGreaterThanOrEqual(paste.frame.height, 44, "a 44pt target")
+        paste.tap()
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the pasted text opens")
+        tapSystemBack(app)
+        XCTAssertTrue(waitForLibraryCount(1, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
+    }
+
     // MARK: - Delete to empty
 
     func testDeletingEveryBookReturnsTheEmptyState() {
@@ -338,8 +384,9 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertTrue(delete.waitForExistence(timeout: 5))
         delete.tap()
         // The confirmation is up once its message shows; its Delete is then
-        // the only one on screen.
-        let message = app.staticTexts["This removes the document and its listening progress."]
+        // the only one on screen. The seeded book is a classic, so it says
+        // it can come back (R1-11).
+        let message = app.staticTexts["This removes the book and your place in it. You can add it again from Classics."]
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         app.buttons["Delete"].firstMatch.tap()
 

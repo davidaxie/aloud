@@ -70,6 +70,41 @@ final class MacGridMetricsTests: XCTestCase {
         }
     }
 
+    /// R1-03 on the Mac's own type: on the default window's covers and the
+    /// widest, a long author wraps whole words onto at most three lines at
+    /// full size, none cut. Measured with the cover's author type, offered
+    /// the face's width (the cover less its side padding). The narrowest
+    /// window's 136pt cover leaves a 104pt face, short of the 11pt
+    /// eyebrow's longest word here, so it is not claimed.
+    func testALongAuthorFitsTheGridsCovers() throws {
+        let author = "Mary Wollstonecraft Shelley"
+        for width in [MacGridMetrics(windowWidth: 1000).coverWidth, MacGridMetrics.coverWidths.upperBound] {
+            let face = width - 2 * Theme.Space.md
+            var lines: [String] = []
+            for word in author.split(separator: " ").map(String.init) {
+                XCTAssertLessThanOrEqual(Self.eyebrowWidth(word), face, "\(width) pt: '\(word)' is cut")
+                if let last = lines.last, Self.eyebrowWidth(last + " " + word) <= face {
+                    lines[lines.count - 1] = last + " " + word
+                } else {
+                    lines.append(word)
+                }
+            }
+            XCTAssertLessThanOrEqual(lines.count, 3, "\(width) pt: \(lines)")
+        }
+        // And the cover itself still draws at a grid width, author and all.
+        let renderer = ImageRenderer(content: BookCover(title: "Frankenstein; or, The Modern Prometheus",
+                                                        author: author))
+        renderer.proposedSize = ProposedViewSize(width: MacGridMetrics.coverWidths.lowerBound, height: nil)
+        XCTAssertNotNil(renderer.nsImage)
+    }
+
+    /// One line of the cover's author type, as wide as it draws.
+    private static func eyebrowWidth(_ text: String) -> CGFloat {
+        let line = Text(text).font(Theme.font(.eyebrow)).eyebrowTracking().fixedSize().dynamicTypeSize(.large)
+        return NSHostingController(rootView: line)
+            .sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)).width
+    }
+
     // MARK: Arrows
 
     /// 12 cards in 5 columns: rows of 5, 5 and 2.

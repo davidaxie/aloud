@@ -188,7 +188,7 @@ struct MacReaderScreen: View {
                 .font(Theme.font(.title))
                 .foregroundStyle(Theme.textFaint)
                 .accessibilityHidden(true)
-            Text("Couldn't open this document")
+            Text("Couldn't open this book")
                 .font(Theme.font(.headline))
                 .foregroundStyle(Theme.text)
             Text("It may be damaged or a scanned document.")

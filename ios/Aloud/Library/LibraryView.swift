@@ -62,6 +62,9 @@ struct LibraryView: View {
     /// Read on appear, not here: RootView builds a LibraryView on every
     /// import progress tick, and an initial value runs each time.
     @State private var clipboardHasText = false
+    /// A Paste Text that read nothing from a clipboard holding text: the
+    /// paste was declined, and the alert says how to allow it.
+    @State private var pasteDeclined = false
 
     /// The shelf as the feed has it.
     private var shelf: ShelfLayout { feed.layout }
@@ -73,14 +76,18 @@ struct LibraryView: View {
     /// Two columns; one at the accessibility text sizes (AX1+), where a
     /// half-width card can't hold a legible title.
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: metrics.columnSpacing), count: metrics.columns)
+        // Top-aligned: a card with a one-line title is shorter than its
+        // two-line neighbour, and centring it pushed its cover and caption
+        // off the row's line. Top alignment keeps them level, as on the Mac.
+        Array(repeating: GridItem(.flexible(), spacing: metrics.columnSpacing, alignment: .top), count: metrics.columns)
     }
 
     var body: some View {
         Group {
             if store.documents.isEmpty {
                 EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker },
-                                 onPasteText: clipboardHasText ? { pasteText() } : nil)
+                                 onPaste: clipboardHasText
+                                    ? { importer.importText($0.joined(separator: "\n\n")) } : nil)
             } else {
                 grid
             }
@@ -212,7 +219,7 @@ struct LibraryView: View {
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
-            Text("This removes the document and its listening progress.")
+            Text(deleteTarget.map(DocumentAction.deleteMessage(for:)) ?? "")
         }
         // Fixed copy only, as an add's failure (R10). A failed Rename or
         // Mark as finished shows here too, on the Delete failure's slot.
@@ -221,6 +228,13 @@ struct LibraryView: View {
             Button("OK", role: .cancel) {}
         } message: { failure in
             Text(failure.nextStep)
+        }
+        // A declined paste says so, with the way to allow it next time.
+        .alert(PasteTextAction.declinedTitle, isPresented: $pasteDeclined) {
+            Button(PasteTextAction.openSettings) { openSettings() }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(PasteTextAction.declinedMessage)
         }
     }
 
@@ -303,14 +317,25 @@ struct LibraryView: View {
     }
 
     /// The clipboard's text, added as a book that opens playing (R4); text
-    /// that is only whitespace fails as an empty text file does. Nothing,
-    /// when the paste was declined or the text has gone.
+    /// that is only whitespace fails as an empty text file does. A declined
+    /// paste (text was there, the read came back empty) says so; text that
+    /// has gone says nothing. `hasStrings` is read first: it never asks.
     private func pasteText() {
-        guard let text = UIPasteboard.general.string else {
+        let hadStrings = UIPasteboard.general.hasStrings
+        switch PasteTextAction.outcome(hadStrings: hadStrings, string: UIPasteboard.general.string) {
+        case .text(let text):
+            importer.importText(text)
+        case .declined:
             refreshClipboard()
-            return
+            pasteDeclined = true
+        case .gone:
+            refreshClipboard()
         }
-        importer.importText(text)
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private func refreshClipboard() {
@@ -352,6 +377,10 @@ struct LibraryView: View {
                     .id(hero.id)
                 }
                 documentGrid
+                // The empty Library's links stay at the shelf's foot, so the
+                // next book is in reach without the + menu.
+                ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: nil,
+                           idPrefix: "library.shelf")
             }
             .padding(.horizontal, PhoneShelfMetrics.gutter)
             .padding(.top, PhoneShelfMetrics.topPadding)
@@ -381,9 +410,12 @@ struct LibraryView: View {
                 .accessibilityFocused($voFocus, equals: document.id)
                 // What a VoiceOver hand-off scrolls to (`pendingFocus`).
                 .id(document.id)
-                // The long press lifts a rounded card, not a square cell.
+                // The long press lifts the cover alone, by its own corners,
+                // not the cover and a slab of caption; it starts anywhere on
+                // the cell.
                 .contentShape(.contextMenuPreview,
-                              RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                              CoverLiftShape(fixedSize: DocumentCardView.usesHeroCover(at: dynamicTypeSize)
+                                             ? CoverGeometry.heroSize : nil))
                 .contextMenu { contextMenuActions(for: document) }
             }
         }
@@ -444,16 +476,33 @@ struct LibraryView: View {
         }
     }
 
-    /// The long-press menu: Delete in a section of its own, in red, apart
-    /// from the actions that keep the book.
+    /// The long-press menu: the card's own tap first (`openMenuItem`), then
+    /// the actions that keep the book, then Delete in a section of its own,
+    /// in red.
     @ViewBuilder
     private func contextMenuActions(for document: LibraryDocument) -> some View {
+        Section { openMenuItem(for: document) }
         ForEach(DocumentAction.menuSections(for: document), id: \.self) { section in
             Section {
                 ForEach(section, id: \.self) { action in
                     actionButton(action, on: document)
                 }
             }
+        }
+    }
+
+    /// What a tap on the card does, as the menu's lead, labelled by the
+    /// soft haptic's rule in `open(_:)`: it promises playback only when the
+    /// open will start the voice, and not for a finished book, the one
+    /// already playing, or a launch that doesn't autoplay. Not a
+    /// `DocumentAction`: those are the VoiceOver actions and the Mac's
+    /// commands, and opening is the card's own tap.
+    private func openMenuItem(for document: LibraryDocument) -> some View {
+        let plays = model.playback.opensPlaying(document)
+        return Button {
+            open(document)
+        } label: {
+            Label(OpenMenuItem.title(plays: plays), systemImage: OpenMenuItem.systemImage(plays: plays))
         }
     }
 
