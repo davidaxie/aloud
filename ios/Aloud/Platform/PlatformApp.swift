@@ -97,13 +97,16 @@ enum PlatformLifecycle {
             }
         }
 
-        /// The level `notification` carries. One that carries none (the
-        /// iPhone's single `didReceiveMemoryWarning`) is critical, which is
-        /// what that warning has always meant here: a paused engine is
-        /// freed too.
+        /// The level `notification` carries. One that carries none (UIKit's
+        /// own `didReceiveMemoryWarning`) is critical, which is what that
+        /// warning has always meant here: a paused engine is freed too.
         init(of notification: Notification) {
-            let raw = notification.userInfo?[Self.userInfoKey] as? String
-            self = raw.flatMap(Self.init(rawValue:)) ?? .critical
+            self = Self.carried(by: notification) ?? .critical
+        }
+
+        /// The level `notification` carries, if it carries one.
+        static func carried(by notification: Notification) -> Self? {
+            (notification.userInfo?[userInfoKey] as? String).flatMap(Self.init(rawValue:))
         }
 
         /// What a memory warning at this level carries.
@@ -144,6 +147,46 @@ enum PlatformLifecycle {
     static func publisher(for event: Event,
                           in center: NotificationCenter? = nil) -> NotificationCenter.Publisher {
         observed(center, for: event).publisher(for: event.name)
+    }
+
+    /// Each memory warning at its level (M19), for the observers that free
+    /// memory by it. The kernel's pressure source names the level on both
+    /// platforms (`MemoryPressureRelay`, started here for the default
+    /// center). On an iPhone UIKit's own warning, which names none, is the
+    /// safety net and reads as critical, unless the relay names a level
+    /// within `window` of it (nil: `MemoryPressureRelay.coalescingWindow`
+    /// on the default center, none on a test's own), which then stands for
+    /// both: a `.warning` keeps a paused natural voice warm.
+    static func memoryPressure(in center: NotificationCenter? = nil,
+                               window: TimeInterval? = nil) -> AnyPublisher<MemoryPressure, Never> {
+        #if os(iOS)
+        let center = observed(center, for: .memoryWarning)
+        let isDefault = center === NotificationCenter.default
+        if isDefault { MemoryPressureRelay.start() }
+        let window = window ?? (isDefault ? MemoryPressureRelay.coalescingWindow : 0)
+        // A warning that carries its level (the relay's, or one a test
+        // posts) acts at once; UIKit's own carries none.
+        let warnings = center.publisher(for: MemoryPressureRelay.name)
+            .map { Optional(MemoryPressure(of: $0)) }
+            .merge(with: center.publisher(for: Event.memoryWarning.name).map { MemoryPressure.carried(by: $0) })
+        return Deferred { () -> AnyPublisher<MemoryPressure, Never> in
+            let coalescer = MemoryWarningCoalescer(window: window)
+            let feed = warnings.sink { coalescer.receive($0) }
+            return coalescer.output
+                .handleEvents(receiveCancel: {
+                    feed.cancel()
+                    coalescer.cancel()
+                })
+                .eraseToAnyPublisher()
+        }
+        .eraseToAnyPublisher()
+        #elseif os(macOS)
+        // The relay is the Mac's only warning, and it always names a level.
+        _ = window
+        return publisher(for: .memoryWarning, in: center)
+            .map { MemoryPressure(of: $0) }
+            .eraseToAnyPublisher()
+        #endif
     }
 
     /// The center an observer of `event` listens on: the injected one, or
@@ -235,13 +278,19 @@ final class PlatformBackgroundTask {
     #endif
 }
 
-#if os(macOS)
-/// The Mac's memory warning: the kernel's memory-pressure source, posted on
-/// the default center as `PlatformLifecycle.Event.memoryWarning` carrying
-/// its level (`PlatformLifecycle.MemoryPressure`).
+/// The kernel's memory-pressure source, posted on the default center as
+/// `name`, carrying its level (`PlatformLifecycle.MemoryPressure`). The
+/// Mac's only memory warning (`PlatformLifecycle.Event.memoryWarning`); on
+/// an iPhone it tells a `.warning` from a `.critical`, which UIKit's own
+/// warning doesn't (`PlatformLifecycle.memoryPressure(in:window:)`).
 enum MemoryPressureRelay {
 
     static let name = Notification.Name("AloudMemoryWarning")
+
+    /// How close UIKit's own warning and the relay's level must come for the
+    /// level to stand for both. Their order isn't fixed, so UIKit's waits
+    /// this long for a level before it acts as critical.
+    static let coalescingWindow: TimeInterval = 1
 
     /// Made and resumed on first use (a static's initializer runs once) and
     /// kept for the life of the process, so the handler may hold it.
@@ -265,6 +314,58 @@ enum MemoryPressureRelay {
     #if DEBUG
     /// Whether the pressure source runs in this process.
     private(set) static var isRunning = false
+
+    /// Delivers `pressure` as the source's handler does, to `center`.
+    static func deliver(_ pressure: PlatformLifecycle.MemoryPressure, to center: NotificationCenter) {
+        center.post(name: name, object: nil, userInfo: pressure.userInfo)
+    }
     #endif
+}
+
+#if os(iOS)
+/// Merges the relay's levels with UIKit's own warning (`memoryPressure`):
+/// a level acts at once; UIKit's warning is dropped when a level came
+/// within the window before it, and otherwise waits the window for one,
+/// acting as critical if none comes. Fed on the main thread, where both
+/// are posted.
+private final class MemoryWarningCoalescer: @unchecked Sendable {
+
+    let output = PassthroughSubject<PlatformLifecycle.MemoryPressure, Never>()
+    private let window: TimeInterval
+    private var lastLevel: DispatchTime?
+    private var safetyNet: DispatchWorkItem?
+
+    init(window: TimeInterval) {
+        self.window = window
+    }
+
+    /// A warning: its level, or nil for UIKit's own.
+    func receive(_ pressure: PlatformLifecycle.MemoryPressure?) {
+        if let pressure {
+            lastLevel = .now()
+            safetyNet?.cancel()   // the level speaks for the warning waiting on it
+            safetyNet = nil
+            output.send(pressure)
+            return
+        }
+        guard window > 0 else {
+            output.send(.critical)
+            return
+        }
+        if let lastLevel, DispatchTime.now() <= lastLevel + window { return }
+        guard safetyNet == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.safetyNet = nil
+            self.output.send(.critical)
+        }
+        safetyNet = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + window, execute: item)
+    }
+
+    func cancel() {
+        safetyNet?.cancel()
+        safetyNet = nil
+    }
 }
 #endif

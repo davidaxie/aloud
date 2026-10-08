@@ -13,14 +13,33 @@ enum MutedOutputMode: Sendable {
 /// Numbers tuned per platform. (S15)
 enum PlatformTuning {
     #if os(iOS)
-    /// Kokoro's ONNX threads: two keeps synthesis ahead of speech without
-    /// heating the phone.
+    /// Kokoro's ONNX threads: two, until a device measurement says
+    /// otherwise. IOSSynthesisPerfTests (ALOUD_PERF=1, on a device) times
+    /// 2 threads spinning, 2 not spinning and 3 not spinning; a third
+    /// thread is worth taking only if it reads at least 15% faster for no
+    /// more CPU-seconds per second of audio on the A14 floor (an iPhone 12
+    /// Pro), and then the count follows the cores (`hw.perflevel0` and
+    /// `hw.perflevel1`: every performance core and one efficiency core,
+    /// at most 3).
+    /// The iPhone's budgets (M19): synthesis at least 2.5x real time at the
+    /// 2x speed tier, first audio within 1 s warm and 4 s cold.
     static let kokoroThreads = 2
-    /// ONNX Runtime keeps its default spinning threads: the provider stays
-    /// plain "cpu".
-    static let kokoroStopsThreadSpinning = false
-    /// R18: only the Library's Continue card warms the neural voice.
-    static let prewarmsBeyondTheContinueCard = false
+    /// ONNX Runtime's idle threads spin for work by default, competing with
+    /// the main and audio threads and heating the phone toward R11's switch
+    /// to the System voice. Off, through the engine's provider config file
+    /// (`KokoroSherpaEngine.runtimeProvider`), which falls back to plain
+    /// "cpu" whenever the file can't be used.
+    static let kokoroStopsThreadSpinning = true
+    /// R18: the Library's Continue card warms the neural voice, and so does
+    /// the reader for a book loaded in it (LaunchRestore reopens the last
+    /// reader at launch, where no card ever shows).
+    static let prewarmsForLoadedBook = true
+    /// A bare launch never warms it: only a book or the card asks.
+    static let prewarmsAtLaunch = false
+    /// A memory warning's hold on the warm-up ends when the app comes back
+    /// to the foreground, as when the card shows again or another book
+    /// loads: the listener has returned.
+    static let memoryHoldEndsOnReturn = true
     /// Whether going to the background releases an idle neural voice, so
     /// iOS doesn't end the process for its memory.
     static let releasesNeuralOnBackground = true
@@ -51,7 +70,11 @@ enum PlatformTuning {
     /// The natural voice also warms with a book loaded in it and at launch
     /// when it is the saved voice, not only behind the Continue card: a
     /// Mac's reader is often opened without the Library's card showing.
-    static let prewarmsBeyondTheContinueCard = true
+    static let prewarmsForLoadedBook = true
+    static let prewarmsAtLaunch = true
+    /// A window coming back to the front isn't the listener returning: a
+    /// memory warning's hold ends only with the card or another book.
+    static let memoryHoldEndsOnReturn = false
     /// A Mac never ends an app for its memory, and a hidden window keeps
     /// reading.
     static let releasesNeuralOnBackground = false

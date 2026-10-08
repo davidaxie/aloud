@@ -14,8 +14,7 @@ final class CatchingUpTests: XCTestCase {
 
     // MARK: - How far ahead
 
-    /// Where the platform has no listening time, a fixed two sentences
-    /// (an iPhone's rule, unchanged).
+    /// Where a platform has no listening time, a fixed two sentences.
     func testWithoutAListeningTimeItKeepsTwoSentences() {
         XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: Array(repeating: 100, count: 20),
                                                          rate: 2.95, seconds: nil, range: 2...2), 2)
@@ -34,6 +33,47 @@ final class CatchingUpTests: XCTestCase {
         XCTAssertEqual(count(20, 2.95), 10, "short dialogue at 2.95x: capped at 10")
         XCTAssertEqual(count(300, 2.95), 3, "long sentences: three already pass 12 s")
         XCTAssertLessThan(count(100, 1), count(100, 2.95), "a faster speed reaches further")
+    }
+
+    /// P009: an iPhone keeps about 10 s of listening within 2...6
+    /// sentences, so two short lines of dialogue at 2.5x (under a second of
+    /// listening each) no longer run the voice dry.
+    func testAnIPhoneKeepsTenSecondsWithinTwoToSix() {
+        let count = { (characters: Int, rate: Double) in
+            PlaybackController.lookAheadCount(characterCounts: Array(repeating: characters, count: 30),
+                                              rate: rate, seconds: 10, range: 2...6)
+        }
+        // A 20-character line is about 1.9 s at 1x, 0.8 s at 2.5x.
+        XCTAssertGreaterThanOrEqual(count(20, 2.5), 4, "dialogue at 2.5x reaches past two lines")
+        XCTAssertEqual(count(20, 2.5), 6, "capped at six")
+        XCTAssertEqual(count(300, 1), 2, "long sentences at 1x: the floor of two")
+        XCTAssertLessThanOrEqual(count(5, 3), 6)
+        #if os(iOS)
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadSeconds, 10)
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadSentences, 2...6)
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadUnderStrain, 2)
+        XCTAssertEqual(PlatformPlaybackTuning.coolingSwitchLandsWithin, 3)
+        #else
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadSeconds, 12, "the Mac's look-ahead is unchanged")
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadSentences, 3...10)
+        XCTAssertNil(PlatformPlaybackTuning.lookAheadUnderStrain)
+        XCTAssertNil(PlatformPlaybackTuning.coolingSwitchLandsWithin)
+        #endif
+    }
+
+    /// Under Low Power Mode or `.serious` heat the platform's cap holds,
+    /// however short the lines; no cap leaves the count alone.
+    func testStrainCapsTheCount() {
+        let dialogue = Array(repeating: 20, count: 30)
+        XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: dialogue, rate: 2.5, seconds: 10,
+                                                         range: 2...6, strainedCap: 2), 2)
+        XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: dialogue, rate: 2.5, seconds: 10,
+                                                         range: 2...6, strainedCap: nil), 6)
+        XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: dialogue, rate: 2.95, seconds: 12,
+                                                         range: 3...10, strainedCap: nil), 10,
+                       "a Mac, with no cap, as before")
+        XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: dialogue, rate: 1, seconds: nil,
+                                                         range: 2...2, strainedCap: 2), 2)
     }
 
     /// Near the end of a book the count asks for what's there and no more:

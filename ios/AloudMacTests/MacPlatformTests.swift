@@ -32,7 +32,9 @@ final class MacPlatformTests: XCTestCase {
                        PlatformTuning.kokoroThreadCount(performanceCores: PlatformTuning.performanceCoreCount))
         XCTAssertTrue((4...6).contains(PlatformTuning.kokoroThreads))
         XCTAssertTrue(PlatformTuning.kokoroStopsThreadSpinning)
-        XCTAssertTrue(PlatformTuning.prewarmsBeyondTheContinueCard)
+        XCTAssertTrue(PlatformTuning.prewarmsForLoadedBook)
+        XCTAssertTrue(PlatformTuning.prewarmsAtLaunch)
+        XCTAssertFalse(PlatformTuning.memoryHoldEndsOnReturn)
         XCTAssertFalse(PlatformTuning.releasesNeuralOnBackground)
     }
 

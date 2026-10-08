@@ -3,19 +3,22 @@ import Foundation
 
 /// R18: the neural engine loads while the Library shows the Continue card,
 /// so a tap on it speaks in about the time a System sentence takes rather
-/// than after a multi-second model load. On a Mac
-/// (`PlatformTuning.prewarmsBeyondTheContinueCard`) a book loaded in the
-/// neural voice asks for it too, and so does the launch, until a warm-up
-/// first starts: a Mac's reader often opens with no card ever showing.
+/// than after a multi-second model load. A book loaded in the neural voice
+/// asks for it too (`PlatformTuning.prewarmsForLoadedBook`): the reader
+/// LaunchRestore reopens at launch shows no card. On a Mac the launch asks
+/// as well (`PlatformTuning.prewarmsAtLaunch`), until a warm-up first
+/// starts.
 ///
 /// It warms only for the neural voice with the model installed, while the
-/// app is in the foreground, and never under Low Power Mode (the system's
-/// own setting, on a Mac as on an iPhone: M19). A memory warning cancels a
-/// load and keeps the engine cold until the card next appears (or, on a
-/// Mac, another book loads); it frees an idle engine, and at `.critical` a
-/// paused one too (`releasesEngine`). Hiding the card or turning on Low
-/// Power Mode never releases a warm engine: the next tap would only pay
-/// for the load again.
+/// app is in the foreground, never under Low Power Mode (the system's own
+/// setting, on a Mac as on an iPhone: M19) and never while the device is
+/// hot (`.serious` or hotter, as ThermalGuard reports it). A memory warning
+/// cancels a load and keeps the engine cold until the card next appears,
+/// another book loads, or (on an iPhone) the app comes back to the
+/// foreground; it frees an idle engine, and at `.critical` a paused one
+/// too (`releasesEngine`). Hiding the card or turning on Low Power Mode
+/// never releases a warm engine: the next tap would only pay for the load
+/// again.
 ///
 /// It warms Kokoro directly and never touches the controller's status,
 /// "Preparing voice…", the schedule or the mixer. A load holds
@@ -43,8 +46,16 @@ final class NeuralPrewarm {
     private let kokoro: any WarmableTtsEngine
     private let isModelInstalled: @MainActor () -> Bool
     private let isLowPowerMode: () -> Bool
-    /// A loaded book and the launch ask for a warm-up too (a Mac).
-    private let warmsBeyondTheCard: Bool
+    /// A loaded book asks for a warm-up too.
+    private let warmsForLoadedBook: Bool
+    /// The launch asks for one too (a Mac).
+    private let warmsAtLaunch: Bool
+    /// The app coming back to the foreground ends a memory warning's hold
+    /// (an iPhone).
+    private let memoryHoldEndsOnReturn: Bool
+    /// In the background a paused engine goes at either level (an iPhone,
+    /// which ends background apps for their memory first).
+    private let releasesPausedInBackground: Bool
 
     private var cardVisible = false
     private var loadedBookID: UUID?
@@ -53,6 +64,8 @@ final class NeuralPrewarm {
     /// Set at creation, then kept by RootView's scene phase.
     private var sceneActive: Bool
     private var suppressedByMemoryWarning = false
+    /// `.serious` or hotter, as the heat publisher last said.
+    private var isHot = false
     private var warmTask: Task<Void, Never>?
     /// Tells a finished warm-up whether it is still the current one.
     private var warmGeneration = 0
@@ -64,23 +77,31 @@ final class NeuralPrewarm {
     /// load the 800 MB model for nobody. A foreground launch may not be
     /// `.active` yet here, so RootView reports its scene phase from its
     /// first appearance.
-    /// `loadedBook` is the id of the book playback holds; only a Mac
-    /// (`warmsBeyondTheCard`) warms for it.
+    /// `loadedBook` is the id of the book playback holds, which warms where
+    /// `warmsForLoadedBook`. `heat` is whether the device is `.serious` or
+    /// hotter (ThermalGuard's `isHot`); never hot unless given.
     init(playback: PlaybackController,
          kokoro: any WarmableTtsEngine,
          cardVisible: AnyPublisher<Bool, Never>,
          loadedBook: AnyPublisher<UUID?, Never> = Just(nil).eraseToAnyPublisher(),
          isModelInstalled: @escaping @MainActor () -> Bool,
          isLowPowerMode: @escaping () -> Bool = { ProcessInfo.processInfo.isLowPowerModeEnabled },
+         heat: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher(),
          sceneActive: Bool? = nil,
-         warmsBeyondTheCard: Bool = PlatformTuning.prewarmsBeyondTheContinueCard,
+         warmsForLoadedBook: Bool = PlatformTuning.prewarmsForLoadedBook,
+         warmsAtLaunch: Bool = PlatformTuning.prewarmsAtLaunch,
+         memoryHoldEndsOnReturn: Bool = PlatformTuning.memoryHoldEndsOnReturn,
+         releasesPausedInBackground: Bool = PlatformTuning.releasesNeuralOnBackground,
          notifications: NotificationCenter = .default) {
         self.playback = playback
         self.kokoro = kokoro
         self.isModelInstalled = isModelInstalled
         self.isLowPowerMode = isLowPowerMode
-        self.warmsBeyondTheCard = warmsBeyondTheCard
-        launchPending = warmsBeyondTheCard
+        self.warmsForLoadedBook = warmsForLoadedBook
+        self.warmsAtLaunch = warmsAtLaunch
+        self.memoryHoldEndsOnReturn = memoryHoldEndsOnReturn
+        self.releasesPausedInBackground = releasesPausedInBackground
+        launchPending = warmsAtLaunch
         // Here, not as the default argument, which isn't on the main actor.
         self.sceneActive = sceneActive ?? PlatformApp.isActive
 
@@ -101,7 +122,7 @@ final class NeuralPrewarm {
                 guard let self else { return }
                 // Another book is the listener returning too, where it asks
                 // for a warm-up.
-                if self.warmsBeyondTheCard, let id, id != self.loadedBookID {
+                if self.warmsForLoadedBook, let id, id != self.loadedBookID {
                     self.suppressedByMemoryWarning = false
                 }
                 self.loadedBookID = id
@@ -124,14 +145,26 @@ final class NeuralPrewarm {
             .sink { [weak self] _ in self?.reevaluate() }
             .store(in: &subscriptions)
 
-        PlatformLifecycle.publisher(for: .memoryWarning, in: notifications)
+        // Cooling down asks again; heating up never cancels or releases.
+        heat
+            .removeDuplicates()
+            .sink { [weak self] hot in
+                self?.isHot = hot
+                self?.reevaluate()
+            }
+            .store(in: &subscriptions)
+
+        PlatformLifecycle.memoryPressure(in: notifications)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.memoryWarning(PlatformLifecycle.MemoryPressure(of: $0)) }
+            .sink { [weak self] in self?.memoryWarning($0) }
             .store(in: &subscriptions)
     }
 
-    /// From RootView's scene phase: false only in the background.
+    /// From RootView's scene phase: false only in the background. Coming
+    /// back to the foreground is the listener returning, where the platform
+    /// says so: a memory warning's hold ends there.
     func sceneActivityChanged(_ active: Bool) {
+        if active, !sceneActive, memoryHoldEndsOnReturn { suppressedByMemoryWarning = false }
         sceneActive = active
         reevaluate()
     }
@@ -142,12 +175,14 @@ final class NeuralPrewarm {
         let asked = Self.asksForWarmUp(cardVisible: cardVisible,
                                        bookLoaded: loadedBookID != nil,
                                        launchPending: launchPending,
-                                       warmsBeyondTheCard: warmsBeyondTheCard)
+                                       warmsForLoadedBook: warmsForLoadedBook,
+                                       warmsAtLaunch: warmsAtLaunch)
         guard Self.shouldWarm(asked: asked,
                               sceneActive: sceneActive,
                               modelInstalled: isModelInstalled(),
                               voiceIsNeural: playback.voice.engine == .kokoro,
                               lowPowerMode: isLowPowerMode(),
+                              hot: isHot,
                               suppressedByMemoryWarning: suppressedByMemoryWarning),
               !kokoro.isWarm, warmTask == nil else { return }
         launchPending = false
@@ -178,18 +213,20 @@ final class NeuralPrewarm {
                                        modelInstalled: Bool,
                                        voiceIsNeural: Bool,
                                        lowPowerMode: Bool,
+                                       hot: Bool,
                                        suppressedByMemoryWarning: Bool) -> Bool {
         asked && sceneActive && modelInstalled && voiceIsNeural
-            && !lowPowerMode && !suppressedByMemoryWarning
+            && !lowPowerMode && !hot && !suppressedByMemoryWarning
     }
 
-    /// The Continue card asks everywhere; where the platform warms beyond
-    /// it, so do a loaded book and the launch.
+    /// The Continue card asks everywhere; a loaded book and the launch ask
+    /// where the platform warms for them.
     nonisolated static func asksForWarmUp(cardVisible: Bool,
                                           bookLoaded: Bool,
                                           launchPending: Bool,
-                                          warmsBeyondTheCard: Bool) -> Bool {
-        cardVisible || (warmsBeyondTheCard && (bookLoaded || launchPending))
+                                          warmsForLoadedBook: Bool,
+                                          warmsAtLaunch: Bool) -> Bool {
+        cardVisible || (warmsForLoadedBook && bookLoaded) || (warmsAtLaunch && launchPending)
     }
 
     /// The Library is the root of the stack and has a Continue card to show,
@@ -206,8 +243,9 @@ final class NeuralPrewarm {
     /// `status` (M19). Never one that is reading. One that nothing waits on
     /// (no book cued, or one that ended or failed) goes at `.warning`; a
     /// paused one only at `.critical`, since Play would pay the load again.
-    /// The iPhone's warning reads as critical (`MemoryPressure(of:)`), so
-    /// it frees a paused engine as it always has.
+    /// UIKit's own warning, which names no level, reads as critical
+    /// (`PlatformLifecycle.memoryPressure`), so it frees a paused engine as
+    /// it always has; the relay's `.warning` keeps one warm.
     nonisolated static func releasesEngine(under pressure: PlatformLifecycle.MemoryPressure,
                                            status: PlayerStatus) -> Bool {
         switch status {
@@ -217,10 +255,13 @@ final class NeuralPrewarm {
         }
     }
 
-    /// On a Mac the warning is the kernel's memory-pressure source, whose
-    /// level the relay carries (`MemoryPressureRelay`).
-    private func memoryWarning(_ pressure: PlatformLifecycle.MemoryPressure) {
+    /// The level is the kernel's memory-pressure source's, as the relay
+    /// carries it (`MemoryPressureRelay`), or critical for UIKit's own.
+    private func memoryWarning(_ warned: PlatformLifecycle.MemoryPressure) {
         suppressedByMemoryWarning = true
+        // A backgrounded app is the first iOS ends for its memory: there a
+        // paused engine goes at either level.
+        let pressure: PlatformLifecycle.MemoryPressure = !sceneActive && releasesPausedInBackground ? .critical : warned
         // A load in flight began on a cold engine, so freeing what it loads
         // finishes cancelling it at either level, a paused book's included.
         let cancelledLoad = warmTask != nil

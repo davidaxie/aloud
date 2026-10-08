@@ -23,11 +23,29 @@ final class NeuralPrewarmTests: XCTestCase {
         var lowPowerMode = false
     }
 
+    /// Which platform rules a harness follows: only the card asks, unless a
+    /// test names an iPhone's or a Mac's rules (pinned here rather than
+    /// taken from the host, so each test reads the same on both).
+    private struct Rules {
+        var forLoadedBook = false
+        var atLaunch = false
+        var holdEndsOnReturn = false
+        var releasesPausedInBackground = false
+
+        static let cardOnly = Rules()
+        /// P010, P011, P013: a loaded book warms, the launch doesn't, the
+        /// foreground ends a memory hold, the background frees a paused engine.
+        static let iPhone = Rules(forLoadedBook: true, atLaunch: false, holdEndsOnReturn: true,
+                                  releasesPausedInBackground: true)
+        static let mac = Rules(forLoadedBook: true, atLaunch: true)
+    }
+
     private struct Harness {
         let rig: PlaybackTestRig
         let neural: FakeNeuralEngine
         let card: PassthroughSubject<Bool, Never>
         let book: PassthroughSubject<UUID?, Never>
+        let heat: CurrentValueSubject<Bool, Never>
         let conditions: Conditions
         let center: NotificationCenter
         let prewarm: NeuralPrewarm
@@ -35,16 +53,16 @@ final class NeuralPrewarmTests: XCTestCase {
 
     /// Michael is the voice unless `neuralVoice` is false; no book is loaded.
     /// The scene starts as `sceneActive` says, never as the test host's
-    /// app happens to be. Only the card asks for a warm-up unless
-    /// `warmsBeyondTheCard` (a Mac's rule, pinned here rather than taken
-    /// from the host, so each test reads the same on both).
+    /// app happens to be. Only the card asks for a warm-up unless `rules`
+    /// say otherwise. Never hot until `heat` says so.
     private func makeHarness(neuralVoice: Bool = true, sceneActive: Bool = true,
-                             warmsBeyondTheCard: Bool = false) -> Harness {
+                             rules: Rules = .cardOnly) -> Harness {
         let neural = FakeNeuralEngine()
         let rig = PlaybackTestRig(neural: neural)
         if neuralVoice { rig.controller.voice = PlaybackTestRig.michael }
         let card = PassthroughSubject<Bool, Never>()
         let book = PassthroughSubject<UUID?, Never>()
+        let heat = CurrentValueSubject<Bool, Never>(false)
         let conditions = Conditions()
         let center = NotificationCenter()
         let prewarm = NeuralPrewarm(playback: rig.controller,
@@ -53,10 +71,14 @@ final class NeuralPrewarmTests: XCTestCase {
                                     loadedBook: book.eraseToAnyPublisher(),
                                     isModelInstalled: { conditions.modelInstalled },
                                     isLowPowerMode: { conditions.lowPowerMode },
+                                    heat: heat.eraseToAnyPublisher(),
                                     sceneActive: sceneActive,
-                                    warmsBeyondTheCard: warmsBeyondTheCard,
+                                    warmsForLoadedBook: rules.forLoadedBook,
+                                    warmsAtLaunch: rules.atLaunch,
+                                    memoryHoldEndsOnReturn: rules.holdEndsOnReturn,
+                                    releasesPausedInBackground: rules.releasesPausedInBackground,
                                     notifications: center)
-        return Harness(rig: rig, neural: neural, card: card, book: book, conditions: conditions,
+        return Harness(rig: rig, neural: neural, card: card, book: book, heat: heat, conditions: conditions,
                        center: center, prewarm: prewarm)
     }
 
@@ -77,31 +99,46 @@ final class NeuralPrewarmTests: XCTestCase {
 
     func testShouldWarmTruthTable() {
         var rows = 0
-        for bits in 0..<64 {
+        for bits in 0..<128 {
             let flag = { (bit: Int) in bits & (1 << bit) != 0 }
-            let expected = flag(0) && flag(1) && flag(2) && flag(3) && !flag(4) && !flag(5)
+            let expected = flag(0) && flag(1) && flag(2) && flag(3) && !flag(4) && !flag(5) && !flag(6)
             XCTAssertEqual(NeuralPrewarm.shouldWarm(asked: flag(0),
                                                     sceneActive: flag(1),
                                                     modelInstalled: flag(2),
                                                     voiceIsNeural: flag(3),
                                                     lowPowerMode: flag(4),
+                                                    hot: flag(6),
                                                     suppressedByMemoryWarning: flag(5)),
                            expected, "row \(bits)")
             rows += 1
         }
-        XCTAssertEqual(rows, 64)
+        XCTAssertEqual(rows, 128)
     }
 
-    /// The card asks everywhere; a loaded book and the launch ask only
-    /// where the platform warms beyond the card (a Mac).
+    /// The card asks everywhere; a loaded book where the platform warms
+    /// for it (both), the launch where it warms at launch (a Mac).
     func testWhatAsksForAWarmUp() {
-        for bits in 0..<16 {
+        for bits in 0..<32 {
             let flag = { (bit: Int) in bits & (1 << bit) != 0 }
-            let expected = flag(0) || (flag(3) && (flag(1) || flag(2)))
+            let expected = flag(0) || (flag(3) && flag(1)) || (flag(4) && flag(2))
             XCTAssertEqual(NeuralPrewarm.asksForWarmUp(cardVisible: flag(0), bookLoaded: flag(1),
-                                                       launchPending: flag(2), warmsBeyondTheCard: flag(3)),
+                                                       launchPending: flag(2), warmsForLoadedBook: flag(3),
+                                                       warmsAtLaunch: flag(4)),
                            expected, "row \(bits)")
         }
+    }
+
+    /// P010: the iPhone warms for a loaded book (the reader LaunchRestore
+    /// reopens) but never for a bare launch; the Mac does both.
+    func testThePlatformsRules() {
+        XCTAssertTrue(PlatformTuning.prewarmsForLoadedBook)
+        #if os(iOS)
+        XCTAssertFalse(PlatformTuning.prewarmsAtLaunch, "an iPhone launch never warms on its own")
+        XCTAssertTrue(PlatformTuning.memoryHoldEndsOnReturn)
+        #else
+        XCTAssertTrue(PlatformTuning.prewarmsAtLaunch)
+        XCTAssertFalse(PlatformTuning.memoryHoldEndsOnReturn)
+        #endif
     }
 
     func testContinueCardVisibility() {
@@ -256,13 +293,13 @@ final class NeuralPrewarmTests: XCTestCase {
         XCTAssertTrue(harness.neural.isWarm)
     }
 
-    // MARK: - Beyond the card (a Mac)
+    // MARK: - Beyond the card
 
     /// Where the platform warms beyond the card, the launch asks once (no
     /// card ever shows when a book opens straight into the reader), and a
     /// different book loaded after a memory warning asks again.
     func testTheLaunchAndALoadedBookWarmBeyondTheCard() async {
-        let harness = makeHarness(warmsBeyondTheCard: true)
+        let harness = makeHarness(rules: .mac)
         let rig = harness.rig
         harness.prewarm.reevaluate()
         await warm(harness)
@@ -280,14 +317,95 @@ final class NeuralPrewarmTests: XCTestCase {
         XCTAssertFalse(rig.controller.isPreparingVoice)
     }
 
-    /// Where only the card asks (an iPhone), neither the launch nor a loaded
-    /// book warms the engine.
+    /// Where only the card asks, neither the launch nor a loaded book warms
+    /// the engine.
     func testOnlyTheCardWarmsWhereThePlatformDoesNotWarmBeyondIt() async {
-        let harness = makeHarness(warmsBeyondTheCard: false)
+        let harness = makeHarness(rules: .cardOnly)
         harness.prewarm.reevaluate()
         harness.book.send(UUID())
         await elapse(0.3)
         XCTAssertEqual(harness.neural.warmUpCalls, 0)
+    }
+
+    /// P010: on an iPhone the launch alone asks for nothing; the reader for
+    /// a natural-voice book that LaunchRestore reopens does, with no card
+    /// ever showing, and playback never moves for it.
+    func testTheIPhoneWarmsForALoadedBookButNotAtLaunch() async {
+        let harness = makeHarness(rules: .iPhone)
+        harness.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0, "a bare launch is no ask on an iPhone")
+
+        harness.book.send(UUID())
+        await warm(harness)
+        XCTAssertEqual(harness.rig.statuses, [.idle], "playback never moved")
+        XCTAssertFalse(harness.rig.controller.isPreparingVoice)
+        XCTAssertNil(harness.rig.controller.notice)
+    }
+
+    /// P010: a loaded book under Low Power Mode, at `.serious` heat, in the
+    /// background or behind a memory warning starts nothing.
+    func testALoadedBookKeepsEveryGate() async {
+        for gate in ["low power", "hot", "background", "memory warning"] {
+            let harness = makeHarness(sceneActive: gate != "background", rules: .iPhone)
+            if gate == "low power" { harness.conditions.lowPowerMode = true }
+            if gate == "hot" { harness.heat.send(true) }
+            if gate == "memory warning" {
+                // The book loads first (a new book ends a hold), held back
+                // by Low Power Mode until the warning lands.
+                harness.conditions.lowPowerMode = true
+                harness.book.send(UUID())
+                PlatformLifecycle.post(.memoryWarning, to: harness.center)
+                await elapse(0.1)
+                harness.conditions.lowPowerMode = false
+            } else {
+                harness.book.send(UUID())
+            }
+            harness.prewarm.reevaluate()
+            await elapse(0.3)
+            XCTAssertEqual(harness.neural.warmUpCalls, 0, gate)
+            XCTAssertFalse(harness.prewarm.isWarming, gate)
+        }
+    }
+
+    /// The heat gate: no warm-up while hot; cooling down asks again, and
+    /// heating up never releases a warm engine.
+    func testHeatHoldsTheWarmUpUntilItCools() async {
+        let harness = makeHarness()
+        harness.heat.send(true)
+        harness.card.send(true)
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0)
+
+        harness.heat.send(false)
+        await warm(harness)
+        harness.heat.send(true)
+        await elapse(0.2)
+        XCTAssertTrue(harness.neural.isWarm, "heat alone never releases")
+    }
+
+    /// P013: on an iPhone the app coming back to the foreground ends a
+    /// memory warning's hold, with the reader's book still loaded; a Mac's
+    /// window coming back doesn't.
+    func testComingBackToTheForegroundEndsAMemoryHoldOnAnIPhone() async {
+        for rules in [Rules.iPhone, Rules.mac] {
+            let harness = makeHarness(rules: rules)
+            harness.book.send(UUID())
+            harness.prewarm.reevaluate()
+            await warm(harness)
+            PlatformLifecycle.post(.memoryWarning, to: harness.center)
+            let released = await harness.rig.waitUntil(2) { !harness.neural.isWarm }
+            XCTAssertTrue(released)
+
+            harness.prewarm.sceneActivityChanged(false)
+            harness.prewarm.sceneActivityChanged(true)
+            if rules.holdEndsOnReturn {
+                await warm(harness, call: 2)
+            } else {
+                await elapse(0.3)
+                XCTAssertEqual(harness.neural.warmUpCalls, 1, "a Mac's hold waits for the card or another book")
+            }
+        }
     }
 
     /// A load holds the platform activity from its start to its end.
@@ -366,5 +484,44 @@ final class NeuralPrewarmTests: XCTestCase {
         XCTAssertEqual(rig.controller.status, .playing, "the reading never stops for it")
         XCTAssertTrue(harness.neural.requests.isEmpty)
         rig.controller.pause()
+    }
+
+    /// Michael paused on a warm engine, mid-book, with the iPhone's rules.
+    private func pausedOnAWarmEngine(sceneActive: Bool = true) async throws -> Harness {
+        let harness = makeHarness(sceneActive: sceneActive, rules: .iPhone)
+        harness.neural.finishWarmUp()
+        harness.rig.loadDefault(at: 3)
+        harness.rig.controller.play()
+        try await harness.rig.waitUntilPlayingOrSkip()
+        harness.rig.controller.pause()
+        XCTAssertEqual(harness.rig.controller.status, .paused)
+        XCTAssertTrue(harness.neural.isWarm)
+        return harness
+    }
+
+    /// P013: the relay's `.warning` keeps a paused book's voice warm, so
+    /// Play never pays the load again; `.critical` frees it, and so does
+    /// UIKit's own warning, which names no level.
+    func testEachLevelAndAPausedEngine() async throws {
+        for (pressure, frees) in [(PlatformLifecycle.MemoryPressure?.some(.warning), false),
+                                  (.some(.critical), true),
+                                  (nil, true)] {
+            let harness = try await pausedOnAWarmEngine()
+            PlatformLifecycle.post(.memoryWarning, to: harness.center, pressure: pressure)
+            let released = await harness.rig.waitUntil(frees ? 2 : 0.5) { !harness.neural.isWarm }
+            XCTAssertEqual(released, frees, "\(pressure.map(\.rawValue) ?? "UIKit's")")
+            XCTAssertEqual(harness.rig.controller.status, .paused)
+            XCTAssertFalse(harness.rig.controller.isPreparingVoice)
+        }
+    }
+
+    /// P011: in the background (where the platform frees memory there) a
+    /// warning at either level frees a paused engine.
+    func testInTheBackgroundAWarningFreesAPausedEngine() async throws {
+        let harness = try await pausedOnAWarmEngine()
+        harness.prewarm.sceneActivityChanged(false)
+        PlatformLifecycle.post(.memoryWarning, to: harness.center, pressure: .warning)
+        let released = await harness.rig.waitUntil(2) { !harness.neural.isWarm }
+        XCTAssertTrue(released, "a backgrounded app is the first to go")
     }
 }

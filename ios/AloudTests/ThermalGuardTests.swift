@@ -30,8 +30,14 @@ final class ThermalGuardTests: XCTestCase {
     private var selections: [String] = []
     private var subscriptions: Set<AnyCancellable> = []
 
-    private func makeRig(_ neural: FakeNeuralEngine = FakeNeuralEngine(warm: true)) -> PlaybackTestRig {
-        let rig = PlaybackTestRig(sentences: 40, neural: neural)
+    /// Long sentences, so the look-ahead stays at the few sentences the
+    /// cooling switch splices behind without a cut, on every platform
+    /// (`PlatformPlaybackTuning.coolingSwitchLandsWithin`); short ones
+    /// (`deepQueue`) fill an iPhone's queue to its six.
+    private func makeRig(_ neural: FakeNeuralEngine = FakeNeuralEngine(warm: true),
+                         deepQueue: Bool = false) -> PlaybackTestRig {
+        let shallow = PlatformPlaybackTuning.coolingSwitchLandsWithin != nil
+        let rig = PlaybackTestRig(sentences: 40, wordsPerSentence: deepQueue || !shallow ? 3 : 30, neural: neural)
         rig.controller.voiceSelections
             .sink { [weak self] in self?.selections.append($0.id) }
             .store(in: &subscriptions)
@@ -91,6 +97,71 @@ final class ThermalGuardTests: XCTestCase {
         XCTAssertEqual(rig.announcements, [Self.coolingSpoken])
         XCTAssertNil(rig.controller.stopped)
         XCTAssertEqual(selections, [], "heat is never persisted as a pick")
+    }
+
+    /// P009: an iPhone keeps up to six sentences queued, more than the
+    /// cooling switch may wait behind. Heating up with six natural-voice
+    /// clips queued drops those past the next sentence boundary there, so
+    /// the System voice reads within three sentences, from the one after
+    /// the sentence playing, never re-reading it.
+    func testWithADeepQueueTheCoolingSwitchLandsWithinThreeSentences() async throws {
+        guard let limit = PlatformPlaybackTuning.coolingSwitchLandsWithin else {
+            throw XCTSkip("a Mac splices after its whole queue")
+        }
+        let rig = makeRig(deepQueue: true)
+        try await startPlaying(rig)
+        let deep = PlatformPlaybackTuning.lookAheadSentences.upperBound
+        let filled = await rig.waitUntil(2) {
+            (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence >= deep
+        }
+        XCTAssertTrue(filled, "six natural-voice clips past the one playing")
+        let thermal = makeGuard(rig)
+        let mark = rig.events.count
+        let startedAt = rig.controller.currentSentence
+
+        thermal.thermalStateChanged(.serious)
+        let switched = await rig.waitUntil { rig.controller.voice == Self.system }
+        XCTAssertTrue(switched)
+        // Cut short, the switch commits at the boundary, then its clip goes on.
+        let systemQueued = await rig.waitUntil(2) {
+            Self.scheduled(Array(rig.events[mark...])).contains { $0.voiceID == Self.system.id }
+        }
+        XCTAssertTrue(systemQueued)
+        let queued = Self.scheduled(Array(rig.events[mark...]))
+        let firstSystem = try XCTUnwrap(queued.first { $0.voiceID == Self.system.id })
+        XCTAssertLessThanOrEqual(firstSystem.sentence - startedAt, limit,
+                                 "the System voice reads within \(limit) sentences")
+        XCTAssertGreaterThan(firstSystem.sentence, startedAt, "the sentence playing is never read again")
+        XCTAssertEqual(rig.controller.notice, .coolingDown)
+        XCTAssertEqual(rig.announcements, [Self.coolingSpoken])
+        XCTAssertEqual(selections, [], "heat is never persisted as a pick")
+
+        let readOn = await rig.waitUntil(3) { rig.controller.currentSentence > firstSystem.sentence }
+        XCTAssertTrue(readOn, "reading goes on in the System voice")
+        XCTAssertEqual(rig.controller.status, .playing)
+        rig.controller.pause()
+    }
+
+    /// The look-ahead under strain: two sentences on an iPhone at
+    /// `.serious` heat or in Low Power Mode, the whole queue on a Mac.
+    func testStrainShrinksTheLookAheadWhereThePlatformSaysSo() async throws {
+        let rig = makeRig(deepQueue: true)
+        rig.controller.isUnderStrain = { true }
+        try await startPlaying(rig)
+        let range = PlatformPlaybackTuning.lookAheadSentences
+        let expected = PlaybackController.lookAheadCount(
+            characterCounts: rig.content.sentences.map(\.text.count), rate: 1,
+            seconds: PlatformPlaybackTuning.lookAheadSeconds, range: range,
+            strainedCap: PlatformPlaybackTuning.lookAheadUnderStrain)
+        let reached = await rig.waitUntil(2) {
+            (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence >= expected
+        }
+        XCTAssertTrue(reached)
+        await elapse(0.1)
+        let ahead = (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence
+        XCTAssertLessThanOrEqual(ahead, expected, "never past the strained count")
+        if PlatformPlaybackTuning.lookAheadUnderStrain != nil { XCTAssertEqual(expected, 2) }
+        rig.controller.pause()
     }
 
     func testCoolingDownRestoresThePreferredVoice() async throws {

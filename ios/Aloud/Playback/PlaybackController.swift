@@ -203,6 +203,13 @@ final class PlaybackController: ObservableObject {
     /// background waits for `sceneDidBecomeActive`. Tests replace it.
     var isAppActive: () -> Bool = { PlatformApp.isActive }
 
+    /// Whether the device is under strain now: Low Power Mode, or `.serious`
+    /// heat or hotter. Where the platform says so
+    /// (`PlatformPlaybackTuning.lookAheadUnderStrain`) the look-ahead
+    /// shrinks while it holds. AppModel answers through ThermalGuard; tests
+    /// set it.
+    var isUnderStrain: @MainActor () -> Bool = { false }
+
     /// How long an "Undo jump" offer stays up. Tests shorten it.
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
 
@@ -486,10 +493,18 @@ final class PlaybackController: ObservableObject {
     /// the engine warms; once fixed, sentences from it on are synthesized and
     /// queued in `voice` behind the clips already on the node. `notice` is
     /// what the commit shows (R11's cooling switch passes its own).
+    /// `landingWithin`: the most sentences past the playhead the splice may
+    /// sit (R11's cooling switch on an iPhone), nil for no limit.
+    /// `outgoingThrough`: set when the queue was deeper than that, so the
+    /// splice sits at the next boundary with the outgoing voice's clips
+    /// still queued through this sentence; they are dropped there
+    /// (`sentenceFinished`).
     private struct VoiceHandoff {
         let voice: TtsVoice
         let notice: PlaybackNotice?
         var spliceAt: Int?
+        var landingWithin: Int? = nil
+        var outgoingThrough: Int? = nil
     }
     private var handoff: VoiceHandoff?
     private var isSettingVoiceQuietly = false
@@ -498,7 +513,7 @@ final class PlaybackController: ObservableObject {
     /// splice); nil with none. Heat reads it (`ThermalGuard`).
     var incomingVoice: TtsVoice? { handoff?.voice }
 
-    private static let lookAhead = 2
+    nonisolated private static let lookAhead = 2
     /// Spoken seconds of a sentence at 1x, from its characters: Kokoro's
     /// measured fit (0.94 s + 50.4 ms per character).
     nonisolated static func estimatedSeconds(characters: Int) -> TimeInterval {
@@ -1528,8 +1543,15 @@ final class PlaybackController: ObservableObject {
     /// How many sentences past the playhead stay queued: the platform's
     /// listening time at `rate`, within its sentence range
     /// (`PlatformPlaybackTuning`), or a fixed `lookAhead` where it has none.
+    /// `strainedCap`: the platform's smaller count under Low Power Mode or
+    /// heat (`PlatformPlaybackTuning.lookAheadUnderStrain`), nil otherwise.
     nonisolated static func lookAheadCount(characterCounts: [Int], rate: Double,
-                                           seconds: TimeInterval?, range: ClosedRange<Int>) -> Int {
+                                           seconds: TimeInterval?, range: ClosedRange<Int>,
+                                           strainedCap: Int? = nil) -> Int {
+        if let strainedCap {
+            return min(lookAheadCount(characterCounts: characterCounts, rate: rate, seconds: seconds, range: range),
+                       max(strainedCap, 1))
+        }
         guard let seconds else { return lookAhead }
         let speed = max(rate, 0.1)
         var queued: TimeInterval = 0
@@ -1546,9 +1568,10 @@ final class PlaybackController: ObservableObject {
     private func lookAheadHorizon(in content: DocContent) -> Int {
         let range = PlatformPlaybackTuning.lookAheadSentences
         let ahead = content.sentences.dropFirst(currentSentence + 1).prefix(range.upperBound).map(\.text.count)
+        let strained = PlatformPlaybackTuning.lookAheadUnderStrain.flatMap { isUnderStrain() ? $0 : nil }
         return currentSentence + Self.lookAheadCount(characterCounts: ahead, rate: rate,
                                                      seconds: PlatformPlaybackTuning.lookAheadSeconds,
-                                                     range: range)
+                                                     range: range, strainedCap: strained)
     }
 
     /// Keeps the player node loaded past the playhead (`lookAheadHorizon`).
@@ -1860,6 +1883,16 @@ final class PlaybackController: ObservableObject {
         if frozenSentenceElapsed != nil { frozenSentenceElapsed = 0 }
         // The frame ticker prunes only while the word tint is on.
         wordTiming.prune(before: currentSentence)
+        // A splice cut short (R11's cooling switch on a deep queue): the
+        // outgoing voice's clips still queued from here on are dropped, and
+        // the incoming voice reads on from this sentence, its first clip
+        // already warmed (`primeHandoff`). Never inside a pause's ramp.
+        if isActive, let pending = handoff, pending.outgoingThrough != nil,
+           let splice = pending.spliceAt, currentSentence >= splice {
+            commitHandoff()
+            startPlayback(at: currentSentence)
+            return
+        }
         // The first clip in the incoming voice is now the one playing.
         if let splice = handoff?.spliceAt, currentSentence >= splice { commitHandoff() }
         // Synthesis fell behind: this sentence's clip isn't on the node, so
@@ -2002,15 +2035,19 @@ final class PlaybackController: ObservableObject {
     func cancelVoiceHandoff() {
         guard let pending = handoff else { return }
         handoff = nil   // first: an invalidate would commit a primed splice
-        if let splice = pending.spliceAt, hasActiveSchedule, lastScheduled >= splice { reloadCurrent() }
+        // A splice cut short has the outgoing voice's own clips past it:
+        // only what was queued after them is in the incoming voice.
+        guard let splice = pending.spliceAt else { return }
+        let firstIncoming = pending.outgoingThrough.map { max($0 + 1, splice) } ?? splice
+        if hasActiveSchedule, lastScheduled >= firstIncoming { reloadCurrent() }
     }
 
     /// R5 install switch (and R11's thermal fallback): moves to `newVoice`
     /// with no gap and no buffering.
     /// - Playing: the engine warms off the audio path while the current voice
     ///   keeps reading. The splice is then fixed at the first sentence not yet
-    ///   handed to the player node (`lastScheduled + 1`, at most `lookAhead`
-    ///   + 1 ahead), never the literal next boundary: the node can't unqueue
+    ///   handed to the player node (`lastScheduled + 1`, at most the
+    ///   look-ahead + 1 ahead), never the literal next boundary: the node can't unqueue
     ///   single buffers, and a flush would make the gap R5 forbids. That
     ///   sentence is synthesized in the new voice and queued behind the old
     ///   clips; when it becomes current the voice commits quietly and the
@@ -2021,7 +2058,12 @@ final class PlaybackController: ObservableObject {
     ///   is loaded) and the cue is warmed in it.
     /// Never emits `voiceSelections`: the stored choice didn't change, only
     /// what can now honor it. A deliberate pick before the splice cancels it.
-    func switchVoiceAtSentenceBoundary(to newVoice: TtsVoice, notice: PlaybackNotice? = nil) {
+    /// `landingWithin` (R11's cooling switch on an iPhone): with more clips
+    /// queued past the playhead than this, the splice is the next boundary
+    /// instead, and the clips queued past it are dropped there: reading
+    /// restarts from that sentence in the new voice, already warmed.
+    func switchVoiceAtSentenceBoundary(to newVoice: TtsVoice, notice: PlaybackNotice? = nil,
+                                       landingWithin: Int? = nil) {
         guard newVoice != voice else { handoff = nil; return }
         if audition != nil { finishAudition() }   // back to the cue it began from; that switches quietly
         guard isActive, content != nil, currentSentence >= 0 else {
@@ -2037,7 +2079,7 @@ final class PlaybackController: ObservableObject {
             }
             return
         }
-        handoff = VoiceHandoff(voice: newVoice, notice: notice, spliceAt: nil)
+        handoff = VoiceHandoff(voice: newVoice, notice: notice, spliceAt: nil, landingWithin: landingWithin)
         if newVoice.engine == .kokoro, let kokoro, !kokoro.isWarm {
             let expected = newVoice
             Task { [weak self] in
@@ -2073,7 +2115,14 @@ final class PlaybackController: ObservableObject {
             if isActive { startPlayback(at: max(currentSentence, 0)) } else { cuePrefetch() }
             return
         }
-        let splice = min(lastScheduled + 1, content.sentences.count)
+        var splice = min(lastScheduled + 1, content.sentences.count)
+        // Too deep a queue for the switch's limit: it lands at the next
+        // boundary, where the clips queued past it are dropped.
+        if let limit = pending.landingWithin, splice - currentSentence > max(limit, 1),
+           currentSentence + 1 < content.sentences.count {
+            pending.outgoingThrough = lastScheduled
+            splice = currentSentence + 1
+        }
         pending.spliceAt = splice
         handoff = pending
         cuePrefetch(from: splice, through: splice + 1, voice: pending.voice)
@@ -2197,6 +2246,21 @@ final class PlaybackController: ObservableObject {
         // nothing more from it: every clip before its splice is queued.
         guard !isActive, handoff?.voice.engine != .kokoro else { return }
         kokoro?.release()
+    }
+
+    /// Whether the audio engine runs now. Paused, it runs on until the idle
+    /// stop (`idleEngineStopDelay`). Reading it never builds the output.
+    var isAudioEngineRunning: Bool { audioEngine.isRunning }
+
+    /// The app went to the background where the platform frees memory there
+    /// (`PlatformTuning.releasesNeuralOnBackground`). While the idle audio
+    /// engine still runs, iOS can't suspend the app, a memory warning still
+    /// reaches it, and Play comes back to a warm voice: the natural voice
+    /// stays, and the idle stop frees it when the engine stops
+    /// (`stopIdleEngine`). With the engine already stopped it goes now.
+    func releaseNeuralEngineOnBackground() {
+        guard !isAudioEngineRunning else { return }
+        releaseNeuralEngineIfIdle()
     }
 
     /// Listening view hook: auditioning a natural voice may have warmed the

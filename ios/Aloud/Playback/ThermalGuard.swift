@@ -21,8 +21,10 @@ final class ThermalGuard {
     /// wins.
     var preferredVoice: @MainActor () -> TtsVoice
 
-    /// `.serious` or hotter.
-    var isHot: Bool { state.rawValue >= ProcessInfo.ThermalState.serious.rawValue }
+    /// `.serious` or hotter, published as it changes: the look-ahead
+    /// shrinks (`PlaybackController.isUnderStrain`) and the pre-warm holds
+    /// off (`NeuralPrewarm`) while it holds.
+    @Published private(set) var isHot = false
 
     private let playback: PlaybackController
     private let systemVoice: TtsVoice
@@ -31,7 +33,9 @@ final class ThermalGuard {
     /// cools.
     private var isCooling = false
     /// The cooling switch is still waiting for its splice, 1–3 sentences
-    /// ahead, with Kokoro reading until then. Any voice change ends the
+    /// ahead on an iPhone (a deeper queue is cut at the next boundary:
+    /// `PlatformPlaybackTuning.coolingSwitchLandsWithin`), with Kokoro
+    /// reading until then. Any voice change ends the
     /// wait: the switch landing, or a pick or a fallback that replaced it.
     private var isSwitchPending = false
     private var subscription: AnyCancellable?
@@ -69,6 +73,7 @@ final class ThermalGuard {
         state = newState
         let serious = ProcessInfo.ThermalState.serious.rawValue
         let critical = ProcessInfo.ThermalState.critical.rawValue
+        if isHot != (new >= serious) { isHot = new >= serious }
 
         // The stop first: its reason is what the listener most needs to hear.
         if new >= critical, old < critical {
@@ -88,7 +93,8 @@ final class ThermalGuard {
         if new >= serious, old < serious, playback.voice.engine == .kokoro {
             isCooling = true
             isSwitchPending = true   // before the call: a switch that lands at once clears it
-            playback.switchVoiceAtSentenceBoundary(to: systemVoice, notice: .coolingDown)
+            playback.switchVoiceAtSentenceBoundary(to: systemVoice, notice: .coolingDown,
+                                                   landingWithin: PlatformPlaybackTuning.coolingSwitchLandsWithin)
         } else if new >= serious, old < serious {
             dropIncomingNaturalVoice()
         } else if new < serious, old >= serious, isCooling {

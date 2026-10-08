@@ -93,6 +93,112 @@ final class PlatformSeamTests: XCTestCase {
         subscription.cancel()
     }
 
+    /// P012: the shipping engine is built with spinning off, so it names
+    /// the provider config file wherever one can be written.
+    func testTheShippingEngineStopsThreadSpinning() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlatformSeamTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let engine = KokoroSherpaEngine(modelDirectory: folder, runtimeConfigDirectory: folder)
+        XCTAssertTrue(engine.stopsThreadSpinning)
+        XCTAssertEqual(engine.numThreads, 2)
+        XCTAssertFalse(engine.isWarm, "building it loads nothing")
+        let provider = KokoroSherpaEngine.runtimeProvider(stopsThreadSpinning: engine.stopsThreadSpinning,
+                                                          configDirectory: folder)
+        XCTAssertTrue(provider.hasPrefix("cpu:"), provider)
+    }
+
+    // MARK: P013 · memory pressure levels on the iPhone
+
+    /// What `PlatformLifecycle.memoryPressure` delivers on a private center.
+    @MainActor
+    private func pressures(window: TimeInterval, during deliver: (NotificationCenter) async -> Void)
+        async -> [PlatformLifecycle.MemoryPressure] {
+        let center = NotificationCenter()
+        var received: [PlatformLifecycle.MemoryPressure] = []
+        let subscription = PlatformLifecycle.memoryPressure(in: center, window: window)
+            .sink { received.append($0) }
+        await deliver(center)
+        subscription.cancel()
+        return received
+    }
+
+    @MainActor
+    private func elapse(_ seconds: Double) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    /// The relay's levels arrive at once, each as itself.
+    @MainActor
+    func testTheRelaysLevelsArriveAtOnce() async {
+        let received = await pressures(window: 0.3) { center in
+            MemoryPressureRelay.deliver(.warning, to: center)
+            MemoryPressureRelay.deliver(.critical, to: center)
+        }
+        XCTAssertEqual(received, [.warning, .critical])
+    }
+
+    /// UIKit's own warning names no level: with nothing from the relay it is
+    /// critical, once the window has passed (and at once with no window).
+    @MainActor
+    func testUIKitsWarningAloneIsCritical() async {
+        let waited = await pressures(window: 0.2) { center in
+            PlatformLifecycle.post(.memoryWarning, to: center)
+            await self.elapse(0.5)
+        }
+        XCTAssertEqual(waited, [.critical])
+        let atOnce = await pressures(window: 0) { center in
+            PlatformLifecycle.post(.memoryWarning, to: center)
+        }
+        XCTAssertEqual(atOnce, [.critical])
+    }
+
+    /// The relay's `.warning` and UIKit's warning for the same pressure, in
+    /// either order, are one `.warning`: a paused natural voice stays warm.
+    @MainActor
+    func testTheRelaysLevelStandsForUIKitsWarning() async {
+        let relayFirst = await pressures(window: 0.3) { center in
+            MemoryPressureRelay.deliver(.warning, to: center)
+            PlatformLifecycle.post(.memoryWarning, to: center)
+            await self.elapse(0.6)
+        }
+        XCTAssertEqual(relayFirst, [.warning])
+        let uiKitFirst = await pressures(window: 0.3) { center in
+            PlatformLifecycle.post(.memoryWarning, to: center)
+            await self.elapse(0.05)
+            MemoryPressureRelay.deliver(.warning, to: center)
+            await self.elapse(0.6)
+        }
+        XCTAssertEqual(uiKitFirst, [.warning])
+    }
+
+    /// The default center's observer starts the kernel's pressure source on
+    /// the iPhone too.
+    @MainActor
+    func testTheRelayRunsOnTheIPhone() {
+        let subscription = PlatformLifecycle.memoryPressure().sink { _ in }
+        XCTAssertTrue(MemoryPressureRelay.isRunning)
+        subscription.cancel()
+    }
+
+    // MARK: P011 · AppModel's background release
+
+    /// The move to the background leaves a paused natural voice to the idle
+    /// stop while the audio engine runs (`releaseNeuralEngineOnBackground`).
+    func testTheBackgroundReleaseWaitsForTheIdleEngine() throws {
+        let s = try SourceTree.sources(only: ["App/AppModel.swift", "Playback/PlaybackController.swift"])
+        let model = try XCTUnwrap(s["App/AppModel.swift"])
+        let controller = try XCTUnwrap(s["Playback/PlaybackController.swift"])
+        XCTAssertTrue(model.contains("playback.releaseNeuralEngineOnBackground()"))
+        XCTAssertFalse(model.contains("PlatformTuning.releasesNeuralOnBackground else { return }\n"
+                                      + "        playback.releaseNeuralEngineIfIdle()"),
+                       "never at once while the idle engine runs")
+        XCTAssertTrue(controller.contains("guard !isAudioEngineRunning else { return }"))
+        // P009 and P010: the strain and the heat reach the controller and the pre-warm.
+        XCTAssertTrue(model.contains("playback.isUnderStrain = "))
+        XCTAssertTrue(model.contains("heat: thermalGuard.$isHot"))
+    }
+
     func testActivityHoldsNothingOnTheIPhone() {
         let token = PlatformActivity.begin(reason: "Reading aloud")
         XCTAssertNil(token)
@@ -165,8 +271,13 @@ final class PlatformSeamTests: XCTestCase {
     // MARK: S15 · tuning
 
     func testTuningKeepsTheIPhoneValues() {
-        XCTAssertEqual(PlatformTuning.kokoroThreads, 2)
+        XCTAssertEqual(PlatformTuning.kokoroThreads, 2, "two until a device measurement says otherwise (P012)")
+        XCTAssertTrue(PlatformTuning.kokoroStopsThreadSpinning, "idle ONNX threads never spin (P012)")
+        XCTAssertTrue(PlatformTuning.prewarmsForLoadedBook, "the reopened reader warms its book (P010)")
+        XCTAssertFalse(PlatformTuning.prewarmsAtLaunch, "a bare launch never warms (P010)")
+        XCTAssertTrue(PlatformTuning.memoryHoldEndsOnReturn)
         XCTAssertTrue(PlatformTuning.releasesNeuralOnBackground)
+        XCTAssertEqual(PlatformTuning.idleEngineStopDelay, 60)
         XCTAssertFalse(PlatformAudio.debugBuildsStartMuted)
         XCTAssertEqual(PlatformAudio.mutedOutputMode, .deviceAtZeroVolume)
     }

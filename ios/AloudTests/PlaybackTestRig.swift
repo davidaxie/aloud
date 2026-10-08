@@ -297,8 +297,11 @@ final class PlaybackTestRig {
 
     /// `voiceA` is the system voice; `michael` speaks through `neural`, which
     /// is also the controller's warmable engine.
-    convenience init(sentences: Int = 12, clipDuration: TimeInterval = 0.25, neural: FakeNeuralEngine) {
-        self.init(sentences: sentences, clipDuration: clipDuration,
+    /// `wordsPerSentence` sets how deep the platform's look-ahead reaches
+    /// (it counts characters): long sentences keep it to its floor.
+    convenience init(sentences: Int = 12, wordsPerSentence: Int = 3, clipDuration: TimeInterval = 0.25,
+                     neural: FakeNeuralEngine) {
+        self.init(sentences: sentences, wordsPerSentence: wordsPerSentence, clipDuration: clipDuration,
                   kokoro: neural, extraRoutes: [Self.michael.id: neural])
     }
 

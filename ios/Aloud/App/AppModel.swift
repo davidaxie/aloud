@@ -169,6 +169,11 @@ final class AppModel: ObservableObject {
         // applied once the voice preference is engaged.
         thermalGuard = ThermalGuard(playback: playback, systemVoice: engine.defaultVoice,
                                     initialState: .nominal)
+        // Low Power Mode or heat shrinks the look-ahead where the platform
+        // says so (PlatformPlaybackTuning.lookAheadUnderStrain).
+        playback.isUnderStrain = { [unowned thermalGuard] in
+            thermalGuard.isHot || ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
         neuralPrewarm = NeuralPrewarm(
             playback: playback,
             kokoro: kokoroEngine,
@@ -179,11 +184,12 @@ final class AppModel: ObservableObject {
                 .map { NeuralPrewarm.continueCardVisible(pathIsEmpty: $0, documents: $1, loadedID: $2, stop: $3) }
                 .removeDuplicates()
                 .eraseToAnyPublisher(),
-            // A Mac also warms for the book loaded in the natural voice
-            // (PlatformTuning.prewarmsBeyondTheContinueCard); an iPhone
-            // ignores it.
+            // The book loaded in the natural voice warms it too
+            // (PlatformTuning.prewarmsForLoadedBook): on an iPhone that is
+            // the reader LaunchRestore reopens, where no card ever shows.
             loadedBook: playback.$document.map { $0?.id }.eraseToAnyPublisher(),
-            isModelInstalled: { [unowned modelManager] in modelManager.isInstalled })
+            isModelInstalled: { [unowned modelManager] in modelManager.isInstalled },
+            heat: thermalGuard.$isHot.eraseToAnyPublisher())
 
         let defaults = UserDefaults.standard
         // UI-test hook (no-op in Release): start from clean listening prefs.
@@ -307,11 +313,13 @@ final class AppModel: ObservableObject {
 
     /// Scene-phase hook (from RootView): a backgrounded, non-playing app
     /// never pre-warms the neural engine, and gives back its memory where
-    /// the platform ends background processes for it.
+    /// the platform ends background processes for it: at once when the
+    /// audio engine has stopped, otherwise when the idle stop stops it, so
+    /// a pause, lock and unlock comes back to a warm voice.
     func handleScenePhaseChange(toBackground: Bool) {
         neuralPrewarm.sceneActivityChanged(!toBackground)
         guard toBackground, PlatformTuning.releasesNeuralOnBackground else { return }
-        playback.releaseNeuralEngineIfIdle()
+        playback.releaseNeuralEngineOnBackground()
     }
 
     // MARK: - Model lifecycle

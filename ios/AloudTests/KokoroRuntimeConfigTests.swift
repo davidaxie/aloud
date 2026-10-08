@@ -89,6 +89,17 @@ final class KokoroRuntimeConfigTests: XCTestCase {
         XCTAssertFalse(KokoroSherpaEngine.speaksWarmLine(onDemand: true, sentenceWaiting: true))
     }
 
+    /// P012: both apps build the engine with ONNX Runtime's idle threads
+    /// not spinning, so it names the config file wherever it can be written.
+    func testTheShippingEngineStopsSpinningOnEveryPlatform() {
+        XCTAssertTrue(PlatformTuning.kokoroStopsThreadSpinning)
+        let engine = KokoroSherpaEngine(modelDirectory: folder, runtimeConfigDirectory: folder)
+        XCTAssertTrue(engine.stopsThreadSpinning)
+        XCTAssertEqual(KokoroSherpaEngine.runtimeProvider(stopsThreadSpinning: engine.stopsThreadSpinning,
+                                                          configDirectory: folder),
+                       "cpu:" + configURL.path)
+    }
+
     /// The engine never runs on fewer than one thread, whatever it's given.
     func testTheEngineKeepsAtLeastOneThread() {
         let engine = KokoroSherpaEngine(modelDirectory: folder, numThreads: 0, stopsThreadSpinning: false,

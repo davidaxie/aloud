@@ -348,7 +348,8 @@ final class BudgetSignpostsTests: XCTestCase {
         let prewarm = NeuralPrewarm(playback: rig.controller, kokoro: neural,
                                     cardVisible: card.eraseToAnyPublisher(),
                                     isModelInstalled: { true }, isLowPowerMode: { false },
-                                    sceneActive: true, warmsBeyondTheCard: false, notifications: center)
+                                    sceneActive: true, warmsForLoadedBook: false, warmsAtLaunch: false,
+                                    notifications: center)
         prewarm.budgetSignposts = recorder.signposts
         return Prewarm(rig: rig, neural: neural, card: card, center: center, prewarm: prewarm)
     }

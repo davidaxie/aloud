@@ -160,8 +160,9 @@ final class SleepStopMechanicsTests: XCTestCase {
         XCTAssertTrue(ends.allSatisfy { $0.sentence >= current })
         XCTAssertTrue(ends.allSatisfy { $0.secondsFromNow >= 0 })
         XCTAssertTrue(zip(ends, ends.dropFirst()).allSatisfy { $0.secondsFromNow < $1.secondsFromNow })
-        // The current sentence and the platform's look-ahead (two on an
-        // iPhone; about 12 s of listening, within 3...10, on a Mac).
+        // The current sentence and the platform's look-ahead (about 10 s of
+        // listening, within 2...6, on an iPhone; 12 s, within 3...10, on a
+        // Mac).
         let ahead = PlaybackController.lookAheadCount(
             characterCounts: rig.content.sentences.map(\.text.count),
             rate: 1, seconds: PlatformPlaybackTuning.lookAheadSeconds,
