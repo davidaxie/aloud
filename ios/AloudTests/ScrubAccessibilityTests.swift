@@ -118,6 +118,50 @@ final class ScrubAccessibilityTests: XCTestCase {
         XCTAssertTrue(moved, "decrement from 3 should land on its chapter's start, got \(rig.controller.currentSentence)")
         XCTAssertEqual(rig.controller.status, .paused)
     }
+
+    /// P008: the thumb and the touch-down feedback are decoration. The
+    /// scrub is still one adjustable "Position" element, and nothing else
+    /// in the bar answers to that name.
+    func testTheThumbAddsNoElement() async throws {
+        _ = hostBar(pausedAt: 1)
+        let scrub = try await findScrub()
+        XCTAssertTrue(scrub.accessibilityTraits.contains(.adjustable))
+        let positions = try XCTUnwrap(host).all(labelled: "Position")
+        XCTAssertEqual(positions.count, 1, "one Position element, got \(positions.count)")
+    }
+}
+
+/// P008's touch feedback: the thumb sits on the fill's end inside the track,
+/// a held track grows, and the touch-down gesture's travel is never a seek.
+final class ScrubThumbTests: XCTestCase {
+
+    func testTheThumbCentresOnTheFillsEndInsideTheTrack() {
+        XCTAssertEqual(ScrubThumb.offset(fill: 100, diameter: 12, width: 300), 94)
+        XCTAssertEqual(ScrubThumb.offset(fill: 4, diameter: 12, width: 300), 0, "kept inside at the start")
+        XCTAssertEqual(ScrubThumb.offset(fill: 300, diameter: 20, width: 300), 280, "kept inside at the end")
+        XCTAssertEqual(ScrubThumb.offset(fill: 0, diameter: 20, width: 10), 0, "a track narrower than the thumb")
+    }
+
+    func testAHeldTrackGrows() {
+        XCTAssertEqual(ScrubThumb.trackHeight, 4)
+        XCTAssertEqual(ScrubThumb.pressedTrackHeight, 8)
+        XCTAssertEqual(ScrubThumb.diameter, 12)
+        XCTAssertEqual(ScrubThumb.pressedDiameter, 20)
+    }
+
+    /// The feedback starts on touch-down, but a touch that never travels 8pt
+    /// sideways is no seek (R17): no preview, no jump, no tick, no Undo.
+    func testTouchDownTravelIsNeverASeek() {
+        XCTAssertEqual(ScrubGesture.touchDownDistance, 0)
+        for travel in [0, 3, 7.9] as [CGFloat] {
+            XCTAssertFalse(ScrubGesture.isSeek(translation: CGSize(width: travel, height: 0)), "\(travel)pt")
+            XCTAssertNil(ScrubDrag.next(after: nil, translation: CGSize(width: travel, height: 30),
+                                        current: { 0...9 }, target: { $0.lowerBound }))
+        }
+        let latch = ScrubReleaseSpan()
+        XCTAssertNil(latch.release(translation: CGSize(width: 2, height: 0), current: { 0...9 }),
+                     "lifting without travel seeks nothing")
+    }
 }
 
 /// R17's Contents grouping as VoiceOver meets it: a Part/Book heading is a
@@ -240,13 +284,14 @@ final class ScrubAccessibilityLintTests: XCTestCase {
 
 /// A SwiftUI view in a real window, and lookups in the accessibility tree
 /// SwiftUI builds for it. `keepAlive` holds the models the view observes.
+/// Shared with PlayerBarLayoutTests, which measures the bar through it.
 @MainActor
-private final class AccessibilityHost {
+final class AccessibilityHost {
 
     private let window: UIWindow
     private let keepAlive: [AnyObject]
 
-    init<Content: View>(_ view: Content, keepAlive: [AnyObject]) {
+    init<Content: View>(_ view: Content, keepAlive: [AnyObject], width: CGFloat = 390) {
         self.keepAlive = keepAlive
         let controller = UIHostingController(rootView: view)
         // A scene-backed window, so SwiftUI renders and updates it as it
@@ -256,7 +301,7 @@ private final class AccessibilityHost {
         } else {
             window = UIWindow()
         }
-        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.frame = CGRect(x: 0, y: 0, width: width, height: 844)
         window.rootViewController = controller
         window.isHidden = false
         controller.view.layoutIfNeeded()
@@ -297,6 +342,44 @@ private final class AccessibilityHost {
 
     func find(_ identifier: String) -> NSObject? {
         first { Self.identifier(of: $0) == identifier }
+    }
+
+    /// Every element whose label is `label`.
+    func all(labelled label: String) -> [NSObject] {
+        var found: [NSObject] = []
+        _ = first { node in
+            if node.accessibilityLabel == label, node.isAccessibilityElement { found.append(node) }
+            return false
+        }
+        return found
+    }
+
+    /// The identifiers in `wanted` in the order a depth-first walk of the
+    /// accessibility tree meets them: the order VoiceOver swipes through.
+    func order(of wanted: Set<String>) -> [String] {
+        guard let root = window.rootViewController?.view else { return [] }
+        var order: [String] = []
+        var visited = 0
+        func visit(_ node: NSObject) {
+            visited += 1
+            guard visited < 5_000 else { return }
+            if let identifier = Self.identifier(of: node), wanted.contains(identifier), !order.contains(identifier) {
+                order.append(identifier)
+            }
+            if let elements = node.accessibilityElements {
+                elements.compactMap { $0 as? NSObject }.forEach(visit)
+            } else {
+                let count = node.accessibilityElementCount()
+                if count > 0, count != NSNotFound {
+                    for index in 0..<count {
+                        if let child = node.accessibilityElement(at: index) as? NSObject { visit(child) }
+                    }
+                }
+            }
+            if let view = node as? UIView { view.subviews.forEach(visit) }
+        }
+        visit(root)
+        return order
     }
 
     /// A breadth-first walk over accessibility children and subviews.
@@ -340,7 +423,7 @@ private struct MissingAccessibilityElement: Error, CustomStringConvertible {
 /// a unit-test host has none (XCUITest and VoiceOver turn this on in the
 /// app). The AX runtime's own switches stand in for one, as KIF and
 /// AccessibilitySnapshot do. Private API, in the test target only.
-private enum AccessibilityRuntime {
+enum AccessibilityRuntime {
     private typealias Getter = @convention(c) () -> Int32
     private typealias Setter = @convention(c) (Int32) -> Void
 

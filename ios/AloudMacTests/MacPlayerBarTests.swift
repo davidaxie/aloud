@@ -516,11 +516,11 @@ final class MacPlayerBarTests: XCTestCase {
 
     func testTheSleepMenuListsTheMostRecentFirstAndOffOnlyWhileArmed() {
         let options = SleepTimer.orderedOptions(lastUsed: .minutes(30), minuteChoices: SleepTimer.standardMinuteChoices)
-        let off = MacSleepMenu.items(options: options, isArmed: false)
+        let off = SleepTimer.menuItems(options: options, isArmed: false)
         XCTAssertEqual(off.choices, [.minutes(30), .minutes(15), .minutes(45), .minutes(60), .endOfChapter])
         XCTAssertFalse(off.showsOff, "Off shows only while a timer is armed")
 
-        let armed = MacSleepMenu.items(options: options, isArmed: true)
+        let armed = SleepTimer.menuItems(options: options, isArmed: true)
         XCTAssertEqual(armed.choices, off.choices, "Off never joins the choices")
         XCTAssertTrue(armed.showsOff)
     }

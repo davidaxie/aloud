@@ -31,7 +31,8 @@ struct MacSleepMenu: View {
     // MARK: - Armed or off
 
     private var menu: some View {
-        let items = Self.items(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)
+        // The shared rule: Off only while armed, apart from the choices.
+        let items = SleepTimer.menuItems(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)
         return Menu {
             ForEach(items.choices, id: \.self) { option in
                 Toggle(isOn: selection(option)) {
@@ -106,12 +107,6 @@ struct MacSleepMenu: View {
     }
 
     // MARK: - Rules
-
-    /// The menu's choices, most recent first (the shared order), and whether
-    /// Off shows: only while a timer is armed, kept apart from the choices.
-    static func items(options: [SleepTimer.Option], isArmed: Bool) -> (choices: [SleepTimer.Option], showsOff: Bool) {
-        (options.filter { $0 != .off }, isArmed)
-    }
 
     /// The chip menu's sentence-case titles: "15 min", "1 hr", "End of
     /// chapter" ("End of book" without chapters) and "Off".

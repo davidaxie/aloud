@@ -24,6 +24,13 @@ enum ListeningFormat {
     static func chipTitle(voice: TtsVoice, rate: Double) -> String {
         "\(shortName(voice)) · \(Self.rate(rate))"
     }
+
+    /// The player chip where its full title can't fit beside the transport:
+    /// the speed alone, "2.25×". The chip's spoken label still names the
+    /// voice.
+    static func chipShortTitle(rate: Double) -> String {
+        Self.rate(rate)
+    }
 }
 
 /// The speed control's scale: range, step, the magnetic 1× detent and the

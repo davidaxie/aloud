@@ -240,6 +240,15 @@ final class SleepTimer: ObservableObject {
         return options + [.off]
     }
 
+    /// The sleep menu's rows on both apps: the choices in `options`' order
+    /// (most recent first) with Off never among them, and whether Off shows
+    /// apart below them, which it does only while a timer is armed. With
+    /// nothing set there is nothing to turn off, so no checked Off reads as
+    /// a choice.
+    nonisolated static func menuItems(options: [Option], isArmed: Bool) -> (choices: [Option], showsOff: Bool) {
+        (options.filter { $0 != .off }, isArmed)
+    }
+
     /// The sentence whose end is nearest the deadline, within `window` either
     /// side of it (a tie goes to the earlier end); nil when none is that close.
     nonisolated static func landing(deadline: TimeInterval, ends: [SentenceEnd],

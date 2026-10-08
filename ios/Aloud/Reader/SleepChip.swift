@@ -24,52 +24,94 @@ struct SleepChip: View {
 
     // MARK: - Armed or off
 
-    /// The most recent option sits nearest the chip (`.priority` on the
-    /// iPhone), Off last.
+    /// The most recent choice sits nearest the chip (`.priority` on the
+    /// iPhone), each a native checkmark item that VoiceOver reads as
+    /// selected; Off sits apart, and only while a timer is armed.
     private var menu: some View {
-        Menu {
+        let items = SleepTimer.menuItems(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)
+        return Menu {
             Section(SleepTimer.Copy.section) {
-                ForEach(sleepTimer.menuOptions, id: \.self) { option in
-                    Button {
-                        sleepTimer.select(option)
-                    } label: {
-                        optionLabel(option)
+                ForEach(items.choices, id: \.self) { option in
+                    Toggle(isOn: selection(option)) {
+                        Text(option.title(endsAtChapter: sleepTimer.endsAtChapter))
+                    }
+                }
+            }
+            if items.showsOff {
+                Section {
+                    Button(SleepTimer.Option.off.title(endsAtChapter: sleepTimer.endsAtChapter)) {
+                        sleepTimer.select(.off)
                     }
                 }
             }
         } label: {
+            // The label draws the chip; the press reaches it wherever the
+            // system styles the menu's button.
             chipLabel
+                .readerChip(isOn: sleepTimer.isArmed)
         }
+        .menuStyle(.button)
+        .buttonStyle(ReaderChipPressStyle())
         .menuOrderNearestFirst()
         .menuIndicator(.hidden)
+        .readerChipFullWidth(isOn: sleepTimer.isArmed) { fullLabel }
+        .largeContentViewerIfAvailable { largeContent }
         .accessibilityLabel(sleepTimer.chipSpokenLabel)
         .accessibilityValue(sleepTimer.isArmed ? "" : "Off")
         .accessibilityInputLabels([Text(SleepTimer.Copy.section)])
         .accessibilityIdentifier("player.sleep")
     }
 
+    /// The moon while off; the countdown, which never shortens; or the
+    /// chapter or book end, which falls back to a filled moon on the armed
+    /// fill where its words can't fit. Never smaller type.
     @ViewBuilder
     private var chipLabel: some View {
-        if sleepTimer.isArmed {
+        switch sleepTimer.option {
+        case .off:
+            Image(systemName: "moon")
+                .foregroundStyle(Theme.textMuted)
+        case .minutes:
             Text(sleepTimer.chipText)
                 .monospacedDigit()
                 .numericReadout(sleepTimer.remaining)
-                .readerChip(isOn: true)
-        } else {
-            Image(systemName: "moon")
-                .foregroundStyle(Theme.textMuted)
-                .readerChip()
+        case .endOfChapter:
+            ViewThatFits(in: .horizontal) {
+                Text(sleepTimer.chipText)
+                Image(systemName: "moon.fill")
+            }
         }
     }
 
+    /// The label with all its words, which the bar measures.
     @ViewBuilder
-    private func optionLabel(_ option: SleepTimer.Option) -> some View {
-        let title = option.title(endsAtChapter: sleepTimer.endsAtChapter)
-        if sleepTimer.option == option {
-            Label(title, systemImage: "checkmark")
+    private var fullLabel: some View {
+        if sleepTimer.isFading {
+            Text(SleepTimer.Copy.extendChip)
+                .monospacedDigit()
+        } else if sleepTimer.isArmed {
+            Text(sleepTimer.chipText)
+                .monospacedDigit()
         } else {
-            Text(title)
+            Image(systemName: "moon")
         }
+    }
+
+    /// What a long press shows at accessibility sizes, past the chip's cap.
+    @ViewBuilder
+    private var largeContent: some View {
+        if sleepTimer.isArmed {
+            Text(sleepTimer.chipText)
+        } else {
+            Label(SleepTimer.Copy.section, systemImage: "moon")
+        }
+    }
+
+    /// A checkmark item: on while it is the armed choice; picking it again
+    /// re-arms it from the top, as on the Mac.
+    private func selection(_ option: SleepTimer.Option) -> Binding<Bool> {
+        Binding(get: { sleepTimer.option == option },
+                set: { _ in sleepTimer.select(option) })
     }
 
     // MARK: - Fading
@@ -80,9 +122,10 @@ struct SleepChip: View {
         } label: {
             Text(SleepTimer.Copy.extendChip)
                 .monospacedDigit()
-                .readerChip(isOn: true)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ReaderChipButtonStyle(isOn: true))
+        .readerChipFullWidth(isOn: true) { fullLabel }
+        .largeContentViewerIfAvailable { Text(SleepTimer.Copy.extendChip) }
         .accessibilityLabel(SleepTimer.Copy.extendSpoken)
         .accessibilityHint(SleepTimer.Copy.extendHint)
         .accessibilityInputLabels([Text(SleepTimer.Copy.extendChip),

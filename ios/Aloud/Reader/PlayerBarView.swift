@@ -3,12 +3,15 @@ import SwiftUI
 /// Bottom player chrome, every frequent control in the thumb's reach (R6):
 /// the chapter line (the one message slot, which opens Contents), the scrub
 /// and one row of five controls — the voice · speed chip, back 15, Play,
-/// forward 15 and the sleep chip. From .xxLarge the chip takes a row of its
-/// own. All state flows through PlaybackController.
+/// forward 15 and the sleep chip. Play sits on the screen's center line
+/// whatever the chips say (PlayerBarLayout); from .xxLarge the two chips
+/// share a row above the centred transport. All state flows through
+/// PlaybackController.
 ///
 /// The scrub spans the current chapter (the whole document for PDFs and
 /// chapterless books) so a long book still scrubs at sentence precision
-/// (R17). Only a horizontal drag of at least 8pt seeks: a plain tap does
+/// (R17). Only a horizontal drag of at least 8pt seeks: a touch only shows
+/// it is held (a thicker track, a larger thumb) and a plain tap does
 /// nothing. The release is a `.scrub` jump, which offers Undo jump (R15).
 /// VoiceOver adjusts it by chapter or page row, else by a minute (R12c).
 struct PlayerBarView: View {
@@ -37,8 +40,22 @@ struct PlayerBarView: View {
     /// use the capsule's real size (it varies with the words and text size).
     /// Seeded near a default-size preview so the first drag frame sits right.
     @State private var previewWidth: CGFloat = 180
+    /// A finger resting on the scrub: touch feedback only, never a seek.
+    /// Gesture state, so a system cancel lets the track settle back too.
+    @GestureState private var isTouchingScrub = false
     @State private var showListening = false
     @State private var showContents = false
+    /// The transport row's measured width, inside the gutters (0 until the
+    /// first layout), and the wider chip's width with its full label.
+    @State private var barWidth: CGFloat = 0
+    @State private var widestFullChip: CGFloat = 0
+    /// Play and the skip targets grow with Dynamic Type, inside
+    /// PlayerBarLayout's caps.
+    @ScaledMetric(relativeTo: .title2) private var scaledPlayDiameter: CGFloat = Theme.PlayCircle.diameter
+    @ScaledMetric(relativeTo: .title2) private var scaledSkipTarget: CGFloat = 44
+
+    /// The skip glyphs read a step lighter than Play.
+    private static let skipGlyphFont = Font.title3.weight(.medium)
 
     var body: some View {
         // Line, track and transport are each at least a 44pt-tall hit row,
@@ -49,6 +66,9 @@ struct PlayerBarView: View {
                               onOpenContents: { showContents = true },
                               onRetry: retry,
                               onBackFiveMinutes: backFiveMinutes)
+                // The bar's height budget: past the chips' cap a wrapping
+                // line would leave only a few lines of the page.
+                .dynamicTypeSize(...PlayerBarLayout.chipTypeCap)
             // Inside the gutter, so a back swipe from the screen edge never
             // lands on the drag gesture.
             scrubTrack
@@ -103,14 +123,25 @@ struct PlayerBarView: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let span = drag?.span ?? navigation.scrubSpan(at: playhead)
+            let fill = max(ScrubThumb.trackHeight,
+                           width * navigation.scrubFill(of: drag?.target ?? playhead, in: span,
+                                                        isFinished: drag == nil && playback.isAtEnd))
+            // A held track thickens and its thumb grows; under Reduce
+            // Motion nothing grows and a soft ring fades in instead.
+            let grows = isTouchingScrub && !reduceMotion
+            let thumb = grows ? ScrubThumb.pressedDiameter : ScrubThumb.diameter
             ZStack(alignment: .leading) {
                 Capsule().fill(Theme.track)
                 Capsule()
                     .fill(Theme.accent)
-                    .frame(width: max(4, width * navigation.scrubFill(of: drag?.target ?? playhead, in: span,
-                                                                     isFinished: drag == nil && playback.isAtEnd)))
+                    .frame(width: fill)
             }
-            .frame(height: 4)
+            .frame(height: grows ? ScrubThumb.pressedTrackHeight : ScrubThumb.trackHeight)
+            .overlay(alignment: .leading) {
+                scrubThumb(diameter: thumb)
+                    .offset(x: ScrubThumb.offset(fill: fill, diameter: thumb, width: width))
+            }
+            .animation(.easeOut(duration: Theme.Motion.press), value: isTouchingScrub)
             .frame(maxHeight: .infinity, alignment: .center)
             .overlay(alignment: .topLeading) {
                 if let drag {
@@ -122,6 +153,7 @@ struct PlayerBarView: View {
             }
             .contentShape(Rectangle())
             .gesture(scrubGesture(width: width))
+            .simultaneousGesture(touchDownGesture)
         }
         // A full 44pt touch row around the 4pt line.
         .frame(height: 44)
@@ -187,6 +219,29 @@ struct PlayerBarView: View {
             }
     }
 
+    /// Touch feedback alone: holds `isTouchingScrub` while a finger rests on
+    /// the track. It never seeks, ticks or offers Undo; lifting without 8pt
+    /// of travel just lets the track settle.
+    private var touchDownGesture: some Gesture {
+        DragGesture(minimumDistance: ScrubGesture.touchDownDistance)
+            .updating($isTouchingScrub) { _, touching, _ in touching = true }
+    }
+
+    /// The accent thumb at the end of the fill. Decoration: the scrub is one
+    /// adjustable element to assistive tech.
+    private func scrubThumb(diameter: CGFloat) -> some View {
+        Circle()
+            .fill(Theme.accent)
+            .frame(width: diameter, height: diameter)
+            .background {
+                Circle()
+                    .fill(Theme.accentSoft)
+                    .frame(width: ScrubThumb.ringDiameter, height: ScrubThumb.ringDiameter)
+                    .opacity(isTouchingScrub && reduceMotion ? 1 : 0)
+            }
+            .accessibilityHidden(true)
+    }
+
     private func scrubTarget(atX x: CGFloat, width: CGFloat, in span: ClosedRange<Int>) -> Int {
         navigation.sentence(atFraction: ScrubGesture.fraction(atX: x, width: width), in: span)
     }
@@ -237,85 +292,120 @@ struct PlayerBarView: View {
 
     // MARK: - Transport
 
-    /// Five controls in one row fit through .xLarge; past that the chip's
-    /// text would squeeze the transport, so it moves to a row of its own.
-    private var stacksTransport: Bool { dynamicTypeSize >= .xxLarge }
-
-    /// VoiceOver order in both layouts: chip, back, play, forward, sleep.
-    @ViewBuilder
-    private var transport: some View {
-        if stacksTransport {
-            VStack(spacing: Theme.Space.xs) {
-                HStack {
-                    listeningChip
-                    Spacer(minLength: 0)
-                }
-                HStack(spacing: 0) {
-                    transportCluster
-                    Spacer(minLength: Theme.Space.xs)
-                    SleepChip()
-                }
-            }
-        } else {
-            HStack(spacing: 0) {
-                listeningChip
-                Spacer(minLength: Theme.Space.xs)
-                transportCluster
-                Spacer(minLength: Theme.Space.xs)
-                SleepChip()
-            }
-        }
+    /// The bar's geometry for this width, text size and pair of chips.
+    private var layout: PlayerBarLayout {
+        PlayerBarLayout(barWidth: barWidth,
+                        dynamicTypeSize: dynamicTypeSize,
+                        playDiameter: PlayerBarLayout.playDiameter(scaled: scaledPlayDiameter),
+                        skipTarget: PlayerBarLayout.skipTarget(scaled: scaledSkipTarget),
+                        widestFullChip: widestFullChip)
     }
 
-    private var transportCluster: some View {
-        HStack(spacing: 0) {
-            back15
-            playButton
-            forward15
+    /// One row of five through .xLarge, each chip on an equal flexible side
+    /// so Play sits on the center line; from .xxLarge the chips share a row
+    /// above the centred cluster. VoiceOver reads chip, back, play, forward,
+    /// sleep in both.
+    private var transport: some View {
+        let layout = self.layout
+        return Group {
+            if layout.stacksTransport {
+                VStack(spacing: Theme.Space.xs) {
+                    HStack(spacing: PlayerBarLayout.chipRowSpacing) {
+                        listeningChipSlot(layout)
+                        sleepChipSlot(layout)
+                    }
+                    transportCluster(layout)
+                        .frame(maxWidth: .infinity)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    listeningChipSlot(layout)
+                    transportCluster(layout)
+                    sleepChipSlot(layout)
+                }
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            barWidth = width
+        }
+        .onPreferenceChange(ReaderChipFullWidth.self) { width in
+            widestFullChip = width
+        }
+        // The sort priorities order the five among themselves, never ahead
+        // of the chapter line and the scrub.
+        .accessibilityElement(children: .contain)
+    }
+
+    private func listeningChipSlot(_ layout: PlayerBarLayout) -> some View {
+        listeningChip
+            .frame(maxWidth: layout.chipWidthLimit, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .listening))
+    }
+
+    /// Its own view, so the countdown's tick never redraws the bar.
+    private func sleepChipSlot(_ layout: PlayerBarLayout) -> some View {
+        SleepChip()
+            .dynamicTypeSize(...PlayerBarLayout.chipTypeCap)
+            .frame(maxWidth: layout.chipWidthLimit, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .sleep))
+    }
+
+    private func transportCluster(_ layout: PlayerBarLayout) -> some View {
+        HStack(spacing: layout.clusterGap) {
+            skipButton(seconds: -PlaybackController.skipInterval, systemImage: "gobackward.15",
+                       label: "Back 15 seconds", inputLabel: "Back 15",
+                       identifier: "player.back15", target: layout.skipTarget)
+                .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .back15))
+            playButton(diameter: layout.playDiameter)
+                .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .play))
+            skipButton(seconds: PlaybackController.skipInterval, systemImage: "goforward.15",
+                       label: "Forward 15 seconds", inputLabel: "Forward 15",
+                       identifier: "player.forward15", target: layout.skipTarget)
+                .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .forward15))
         }
         .fixedSize()
     }
 
     /// Names lead with the visible text, so Voice Control matches it; the
-    /// input labels add the words people say for it.
+    /// input labels add the words people say for it. Where its full title
+    /// can't fit its side, the chip shows the speed alone at the same size;
+    /// the spoken label and a long press past the type cap still name the
+    /// voice.
     private var listeningChip: some View {
         let voiceName = ListeningFormat.shortName(playback.voice)
+        let title = ListeningFormat.chipTitle(voice: playback.voice, rate: playback.rate)
         return Button { showListening = true } label: {
-            Text(ListeningFormat.chipTitle(voice: playback.voice, rate: playback.rate))
-                .monospacedDigit()
-                .numericReadout(playback.rate)
-                .readerChip()
+            ViewThatFits(in: .horizontal) {
+                Text(title)
+                Text(ListeningFormat.chipShortTitle(rate: playback.rate))
+            }
+            .monospacedDigit()
+            .numericReadout(playback.rate)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ReaderChipButtonStyle())
+        .readerChipFullWidth { Text(title).monospacedDigit() }
+        .dynamicTypeSize(...PlayerBarLayout.chipTypeCap)
+        .largeContentViewerIfAvailable { Text(title) }
         .accessibilityLabel("\(voiceName), \(ListeningFormat.rate(playback.rate)), voice and speed")
         .accessibilityHint("Opens voice and speed")
         .accessibilityInputLabels([Text(voiceName), Text("Voice"), Text("Speed")])
         .accessibilityIdentifier("player.listening")
     }
 
-    private var back15: some View {
-        skipButton(seconds: -PlaybackController.skipInterval, systemImage: "gobackward.15",
-                   label: "Back 15 seconds", inputLabel: "Back 15",
-                   identifier: "player.back15")
-    }
-
-    private var forward15: some View {
-        skipButton(seconds: PlaybackController.skipInterval, systemImage: "goforward.15",
-                   label: "Forward 15 seconds", inputLabel: "Forward 15",
-                   identifier: "player.forward15")
-    }
-
     private func skipButton(seconds: TimeInterval, systemImage: String, label: String,
-                            inputLabel: String, identifier: String) -> some View {
+                            inputLabel: String, identifier: String, target: CGFloat) -> some View {
         Button { skip(seconds) } label: {
             Image(systemName: systemImage)
-                .font(.title2.weight(.medium))
-                .foregroundStyle(Theme.text)
-                .frame(width: 44, height: 44)
+                .font(Self.skipGlyphFont)
+                .frame(width: target, height: target)
                 .contentShape(Rectangle())
         }
-        // The glyph scales inside a fixed 44pt target, so growth stops at
-        // xxxLarge; a long press past the cap shows it large.
+        // textMuted at rest, Theme.text while pressed; no haptic (R20).
+        .buttonStyle(ReaderGlyphButtonStyle())
+        // The glyph scales inside the target, so growth stops at xxxLarge;
+        // a long press past the cap shows it large.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .largeContentViewerIfAvailable {
             Label(label, systemImage: systemImage)
@@ -325,7 +415,7 @@ struct PlayerBarView: View {
         .accessibilityIdentifier(identifier)
     }
 
-    private var playButton: some View {
+    private func playButton(diameter: CGFloat) -> some View {
         // A playback error's stop keeps the retry face beside "tap to try
         // again" (`PlayButtonState.circleStatus`).
         let state = PlayButtonState(status: PlayButtonState.circleStatus(playback.status,
@@ -333,12 +423,12 @@ struct PlayerBarView: View {
                                     isPreparingVoice: playback.isPreparingVoice,
                                     reduceMotion: reduceMotion)
         return Button(action: togglePlayback) {
-            PlayCircleFace(state: state)
-                // The glyph scales inside the fixed 54pt circle; a long
-                // press past the cap shows it large.
+            PlayCircleFace(state: state, diameter: diameter)
+                // The glyph scales inside the circle, which grows to its own
+                // cap; a long press past the glyph's cap shows it large.
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         }
-        .buttonStyle(AccentCircleButtonStyle(diameter: Theme.PlayCircle.diameter))
+        .buttonStyle(AccentCircleButtonStyle(diameter: diameter))
         .largeContentViewerIfAvailable {
             Label(state.label, systemImage: state.glyph.rawValue)
         }

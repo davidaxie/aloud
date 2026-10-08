@@ -28,6 +28,10 @@ enum ScrubGesture {
 
     static let minimumDistance: CGFloat = 8
 
+    /// The touch feedback's gesture starts on touch-down. It only shows the
+    /// track is held: no travel under `minimumDistance` is a seek.
+    static let touchDownDistance: CGFloat = 0
+
     static func isSeek(translation: CGSize) -> Bool {
         abs(translation.width) >= minimumDistance
     }
@@ -36,6 +40,26 @@ enum ScrubGesture {
     static func fraction(atX x: CGFloat, width: CGFloat) -> Double {
         guard width > 0, x.isFinite else { return 0 }
         return Double(min(max(x / width, 0), 1))
+    }
+}
+
+/// The iPhone scrub's thumb, which shows the track is touchable: a 12pt
+/// accent circle at the end of the fill on a 4pt track. Held, the track
+/// thickens to 8pt and the thumb grows to 20pt (under Reduce Motion a soft
+/// ring fades in instead).
+enum ScrubThumb {
+    static let trackHeight: CGFloat = 4
+    static let pressedTrackHeight: CGFloat = 8
+    static let diameter: CGFloat = 12
+    static let pressedDiameter: CGFloat = 20
+    /// The Reduce Motion ring around the resting thumb.
+    static let ringDiameter: CGFloat = 28
+
+    /// The thumb's leading offset: centred on the fill's end, kept inside
+    /// the track at either end.
+    static func offset(fill: CGFloat, diameter: CGFloat, width: CGFloat) -> CGFloat {
+        guard width > diameter else { return 0 }
+        return min(max(fill - diameter / 2, 0), width - diameter)
     }
 }
 

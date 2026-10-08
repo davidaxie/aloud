@@ -77,8 +77,10 @@ enum ReaderChip: Equatable {
     }
 }
 
-/// The chip's capsule. No transition inside: the caller applies
-/// `.messageTransition()` keyed by `slotKey`.
+/// The chip's capsule: the reader's chip look in accentStrong, pressed like
+/// the bar's chips (surface2 and a slight settle), never an opacity dim. No
+/// transition inside: the caller applies `.messageTransition()` keyed by
+/// `slotKey`.
 struct ReaderChipView: View {
     let chip: ReaderChip
     let action: () -> Void
@@ -95,16 +97,10 @@ struct ReaderChipView: View {
                     .accessibilityHidden(true)
                 Text(chip.title)
             }
-            .font(Theme.font(.subhead))
-            .foregroundStyle(Theme.accentStrong)
-            .padding(.horizontal, Theme.Space.md)
-            .padding(.vertical, Theme.Space.xs)
-            .background(Theme.surface, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
-            // The capsule is ~32pt tall; the hit area is the full 44.
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
+            // With the style's own inset, the capsule's roomier sides.
+            .padding(.horizontal, Theme.Space.xs)
         }
+        .buttonStyle(ReaderChipButtonStyle(tint: Theme.accentStrong))
         .accessibilityLabel(chip.title)
         .accessibilityHint(chip.hint)
         .accessibilityInputLabels(chip.inputLabels)

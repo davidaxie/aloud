@@ -101,6 +101,106 @@ final class PlayerBarLintTests: XCTestCase {
         XCTAssertFalse(mac.contains("scrubFraction(of: playhead"))
     }
 
+    /// P004: the bar's chips and the chip above it press like controls
+    /// (surface2 and a settle, ReaderChipButtonStyle), never the plain
+    /// style's opacity flicker.
+    func testChipsPressLikeControls() throws {
+        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift", "Reader/SleepChip.swift",
+                                              "Reader/ReaderChip.swift"])
+        let bar = try XCTUnwrap(s["Reader/PlayerBarView.swift"])
+        let listening = Self.code(try XCTUnwrap(Self.closure(after: "private var listeningChip", in: bar)))
+        XCTAssertFalse(listening.contains(".buttonStyle(.plain)"), "player.listening dims instead of pressing")
+        XCTAssertTrue(listening.contains(".buttonStyle(ReaderChipButtonStyle("), listening)
+
+        let sleep = try XCTUnwrap(s["Reader/SleepChip.swift"])
+        let extend = Self.code(try XCTUnwrap(Self.closure(after: "private var extendButton", in: sleep)))
+        XCTAssertFalse(extend.contains(".buttonStyle(.plain)"), "+15 min dims instead of pressing")
+        XCTAssertTrue(extend.contains(".buttonStyle(ReaderChipButtonStyle(isOn: true))"), extend)
+        XCTAssertTrue(Self.code(sleep).contains(".buttonStyle(ReaderChipPressStyle())"), "the sleep menu's press")
+
+        let chip = Self.code(try XCTUnwrap(s["Reader/ReaderChip.swift"]))
+        XCTAssertFalse(chip.contains(".buttonStyle(.plain)"))
+        XCTAssertTrue(chip.contains(".buttonStyle(ReaderChipButtonStyle("), "ReaderChipView presses like the bar's chips")
+    }
+
+    /// P005: a chip that can't fit says less, never in smaller type.
+    func testChipLabelsNeverShrinkTheirType() throws {
+        let paths = ["Reader/ReaderChipStyle.swift", "Reader/PlayerBarView.swift", "Reader/SleepChip.swift",
+                     "Reader/ReaderChip.swift"]
+        let s = try SourceTree.sources(only: paths)
+        for path in paths {
+            let text = Self.code(try XCTUnwrap(s[path], path))
+            XCTAssertFalse(text.contains("minimumScaleFactor"), "\(path) shrinks a chip's type")
+        }
+        let bar = Self.code(try XCTUnwrap(s["Reader/PlayerBarView.swift"]))
+        XCTAssertTrue(bar.contains("ListeningFormat.chipShortTitle(rate:"), "the voice chip's short form")
+        XCTAssertTrue(bar.contains("ViewThatFits(in: .horizontal)"))
+        let sleep = Self.code(try XCTUnwrap(s["Reader/SleepChip.swift"]))
+        XCTAssertTrue(sleep.contains("ViewThatFits(in: .horizontal)") && sleep.contains("\"moon.fill\""),
+                      "Chapter end and Book end fall back to the filled moon")
+    }
+
+    /// P001-P003, P006: Play's place and size come from PlayerBarLayout,
+    /// the five controls carry its VoiceOver order, the chips stop at its
+    /// type cap with the Large Content Viewer, and the skips are the quiet
+    /// glyph style in their named font.
+    func testTheTransportFollowsPlayerBarLayout() throws {
+        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift"])
+        let bar = Self.code(try XCTUnwrap(s["Reader/PlayerBarView.swift"]))
+        XCTAssertFalse(bar.contains("Spacer(minLength: Theme.Space.xs)"), "Spacers shift Play off center")
+        XCTAssertTrue(bar.contains("layout.stacksTransport"))
+        XCTAssertFalse(bar.contains("private var stacksTransport"), "the stacking rule lives in PlayerBarLayout")
+        for control in ["listening", "back15", "play", "forward15", "sleep"] {
+            XCTAssertTrue(bar.contains(".accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .\(control)))"),
+                          "\(control) has no VoiceOver order")
+        }
+        XCTAssertTrue(bar.contains(".accessibilityElement(children: .contain)"), "the order stays inside the transport")
+        XCTAssertTrue(bar.contains("HStack(spacing: layout.clusterGap)"), "breathing room beside Play")
+        XCTAssertTrue(bar.contains(".buttonStyle(ReaderGlyphButtonStyle())"))
+        XCTAssertTrue(bar.contains(".font(Self.skipGlyphFont)"))
+        XCTAssertFalse(bar.contains(".font(.title2"), "a raw skip glyph font")
+        XCTAssertTrue(bar.contains("AccentCircleButtonStyle(diameter: diameter)"))
+        XCTAssertTrue(bar.contains("PlayCircleFace(state: state, diameter: diameter)"), "the ring follows the circle")
+        XCTAssertEqual(bar.components(separatedBy: ".dynamicTypeSize(...PlayerBarLayout.chipTypeCap)").count - 1, 3,
+                       "the voice chip, the sleep chip and the chapter line stop at the cap")
+        let listening = Self.code(try XCTUnwrap(Self.closure(after: "private var listeningChip", in: bar)))
+        XCTAssertTrue(listening.contains(".largeContentViewerIfAvailable"))
+    }
+
+    /// P008: the scrub's touch-down feedback is gesture state alone. It never
+    /// seeks, ticks or ends; only the 8pt drag's release jumps (R17).
+    func testScrubTouchFeedbackNeverSeeks() throws {
+        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift"])
+        let bar = try XCTUnwrap(s["Reader/PlayerBarView.swift"])
+        let touch = Self.code(try XCTUnwrap(Self.closure(after: "private var touchDownGesture", in: bar),
+                                            "the scrub's touch feedback is gone"))
+        XCTAssertTrue(touch.contains("DragGesture(minimumDistance: ScrubGesture.touchDownDistance)"), touch)
+        XCTAssertTrue(touch.contains(".updating($isTouchingScrub)"), touch)
+        for needle in ["onEnded", "jump(", "seek", "TransportHaptics", "releaseSpan"] {
+            XCTAssertFalse(touch.contains(needle), "the touch feedback should never \(needle):\n\(touch)")
+        }
+        let code = Self.code(bar)
+        XCTAssertEqual(code.components(separatedBy: ".onEnded").count - 1, 1, "only the seek drag ends in a jump")
+        XCTAssertTrue(code.contains("DragGesture(minimumDistance: ScrubGesture.minimumDistance)"))
+        XCTAssertTrue(code.contains(".simultaneousGesture(touchDownGesture)"))
+        XCTAssertTrue(code.contains("@GestureState private var isTouchingScrub"), "a system cancel must clear it")
+    }
+
+    /// P007: native checkmark items over the shared rule, on both apps.
+    func testTheSleepMenuUsesTheSharedRuleAndNativeSelection() throws {
+        let s = try SourceTree.sources(only: ["Reader/SleepChip.swift"])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: ["Reader/MacSleepMenu.swift"])
+        let chip = Self.code(try XCTUnwrap(s["Reader/SleepChip.swift"]))
+        XCTAssertTrue(chip.contains("SleepTimer.menuItems(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)"))
+        XCTAssertTrue(chip.contains("Toggle(isOn: selection(option))"), "a native selected state")
+        XCTAssertFalse(chip.contains("\"checkmark\""), "a checkmark image reads as an image, not as selected")
+        XCTAssertTrue(chip.contains(".menuOrderNearestFirst()"))
+        XCTAssertTrue(chip.contains("Section(SleepTimer.Copy.section)"))
+        let mac = Self.code(try XCTUnwrap(macSources["Reader/MacSleepMenu.swift"]))
+        XCTAssertTrue(mac.contains("SleepTimer.menuItems("), "the Mac reads the shared rule")
+        XCTAssertFalse(mac.contains("static func items("), "one rule, not a Mac copy")
+    }
+
     /// `source` without its line comments.
     private static func code(_ source: String) -> String {
         source.split(separator: "\n", omittingEmptySubsequences: false)
