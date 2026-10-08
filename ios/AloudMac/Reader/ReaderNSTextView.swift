@@ -263,13 +263,34 @@ final class ReaderNSTextView: NSTextView {
 
     /// The words only: the rule paragraphs between them (a chapter's
     /// opening, a PDF page's mark, the colophon's) are attachments, which
-    /// the plain text would carry as U+FFFC on a line of its own.
+    /// the plain text would carry as U+FFFC on a line of its own; a PDF
+    /// page's numeral, the end mark and the colophon are the page's
+    /// furniture (`readerFurniture`), never part of a quote (L023).
     override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
         guard super.writeSelection(to: pboard, types: types) else { return false }
-        if let text = pboard.string(forType: .string), text.contains(Self.attachmentMark) {
-            pboard.setString(Self.quotable(text), forType: .string)
+        guard let text = pboard.string(forType: .string) else { return true }
+        var quote = text
+        // One selection (a drag, ⌘A): its words straight from the text,
+        // which knows its furniture.
+        if selectedRanges.count == 1, let storage = textStorage {
+            let range = selectedRange()
+            if range.length > 0, NSMaxRange(range) <= storage.length {
+                quote = Self.withoutFurniture(storage.attributedSubstring(from: range))
+            }
         }
+        quote = Self.quotable(quote)
+        if quote != text { pboard.setString(quote, forType: .string) }
         return true
+    }
+
+    /// `text`'s characters, less every run of the page's furniture.
+    static func withoutFurniture(_ text: NSAttributedString) -> String {
+        let string = text.string as NSString
+        var words = ""
+        text.enumerateAttribute(.readerFurniture, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if value == nil { words += string.substring(with: range) }
+        }
+        return words
     }
 
     /// `text` without its attachment characters, and without the line each
@@ -345,9 +366,23 @@ final class ReaderNSTextView: NSTextView {
             _ = nextResponder?.tryToPerform(selector, with: nil)
         default:
             if Self.selectionCommands.contains(selector), responds(to: selector) {
+                if selector != #selector(NSResponder.selectAll(_:)) { bringCaretOnScreen() }
                 _ = tryToPerform(selector, with: nil)
             }
         }
+    }
+
+    /// A selection key extends the selection from the caret, and scrolls
+    /// to wherever that lands. A caret the reader can't see (each build
+    /// leaves it at the text's start; following carries the page far from
+    /// a click's) first moves to the first character on screen, so the
+    /// selection starts in the passage shown and the page stays (L021).
+    private func bringCaretOnScreen() {
+        let caret = selectedRange()
+        guard caret.length == 0,
+              let shown = MacReaderAccessibility.visibleCharacterRange(of: self, in: visibleRect),
+              caret.location < shown.location || caret.location > NSMaxRange(shown) else { return }
+        setSelectedRange(NSRange(location: shown.location, length: 0))
     }
 
     /// The keys that extend a selection (⇧ with the arrows and their

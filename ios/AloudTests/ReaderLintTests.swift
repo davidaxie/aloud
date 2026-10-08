@@ -198,6 +198,44 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertTrue(panel.contains("} else if cursorUnheard {"))
     }
 
+    /// A scan that lands while the Mac panel's list holds the keyboard
+    /// moves its cursor onto what landed and says it, or hands the keyboard
+    /// back to the field (L024). Focus can't be driven from a test, so this
+    /// pins the landing; the rule is in MacContentsPanelTests. Here because
+    /// Mac-hosted tests can't read the checkout.
+    func testTheMacContentsSearchMovesAListCursorOntoWhatLanded() throws {
+        let path = "Reader/MacContentsPanel.swift"
+        let sources = try SourceTree.sources(in: SourceTree.macRoot, only: [path])
+        let panel = codeLines(try XCTUnwrap(sources[path])).joined(separator: "\n")
+        let landed = try XCTUnwrap(panel.range(of: "results = found"))
+        let after = panel[landed.upperBound...].prefix(1_200)
+        XCTAssertTrue(after.contains("MacContents.cursorAfterScan(listFocused: isListFocused, found: found.count)"))
+        XCTAssertTrue(after.contains("announceCursor(.results)"))
+        XCTAssertTrue(after.contains("focusField()"))
+    }
+
+    /// "Where you stopped" rows are keyed by their place, never their
+    /// position, on both apps: a stop recorded while Contents is open
+    /// slides the rows down with their own elements, so VoiceOver stays on
+    /// the place it read and a double-tap plays that one (L026). Here
+    /// because Mac-hosted tests can't read the checkout.
+    func testPlaceRowsAreKeyedByTheirPlaceOnBothApps() throws {
+        let sheetPath = "Reader/ContentsSheet.swift"
+        let sheets = try SourceTree.sources(only: [sheetPath])
+        let sheet = codeLines(try XCTUnwrap(sheets[sheetPath])).joined(separator: "\n")
+        XCTAssertTrue(sheet.contains("ForEach(Array(rows.prefix(visible)), id: \\.sentence)"))
+        XCTAssertFalse(sheet.contains("ForEach(Array(rows.prefix(visible))) {"), "never keyed by position")
+
+        let panelPath = "Reader/MacContentsPanel.swift"
+        let panels = try SourceTree.sources(in: SourceTree.macRoot, only: [panelPath])
+        let panel = codeLines(try XCTUnwrap(panels[panelPath])).joined(separator: "\n")
+        XCTAssertTrue(panel.contains("ForEach(Array(rows.prefix(list.placeCount)), id: \\.sentence)"))
+        XCTAssertTrue(panel.contains(".id(MacContents.PlaceKey(sentence: row.sentence))"))
+        XCTAssertFalse(panel.contains(".id(row.index)"), "no place row takes its position as its identity")
+        XCTAssertTrue(panel.contains("proxy.scrollTo(MacContents.PlaceKey(sentence: rows[index].sentence))"),
+                      "the keyboard's cursor still scrolls to a place")
+    }
+
     /// The page's own Look Up event reaches the coordinator, which drops
     /// the click's play (J022). Only AppKit's Look Up counts, never a Force
     /// Click's pressure alone: with Look Up set to a three-finger tap (or

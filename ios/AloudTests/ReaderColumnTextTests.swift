@@ -108,6 +108,40 @@ final class ReaderColumnTextTests: XCTestCase {
         XCTAssertNotEqual(style?.alignment, .center)
     }
 
+    /// A PDF page's numeral, the end mark and the whole colophon are the
+    /// page's furniture, and no sentence is: the Mac's Copy leaves the
+    /// furniture out of a quote (L023).
+    @MainActor
+    func testPageNumeralsTheEndMarkAndTheColophonAreFurniture() throws {
+        let content = makeContent([
+            [("First page text.", 1)],
+            [("Second page text.", 2)],
+        ])
+        let colophon = ReaderColophon(title: "Lines", author: "A. Writer", words: 165 * 72, rate: 1)
+        for colophon in [nil, colophon] {
+            let built = ReaderColumnText.makeAttributedString(content: content, fontSize: 19, isChapterBook: false,
+                                                              colophon: colophon, bold: false, ink: ink())
+            let string = built.string
+            func isFurniture(_ location: Int) -> Bool {
+                string.attribute(.readerFurniture, at: location, effectiveRange: nil) != nil
+            }
+            for range in built.sentenceRanges {
+                var effective = NSRange()
+                XCTAssertNil(string.attribute(.readerFurniture, at: range.location, longestEffectiveRange: &effective,
+                                              in: range), "a sentence's words")
+                XCTAssertEqual(effective, range, "no furniture inside a sentence")
+            }
+            let numeral = (string.string as NSString).range(of: "\n2\n")
+            XCTAssertNotEqual(numeral.location, NSNotFound)
+            XCTAssertTrue(isFurniture(numeral.location + 1), "the page numeral")
+            XCTAssertTrue(isFurniture(numeral.location + 2), "and its line's end")
+            var mark = NSRange()
+            XCTAssertNotNil(string.attribute(.readerFurniture, at: built.endMarkRange.location,
+                                             longestEffectiveRange: &mark, in: built.endMarkRange))
+            XCTAssertEqual(mark, built.endMarkRange, colophon == nil ? "the end mark" : "the whole colophon")
+        }
+    }
+
     // MARK: - Bold Text and ink
 
     /// Every rule image the column asked the ink for.

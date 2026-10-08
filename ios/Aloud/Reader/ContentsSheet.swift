@@ -381,7 +381,10 @@ struct ContentsSheet: View {
         let visible = PlaceHistory.visibleCount(total: rows.count, hasChapterList: navigation.hasChapterList,
                                                 expanded: showsEarlierPlaces)
         eyebrow(PlaceHistoryCopy.header, identifier: "places.header")
-        ForEach(Array(rows.prefix(visible))) { row in
+        // Keyed by place, never position: a stop recorded while the sheet
+        // is open slides the rows down with their own elements, so
+        // VoiceOver stays on the place it read (L026).
+        ForEach(Array(rows.prefix(visible)), id: \.sentence) { row in
             placeRow(row)
         }
         if PlaceHistory.offersEarlier(total: rows.count, hasChapterList: navigation.hasChapterList) {

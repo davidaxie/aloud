@@ -1129,22 +1129,22 @@ struct ReaderTextView: UIViewRepresentable {
         private var readsColophon: Bool { shownColophon != nil && accessibilitySentence == nil }
 
         /// The column's label: the colophon as one label at the end, else the
-        /// rotor's sentence, else the playhead's.
+        /// rotor's sentence, else the resting one (`restingSentence`).
         var spokenSentence: String? {
             if readsColophon, let shownColophon { return shownColophon.spokenText }
-            let id = accessibilitySentence ?? activeSentence
+            let id = accessibilitySentence ?? restingSentence()
             let sentences = parent.content.sentences
             return sentences.indices.contains(id) ? sentences[id].text : nil
         }
 
         /// "Play from here" and double-tap: the rotor's sentence (else the
-        /// playhead's), through the tap path.
+        /// resting one the label names), through the tap path.
         @discardableResult
         func playFromHere() -> Bool {
             // The colophon is no sentence: nothing to play from (Play reads
             // Listen again).
             guard !readsColophon else { return false }
-            let id = accessibilitySentence ?? activeSentence
+            let id = accessibilitySentence ?? restingSentence()
             guard parent.content.sentences.indices.contains(id) else { return false }
             accessibilitySentence = nil
             parent.onTapSentence(id)
@@ -1167,7 +1167,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// on screen and handed to VoiceOver as a text range of the column.
         private func rotorStep(_ rotor: ReaderRotor, forward: Bool) -> UIAccessibilityCustomRotorItemResult? {
             guard let textView,
-                  let target = ReaderRotor.target(rotor, from: accessibilitySentence, anchor: rotorAnchor(),
+                  let target = ReaderRotor.target(rotor, from: accessibilitySentence, anchor: restingSentence(),
                                                   forward: forward, content: parent.content,
                                                   navigation: parent.navigation) else { return nil }
             accessibilitySentence = target
@@ -1176,9 +1176,14 @@ struct ReaderTextView: UIViewRepresentable {
                                                         targetRange: textRange(forSentence: target))
         }
 
-        /// Where the first rotor step starts: the playhead while it is on
-        /// screen, else the first sentence at the top of the screen.
-        private func rotorAnchor() -> Int {
+        /// Where VoiceOver rests with no rotor stop, as on the Mac: the
+        /// playhead while it is on screen, else the first sentence at the
+        /// top of the screen. The label, double-tap and the first rotor step
+        /// all start here, so after a three-finger scroll they name and play
+        /// the passage on screen, never a voice scrolled out of view (L020).
+        /// The playhead is measured from the follow chip's cached rect, so
+        /// the label's many reads lay out nothing.
+        private func restingSentence() -> Int {
             guard let viewport = viewport() else { return max(activeSentence, 0) }
             if let rect = activeSentenceRect(), FollowBand.direction(of: rect, in: viewport) == nil {
                 return activeSentence

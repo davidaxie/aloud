@@ -149,8 +149,9 @@ final class ReaderColumnViewTests: XCTestCase {
         let id = try page.singleLineSentence(near: 9)
         let point = try page.point(inSentence: id)
         XCTAssertEqual(page.coordinator.sentence(at: point), id)
-        XCTAssertEqual(page.view.makeCoordinator().clickPlayDelay(), NSEvent.doubleClickInterval,
-                       "a click waits for the system's double-click interval")
+        XCTAssertEqual(page.view.makeCoordinator().clickPlayDelay(),
+                       min(NSEvent.doubleClickInterval, ReaderColumnView.clickPlayHoldLimit),
+                       "a click waits for the system's double-click interval, capped")
 
         page.textView.onClickLanded?()
         page.textView.onClickEnded?(point, 1, false)
@@ -165,6 +166,44 @@ final class ReaderColumnViewTests: XCTestCase {
         page.textView.onClickEnded?(point, 1, true)
         settleClick(on: page)
         XCTAssertEqual(page.played.ids, [id], "a selection is not a click to play")
+    }
+
+    /// A click shows at once where it will play: the highlight moves to the
+    /// clicked sentence as the button comes up while the audio waits, and
+    /// the wait is half a second at most, however slow the system's
+    /// double-click speed (L022). A key, or the second click of a
+    /// double-click, puts the highlight back on the voice.
+    func testAHeldClickShowsItsSentenceAtOnceAndHoldsTheAudioBriefly() throws {
+        XCTAssertEqual(ReaderColumnView.clickPlayHold(doubleClickInterval: 5), ReaderColumnView.clickPlayHoldLimit,
+                       "a slow double-click speed never holds a click for seconds")
+        XCTAssertEqual(ReaderColumnView.clickPlayHold(doubleClickInterval: 0.3), 0.3, "a quick one is kept")
+        XCTAssertLessThanOrEqual(ReaderColumnView.clickPlayHoldLimit, 0.5)
+
+        let page = try makePage(sentences: 60, active: 0)
+        page.coordinator.clickPlayDelay = { 60 }   // held for the whole test
+        let id = try page.singleLineSentence(near: 9)
+        let point = try page.point(inSentence: id)
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertTrue(page.coordinator.isClickPlayPending)
+        XCTAssertEqual(page.coordinator.highlightedSentence, id, "the clicked sentence shows at once")
+        XCTAssertEqual(page.coordinator.activeSentence, 0, "the voice is where it was")
+        page.update(activeSentence: 1)
+        XCTAssertEqual(page.coordinator.highlightedSentence, id, "the voice moving on keeps the held click's cue")
+        XCTAssertEqual(page.played.ids, [])
+
+        page.coordinator.otherInputArrived()
+        XCTAssertFalse(page.coordinator.isClickPlayPending)
+        XCTAssertEqual(page.coordinator.highlightedSentence, 1, "dropped: the highlight is the voice's again")
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertEqual(page.coordinator.highlightedSentence, id)
+        page.textView.onClickLanded?()   // a double-click's second click
+        XCTAssertFalse(page.coordinator.isClickPlayPending)
+        XCTAssertEqual(page.coordinator.highlightedSentence, 1)
+        XCTAssertEqual(page.played.ids, [])
     }
 
     /// A double-click selects a word and a triple-click a paragraph (for
@@ -354,6 +393,35 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "Last sentence.\nChapter Two\nFirst line of chapter two.")
         XCTAssertEqual(ReaderNSTextView.quotable("words\n\u{FFFC}"), "words\n", "a selection ending on the rule")
         XCTAssertEqual(ReaderNSTextView.quotable("plain words"), "plain words")
+    }
+
+    /// ⌘A then ⌘C on a finished PDF quotes its sentences only: no page
+    /// numeral between pages 1 and 2, no end mark, no colophon (L023).
+    func testACopyLeavesOutPageNumeralsAndTheColophon() {
+        let sentences = [Sentence(id: 0, text: "Last words of page one.", para: 0, page: 1),
+                         Sentence(id: 1, text: "First words of page two.", para: 1, page: 2)]
+        let paragraphs = [Paragraph(id: 0, sentenceIDs: 0..<1, page: 1),
+                          Paragraph(id: 1, sentenceIDs: 1..<2, page: 2)]
+        let content = DocContent(title: "Pages", pageCount: 2, sentences: sentences, paragraphs: paragraphs,
+                                 contentHash: "mac-copy-furniture")
+        let colophon = ReaderColophon(title: "Pages", author: "A. Writer", words: 165 * 72, rate: 1)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.davidxie.AloudMacTests.furniture.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        for colophon in [nil, colophon] {
+            let built = ReaderColumnText.makeAttributedString(content: content, fontSize: 19, isChapterBook: false,
+                                                              colophon: colophon, bold: false, ink: .live())
+            XCTAssertTrue(built.string.string.contains("\n2\n"), "the page numeral is on the page")
+            let textView = ReaderNSTextView(usingTextLayoutManager: true)
+            textView.frame = NSRect(x: 0, y: 0, width: 400, height: 400)
+            textView.textStorage?.setAttributedString(built.string)
+            textView.setSelectedRange(NSRange(location: 0, length: built.string.length))
+
+            pasteboard.clearContents()
+            XCTAssertTrue(textView.writeSelection(to: pasteboard, types: textView.writablePasteboardTypes))
+            XCTAssertEqual(pasteboard.string(forType: .string), "Last words of page one.\nFirst words of page two.\n",
+                           colophon == nil ? "no numeral, no end mark" : "no numeral, no colophon")
+        }
     }
 
     /// The mouse button held on the page (a click, or a drag selection
@@ -611,6 +679,32 @@ final class ReaderColumnViewTests: XCTestCase {
         }
         XCTAssertEqual(spy.calls, [], "no selector went on up the chain")
         XCTAssertEqual(textView.string, text)
+    }
+
+    /// A book opened deep in its text leaves the hidden caret at the text's
+    /// start. The first ⇧↓ (or ⌘⇧→, ⇧Page Down) selects from the passage
+    /// on screen instead, never jumping the page back to the book's first
+    /// lines: ⇧↓ and ⌘⇧→ keep the page, and following too (L021).
+    func testASelectionKeyStartsFromThePassageOnScreen() throws {
+        let page = try makePage(sentences: 300, active: 150, size: NSSize(width: 800, height: 500))
+        let coordinator = page.coordinator
+        XCTAssertTrue(coordinator.isFollowing)
+        XCTAssertGreaterThan(page.offset, 0, "the page is deep in the book")
+        for (name, keepsThePage) in [("moveDownAndModifySelection:", true),
+                                     ("moveToRightEndOfLineAndModifySelection:", true),
+                                     ("pageDownAndModifySelection:", false)] {
+            page.textView.setSelectedRange(NSRange(location: 0, length: 0))
+            let before = page.offset
+            page.textView.doCommand(by: NSSelectorFromString(name))
+            let selection = page.textView.selectedRange()
+            XCTAssertGreaterThan(selection.length, 0, "\(name) selects")
+            XCTAssertGreaterThan(selection.location, coordinator.sentenceRanges[100].location,
+                                 "\(name) selects from the passage on screen, never the book's start")
+            XCTAssertGreaterThanOrEqual(page.offset, before - 1, "\(name) never jumps back to the start")
+            guard keepsThePage else { continue }
+            XCTAssertEqual(page.offset, before, accuracy: 1, "\(name) keeps the page")
+            XCTAssertTrue(coordinator.isFollowing, "\(name) is no scroll of the reader's")
+        }
     }
 
     /// Space, ← and → are the app's: `MacKeyRouter` runs them at once while

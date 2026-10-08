@@ -89,7 +89,7 @@ final class MacKeyRouter {
             run(command, in: window)
             return nil
         }
-        if MacCommand.command(for: event) == .undoJump, let window, Self.isEditableText(window.firstResponder),
+        if Self.isUndoKey(event), let window, Self.isEditableText(window.firstResponder),
            let undo = window.firstResponder?.undoManager, undo.canUndo {
             // ⌘Z in a field with typing to undo is the field's (the system
             // Undo's), never Undo Jump ahead of it in the Edit menu.
@@ -165,6 +165,23 @@ final class MacKeyRouter {
             if next === tail { return }
             last = next
         }
+    }
+
+    /// ⌘Z, as the menus match it: by the shortcut table, or by the key's
+    /// ⌘ layer. A Russian, Greek or Hebrew layout reads its own letter on
+    /// the key ignoring modifiers, which the table never matches, while
+    /// the menus still see ⌘Z and Undo Jump would take it (L030).
+    static func isUndoKey(_ event: NSEvent) -> Bool {
+        if MacCommand.command(for: event) == .undoJump { return true }
+        guard event.type == .keyDown else { return false }
+        return isUndoKey(commandLayer: event.charactersByApplyingModifiers(.command),
+                         modifiers: event.modifierFlags)
+    }
+
+    /// ⌘ alone (⇧⌘Z is Redo) with the key whose ⌘ layer types "z".
+    static func isUndoKey(commandLayer: String?, modifiers: NSEvent.ModifierFlags) -> Bool {
+        modifiers.intersection([.command, .shift, .option, .control]) == .command
+            && commandLayer?.lowercased() == "z"
     }
 
     /// A field editor or an editable text view: it types every plain key.

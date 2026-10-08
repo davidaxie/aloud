@@ -336,6 +336,37 @@ final class MacKeyRouterTests: XCTestCase {
         XCTAssertTrue(router.handle(menuUndo, in: bare) === menuUndo, "outside a field: Undo Jump's")
     }
 
+    /// On a Russian, Greek or Hebrew layout the Z key reads its own letter
+    /// ignoring modifiers, while the menus match its ⌘ layer, ⌘Z: a field
+    /// with typing to undo still takes it from Undo Jump (L030). ⇧⌘Z,
+    /// ⌥⌘Z and the plain letter never count.
+    func testCommandZOnANonLatinLayoutUndoesTheTypingNotTheJump() throws {
+        XCTAssertTrue(MacKeyRouter.isUndoKey(commandLayer: "z", modifiers: .command))
+        XCTAssertTrue(MacKeyRouter.isUndoKey(commandLayer: "z", modifiers: [.command, .capsLock]))
+        XCTAssertFalse(MacKeyRouter.isUndoKey(commandLayer: "z", modifiers: [.command, .shift]), "Redo")
+        XCTAssertFalse(MacKeyRouter.isUndoKey(commandLayer: "z", modifiers: [.command, .option]))
+        XCTAssertFalse(MacKeyRouter.isUndoKey(commandLayer: "z", modifiers: []))
+        XCTAssertFalse(MacKeyRouter.isUndoKey(commandLayer: "я", modifiers: .command))
+        XCTAssertFalse(MacKeyRouter.isUndoKey(commandLayer: nil, modifiers: .command))
+
+        // ⌘я: the Russian layout's Z key, with ⌘.
+        let russian = MacShortcutsTests.key("я", code: 6, flags: .command)
+        guard russian.charactersByApplyingModifiers(.command) == "z" else {
+            throw XCTSkip("This host's layout puts no Z on key code 6")
+        }
+        XCTAssertNil(MacCommand.command(for: russian), "the shortcut table never sees ⌘Z here")
+        XCTAssertTrue(MacKeyRouter.isUndoKey(russian))
+
+        let (window, text) = makeWindowWithText(editable: true)
+        text.allowsUndo = true
+        text.insertText("pride", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(try XCTUnwrap(text.undoManager).canUndo)
+        let undo = MacShortcutsTests.key("я", code: 6, flags: .command, window: window)
+        XCTAssertNil(router.handle(undo, in: window), "the field's undo took it, before any menu")
+        XCTAssertEqual(text.string, "", "the typing was undone")
+        XCTAssertEqual(performed, [], "no Undo Jump")
+    }
+
     /// ⌘=, the unshifted key beside ⌘+, makes the text bigger: no menu
     /// item carries it, so the router runs it, in a field or not.
     func testCommandEqualsMakesTheTextBigger() throws {

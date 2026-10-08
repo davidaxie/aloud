@@ -115,6 +115,17 @@ struct ReaderColumnView: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
+    /// The longest a single click holds its play for a second click
+    /// (L022): a double-click speed slowed for motor reasons would hold
+    /// every click for seconds.
+    static let clickPlayHoldLimit: TimeInterval = 0.5
+
+    /// How long a single click waits for a second before it plays: the
+    /// system's double-click interval, at most `clickPlayHoldLimit`.
+    static func clickPlayHold(doubleClickInterval: TimeInterval) -> TimeInterval {
+        min(doubleClickInterval, clickPlayHoldLimit)
+    }
+
     /// R15: a click plays from the clicked sentence in any state, through
     /// the same jump the iPhone's tap makes (a far one offers Undo jump).
     @MainActor
@@ -224,6 +235,11 @@ struct ReaderColumnView: NSViewRepresentable {
         /// While a click's play is held: a key (Space, ⌘Z, an arrow) or a
         /// click anywhere else (the bar's Pause) drops it.
         private var clickPlayMonitor: Any?
+        /// A single click's sentence, highlighted as the button comes up
+        /// while its play is held, so the click shows at once (L022). Kept
+        /// once the play runs, until the jump moves the voice there; the
+        /// hold giving way puts the highlight back on the voice.
+        private var clickCue: (sentence: Int, hash: String)?
         /// Moves of our own in progress (offsets, rebuilds): the clip view's
         /// bounds moving then is not the reader scrolling.
         private var programmaticMoves = 0
@@ -268,9 +284,17 @@ struct ReaderColumnView: NSViewRepresentable {
         var isCoasting: (ReaderScrollView) -> Bool = { $0.isCoastingOrJustStopped }
         /// Test seam: how long a single click waits for a second before it
         /// plays.
-        var clickPlayDelay: () -> TimeInterval = { NSEvent.doubleClickInterval }
+        var clickPlayDelay: () -> TimeInterval = {
+            ReaderColumnView.clickPlayHold(doubleClickInterval: NSEvent.doubleClickInterval)
+        }
         /// A single click is waiting out the double-click interval (tests).
         var isClickPlayPending: Bool { pendingClickPlay != nil }
+        /// The sentence the highlight is drawn on: a held click's cue
+        /// (`clickCue`) in the text it landed on, else the voice's.
+        var highlightedSentence: Int {
+            if let clickCue, clickCue.hash == builtHash { return clickCue.sentence }
+            return activeSentence
+        }
         /// Keys and clicks elsewhere are watched for, while a click waits
         /// (tests).
         var isWatchingForOtherInput: Bool { clickPlayMonitor != nil }
@@ -917,21 +941,26 @@ struct ReaderColumnView: NSViewRepresentable {
                 follow.cachedActiveRect = nil
             }
             activeSentence = id
+            // The voice takes the highlight back from a click's cue, once
+            // the click's play is no longer held.
+            if pendingClickPlay == nil { clickCue = nil }
             renderSentenceHighlight(animated: changed)
             if scroll && isFollowing { followIfNeeded(animated: true) }
             updateFollowChip()
         }
 
-        /// Draws the active sentence in the highlight layer beneath the
-        /// text. Never touches `textStorage`.
+        /// Draws the active sentence (or a held click's, `highlightedSentence`)
+        /// in the highlight layer beneath the text. Never touches
+        /// `textStorage`.
         private func renderSentenceHighlight(animated: Bool) {
             guard let page, let textView else { return }
-            guard sentenceRanges.indices.contains(activeSentence) else {
+            let shown = highlightedSentence
+            guard sentenceRanges.indices.contains(shown) else {
                 page.highlight.clearSentence()
                 return
             }
             let appearance = textView.effectiveAppearance
-            page.highlight.showSentence(segments(for: sentenceRanges[activeSentence]),
+            page.highlight.showSentence(segments(for: sentenceRanges[shown]),
                                         fill: appearance.resolvedCGColor(Theme.highlightBg),
                                         mark: appearance.resolvedCGColor(Theme.accent),
                                         gutterX: textView.textContainerOrigin.x,
@@ -1641,9 +1670,10 @@ struct ReaderColumnView: NSViewRepresentable {
 
         /// A click plays from the clicked sentence in any state, unless it
         /// landed on moving text: then it only stopped the scroll. The play
-        /// waits out the double-click interval: AppKit ends a double-click's
-        /// first click as a plain one, and a double- or triple-click selects
-        /// (for Copy or Look Up), never plays.
+        /// waits out the double-click interval (capped, `clickPlayHold`):
+        /// AppKit ends a double-click's first click as a plain one, and a
+        /// double- or triple-click selects (for Copy or Look Up), never
+        /// plays. The clicked sentence is highlighted at once meanwhile.
         func handleClick(at point: CGPoint, isDecelerating: Bool) {
             if isDecelerating {
                 userScrollEnded()
@@ -1656,16 +1686,21 @@ struct ReaderColumnView: NSViewRepresentable {
             let play = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.cancelClickPlay()
-                    // The same text the click landed on.
-                    guard self.builtHash == hash else { return }
-                    // A pause, a jump or an Undo since then stands: the
-                    // held click never overrides it.
-                    guard self.parent.transportStamp?() == stamp else { return }
+                    // The cue stays until the jump moves the voice there.
+                    self.cancelClickPlay(keepingCue: true)
+                    // The same text the click landed on, and a pause, a
+                    // jump or an Undo since then stands: the held click
+                    // never overrides it.
+                    guard self.builtHash == hash, self.parent.transportStamp?() == stamp else {
+                        self.dropClickCue()
+                        return
+                    }
                     self.parent.onPlaySentence(id)
                 }
             }
             pendingClickPlay = play
+            clickCue = (id, hash)
+            renderSentenceHighlight(animated: true)
             clickPlayMonitor = NSEvent.addLocalMonitorForEvents(
                 matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
                 MainActor.assumeIsolated { self?.otherInputArrived() }
@@ -1681,11 +1716,19 @@ struct ReaderColumnView: NSViewRepresentable {
             cancelClickPlay()
         }
 
-        private func cancelClickPlay() {
+        private func cancelClickPlay(keepingCue: Bool = false) {
             pendingClickPlay?.cancel()
             pendingClickPlay = nil
             if let clickPlayMonitor { NSEvent.removeMonitor(clickPlayMonitor) }
             clickPlayMonitor = nil
+            if !keepingCue { dropClickCue() }
+        }
+
+        /// A held click gave way: the highlight is the voice's again.
+        private func dropClickCue() {
+            guard clickCue != nil else { return }
+            clickCue = nil
+            renderSentenceHighlight(animated: false)
         }
 
         /// The sentence under `point` (page coordinates); nil between

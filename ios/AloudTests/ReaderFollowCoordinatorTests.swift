@@ -1000,6 +1000,26 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(after - before), 1, "the same passage is at the top")
     }
 
+    /// With no rotor stop and the voice scrolled out of view, VoiceOver's
+    /// label and double-tap are the passage on screen, as a sighted tap
+    /// is: never the voice's sentence, which a double-tap would restart
+    /// and pull the column back to (L020).
+    func testVoiceOverRestsOnThePassageOnScreenWhileTheVoiceIsAway() throws {
+        let taps = Taps()
+        let (coordinator, textView, sentenceAtTop) = try readAwayFromTheVoice(taps: taps)
+        let sentences = coordinator.parent.content.sentences
+        XCTAssertNil(coordinator.accessibilitySentence, "no rotor stop")
+
+        let label = try XCTUnwrap(textView.accessibilityLabel)
+        XCTAssertNotEqual(label, sentences[10].text, "never the voice's sentence off screen")
+        XCTAssertTrue(textView.accessibilityActivate())
+        let played = try XCTUnwrap(taps.sentences.last)
+        XCTAssertNotEqual(played, 10, "a double-tap plays the passage on screen")
+        XCTAssertEqual(label, sentences[played].text, "the label names what a double-tap plays")
+        let top = try sentenceAtTop()
+        XCTAssertLessThanOrEqual(abs(played - top), 1, "the sentence at the top of the screen")
+    }
+
     /// While following, a text-size step stays on the voice.
     func testATextSizeStepWhileFollowingStaysOnTheVoice() throws {
         let (coordinator, textView) = try makeColumn(count: 1_200)

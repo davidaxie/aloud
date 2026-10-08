@@ -236,7 +236,14 @@ struct MacContentsPanel: View {
             // without, the flat ids are the chapter indices.
             .onAppear { if rows.isEmpty { scrollToCurrent(proxy, current: current) } }
             .onChange(of: cursor) { _, row in
-                if let row { proxy.scrollTo(row) }
+                guard let row else { return }
+                // A place is keyed by its sentence (`PlaceKey`); the rest
+                // by their flat index.
+                if case .place(let index)? = flatLayout(rows).row(at: row), rows.indices.contains(index) {
+                    proxy.scrollTo(MacContents.PlaceKey(sentence: rows[index].sentence))
+                } else {
+                    proxy.scrollTo(row)
+                }
             }
         }
     }
@@ -317,7 +324,10 @@ struct MacContentsPanel: View {
     private func placesSection(_ rows: [PlaceRow]) -> some View {
         let list = flatLayout(rows)
         eyebrow(PlaceHistoryCopy.header, identifier: "places.header")
-        ForEach(Array(rows.prefix(list.placeCount))) { row in
+        // Keyed by place, never position: a stop recorded while the panel
+        // is open slides the rows down with their own elements, so the
+        // VoiceOver cursor stays on the place it read (L026).
+        ForEach(Array(rows.prefix(list.placeCount)), id: \.sentence) { row in
             placeRow(row)
         }
         if list.hasShowEarlier {
@@ -361,7 +371,7 @@ struct MacContentsPanel: View {
                     .accessibilityHidden(true)
             }
         }
-        .id(row.index)
+        .id(MacContents.PlaceKey(sentence: row.sentence))
         .accessibilityLabel(row.accessibilityLabel)
         .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
         .accessibilityIdentifier(row.identifier)
@@ -651,9 +661,21 @@ struct MacContentsPanel: View {
             let previousCount: Int? = searchedQuery == nil ? nil : results.count
             results = found
             searchedQuery = trimmed
-            // Focus stays in the field: VoiceOver hears what landed.
+            // VoiceOver hears what landed.
             ContentsSearch.announceResults(count: found.count, query: trimmed,
                                            previousCount: previousCount, muted: playback.isOutputMuted)
+            // ↓ may have entered the list on the previous query's results
+            // while this scan ran: its cursor moves onto what landed.
+            switch MacContents.cursorAfterScan(listFocused: isListFocused, found: found.count) {
+            case .row(let row)?:
+                cursor = row
+                announceCursor(.results)
+            case .field?:
+                cursor = nil
+                focusField()
+            case nil:
+                break
+            }
             if submitPending {
                 submitPending = false
                 if !found.isEmpty { pickResult(0) }
@@ -775,6 +797,24 @@ enum MacContents {
         guard let cursor else { return delta < 0 ? .field : .row(0) }
         let next = cursor + delta
         return next < 0 ? .field : .row(min(next, count - 1))
+    }
+
+    /// A place row's identity in the list: its sentence, never its
+    /// position (L026). A type of its own, apart from the flat indices the
+    /// toggle and the chapters are keyed by.
+    struct PlaceKey: Hashable {
+        let sentence: Int
+    }
+
+    /// Where the keyboard's cursor goes as a scan lands (L024). With the
+    /// list away, nowhere: the field keeps the keyboard. With the list
+    /// holding it (↓ entered the previous query's results while the scan
+    /// ran), the top result, said, so Return never opens a row VoiceOver
+    /// hasn't read; with nothing found, the field, since a list with no
+    /// rows can't hold the keyboard.
+    static func cursorAfterScan(listFocused: Bool, found: Int) -> CursorMove? {
+        guard listFocused else { return nil }
+        return found > 0 ? .row(0) : .field
     }
 
     /// What VoiceOver hears as the cursor lands on a row of the list: the

@@ -32,6 +32,13 @@ struct ReaderInk {
     var ruleImage: (CGSize, Tint) -> RuleImage
 }
 
+extension NSAttributedString.Key {
+    /// The page's furniture, never a sentence's words: a PDF page's
+    /// numeral, the "· · ·" end mark and the colophon. The Mac's Copy
+    /// leaves it out of a quote (L023).
+    static let readerFurniture = NSAttributedString.Key("AloudReaderFurniture")
+}
+
 /// The reading column's attributed string: every paragraph, page mark and
 /// chapter opening, then the end mark. Pure: the host passes Bold Text as
 /// `bold` and its colors as `ReaderInk`, so both columns build the same text.
@@ -236,6 +243,7 @@ enum ReaderColumnText {
             .foregroundColor: ink.textMuted,
             .paragraphStyle: centered(spacingAfter: 0),
         ]))
+        mark.addAttribute(.readerFurniture, value: true, range: NSRange(location: 0, length: mark.length))
         return mark
     }
 
@@ -257,6 +265,7 @@ enum ReaderColumnText {
             .foregroundColor: ink.textMuted,
             .kern: 1.2,
             .paragraphStyle: markStyle,
+            .readerFurniture: true,
         ]
     }
 

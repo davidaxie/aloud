@@ -185,6 +185,18 @@ final class MacContentsPanelTests: XCTestCase {
         XCTAssertEqual(MacContents.step(nil, by: 1, count: 0), .field, "no rows to walk")
     }
 
+    /// A scan landing while ↓ has the list on the previous query's results
+    /// moves the cursor to the top result (which is then said), or, with
+    /// nothing found, back to the field: Return never opens a result
+    /// VoiceOver didn't read (L024). With the field holding the keyboard,
+    /// nothing moves.
+    func testALandingScanMovesAListCursorOntoWhatLanded() {
+        XCTAssertEqual(MacContents.cursorAfterScan(listFocused: true, found: 3), .row(0))
+        XCTAssertEqual(MacContents.cursorAfterScan(listFocused: true, found: 0), .field)
+        XCTAssertNil(MacContents.cursorAfterScan(listFocused: false, found: 3))
+        XCTAssertNil(MacContents.cursorAfterScan(listFocused: false, found: 0))
+    }
+
     func testEscClearsTheSearchThenCloses() {
         XCTAssertEqual(MacContents.escape(query: "cask"), .clearSearch)
         XCTAssertEqual(MacContents.escape(query: " "), .clearSearch)
