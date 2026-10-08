@@ -119,6 +119,8 @@ final class ReaderChromeUITest: XCTestCase {
         chip.tap()
         let thirty = app.buttons["30 minutes"].firstMatch
         XCTAssertTrue(thirty.waitForExistence(timeout: 5), "The sleep options should open")
+        // P007: Off joins the menu only once a timer is armed.
+        XCTAssertFalse(app.buttons["Off"].firstMatch.exists, "No Off while unarmed")
         thirty.tap()
         // Paused, so the countdown holds at 30:00, spoken in words.
         XCTAssertTrue(wait(for: "label BEGINSWITH %@", "30 minutes left", on: chip, timeout: 5),
@@ -127,9 +129,37 @@ final class ReaderChromeUITest: XCTestCase {
         chip.tap()
         let off = app.buttons["Off"].firstMatch
         XCTAssertTrue(off.waitForExistence(timeout: 5))
+        // P007: the armed choice is a native selected item, not a checkmark
+        // image VoiceOver would read as a picture.
+        let armed = app.buttons["30 minutes"].firstMatch
+        XCTAssertTrue(armed.waitForExistence(timeout: 5))
+        XCTAssertTrue(armed.isSelected, "The armed choice should read as selected")
         off.tap()
         XCTAssertTrue(wait(for: "label == %@", "Sleep timer", on: chip, timeout: 5),
                       "Disarmed chip should read Sleep timer, got \(chip.label)")
+    }
+
+    // MARK: - Scrub
+
+    /// P008: the track answers a finger at once, but a still press is touch
+    /// feedback alone. It never seeks and never offers Undo jump (R17); only
+    /// a drag of 8pt or more jumps.
+    func testAStillPressOnTheScrubNeitherSeeksNorOffersUndo() throws {
+        let app = openSeededReader()
+        let scrub = element("player.scrub", in: app)
+        XCTAssertTrue(scrub.waitForExistence(timeout: 10))
+        let start = try XCTUnwrap(waitForSentence(in: app, timeout: 10) { _ in true },
+                                  "The playhead probe should appear")
+        let position = stringValue(of: scrub)
+        XCTAssertFalse(position.isEmpty, "The scrub should speak the position")
+
+        scrub.press(forDuration: 0.3)
+
+        XCTAssertFalse(element("reader.undoJump", in: app).waitForExistence(timeout: 1),
+                       "A still press should offer no Undo jump")
+        XCTAssertNil(waitForSentence(in: app, timeout: 1) { $0 != start },
+                     "A still press should leave the playhead on sentence \(start)")
+        XCTAssertEqual(stringValue(of: scrub), position, "A still press should not move the position")
     }
 
     // MARK: - Contents

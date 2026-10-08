@@ -64,6 +64,8 @@ struct NaturalVoiceOfferRow: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // The player bar stops this row's type at the chips' cap.
+        .largeContentViewerIfAvailable { Text(line) }
         .accessibilityHint("Opens contents and search")
         .accessibilityIdentifier("naturalVoice.offer")
     }
@@ -84,6 +86,7 @@ struct NaturalVoiceOfferRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .largeContentViewerIfAvailable { Text(NaturalVoiceCopy.download) }
             .accessibilityHint(NaturalVoiceCopy.privacyLine)
             .accessibilityInputLabels([Text("Download"), Text("Download natural voice")])
             .accessibilityIdentifier("naturalVoice.offer.download")
@@ -98,6 +101,7 @@ struct NaturalVoiceOfferRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .largeContentViewerIfAvailable { Text(NaturalVoiceCopy.notNow) }
             .accessibilityIdentifier("naturalVoice.offer.notNow")
         }
     }

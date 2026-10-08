@@ -11,6 +11,8 @@ import SwiftUI
 /// reader.chapterLine (the offer row carries its own identifiers), and each
 /// label starts with the visible text. On the Mac its type follows the
 /// reader's chrome band (M18), and in the Largest band the title may wrap.
+/// On the iPhone the player bar stops its type at the chips' cap, so every
+/// button here shows its visible text in the Large Content Viewer.
 struct ReaderMessageLine: View {
 
     let message: ReaderMessage?
@@ -92,6 +94,8 @@ struct ReaderMessageLine: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // The whole visible line, title first, as the HUD may cut its end.
+        .largeContentViewerIfAvailable { Text(position.text) }
         .accessibilityLabel(position.accessibilityLabel)
         .accessibilityHint(Self.contentsHint)
         // The visible title first, so Voice Control matches what it shows.
@@ -132,6 +136,9 @@ struct ReaderMessageLine: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .largeContentViewerIfAvailable {
+            Label(StopReason.playbackError.text, systemImage: "arrow.clockwise")
+        }
         .accessibilityLabel(StopReason.playbackError.spokenText)
         .accessibilityHint(Self.retryHint)
         .accessibilityIdentifier("reader.chapterLine")
@@ -176,6 +183,7 @@ struct ReaderMessageLine: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .largeContentViewerIfAvailable { Label(reason.text, systemImage: "pause.circle") }
         .accessibilityLabel(reason.spokenText)
         .accessibilityHint(Self.contentsHint)
         .accessibilityIdentifier("reader.chapterLine")
@@ -192,6 +200,7 @@ struct ReaderMessageLine: View {
         }
         .buttonStyle(.plain)
         .fixedSize()
+        .largeContentViewerIfAvailable { Text(StopCopy.backFiveMinutes) }
         .accessibilityLabel(StopCopy.backFiveMinutesSpoken)
         .accessibilityHint(StopCopy.backFiveMinutesHint)
         .accessibilityInputLabels([Text(StopCopy.backFiveMinutes), Text(StopCopy.backFiveMinutesSpoken)])
@@ -214,6 +223,7 @@ struct ReaderMessageLine: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .largeContentViewerIfAvailable { Text(message.text) }
         .accessibilityLabel(message.spokenText)
         .accessibilityHint(Self.contentsHint)
         .accessibilityAddTraits(progress != nil ? .updatesFrequently : [])

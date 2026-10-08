@@ -167,6 +167,41 @@ final class PlayerBarLintTests: XCTestCase {
         XCTAssertTrue(listening.contains(".largeContentViewerIfAvailable"))
     }
 
+    /// P006: the chapter line stops at the chips' cap inside the bar's
+    /// height budget, so every button in that slot, the natural-voice offer
+    /// row's included, shows its text large on a long press. Without it the
+    /// line was unreadable at AX3 to AX5 and had no way to enlarge.
+    func testTheCappedChapterLineOffersTheLargeContentViewer() throws {
+        let paths = ["Reader/PlayerBarView.swift", "Reader/ReaderMessageLine.swift", "TTS/NaturalVoiceOfferRow.swift"]
+        let s = try SourceTree.sources(only: paths)
+        let bar = Self.code(try XCTUnwrap(s["Reader/PlayerBarView.swift"]))
+        let lineCall = try XCTUnwrap(bar.components(separatedBy: "ReaderMessageLine(message:").dropFirst().first,
+                                     "the bar draws the chapter line")
+        // The line's own modifiers: everything before the next row.
+        let lineModifiers = lineCall.components(separatedBy: "scrubTrack")[0]
+        guard lineModifiers.contains(".dynamicTypeSize(...PlayerBarLayout.chipTypeCap)") else { return }
+
+        let line = Self.code(try XCTUnwrap(s["Reader/ReaderMessageLine.swift"]))
+        for button in ["private var positionLine", "private var retryLine", "private func stopReasonButton",
+                       "private var backFiveMinutesButton", "private func statusLine"] {
+            let body = try XCTUnwrap(Self.closure(after: button, in: line), "\(button) is gone")
+            XCTAssertTrue(body.contains(".largeContentViewerIfAvailable"),
+                          "\(button) is capped with no Large Content Viewer")
+        }
+        let buttons = try NSRegularExpression(pattern: #"\bButton\s*[({]"#)
+            .numberOfMatches(in: line, range: NSRange(line.startIndex..., in: line))
+        XCTAssertEqual(buttons, 5, "the lint reads every button in the chapter line")
+        XCTAssertEqual(line.components(separatedBy: ".largeContentViewerIfAvailable").count - 1, buttons,
+                       "every button in the chapter line offers the Large Content Viewer")
+
+        let offer = Self.code(try XCTUnwrap(s["TTS/NaturalVoiceOfferRow.swift"]))
+        let offerText = try XCTUnwrap(Self.closure(after: "private func offerText", in: offer))
+        XCTAssertTrue(offerText.contains(".largeContentViewerIfAvailable"), "the offer's line")
+        let offerButtons = try XCTUnwrap(Self.closure(after: "private var buttons", in: offer))
+        XCTAssertEqual(offerButtons.components(separatedBy: ".largeContentViewerIfAvailable").count - 1, 2,
+                       "Download and Not now")
+    }
+
     /// P008: the scrub's touch-down feedback is gesture state alone. It never
     /// seeks, ticks or ends; only the 8pt drag's release jumps (R17).
     func testScrubTouchFeedbackNeverSeeks() throws {
