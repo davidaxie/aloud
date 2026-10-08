@@ -28,18 +28,18 @@ final class VoiceOverStopLintTests: XCTestCase {
         XCTAssertTrue(icon.contains(".accessibilityHidden(true)"), "the waveform tile should be hidden: \(icon)")
     }
 
-    /// The field names itself ("Search this book"), so the glyph before it
-    /// adds nothing.
+    /// The field names itself (`ContentsSearch.searchPrompt`), so the glyph
+    /// before it adds nothing.
     func testTheSearchFieldGlyphIsHidden() throws {
         let glyph = try region(of: "Reader/ContentsSheet.swift", from: "Image(systemName: \"magnifyingglass\")",
-                               to: "TextField(\"Search this book\"")
+                               to: "TextField(ContentsSearch.searchPrompt")
         XCTAssertTrue(glyph.contains(".accessibilityHidden(true)"), "the magnifying glass should be hidden: \(glyph)")
     }
 
     /// The row shows a few words before the hit behind an ellipsis, and at
     /// most three or five lines; VoiceOver gets the sentence whole, typeset.
     func testASearchResultReadsItsWholeSentence() throws {
-        let label = try region(of: "Reader/ContentsSheet.swift", from: "emphasized(snippet)",
+        let label = try region(of: "Reader/ContentsSheet.swift", from: "Self.emphasized(snippet, underlined:",
                                to: "Text(location)")
         XCTAssertTrue(label.contains(".accessibilityLabel(ReaderTypography.typeset(match.text))"),
                       "the result should read its whole sentence: \(label)")

@@ -106,6 +106,36 @@ final class PlaceHistoryRulesTests: XCTestCase {
         XCTAssertFalse(PlaceHistory.offersEarlier(total: 8, hasChapterList: false))
     }
 
+    /// P024: the iPhone's half-height Contents keeps one stop above the
+    /// chapter list, so the earlier-stops toggle counts from one; full height
+    /// and the accessibility sizes keep three, as the Mac does.
+    func testHalfHeightKeepsOneStopAboveTheChapters() {
+        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: true, hasChapterList: true,
+                                                   accessibilitySize: false), 1)
+        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: false, hasChapterList: true,
+                                                   accessibilitySize: false), 3, "full height")
+        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: true, hasChapterList: true,
+                                                   accessibilitySize: true), 3, "accessibility sizes")
+        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: true, hasChapterList: false,
+                                                   accessibilitySize: false), 3, "places only")
+
+        XCTAssertEqual(PlaceHistory.visibleCount(total: 8, hasChapterList: true, expanded: false,
+                                                 collapsedCount: 1), 1)
+        XCTAssertEqual(PlaceHistory.visibleCount(total: 8, hasChapterList: true, expanded: false,
+                                                 collapsedCount: 3), 3)
+        XCTAssertEqual(PlaceHistory.visibleCount(total: 8, hasChapterList: true, expanded: true,
+                                                 collapsedCount: 1), 8, "expanded shows them all")
+        XCTAssertEqual(PlaceHistory.visibleCount(total: 8, hasChapterList: false, expanded: false,
+                                                 collapsedCount: 1), 8, "a book without chapters lists them all")
+        XCTAssertTrue(PlaceHistory.offersEarlier(total: 2, hasChapterList: true, collapsedCount: 1))
+        XCTAssertFalse(PlaceHistory.offersEarlier(total: 1, hasChapterList: true, collapsedCount: 1))
+        XCTAssertFalse(PlaceHistory.offersEarlier(total: 2, hasChapterList: true, collapsedCount: 3))
+        // The default is the Mac's (and full height's) three.
+        XCTAssertEqual(PlaceHistory.visibleCount(total: 8, hasChapterList: true, expanded: false),
+                       PlaceHistory.visibleCount(total: 8, hasChapterList: true, expanded: false,
+                                                 collapsedCount: PlaceHistory.collapsedCount))
+    }
+
     func testTheExcerptIsTheSentencesStart() {
         let long = String(repeating: "word ", count: 40)
         XCTAssertEqual(PlaceHistory.excerpt(of: long).count, PlaceHistory.excerptLength)

@@ -29,6 +29,8 @@ import SwiftUI
 ///   closed Aloud while it was speaking.
 /// - `-uitest-restore-session` reopens the last reader at launch.
 /// - `-uitest-haptic-log` exposes the transport haptic log (debug.haptics).
+/// - `-uitest-seed-places <n>` records n places, spread through the first
+///   document, in its place history (Contents' places list).
 /// - `-uitest-low-disk` reports 100 MB free to the download's space check.
 /// - `-uitest-damaged-model` installs 1-byte model files in the temporary
 ///   model directory, which launch-time detection reads as damaged.
@@ -119,6 +121,11 @@ enum UITestHooks {
 
     /// Seed the first classic and mark it Finished.
     static var seedFinished: Bool { arguments.contains("-uitest-seed-finished") }
+
+    /// `-uitest-seed-places <n>`: n places in the first document's history.
+    static var seedPlaceCount: Int {
+        value(after: "-uitest-seed-places", in: arguments).flatMap { Int($0) }.map { max($0, 0) } ?? 0
+    }
 
     /// Hold every Files/Open-in import for 10 s so the overlay and Cancel
     /// can be exercised.
@@ -310,6 +317,7 @@ enum UITestHooks {
     static var seedClassicCount: Int { 0 }
     static var seedClassicIDs: [Int] { [] }
     static var seedFinished: Bool { false }
+    static var seedPlaceCount: Int { 0 }
     static var slowImport: Bool { false }
     static var openFixture: UITestFixtureKind? { nil }
     static var pickFixture: UITestFixtureKind? { nil }

@@ -167,7 +167,8 @@ final class ScrubThumbTests: XCTestCase {
 /// R17's Contents grouping as VoiceOver meets it: a Part/Book heading is a
 /// header above its chapters (XCUITest can't see the header trait, so it is
 /// checked here), the current chapter is selected, and a row is a `.chapter`
-/// jump that keeps play/pause and offers Undo jump (R15).
+/// jump that plays from there and offers Undo jump (R15, P025), which
+/// restores the pause.
 @MainActor
 final class ContentsSheetAccessibilityTests: XCTestCase {
 
@@ -206,7 +207,7 @@ final class ContentsSheetAccessibilityTests: XCTestCase {
     }
 
     func testSectionHeaderSelectionAndRowJump() async throws {
-        let rig = PlaybackTestRig(sentences: 5, autoplaySuppressed: true)
+        let rig = PlaybackTestRig(sentences: 5, clipDuration: 2, autoplaySuppressed: true)
         let content = Self.groupedContent()
         let navigation = ReaderNavigation(content: content, kind: .text)
         XCTAssertEqual(navigation.sections.first?.title, "BOOK ONE: 1805", "fixture should group")
@@ -228,11 +229,62 @@ final class ContentsSheetAccessibilityTests: XCTestCase {
         XCTAssertTrue(current.accessibilityTraits.contains(.selected), "the playhead's chapter is selected")
         XCTAssertFalse(next.accessibilityTraits.contains(.selected))
 
+        XCTAssertEqual(next.accessibilityHint, ContentsSearch.playsFromHereHint)
         _ = next.accessibilityActivate()
-        let moved = await rig.waitUntil(2) { rig.controller.currentSentence == 3 }
+        let moved = await rig.waitUntil(2) { rig.controller.currentSentence >= 3 }
         XCTAssertTrue(moved, "a row should jump to its chapter's start, got \(rig.controller.currentSentence)")
-        XCTAssertEqual(rig.controller.status, .paused, "a Contents pick keeps play/pause")
+        let playing = await rig.waitUntil(2) { rig.controller.isActive }
+        XCTAssertTrue(playing, "a Contents pick plays from there, got \(rig.controller.status)")
         XCTAssertEqual(rig.controller.undoableJump?.fromSentence, 2, "a Contents pick offers Undo jump")
+        XCTAssertEqual(rig.controller.undoableJump?.fromStatus, .paused)
+
+        rig.controller.undoJump()
+        let paused = await rig.waitUntil(2) { !rig.controller.isActive }
+        XCTAssertTrue(paused, "Undo jump restores the pause")
+        XCTAssertEqual(rig.controller.currentSentence, 2, "and the sentence")
+    }
+
+    /// P033: the chapter line's VoiceOver action opens Contents with its
+    /// search asked for; the error line, whose tap retries, has none (its
+    /// long-press menu keeps Contents). Its Voice Control names keep the
+    /// visible title first.
+    func testTheChapterLineOffersSearchAsAnAction() async throws {
+        let memory = ContentsSearchMemory.shared
+        _ = memory.consumeSearchFocus()
+        final class Opens { var count = 0 }
+        let opens = Opens()
+        let position = ReaderPositionLine(kind: .book, title: "Test Book", minutesLeft: 3)
+        let host = AccessibilityHost(
+            ReaderMessageLine(message: nil, position: position,
+                              onOpenContents: { opens.count += 1 }, onRetry: {}, onBackFiveMinutes: {}),
+            keepAlive: [opens])
+        self.host = host
+        let line = try await host.require("reader.chapterLine")
+        let actions = line.accessibilityCustomActions ?? []
+        let search = try XCTUnwrap(actions.first { $0.name == ContentsSearch.searchPrompt },
+                                   "actions: \(actions.map(\.name))")
+        if let handler = search.actionHandler {
+            _ = handler(search)
+        } else {
+            _ = (search.target as? NSObject)?.perform(search.selector, with: search)
+        }
+        XCTAssertEqual(opens.count, 1, "the action opens Contents")
+        XCTAssertTrue(memory.consumeSearchFocus(), "with its field asked to take focus")
+        XCTAssertFalse(memory.consumeSearchFocus(), "once")
+        XCTAssertEqual(ReaderMessageLine.positionInputLabels(title: "Test Book").count, 3,
+                       "the title, Contents and Search")
+    }
+
+    func testTheErrorLineHasNoSearchAction() async throws {
+        let position = ReaderPositionLine(kind: .book, title: "Test Book", minutesLeft: 3)
+        let host = AccessibilityHost(
+            ReaderMessageLine(message: .stopped(.playbackError), position: position,
+                              onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {}),
+            keepAlive: [])
+        self.host = host
+        let line = try await host.require("reader.chapterLine")
+        let names = (line.accessibilityCustomActions ?? []).map(\.name)
+        XCTAssertFalse(names.contains(ContentsSearch.searchPrompt), "the retry line's one action is retry: \(names)")
     }
 }
 

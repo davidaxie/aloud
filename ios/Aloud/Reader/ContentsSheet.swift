@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Contents (R6), opened from the chapter line: "Search this book" pinned
+/// Contents (R6), opened from the chapter line: the search field pinned
 /// above the chapter list, and typing replaces the list with results. A book
 /// with fewer than two chapters shows search only, opens full height and
 /// focuses the field.
@@ -23,17 +23,27 @@ import SwiftUI
 /// match tinted accent (color only — no weight change in reading contexts)
 /// and a chapter/page context line.
 ///
-/// A row or result tap jumps there, preserving play/pause, offers Undo
-/// jump (R15) and closes the sheet. A result names its place with its
-/// section ("BOOK ONE: 1805 · CHAPTER I").
+/// A row or result tap jumps there and plays from there, as a sentence tap
+/// and the Mac's Contents do (`ContentsSearch.jumpAndPlay`, P025), offers
+/// Undo jump (R15), which restores the pause too, and closes the sheet.
+/// A result names its place with its section. Rows press to surface2 (P026).
 ///
-/// "Where you stopped" leads the list when the book has places
-/// (`PlaceHistoryStore`, from the environment): the newest three, then
-/// "Show N earlier stops", each its time and chapter over two lines of the
+/// The places list leads when the book has places (`PlaceHistoryStore`,
+/// from the environment): at half height above a chapter list only the
+/// newest, so the chapters start above the fold (P024), else the newest
+/// three, then the earlier-stops toggle; each its time and chapter over the
 /// sentence (`PlaceHistoryRows`). A row is the chapter row's jump; the one
-/// at the playhead carries the current bar and `.isSelected`. With places
-/// the sheet opens at the top, not on the current chapter, and a book
-/// without a chapter list lists them instead of focusing the field.
+/// at the playhead carries the current bar, a semibold detail line and
+/// `.isSelected`. With places the sheet opens at the top, not on the
+/// current chapter, and a book without a chapter list lists them instead
+/// of focusing the field.
+///
+/// A picked result's search is remembered for the book
+/// (`ContentsSearchMemory`, P029): reopened, the sheet opens at full height
+/// on the same results with the pick marked, so the next hit is one tap
+/// away. The keyboard's Search key scans at once and drops the keyboard
+/// (P030); Cancel beside the focused field backs out of a search, and the
+/// blank and no-match states scroll, so a drag drops the keyboard (P031).
 ///
 /// Chapters and labels are derived once per loaded document by the reader and
 /// handed in — deriving them here would rerun a whole-book scan on every
@@ -42,6 +52,7 @@ struct ContentsSheet: View {
 
     let content: DocContent
     let navigation: ReaderNavigation
+    private let searchMemory: ContentsSearchMemory
 
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -58,14 +69,23 @@ struct ContentsSheet: View {
     @State private var scanTask: Task<[SentenceMatch], Never>?
     @FocusState private var fieldFocused: Bool
     @State private var detent: PresentationDetent
-    /// "Show N earlier stops" pressed; reset each time the sheet opens.
+    /// The earlier-stops toggle pressed; reset each time the sheet opens,
+    /// and kept as the sheet changes height.
     @State private var showsEarlierPlaces = false
+    /// The result picked from the restored search, marked like the current
+    /// chapter; cleared by the next edit.
+    @State private var pickedSentence: Int?
+    /// The restored query, scanned at once as the sheet opens: its arrival
+    /// in the field is not a keystroke to debounce.
+    @State private var openedQuery: String?
 
     private static let debounceNanoseconds: UInt64 = 200_000_000
 
-    init(content: DocContent, navigation: ReaderNavigation) {
+    init(content: DocContent, navigation: ReaderNavigation,
+         searchMemory: ContentsSearchMemory = .shared) {
         self.content = content
         self.navigation = navigation
+        self.searchMemory = searchMemory
         // Search only has nothing to show at half height.
         _detent = State(initialValue: navigation.hasChapterList ? .medium : .large)
     }
@@ -74,7 +94,7 @@ struct ContentsSheet: View {
         VStack(spacing: 0) {
             SheetGrabber()
 
-            Text("Contents")
+            Text(ContentsSearch.title)
                 .font(Theme.font(.headline))
                 .foregroundStyle(Theme.text)
                 .accessibilityAddTraits(.isHeader)
@@ -105,17 +125,9 @@ struct ContentsSheet: View {
             if newDetent != .large { fieldFocused = false }
         }
         .onChange(of: query) { _, newValue in
-            scheduleSearch(for: newValue)
+            queryChanged(to: newValue)
         }
-        .onAppear {
-            guard !hasList else { return }
-            // Focus after the sheet's presentation settles; an immediate set
-            // is dropped by the transition on some runtimes.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                fieldFocused = true
-            }
-        }
+        .onAppear { opened() }
         .onDisappear {
             debounceTask?.cancel()
             scanTask?.cancel()
@@ -130,7 +142,7 @@ struct ContentsSheet: View {
             } else if !placeRows.isEmpty {
                 placesOnlyList
             } else {
-                Spacer(minLength: 0)
+                keyboardDismissingArea { Color.clear.frame(height: 0) }
             }
         } else if let searchedQuery {
             if results.isEmpty {
@@ -139,25 +151,108 @@ struct ContentsSheet: View {
                 resultsList
             }
         } else {
-            Spacer(minLength: 0)
+            // Still scanning.
+            keyboardDismissingArea { Color.clear.frame(height: 0) }
         }
+    }
+
+    // MARK: - Opening
+
+    /// A remembered search for this book comes back at full height with its
+    /// results and the keyboard down; the chapter line's search action, or
+    /// a book with nothing to list, focuses the field instead.
+    private func opened() {
+        let restored = searchMemory.restore(for: playback.document?.id)
+        let searchAsked = searchMemory.consumeSearchFocus()
+        if let restored {
+            pickedSentence = restored.pickedSentence
+            openedQuery = restored.query
+            query = restored.query
+            detent = .large
+            startSearch(now: restored.query)
+        }
+        guard searchAsked || (restored == nil && !hasList) else { return }
+        detent = .large
+        // Focus after the sheet's presentation settles; an immediate set
+        // is dropped by the transition on some runtimes.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            fieldFocused = true
+        }
+    }
+
+    /// A keystroke: debounce a scan. An emptied field forgets the remembered
+    /// search, and any edit clears the restored pick's mark.
+    private func queryChanged(to newValue: String) {
+        if let opening = openedQuery {
+            openedQuery = nil
+            if opening == newValue { return }
+        }
+        pickedSentence = nil
+        if ContentsSearchMemory.isBlank(newValue) { searchMemory.forget() }
+        scheduleSearch(for: newValue)
+    }
+
+    /// Backs out of a search, as the system search bar's Cancel does.
+    private func cancelSearch() {
+        query = ""
+        searchMemory.forget()
+        fieldFocused = false
+    }
+
+    /// A pick: jump, play from there unless already playing (with the play
+    /// haptic only then), and close.
+    private func pick(_ sentence: Int, origin: JumpOrigin) {
+        if ContentsSearch.jumpAndPlay(playback, to: sentence, origin: origin) {
+            TransportHaptics.emit(.play)
+        }
+        dismiss()
     }
 
     // MARK: - Field
 
+    /// The field, and Cancel beside it while it has focus.
     private var searchField: some View {
         HStack(spacing: Theme.Space.xs) {
-            // Decorative: the field names itself ("Search this book").
+            fieldBox
+            if fieldFocused {
+                Button(action: cancelSearch) {
+                    Text(ContentsSearch.cancelSearch)
+                        .font(Theme.font(.callout))
+                        .foregroundStyle(Theme.accentStrong)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .fixedSize()
+                .accessibilityIdentifier("search.cancel")
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: Theme.Motion.press), value: fieldFocused)
+        .padding(.horizontal, Theme.Space.sheetGutter)
+    }
+
+    private var fieldBox: some View {
+        HStack(spacing: Theme.Space.xs) {
+            // Decorative: the field names itself.
             Image(systemName: "magnifyingglass")
                 .font(Theme.font(.body))
                 .foregroundStyle(Theme.textFaint)
                 .accessibilityHidden(true)
 
-            TextField("Search this book", text: $query)
+            TextField(ContentsSearch.searchPrompt, text: $query)
                 .font(Theme.font(.body))
                 .foregroundStyle(Theme.text)
                 .focused($fieldFocused)
                 .submitLabel(.search)
+                // The Search key scans now (no debounce left to wait out)
+                // and drops the keyboard; the pick stays the listener's.
+                .onSubmit {
+                    debounceTask?.cancel()
+                    startSearch(now: query)
+                    fieldFocused = false
+                }
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .accessibilityIdentifier("search.field")
@@ -165,6 +260,7 @@ struct ContentsSheet: View {
             if !query.isEmpty {
                 Button {
                     query = ""
+                    searchMemory.forget()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(Theme.font(.body))
@@ -172,7 +268,7 @@ struct ContentsSheet: View {
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .accessibilityLabel("Clear search")
                 .accessibilityIdentifier("search.clear")
             }
@@ -185,7 +281,6 @@ struct ContentsSheet: View {
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                 .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
-        .padding(.horizontal, Theme.Space.sheetGutter)
     }
 
     // MARK: - Chapters
@@ -282,12 +377,12 @@ struct ContentsSheet: View {
             wordsPerMinute: LibraryDocument.spokenWordsPerMinute * playback.rate)
 
         return Button {
-            playback.jump(to: chapter.startSentence, origin: .chapter)
-            dismiss()
+            pick(chapter.startSentence, origin: .chapter)
         } label: {
-            chapterRowContent(title: title,
-                              estimate: ListeningEstimate.phrase(minutes: minutes),
-                              isCompleted: isCompleted)
+            ContentsChapterLabel(title: title,
+                                 estimate: ListeningEstimate.phrase(minutes: minutes),
+                                 isCurrent: isCurrent,
+                                 isCompleted: isCompleted)
             .padding(.horizontal, Theme.Space.sheetGutter)
             .frame(minHeight: 52)
             // The current chapter's marker: a bar on the row's leading edge,
@@ -301,51 +396,13 @@ struct ContentsSheet: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ContentsRowButtonStyle())
         .id(chapter.id)
         .accessibilityLabel(ContentsSearch.chapterAccessibilityLabel(title: title, minutes: minutes,
                                                                      isCurrent: isCurrent))
+        .accessibilityHint(ContentsSearch.playsFromHereHint)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
         .accessibilityIdentifier(navigation.rowIdentifier(at: index))
-    }
-
-    /// Title with its listening time trailing. At accessibility sizes a
-    /// trailing time left the title almost no width (every row read
-    /// "CHAPT…"), so the title wraps to three lines and the time stacks
-    /// beneath it.
-    @ViewBuilder
-    private func chapterRowContent(title: String, estimate: String,
-                                   isCompleted: Bool) -> some View {
-        let titleText = Text(title)
-            .font(Theme.font(.headline))
-            .foregroundStyle(isCompleted ? Theme.textMuted : Theme.text)
-            .truncationMode(.tail)
-        let estimateText = Text(estimate)
-            .font(Theme.font(.caption))
-            .monospacedDigit()
-            .foregroundStyle(Theme.textFaint)
-
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                titleText
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                estimateText
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // Wrapped rows need their own breathing room; the 52pt minimum
-            // only spaces single-line rows.
-            .padding(.vertical, Theme.Space.sm)
-        } else {
-            HStack(spacing: Theme.Space.sm) {
-                titleText
-                    .lineLimit(1)
-
-                Spacer(minLength: Theme.Space.sm)
-
-                estimateText
-            }
-        }
     }
 
     // MARK: - Where you stopped
@@ -378,8 +435,9 @@ struct ContentsSheet: View {
 
     @ViewBuilder
     private func placesSection(_ rows: [PlaceRow]) -> some View {
+        let collapsed = placesCollapsedCount
         let visible = PlaceHistory.visibleCount(total: rows.count, hasChapterList: navigation.hasChapterList,
-                                                expanded: showsEarlierPlaces)
+                                                expanded: showsEarlierPlaces, collapsedCount: collapsed)
         eyebrow(PlaceHistoryCopy.header, identifier: "places.header")
         // Keyed by place, never position: a stop recorded while the sheet
         // is open slides the rows down with their own elements, so
@@ -387,7 +445,8 @@ struct ContentsSheet: View {
         ForEach(Array(rows.prefix(visible)), id: \.sentence) { row in
             placeRow(row)
         }
-        if PlaceHistory.offersEarlier(total: rows.count, hasChapterList: navigation.hasChapterList) {
+        if PlaceHistory.offersEarlier(total: rows.count, hasChapterList: navigation.hasChapterList,
+                                      collapsedCount: collapsed) {
             Button {
                 showsEarlierPlaces.toggle()
             } label: {
@@ -400,21 +459,30 @@ struct ContentsSheet: View {
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ContentsRowButtonStyle())
             .accessibilityIdentifier("places.more")
         }
     }
 
-    /// The chapter row's jump: play or pause kept, Undo jump offered.
+    /// Places kept above the toggle: one at half height over a chapter
+    /// list, below the accessibility sizes; three otherwise. Read from the
+    /// live detent, so growing the sheet shows three without resetting the
+    /// toggle.
+    private var placesCollapsedCount: Int {
+        PlaceHistory.collapsedCount(atHalfHeight: detent == .medium,
+                                    hasChapterList: navigation.hasChapterList,
+                                    accessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
+
+    /// The chapter row's pick: plays from the place, Undo jump offered.
     private func placeRow(_ row: PlaceRow) -> some View {
         Button {
-            playback.jump(to: row.sentence, origin: .chapter)
-            dismiss()
+            pick(row.sentence, origin: .chapter)
         } label: {
-            ContentsPlaceLabel(row: row)
+            ContentsPlaceLabel(row: row, compact: detent == .medium)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Space.sheetGutter)
-                .padding(.vertical, Theme.Space.sm)
+                .padding(.vertical, Theme.Space.xs)
                 .frame(minHeight: 44)
                 // The chapter list's current marker, on the place at the
                 // playhead.
@@ -427,8 +495,9 @@ struct ContentsSheet: View {
                 }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ContentsRowButtonStyle())
         .accessibilityLabel(row.accessibilityLabel)
+        .accessibilityHint(ContentsSearch.playsFromHereHint)
         .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
         .accessibilityIdentifier(row.identifier)
     }
@@ -459,27 +528,45 @@ struct ContentsSheet: View {
                 .padding(.horizontal, Theme.Space.sheetGutter)
                 .accessibilityIdentifier("search.count")
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(results) { match in
-                        resultRow(match)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(results) { match in
+                            resultRow(match)
+                        }
                     }
+                    .padding(.vertical, Theme.Space.xs)
                 }
-                .padding(.vertical, Theme.Space.xs)
+                .scrollDismissesKeyboard(.immediately)
+                // A restored search lands on the result picked last time.
+                .onAppear { scrollToPicked(proxy) }
             }
-            .scrollDismissesKeyboard(.immediately)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// As `scrollToCurrent`: after the first layout pass, and once more
+    /// when the presentation has settled.
+    private func scrollToPicked(_ proxy: ScrollViewProxy) {
+        guard let pickedSentence, results.contains(where: { $0.sentenceID == pickedSentence }) else { return }
+        Task { @MainActor in
+            proxy.scrollTo(pickedSentence, anchor: .center)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            proxy.scrollTo(pickedSentence, anchor: .center)
+        }
     }
 
     private var countLabel: String {
         ContentsSearch.countLabel(results.count)
     }
 
+    /// A result's pick remembers the search for this book, so reopening
+    /// Contents steps on to the next hit.
     private func resultRow(_ match: SentenceMatch) -> some View {
-        Button {
-            playback.jump(to: match.sentenceID, origin: .searchResult)
-            dismiss()
+        let isPicked = match.sentenceID == pickedSentence
+        return Button {
+            searchMemory.remember(query: query, pickedSentence: match.sentenceID, in: playback.document?.id)
+            pick(match.sentenceID, origin: .searchResult)
         } label: {
             ContentsResultLabel(match: match, location: navigation.searchLocation(ofSentence: match.sentenceID,
                                                                                   page: match.page))
@@ -487,25 +574,47 @@ struct ContentsSheet: View {
                 .padding(.horizontal, Theme.Space.sheetGutter)
                 .padding(.vertical, Theme.Space.sm)
                 .frame(minHeight: 44)
+                // The last pick of a restored search: the current marker.
+                .overlay(alignment: .leading) {
+                    if isPicked {
+                        Rectangle()
+                            .fill(Theme.accentStrong)
+                            .frame(width: 3)
+                    }
+                }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ContentsRowButtonStyle())
+        .id(match.id)
+        .accessibilityHint(ContentsSearch.playsFromHereHint)
+        .accessibilityAddTraits(isPicked ? .isSelected : [])
         .accessibilityIdentifier("search.result.\(match.sentenceID)")
     }
 
     private func emptyState(for query: String) -> some View {
-        VStack {
-            Spacer()
+        keyboardDismissingArea {
             Text(ContentsSearch.noMatchesLabel(query))
                 .font(Theme.font(.callout))
                 .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, Theme.Space.sheetGutter)
                 .accessibilityIdentifier("search.empty")
-            Spacer()
-            Spacer()
         }
-        .frame(maxWidth: .infinity)
+    }
+
+    /// Where the list would be, with nothing or one line in it: still a
+    /// scroll view, so a drag drops the keyboard as it does over a list.
+    /// The line sits a third of the way down, where the old spacers set it.
+    private func keyboardDismissingArea<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let line = content()
+        return GeometryReader { proxy in
+            ScrollView {
+                line
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, proxy.size.height / 3)
+            }
+            .scrollDismissesKeyboard(.immediately)
+        }
     }
 
     // MARK: - Debounced scan
@@ -515,7 +624,7 @@ struct ContentsSheet: View {
     /// MainActor: the previous scan is cancelled (it polls cancellation per
     /// sentence and abandons the rest of the book), and only the surviving
     /// one publishes — in sentence order, as the scan produces it.
-    private func scheduleSearch(for newValue: String) {
+    private func scheduleSearch(for newValue: String, immediately: Bool = false) {
         debounceTask?.cancel()
         scanTask?.cancel()
         let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -526,8 +635,10 @@ struct ContentsSheet: View {
         }
         let content = content
         debounceTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: Self.debounceNanoseconds)
-            guard !Task.isCancelled else { return }
+            if !immediately {
+                try? await Task.sleep(nanoseconds: Self.debounceNanoseconds)
+                guard !Task.isCancelled else { return }
+            }
             let scan = Task.detached(priority: .userInitiated) {
                 content.matches(of: trimmed)
             }
@@ -542,16 +653,94 @@ struct ContentsSheet: View {
                                            previousCount: previousCount, muted: playback.isOutputMuted)
         }
     }
+
+    /// The scan with no debounce: the Search key, and a restored search.
+    private func startSearch(now query: String) {
+        scheduleSearch(for: query, immediately: true)
+    }
+}
+
+// MARK: - Row press
+
+/// Contents rows press to surface2, edge to edge, over the sheet's surface;
+/// no scale, so the column of text holds still (the shelf's rows do the
+/// same).
+private struct ContentsRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Theme.surface2 : Color.clear)
+            .animation(.easeOut(duration: Theme.Motion.press), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Chapter label
+
+/// A chapter row's text: the title, regular, or semibold on the current
+/// chapter (`Theme.rowTitle`), with its listening time trailing on the
+/// title's first baseline. Below the accessibility sizes a long title takes
+/// two lines before it truncates; at them a trailing time left the title
+/// almost no width (every row read as a cut-off first word), so the title
+/// wraps to three lines and the time stacks beneath it. Its own view so a
+/// layout test can host it without a controller.
+struct ContentsChapterLabel: View {
+
+    let title: String
+    let estimate: String
+    let isCurrent: Bool
+    let isCompleted: Bool
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        let titleText = Text(title)
+            .font(Theme.rowTitle(emphasized: isCurrent))
+            .foregroundStyle(isCompleted ? Theme.textMuted : Theme.text)
+            .truncationMode(.tail)
+        let estimateText = Text(estimate)
+            .font(Theme.font(.caption))
+            .monospacedDigit()
+            .foregroundStyle(Theme.textFaint)
+
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                titleText
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                estimateText
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Wrapped rows need their own breathing room; the 52pt minimum
+            // only spaces single-line rows.
+            .padding(.vertical, Theme.Space.sm)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+                titleText
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: Theme.Space.sm)
+
+                // The time never truncates; a long title does.
+                estimateText
+                    .fixedSize()
+            }
+            // A two-line title's room; a one-line row stays at the 52pt
+            // minimum.
+            .padding(.vertical, Theme.Space.xs)
+        }
+    }
 }
 
 // MARK: - Place label
 
-/// A "Where you stopped" row's text: when and where, over the sentence. The
-/// sentence keeps the reader's color and weight on the current row too; the
-/// bar marks it.
+/// A place row's text: when and where, over the sentence. The sentence
+/// keeps the reader's color and weight on the current row too; the bar and
+/// a semibold detail line mark it. At half height (`compact`) the sentence
+/// takes one line, two at full height, four at the accessibility sizes.
 private struct ContentsPlaceLabel: View {
 
     let row: PlaceRow
+    let compact: Bool
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -559,7 +748,7 @@ private struct ContentsPlaceLabel: View {
         let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Text(row.detail)
-                .font(Theme.font(.footnote))
+                .font(Theme.font(row.isCurrent ? .subhead : .footnote))
                 .foregroundStyle(Theme.textFaint)
                 .lineLimit(isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
@@ -567,7 +756,7 @@ private struct ContentsPlaceLabel: View {
             Text(row.text)
                 .font(Theme.font(.body))
                 .foregroundStyle(Theme.text)
-                .lineLimit(isAccessibilitySize ? 4 : 2)
+                .lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))
                 .multilineTextAlignment(.leading)
         }
     }
@@ -585,13 +774,14 @@ struct ContentsResultLabel: View {
     let location: String?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
 
     var body: some View {
         let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
         let snippet = ContentsSearch.snippet(for: match,
                                              leadLimit: ContentsSearch.leadLimit(for: dynamicTypeSize))
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-            emphasized(snippet)
+            Self.emphasized(snippet, underlined: differentiateWithoutColor)
                 .font(Theme.font(.body))
                 // Three lines held ~35 characters at AX5: two more keep some
                 // of the sentence after the hit.
@@ -613,11 +803,14 @@ struct ContentsResultLabel: View {
         }
     }
 
-    /// The hit tinted accent — color only, never a weight change (banned in
-    /// reading contexts).
-    private func emphasized(_ snippet: ContentsSearch.Snippet) -> Text {
+    /// The hit tinted accent, never a weight change (banned in reading
+    /// contexts). Under Differentiate Without Color (`underlined`) it is
+    /// underlined too, a cue that isn't colour and doesn't change the
+    /// snippet's width (P032).
+    static func emphasized(_ snippet: ContentsSearch.Snippet, underlined: Bool) -> Text {
         Text(snippet.lead).foregroundColor(Theme.text)
             + Text(snippet.hit).foregroundColor(Theme.accentStrong)
+                .underline(underlined, color: Theme.accentStrong)
             + Text(snippet.tail).foregroundColor(Theme.text)
     }
 }

@@ -13,6 +13,11 @@ import SwiftUI
 /// reader's chrome band (M18), and in the Largest band the title may wrap.
 /// On the iPhone the player bar stops its type at the chips' cap, so every
 /// button here shows its visible text in the Large Content Viewer.
+///
+/// On the iPhone (`PlatformContentsEntry.chapterLineOffersSearch`) the
+/// position line also goes straight to search: a VoiceOver action, a Voice
+/// Control name and a long-press menu; the error line, whose tap retries,
+/// keeps Contents in its long-press menu (P033).
 struct ReaderMessageLine: View {
 
     let message: ReaderMessage?
@@ -99,8 +104,9 @@ struct ReaderMessageLine: View {
         .accessibilityLabel(position.accessibilityLabel)
         .accessibilityHint(Self.contentsHint)
         // The visible title first, so Voice Control matches what it shows.
-        .accessibilityInputLabels([Text(position.title), Text("Contents")])
+        .accessibilityInputLabels(Self.positionInputLabels(title: position.title))
         .accessibilityIdentifier("reader.chapterLine")
+        .modifier(ContentsEntry(onOpenContents: onOpenContents, offersSearchAction: true))
     }
 
     private var positionTitle: some View {
@@ -142,6 +148,8 @@ struct ReaderMessageLine: View {
         .accessibilityLabel(StopReason.playbackError.spokenText)
         .accessibilityHint(Self.retryHint)
         .accessibilityIdentifier("reader.chapterLine")
+        // Its tap retries, so Contents stays a long press away.
+        .modifier(ContentsEntry(onOpenContents: onOpenContents, offersSearchAction: false))
     }
 
     /// Every other stop says why; Play resumes. A sleep stop offers Back
@@ -232,6 +240,14 @@ struct ReaderMessageLine: View {
 }
 
 extension ReaderMessageLine {
+    /// What Voice Control answers to on the position line: the visible title
+    /// first, so it matches what it shows, then Contents, and on the iPhone
+    /// Search too.
+    nonisolated static func positionInputLabels(title: String) -> [Text] {
+        [Text(title), Text("Contents")]
+            + (PlatformContentsEntry.chapterLineOffersSearch ? [Text(ContentsSearch.searchInputLabel)] : [])
+    }
+
     /// The title, and Back 5 min, in `scale`'s band: the Mac's ramp steps it
     /// up per band; the iPhone's follows Dynamic Type whatever the band.
     nonisolated static func titleFont(_ scale: ChromeScale) -> Font {
@@ -247,5 +263,38 @@ extension ReaderMessageLine {
     /// detail: at the accessibility sizes, and in the Mac's Largest band.
     nonisolated static func stacksPosition(dynamicTypeSize: DynamicTypeSize, scale: ChromeScale) -> Bool {
         dynamicTypeSize.isAccessibilitySize || PlatformTypeRamp.wrapsChapterLine(in: scale)
+    }
+}
+
+/// The chapter line's other ways into Contents, where the platform offers
+/// them (`PlatformContentsEntry`): a long-press menu with Contents and the
+/// search, and, on the position line, the search as a VoiceOver action.
+/// The search asks the sheet to open with its field focused
+/// (`ContentsSearchMemory.requestSearchFocus`).
+private struct ContentsEntry: ViewModifier {
+
+    let onOpenContents: () -> Void
+    let offersSearchAction: Bool
+
+    func body(content: Content) -> some View {
+        if PlatformContentsEntry.chapterLineOffersSearch {
+            content
+                .accessibilityActions {
+                    if offersSearchAction {
+                        Button(ContentsSearch.searchPrompt, action: searchThisBook)
+                    }
+                }
+                .contextMenu {
+                    Button(ContentsSearch.title, systemImage: "list.bullet", action: onOpenContents)
+                    Button(ContentsSearch.searchPrompt, systemImage: "magnifyingglass", action: searchThisBook)
+                }
+        } else {
+            content
+        }
+    }
+
+    private func searchThisBook() {
+        ContentsSearchMemory.shared.requestSearchFocus()
+        onOpenContents()
     }
 }

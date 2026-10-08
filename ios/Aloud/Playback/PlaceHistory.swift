@@ -100,6 +100,9 @@ enum PlaceHistory {
     static let limit = 8
     /// Rows shown before "Show N earlier stops" in a book with a chapter list.
     static let collapsedCount = 3
+    /// The iPhone's half-height Contents: the newest stop alone, so the
+    /// chapter list starts above the fold (`collapsedCount(atHalfHeight:)`).
+    static let halfHeightCollapsedCount = 1
     static let excerptLength = 80
 
     /// `places` (newest first) after `stop`:
@@ -126,15 +129,26 @@ enum PlaceHistory {
 
     /// How many of `total` rows show: all of them in a book without a
     /// chapter list (nothing else is in the list) or once expanded, else
-    /// the newest `collapsedCount`.
-    static func visibleCount(total: Int, hasChapterList: Bool, expanded: Bool) -> Int {
+    /// the newest `collapsedCount` (three unless a caller passes fewer).
+    static func visibleCount(total: Int, hasChapterList: Bool, expanded: Bool,
+                             collapsedCount: Int = PlaceHistory.collapsedCount) -> Int {
         hasChapterList && !expanded ? min(total, collapsedCount) : total
     }
 
     /// Whether "Show N earlier stops" (then "Show fewer") follows the rows:
     /// only where `visibleCount` holds some back.
-    static func offersEarlier(total: Int, hasChapterList: Bool) -> Bool {
+    static func offersEarlier(total: Int, hasChapterList: Bool,
+                              collapsedCount: Int = PlaceHistory.collapsedCount) -> Bool {
         hasChapterList && total > collapsedCount
+    }
+
+    /// The rows the iPhone's Contents keeps above its earlier-stops toggle:
+    /// one at half height above a chapter list, so its first chapters show
+    /// without a scroll; three at full height, and at the accessibility
+    /// sizes, where even one stop fills half a screen. The Mac's panel is
+    /// full height and keeps `collapsedCount`.
+    static func collapsedCount(atHalfHeight: Bool, hasChapterList: Bool, accessibilitySize: Bool) -> Int {
+        atHalfHeight && hasChapterList && !accessibilitySize ? halfHeightCollapsedCount : collapsedCount
     }
 
     /// The first `excerptLength` characters of a sentence.

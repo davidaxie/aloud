@@ -718,8 +718,8 @@ enum MacContentsLayout: Equatable {
 @MainActor
 enum MacContents {
 
-    static let title = "Contents"
-    static let searchPrompt = "Search this book"
+    static let title = ContentsSearch.title
+    static let searchPrompt = ContentsSearch.searchPrompt
     /// The iPhone's debounce: a scan per pause in typing, not per key.
     static let debounceNanoseconds: UInt64 = 200_000_000
     /// Characters kept before a result's hit: the iPhone's below the
@@ -903,9 +903,7 @@ enum MacContents {
     /// plays, as a click on the page does; ⌘Z restores the sentence and the
     /// pause.
     static func jump(_ playback: PlaybackController, to sentence: Int, origin: JumpOrigin) {
-        playback.jump(to: sentence, origin: origin)
-        guard playback.document != nil, !playback.isListenerPlaying else { return }
-        playback.seek(to: max(playback.currentSentence, 0), andPlay: true)
+        ContentsSearch.jumpAndPlay(playback, to: sentence, origin: origin)
     }
 }
 

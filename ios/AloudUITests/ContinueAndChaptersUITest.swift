@@ -114,7 +114,10 @@ final class ContinueAndChaptersUITest: XCTestCase {
                       "Contents should dismiss back to the reader")
         XCTAssertTrue(waitForSentence(0, in: app, timeout: 10),
                       "Tapping the first chapter should cue its start sentence")
-        XCTAssertTrue(waitForValue("paused", of: playButton, timeout: 5),
-                      "A seek while paused must stay paused")
+        // P025: a Contents pick plays from there, even from a pause (muted).
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: playButton, timeout: 10),
+                      "A chapter pick plays from its start, got '\(stringValue(of: playButton))'")
+        playButton.tap()
+        XCTAssertTrue(waitForValue("paused", of: playButton, timeout: 10))
     }
 }

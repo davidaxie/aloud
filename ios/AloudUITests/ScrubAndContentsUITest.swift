@@ -5,11 +5,14 @@ import XCTest
 /// a full-width drag stays inside the chapter, and each drag plays exactly
 /// one release haptic. War and Peace: Contents groups its chapters under
 /// "BOOK ONE: 1805" and friends, marks the current chapter, and a row is a
-/// jump that offers Undo jump (R15).
+/// jump that plays from there and offers Undo jump (R15, P025). Then the
+/// parity batch's Contents (P024-P033): half height shows the newest stop
+/// and the chapters, a picked search comes back, the Search key and Cancel
+/// let the keyboard go, and the chapter line's menu goes straight to search.
 ///
-/// Muted, and nothing plays: autoplay stays suppressed and no test taps
-/// Play. Run only with the user's OK. The playhead is read through the
-/// reader.sentence.<n> probe only.
+/// Muted throughout: autoplay stays suppressed, and only a Contents pick
+/// (or the error test's Play) plays, silently. Run only with the user's OK.
+/// The playhead is read through the reader.sentence.<n> probe only.
 final class ScrubAndContentsUITest: XCTestCase {
 
     /// Mid-month in June 1660 (the 19th), so drags land well away from it.
@@ -75,6 +78,60 @@ final class ScrubAndContentsUITest: XCTestCase {
         guard line.waitForExistence(timeout: 10),
               let range = line.label.range(of: #"\d+ of \d+"#, options: .regularExpression) else { return nil }
         return String(line.label[range])
+    }
+
+    /// Opens Contents from the chapter line.
+    @discardableResult
+    private func openContents(_ app: XCUIApplication) -> XCUIElement {
+        let chapterLine = app.buttons["reader.chapterLine"].firstMatch
+        XCTAssertTrue(chapterLine.waitForExistence(timeout: 10))
+        chapterLine.tap()
+        let title = app.staticTexts["contents.title"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "Contents should open")
+        return title
+    }
+
+    /// Swipes Contents closed, from either height.
+    private func closeContents(_ app: XCUIApplication) {
+        let title = app.staticTexts["contents.title"].firstMatch
+        for _ in 0..<3 where title.exists {
+            title.swipeDown(velocity: .fast)
+            _ = waitForNonExistence(of: title, timeout: 2)
+        }
+        XCTAssertFalse(title.exists, "Contents should close on a swipe")
+    }
+
+    /// Kept with the result, for the visual check (silent: a screenshot).
+    private func keepScreenshot(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    private func keyboardGone(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: app.keyboards)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func hasKeyboardFocus(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"),
+                                                object: element)
+        return XCTWaiter().wait(for: [focused], timeout: timeout) == .completed
+    }
+
+    /// An empty field reads as nothing or as its placeholder.
+    private func isEmpty(_ field: XCUIElement) -> Bool {
+        let value = field.value as? String ?? ""
+        return value.isEmpty || value == field.placeholderValue
+    }
+
+    private func chapterRows(_ app: XCUIApplication) -> XCUIElementQuery {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "chapters.row."))
+    }
+
+    private func resultRows(_ app: XCUIApplication) -> XCUIElementQuery {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.result."))
     }
 
     private func scrubReleases(_ app: XCUIApplication) -> Int {
@@ -167,9 +224,169 @@ final class ScrubAndContentsUITest: XCTestCase {
         XCTAssertTrue(waitForNonExistence(of: section, timeout: 10), "A row pick closes Contents")
         XCTAssertNotNil(waitForSentence(in: app, timeout: 10) { $0 != start },
                         "A row pick moves the playhead")
-        XCTAssertTrue(app.buttons["reader.undoJump"].firstMatch.waitForExistence(timeout: 5),
-                      "A Contents pick offers Undo jump")
-        XCTAssertTrue(waitForValue("paused", of: app.buttons["player.play"].firstMatch, timeout: 5),
-                      "A Contents pick keeps play/pause")
+        let undo = app.buttons["reader.undoJump"].firstMatch
+        XCTAssertTrue(undo.waitForExistence(timeout: 5), "A Contents pick offers Undo jump")
+        // P025: a pick from a pause plays from there (muted), as a sentence
+        // tap and the Mac do.
+        let play = app.buttons["player.play"].firstMatch
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 8),
+                      "A Contents pick plays from there, got '\(stringValue(of: play))'")
+        undo.tap()
+        XCTAssertTrue(waitForValue("paused", of: play, timeout: 10), "Undo jump restores the pause")
+        if let start {
+            XCTAssertTrue(waitForSentence(start, in: app, timeout: 10), "and the sentence it left")
+        }
+    }
+
+    // MARK: - War and Peace: the parity batch's Contents
+
+    /// P024: with four stops, half height shows the newest stop and the
+    /// chapters below it, without a scroll. Run on 375x667, 390x844 and
+    /// 440x956 simulators.
+    func testHalfHeightShowsTheNewestStopAndTheChapters() {
+        let app = openReader(classic: 2600, ["-uitest-seed-places", "4"])
+        openContents(app)
+        let size = app.windows.firstMatch.frame.size
+        let screen = "\(Int(size.width))x\(Int(size.height))"
+
+        let header = app.staticTexts["places.header"].firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 10), "The stops lead the list")
+        XCTAssertTrue(header.isHittable, "\(screen): the stops' header shows at half height")
+        XCTAssertTrue(app.buttons["places.more"].firstMatch.exists, "The earlier stops wait behind the toggle")
+        let rows = chapterRows(app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 5), "Contents lists chapters")
+        let visible = rows.allElementsBoundByIndex.prefix(8).contains { $0.isHittable }
+        XCTAssertTrue(visible, "\(screen): a chapter row shows at half height without a scroll")
+        keepScreenshot(app, "contents-half-height-\(screen)")
+    }
+
+    /// P029: a picked result's search comes back on reopening, the pick
+    /// marked and the next hit a tap away; clearing it forgets it.
+    func testAPickedSearchComesBackForTheNextHit() {
+        let app = openReader(classic: 2600)
+        openContents(app)
+        let field = app.textFields["search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Natasha")
+        XCTAssertTrue(app.staticTexts["search.count"].firstMatch.waitForExistence(timeout: 20))
+        let second = resultRows(app).element(boundBy: 1)
+        XCTAssertTrue(second.waitForExistence(timeout: 5))
+        let picked = second.identifier
+        second.tap()
+        XCTAssertTrue(waitForNonExistence(of: field, timeout: 10), "A pick closes Contents")
+
+        openContents(app)
+        XCTAssertEqual(field.value as? String, "Natasha", "The search comes back")
+        let mark = app.buttons[picked].firstMatch
+        XCTAssertTrue(mark.waitForExistence(timeout: 20), "Its results come back")
+        XCTAssertTrue(mark.isSelected, "The last pick is marked")
+        XCTAssertTrue(keyboardGone(app, timeout: 2), "Reopened with the keyboard down")
+        let ids = resultRows(app).allElementsBoundByIndex.map(\.identifier)
+        let index = ids.firstIndex(of: picked)
+        XCTAssertNotNil(index, "The pick is among the results: \(ids)")
+        if let index, index + 1 < ids.count {
+            XCTAssertTrue(app.buttons[ids[index + 1]].firstMatch.isHittable, "The next hit is a tap away")
+        }
+        keepScreenshot(app, "contents-remembered-search")
+
+        app.buttons["search.clear"].firstMatch.tap()
+        XCTAssertTrue(chapterRows(app).firstMatch.waitForExistence(timeout: 5), "Clearing brings the chapters back")
+        closeContents(app)
+        openContents(app)
+        XCTAssertTrue(isEmpty(field), "A cleared search is forgotten, got '\(field.value ?? "")'")
+        XCTAssertTrue(chapterRows(app).firstMatch.waitForExistence(timeout: 5))
+    }
+
+    /// P030: the keyboard's Search key scans at once and drops the keyboard,
+    /// leaving the pick to the listener.
+    func testTheSearchKeyScansAndDropsTheKeyboard() {
+        let app = openReader(classic: 2600)
+        openContents(app)
+        let field = app.textFields["search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Pierre\n")
+        XCTAssertTrue(keyboardGone(app, timeout: 1), "The Search key drops the keyboard")
+        XCTAssertTrue(app.staticTexts["search.count"].firstMatch.waitForExistence(timeout: 10),
+                      "and the results land")
+        XCTAssertTrue(app.staticTexts["contents.title"].firstMatch.exists, "Contents stays open")
+    }
+
+    /// P031: Cancel backs out of a search with nothing found: the field
+    /// empties, the keyboard goes and the chapters come back.
+    func testCancelBacksOutOfASearch() {
+        let app = openReader(classic: 2600)
+        openContents(app)
+        let field = app.textFields["search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("zzzz")
+        XCTAssertTrue(app.staticTexts["search.empty"].firstMatch.waitForExistence(timeout: 20))
+        let cancel = app.buttons["search.cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5), "Cancel shows beside the focused field")
+        cancel.tap()
+        XCTAssertTrue(keyboardGone(app, timeout: 2), "Cancel drops the keyboard")
+        XCTAssertTrue(isEmpty(field), "Cancel empties the field, got '\(field.value ?? "")'")
+        XCTAssertTrue(chapterRows(app).firstMatch.waitForExistence(timeout: 5), "The chapters are back")
+        XCTAssertFalse(cancel.exists, "Cancel shows only while the field has focus")
+    }
+
+    /// P031 in a book with search only: Cancel leaves an empty field and a
+    /// sheet a swipe closes.
+    func testCancelInASearchOnlyBookLetsTheSheetClose() {
+        let app = openReader(classic: 1063)   // The Cask of Amontillado
+        openContents(app)
+        let field = app.textFields["search.field"].firstMatch
+        XCTAssertTrue(hasKeyboardFocus(field, timeout: 5), "Search only: the field takes focus")
+        field.typeText("zzzz")
+        XCTAssertTrue(app.staticTexts["search.empty"].firstMatch.waitForExistence(timeout: 10))
+        app.buttons["search.cancel"].firstMatch.tap()
+        XCTAssertTrue(keyboardGone(app, timeout: 2))
+        XCTAssertTrue(isEmpty(field))
+        closeContents(app)
+    }
+
+    /// P033: the chapter line's long-press menu offers Contents and the
+    /// search, which opens at full height with the field focused.
+    func testTheChapterLinesMenuGoesStraightToSearch() {
+        let app = openReader(classic: 2600)
+        let line = app.buttons["reader.chapterLine"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 10))
+        line.press(forDuration: 1.2)
+        let search = app.buttons["Search this book"].firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "The menu offers the search")
+        XCTAssertTrue(app.buttons["Contents"].firstMatch.exists, "and Contents")
+        keepScreenshot(app, "chapter-line-menu")
+        search.tap()
+        let field = app.textFields["search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(hasKeyboardFocus(field, timeout: 5), "The search opens focused")
+        XCTAssertGreaterThan(app.keyboards.count, 0, "with the keyboard up (which grows the sheet)")
+        keepScreenshot(app, "contents-search-from-the-menu")
+    }
+
+    /// P033: during a playback error the line's tap retries, and its
+    /// long-press menu still opens Contents. Plays muted until the fault.
+    func testTheErrorLineKeepsContentsInItsMenu() {
+        let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-seed-first-classic",
+                                         "-uitest-open-first-doc", "-uitest-reset-natural-voice-offer",
+                                         "-uitest-temp-model-dir", "-uitest-fault", "synthesis",
+                                         "-uitest-fault-after", "3"], allowAutoplay: true)
+        app.launch()
+        let play = app.buttons["player.play"].firstMatch
+        XCTAssertTrue(play.waitForExistence(timeout: 20), "The reader should open")
+        XCTAssertTrue(waitForValue("playing", of: play, timeout: 60), "The book should start playing")
+        let line = app.descendants(matching: .any)["reader.chapterLine"].firstMatch
+        let stopped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@",
+                                                                       "Playback stopped"), object: line)
+        XCTAssertEqual(XCTWaiter().wait(for: [stopped], timeout: 60), .completed,
+                       "The fault should stop playback, got '\(line.label)'")
+        line.press(forDuration: 1.2)
+        let contents = app.buttons["Contents"].firstMatch
+        XCTAssertTrue(contents.waitForExistence(timeout: 5), "The error line's menu offers Contents")
+        contents.tap()
+        XCTAssertTrue(app.staticTexts["contents.title"].firstMatch.waitForExistence(timeout: 10),
+                      "Contents opens during the error")
     }
 }

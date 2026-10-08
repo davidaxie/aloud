@@ -31,6 +31,9 @@ enum UITestLaunchActions {
                                              sentence: max(document.sentenceCount - 1, 0),
                                              fraction: 1.0)
         }
+        if UITestHooks.seedPlaceCount > 0, let first = model.documentStore.documents.first {
+            seedPlaces(UITestHooks.seedPlaceCount, in: first, history: model.placeHistory)
+        }
         if let kind = UITestHooks.openFixture,
            let url = try? UITestFixtures.write(kind, intoInbox: true) {
             model.handleOpenURL(url)
@@ -54,6 +57,28 @@ enum UITestLaunchActions {
         }
         #endif
     }
+
+    #if DEBUG
+    /// `count` stops through `document`, oldest first, an hour apart and far
+    /// apart in the book, each a full listen from its own sentence, so the
+    /// rules keep every one (`PlaceHistory.recording`).
+    @MainActor
+    private static func seedPlaces(_ count: Int, in document: LibraryDocument, history: PlaceHistoryStore) {
+        let kept = min(count, PlaceHistory.limit)
+        let spacing = max(document.sentenceCount / (kept + 1), PlaceHistory.samePlaceSentences + 1)
+        let start = Date().addingTimeInterval(-Double(kept + 1) * 3_600)
+        for index in 0..<kept {
+            let sentence = min(spacing * (index + 1), max(document.sentenceCount - 1, 0))
+            let startedAt = start.addingTimeInterval(Double(index) * 3_600)
+            let listened = PlaceHistory.minimumListen * 3
+            history.record(PlaceStop(documentID: document.id, contentHash: document.contentHash,
+                                     sentence: sentence, excerpt: nil, startSentence: sentence,
+                                     startedAt: startedAt, stoppedAt: startedAt.addingTimeInterval(listened),
+                                     listenedSeconds: listened, movedAway: false),
+                           contentHash: document.contentHash)
+        }
+    }
+    #endif
 }
 
 #if DEBUG

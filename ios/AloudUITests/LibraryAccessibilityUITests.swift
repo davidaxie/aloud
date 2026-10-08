@@ -42,9 +42,8 @@ final class LibraryAccessibilityUITests: XCTestCase {
 
     /// R25's three card states, and R24's Finished card, as VoiceOver reads
     /// them: an unstarted length, a finished book, and time left once a
-    /// book has moved. Pride and Prejudice moves by a paused Contents pick
-    /// (autoplay is suppressed and a chapter pick keeps play or pause), so
-    /// nothing plays.
+    /// book has moved. Pride and Prejudice moves by a Contents pick, which
+    /// plays from there (P025, muted); the test pauses it before going back.
     func testCardsReadTheirThreeStates() {
         let app = XCUIApplication.aloud(["-uitest-reset-library",
                                          "-uitest-seed-classic", "1063", "-uitest-seed-classic", "1342",
@@ -75,7 +74,10 @@ final class LibraryAccessibilityUITests: XCTestCase {
         XCTAssertTrue(rows.element(boundBy: 2).waitForExistence(timeout: 10), "Contents lists the chapters")
         rows.element(boundBy: 2).tap()
         XCTAssertTrue(waitForNonExistence(of: rows.element(boundBy: 2), timeout: 10), "The pick closes Contents")
-        XCTAssertEqual(stringValue(of: play), "paused", "a chapter pick keeps the book paused")
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 10),
+                      "a chapter pick plays from there, got '\(stringValue(of: play))'")
+        play.tap()
+        XCTAssertTrue(waitForValue("paused", of: play, timeout: 10), "paused before going back")
         tapSystemBack(app)
 
         let hero = app.buttons["library.continue"].firstMatch

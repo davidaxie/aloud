@@ -532,4 +532,17 @@ final class MacPlayerBarTests: XCTestCase {
         XCTAssertEqual(MacSleepMenu.title(for: .endOfChapter, endsAtChapter: false), "End of book")
         XCTAssertEqual(MacSleepMenu.title(for: .off, endsAtChapter: true), "Off")
     }
+
+    // MARK: - Chapter line
+
+    /// P033 gave the iPhone's chapter line a search action, a Search name
+    /// and a long-press menu; the Mac's shared chapter line keeps none of
+    /// them (its toolbar, menu bar and Find reach Contents and search).
+    func testTheSharedChapterLineAddsNoSearchEntryOnTheMac() {
+        XCTAssertFalse(PlatformContentsEntry.chapterLineOffersSearch)
+        XCTAssertEqual(ReaderMessageLine.positionInputLabels(title: "Chapter I").count, 2,
+                       "its title and Contents, as before")
+        XCTAssertEqual(MacContents.title, ContentsSearch.title)
+        XCTAssertEqual(MacContents.searchPrompt, ContentsSearch.searchPrompt)
+    }
 }

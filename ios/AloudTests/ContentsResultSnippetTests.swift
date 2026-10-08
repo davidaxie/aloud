@@ -255,3 +255,197 @@ final class ContentsResultLabelLayoutTests: XCTestCase {
         #endif
     }
 }
+
+// MARK: - P032: the hit without colour
+
+/// Under Differentiate Without Color the hit is underlined as well as
+/// tinted, and the snippet keeps its size.
+@MainActor
+final class ContentsResultUnderlineTests: XCTestCase {
+
+    private static let size = CGSize(width: 327, height: 60)
+    private static let sentence = "The countess came back and Natasha was asleep."
+
+    private func snippet() throws -> ContentsSearch.Snippet {
+        ContentsSearch.snippet(for: try firstMatch(of: "Natasha", in: Self.sentence), leadLimit: 16)
+    }
+
+    private func pixels(underlined: Bool) throws -> RenderedPixels {
+        let text = ContentsResultLabel.emphasized(try snippet(), underlined: underlined)
+            .font(Theme.font(.body))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+        return try XCTUnwrap(RenderedPixels(text, size: Self.size))
+    }
+
+    func testTheHitIsUnderlinedOnlyWithoutColor() throws {
+        let plain = try pixels(underlined: false)
+        XCTAssertEqual(plain.bytes, try pixels(underlined: false).bytes, "the render is deterministic")
+        XCTAssertNotEqual(plain.bytes, try pixels(underlined: true).bytes, "the underline draws")
+    }
+
+    func testTheUnderlineKeepsTheSnippetsSize() throws {
+        let snippet = try snippet()
+        func fitted(_ underlined: Bool) -> CGSize {
+            UIHostingController(rootView: ContentsResultLabel.emphasized(snippet, underlined: underlined)
+                .font(Theme.font(.body)))
+                .sizeThatFits(in: CGSize(width: Self.size.width, height: .greatestFiniteMagnitude))
+        }
+        XCTAssertEqual(fitted(true), fitted(false))
+    }
+}
+
+// MARK: - P027, P028: chapter rows
+
+/// A chapter row's title is regular, semibold on the current chapter
+/// (bold under Bold Text), takes two lines below the accessibility sizes
+/// and scales without clipping from the smallest size to the largest.
+@MainActor
+final class ContentsChapterLabelLayoutTests: XCTestCase {
+
+    private static let width: CGFloat = 375 - 2 * Theme.Space.sheetGutter
+    /// 55 characters, the kind of heading that used to end mid-word.
+    private static let longTitle = "CHAPTER VI. STRAIGHT QUESTIONS AND CROOKED ANSWERS, TOO"
+
+    private func height(of view: some View, size: DynamicTypeSize) -> CGFloat {
+        UIHostingController(rootView: view.environment(\.dynamicTypeSize, size))
+            .sizeThatFits(in: CGSize(width: Self.width, height: .greatestFiniteMagnitude))
+            .height
+    }
+
+    private func label(_ title: String, current: Bool = false) -> ContentsChapterLabel {
+        ContentsChapterLabel(title: title, estimate: "12 min", isCurrent: current, isCompleted: false)
+    }
+
+    private func title(_ text: String, lines: Int) -> some View {
+        Text(text).font(Theme.rowTitle(emphasized: false)).lineLimit(lines)
+    }
+
+    func testTheRowTitleWeights() {
+        let serif = Font.custom(Theme.serifFamilyName, size: 17, relativeTo: .headline)
+        XCTAssertEqual(Theme.rowTitle(emphasized: false, boldText: false), serif.weight(.regular))
+        XCTAssertEqual(Theme.rowTitle(emphasized: true, boldText: false), serif.weight(.semibold))
+        XCTAssertNotEqual(Theme.rowTitle(emphasized: true, boldText: false),
+                          Theme.rowTitle(emphasized: false, boldText: false), "the current title stands out")
+        XCTAssertEqual(Theme.rowTitle(emphasized: false, boldText: true), serif.weight(.bold),
+                       "Bold Text takes the serif's bold face")
+        XCTAssertEqual(Theme.rowTitle(emphasized: true, boldText: true), serif.weight(.bold))
+    }
+
+    func testALongTitleTakesTwoLinesBelowTheAccessibilitySizes() {
+        XCTAssertEqual(Self.longTitle.count, 55)
+        let oneLine = height(of: label("CHAPTER I"), size: .large)
+        let titleLine = height(of: title("CHAPTER I", lines: 1), size: .large)
+        XCTAssertEqual(oneLine, titleLine + 2 * Theme.Space.xs, accuracy: 1, "one line, padded")
+        let long = height(of: label(Self.longTitle), size: .large)
+        XCTAssertGreaterThan(long, oneLine + titleLine * 0.5, "a 55-character title wraps")
+        XCTAssertEqual(long, height(of: title(Self.longTitle, lines: 2), size: .large) + 2 * Theme.Space.xs,
+                       accuracy: 1, "two lines, never three")
+        let current = height(of: label(Self.longTitle, current: true), size: .large)
+        XCTAssertEqual(current, long, accuracy: 1, "the semibold title takes the same two lines")
+    }
+
+    func testTheTitleScalesAndNeverClipsAtAnySize() {
+        var previous: CGFloat = 0
+        for size in DynamicTypeSize.allCases {
+            let row = height(of: label(Self.longTitle), size: size)
+            let alone = height(of: title(Self.longTitle, lines: size.isAccessibilitySize ? 3 : 2), size: size)
+            XCTAssertGreaterThanOrEqual(row + 0.5, alone, "\(size): the title is cut")
+            XCTAssertGreaterThanOrEqual(row + 0.5, previous, "\(size): the row shrank as the type grew")
+            previous = row
+        }
+    }
+}
+
+// MARK: - P025: picks play
+
+/// Contents' pick on both apps: from a pause it plays from the target and
+/// says so (the iPhone's haptic follows that answer); from playback it only
+/// moves. Undo jump restores the sentence and the pause.
+@MainActor
+final class ContentsJumpAndPlayTests: XCTestCase {
+
+    func testAPickWhilePausedPlaysAndUndoRestoresThePause() async {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 2, autoplaySuppressed: true)
+        rig.loadDefault(at: 2)
+        XCTAssertFalse(rig.controller.isActive)
+
+        let started = ContentsSearch.jumpAndPlay(rig.controller, to: 8, origin: .chapter)
+        XCTAssertTrue(started, "a paused pick starts playback")
+        XCTAssertEqual(rig.controller.currentSentence, 8)
+        XCTAssertEqual(rig.controller.undoableJump?.fromSentence, 2)
+        XCTAssertEqual(rig.controller.undoableJump?.fromStatus, .paused)
+        let playing = await rig.waitUntil(2) { rig.controller.isActive }
+        XCTAssertTrue(playing)
+
+        rig.controller.undoJump()
+        let paused = await rig.waitUntil(2) { !rig.controller.isActive }
+        XCTAssertTrue(paused, "Undo jump restores the pause")
+        XCTAssertEqual(rig.controller.currentSentence, 2)
+    }
+
+    func testAPickWhilePlayingOnlyMoves() async {
+        let rig = PlaybackTestRig(sentences: 12, clipDuration: 2, autoplaySuppressed: true)
+        rig.loadDefault(at: 2)
+        rig.controller.seek(to: 2, andPlay: true)
+        let playing = await rig.waitUntil(2) { rig.controller.isListenerPlaying }
+        XCTAssertTrue(playing)
+
+        let started = ContentsSearch.jumpAndPlay(rig.controller, to: 9, origin: .searchResult)
+        XCTAssertFalse(started, "already playing: no second start, no haptic")
+        XCTAssertEqual(rig.controller.currentSentence, 9)
+        XCTAssertTrue(rig.controller.isActive)
+        rig.controller.pause()
+    }
+
+    func testAPickWithNoBookDoesNothing() {
+        let rig = PlaybackTestRig(sentences: 12, autoplaySuppressed: true)
+        XCTAssertFalse(ContentsSearch.jumpAndPlay(rig.controller, to: 3, origin: .chapter))
+        XCTAssertFalse(rig.controller.isActive)
+    }
+}
+
+// MARK: - P029, P033: what the sheet remembers
+
+@MainActor
+final class ContentsSearchMemoryTests: XCTestCase {
+
+    func testAPickedSearchComesBackForItsBookOnly() {
+        let memory = ContentsSearchMemory()
+        let book = UUID()
+        XCTAssertNil(memory.restore(for: book), "nothing remembered yet")
+
+        memory.remember(query: "Natasha", pickedSentence: 40, in: book)
+        XCTAssertEqual(memory.restore(for: book), .init(query: "Natasha", pickedSentence: 40))
+        XCTAssertEqual(memory.restore(for: book), .init(query: "Natasha", pickedSentence: 40), "restoring keeps it")
+
+        XCTAssertNil(memory.restore(for: UUID()), "another book's Contents opens empty")
+        XCTAssertNil(memory.documentID, "and the other book's search is forgotten")
+        XCTAssertNil(memory.restore(for: book))
+    }
+
+    func testABlankQueryOrForgetLeavesNothing() {
+        let memory = ContentsSearchMemory()
+        let book = UUID()
+        memory.remember(query: "   ", pickedSentence: 3, in: book)
+        XCTAssertNil(memory.restore(for: book), "a blank query isn't a search")
+        memory.remember(query: "whale", pickedSentence: 3, in: nil)
+        XCTAssertNil(memory.documentID, "no book, nothing to remember")
+
+        memory.remember(query: "whale", pickedSentence: 3, in: book)
+        memory.forget()
+        XCTAssertNil(memory.restore(for: book))
+        XCTAssertEqual(memory.query, "")
+        XCTAssertNil(memory.lastPickedSentence)
+    }
+
+    func testASearchFocusRequestIsTakenOnce() {
+        let memory = ContentsSearchMemory()
+        XCTAssertFalse(memory.consumeSearchFocus())
+        memory.requestSearchFocus()
+        memory.forget()
+        XCTAssertTrue(memory.consumeSearchFocus(), "forgetting a search keeps a focus request")
+        XCTAssertFalse(memory.consumeSearchFocus(), "one request, one opening")
+    }
+}

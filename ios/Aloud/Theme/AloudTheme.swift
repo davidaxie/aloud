@@ -180,6 +180,22 @@ enum Theme {
         }
     }
 
+    /// A list row's serif title (Contents' chapters): regular, and semibold
+    /// on the row that is `emphasized` (the current chapter), so a long list
+    /// isn't a wall of bold and the current row stands out by more than its
+    /// bar. The Mac takes its ramp's headline at that weight. Under Bold Text
+    /// both are the serif's bold face, Iowan's only heavy one.
+    static func rowTitle(emphasized: Bool) -> Font {
+        rowTitle(emphasized: emphasized, boldText: BoldText.shared.isOn)
+    }
+
+    static func rowTitle(emphasized: Bool, boldText: Bool) -> Font {
+        let weight: Font.Weight = emphasized ? .semibold : .regular
+        if let fixed = PlatformTypeRamp.font(for: .headline, scale: .standard) { return fixed.weight(weight) }
+        let title = Font.custom(serifFamilyName, size: 17, relativeTo: .headline)
+        return title.weight(boldText ? .bold : weight)
+    }
+
     /// The serif at `size`, scaling with `textStyle`; its bold face under
     /// Bold Text.
     private static func serif(_ size: CGFloat, relativeTo textStyle: Font.TextStyle, boldText: Bool) -> Font {
