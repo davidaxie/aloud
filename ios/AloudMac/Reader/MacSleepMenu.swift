@@ -37,6 +37,10 @@ struct MacSleepMenu: View {
             ForEach(items.choices, id: \.self) { option in
                 Toggle(isOn: selection(option)) {
                     Text(Self.title(for: option, endsAtChapter: sleepTimer.endsAtChapter))
+                    // How long that is ("37 min"), as the iPhone's menu says it.
+                    if option == .endOfChapter, let minutes = sleepTimer.untilStopMinutes, minutes > 0 {
+                        Text(ListeningEstimate.phrase(minutes: minutes))
+                    }
                 }
             }
             if items.showsOff {

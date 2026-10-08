@@ -72,25 +72,31 @@ enum MacSettingsTab: String, CaseIterable, Identifiable {
 
 /// "Voice & speed": the shared Listening view, with the natural-voice card
 /// shown installed too (size on disk, Remove Download…), as the iPhone's
-/// Settings page shows it. The list fits its content up to a cap and
-/// scrolls beyond, which only the eleven installed voices reach; the privacy
-/// line sits below it, so it closes the tab however the list scrolls.
+/// Settings page shows it. The speed controls stay pinned at the top; the
+/// voice list under them fits its content up to a cap and scrolls beyond,
+/// which only the eleven installed voices reach; the privacy line sits
+/// below it, so it closes the tab however the list scrolls.
 struct MacSettingsVoiceTab: View {
 
-    /// The list's tallest: with the window's toolbar and the privacy line,
-    /// the tab still fits a 1280 × 800 display. The not-installed list
-    /// (the card with its before-you-fly line, the System row and "Add
-    /// voices in System Settings…") fits under it unscrolled.
+    /// The speed controls and the list at their tallest: with the window's
+    /// toolbar and the privacy line, the tab still fits a 1280 × 800
+    /// display. The not-installed list (the card with its before-you-fly
+    /// line, the System row and "Add voices in System Settings…") fits
+    /// under it unscrolled.
     static let maxListHeight: CGFloat = 600
 
     /// Seeded near the not-installed layout so the first frame barely moves.
-    @State private var contentHeight: CGFloat = 560
+    @State private var contentHeight: CGFloat = 400
+    /// The pinned speed block, with its hairline.
+    @State private var pinnedHeight: CGFloat = 160
 
     var body: some View {
         VStack(spacing: 0) {
             MacSettingsHairline()
-            ListeningView(showsInstalledModel: true, onContentHeight: { contentHeight = $0 })
-                .frame(height: Self.listHeight(content: contentHeight))
+            ListeningView(showsInstalledModel: true, pinsSpeed: true,
+                          onContentHeight: { contentHeight = $0 },
+                          onPinnedHeight: { pinnedHeight = $0 })
+                .frame(height: pinnedHeight + Self.listHeight(content: contentHeight, pinned: pinnedHeight))
             Text(PrivacyCopy.line)
                 .font(Theme.font(.aside))
                 .foregroundStyle(Theme.textMuted)
@@ -110,9 +116,10 @@ struct MacSettingsVoiceTab: View {
         .accessibilityIdentifier(MacSettingsTab.listening.accessibilityIdentifier)
     }
 
-    /// The list's height: its content, up to the cap.
-    static func listHeight(content: CGFloat) -> CGFloat {
-        max(min(content, maxListHeight), 0)
+    /// The voice list's height: its content, up to what the cap leaves
+    /// under the pinned speed controls.
+    static func listHeight(content: CGFloat, pinned: CGFloat = 0) -> CGFloat {
+        max(min(content, maxListHeight - pinned), 0)
     }
 }
 

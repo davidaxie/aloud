@@ -287,6 +287,28 @@ final class ScrubAndContentsUITest: XCTestCase {
         XCTAssertTrue(more.waitForExistence(timeout: 5), "Grown, the earlier stops wait behind the toggle")
     }
 
+    /// R1-21: after a book has been listened to, the newest stop and the
+    /// playhead share a late chapter, so Contents opens on that chapter at
+    /// half height, its current row in view without a scroll (War and
+    /// Peace: 365 chapters, the stops seeded through it, the book resumed
+    /// at the newest).
+    func testContentsOpensOnTheCurrentChapterAfterAListen() {
+        let app = openReader(classic: 2600, ["-uitest-seed-places", "4", "-uitest-playhead-at-newest-place"])
+        openContents(app)
+        let header = app.staticTexts["places.header"].firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 10), "The stops still lead the list")
+        let current = chapterRows(app).matching(NSPredicate(format: "selected == true")).firstMatch
+        XCTAssertTrue(current.waitForExistence(timeout: 10), "The current chapter carries .isSelected")
+        let firstRow = chapterRows(app).firstMatch
+        XCTAssertNotEqual(current.identifier, firstRow.identifier, "The playhead is in a late chapter")
+        // The 150 ms repeat of the scroll settles before the check.
+        let hittable = NSPredicate(format: "hittable == true")
+        let landed = XCTNSPredicateExpectation(predicate: hittable, object: current)
+        XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: 5), .completed,
+                       "At half height, unscrolled, the current chapter's row is in view")
+        keepScreenshot(app, "contents-opens-on-current-chapter")
+    }
+
     /// P029: a picked result's search comes back on reopening, the pick
     /// marked and the next hit a tap away; clearing it forgets it.
     func testAPickedSearchComesBackForTheNextHit() {
@@ -385,7 +407,7 @@ final class ScrubAndContentsUITest: XCTestCase {
         let line = app.buttons["reader.chapterLine"].firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 10))
         line.press(forDuration: 1.2)
-        let search = app.buttons["Search this book"].firstMatch
+        let search = app.buttons["Search This Book"].firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5), "The menu offers the search")
         XCTAssertTrue(app.buttons["Contents"].firstMatch.exists, "and Contents")
         keepScreenshot(app, "chapter-line-menu")
@@ -406,7 +428,7 @@ final class ScrubAndContentsUITest: XCTestCase {
         let line = app.buttons["reader.chapterLine"].firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 10))
         line.press(forDuration: 1.2)
-        XCTAssertFalse(app.buttons["Search this book"].firstMatch.waitForExistence(timeout: 3),
+        XCTAssertFalse(app.buttons["Search This Book"].firstMatch.waitForExistence(timeout: 3),
                        "No menu at AX3: the long press shows the line in the viewer")
         keepScreenshot(app, "chapter-line-long-press-ax3")
     }

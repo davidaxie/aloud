@@ -34,9 +34,10 @@ import SwiftUI
 /// three, then the earlier-stops toggle; each its time and chapter over the
 /// sentence (`PlaceHistoryRows`). A row is the chapter row's jump; the one
 /// at the playhead carries the current bar, a semibold detail line and
-/// `.isSelected`. With places the sheet opens at the top, not on the
-/// current chapter, and a book without a chapter list lists them instead
-/// of focusing the field.
+/// `.isSelected`. The sheet opens on the current chapter unless the newest
+/// stop is in another chapter, when it opens at the top so the stop shows
+/// (`PlaceHistory.opensOnCurrentChapter`); a book without a chapter list
+/// lists its places instead of focusing the field.
 ///
 /// A picked result's search is remembered for the book
 /// (`ContentsSearchMemory`, P029): reopened, the sheet opens at full height
@@ -241,7 +242,10 @@ struct ContentsSheet: View {
                 .foregroundStyle(Theme.textFaint)
                 .accessibilityHidden(true)
 
-            TextField(ContentsSearch.searchPrompt, text: $query)
+            TextField(ContentsSearch.searchPrompt, text: $query,
+                      // textFaint, as the magnifier: 4.5:1 on surface2 in
+                      // both schemes, where the system placeholder is not.
+                      prompt: Text(ContentsSearch.searchPrompt).foregroundStyle(Theme.textFaint))
                 .font(Theme.font(.body))
                 .foregroundStyle(Theme.text)
                 .focused($fieldFocused)
@@ -316,8 +320,16 @@ struct ContentsSheet: View {
                 .padding(.vertical, Theme.Space.xs)
             }
             .scrollDismissesKeyboard(.immediately)
-            // With places the sheet opens at the top, on the newest one.
-            .onAppear { if placeRows.isEmpty { scrollToCurrent(proxy) } }
+            // On the current chapter when the newest stop is in it (or there
+            // are none); at the top when that stop is in another chapter, so
+            // the stop shows.
+            .onAppear {
+                if PlaceHistory.opensOnCurrentChapter(newestStop: placeRows.first?.sentence,
+                                                      playhead: playback.currentSentence,
+                                                      navigation: navigation) {
+                    scrollToCurrent(proxy)
+                }
+            }
         }
     }
 
@@ -333,6 +345,8 @@ struct ContentsSheet: View {
         Text(title)
             .font(Theme.font(.eyebrow))
             .eyebrowTracking()
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(title))
             .foregroundStyle(Theme.textMuted)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -510,6 +524,8 @@ struct ContentsSheet: View {
         Text(title)
             .font(Theme.font(.eyebrow))
             .eyebrowTracking()
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(title))
             .foregroundStyle(Theme.textMuted)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -756,7 +772,7 @@ private struct ContentsPlaceLabel: View {
                 .lineLimit(isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
 
-            Text(row.text)
+            Text(row.snippet)
                 .font(Theme.font(.body))
                 .foregroundStyle(Theme.text)
                 .lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))

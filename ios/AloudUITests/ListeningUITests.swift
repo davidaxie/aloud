@@ -183,8 +183,47 @@ final class ListeningUITests: XCTestCase {
             openListeningSheet(app)
             XCTAssertTrue(wait(for: "hittable == true", app.buttons["voice.\(id)"].firstMatch, timeout: 5),
                           "The selected voice.\(id) should be on screen when the sheet opens")
+            // R1-22: the speed stays in view with it, pinned above the list.
+            XCTAssertTrue(app.sliders["listening.speed.slider"].firstMatch.isHittable,
+                          "The speed slider shows with voice.\(id)")
+            XCTAssertTrue(app.buttons["listening.preset.1"].firstMatch.isHittable,
+                          "The 1x preset shows with voice.\(id)")
+            if id == ids[0] {
+                // A swipe on the list scrolls it inside the 60% sheet; the
+                // sheet doesn't grow.
+                let title = app.staticTexts["listening.title"].firstMatch
+                let opened = settledFrame(of: title)
+                app.buttons["voice.\(id)"].firstMatch.swipeUp()
+                XCTAssertTrue(wait(for: "hittable == true", app.buttons["voice.kokoro:af_heart"].firstMatch,
+                                   timeout: 5), "The list scrolled to a voice further down")
+                XCTAssertEqual(settledFrame(of: title).minY, opened.minY, accuracy: 0.5,
+                               "The sheet stays at its opening height")
+            }
             dismissListeningSheet(app)
         }
+    }
+
+    /// R1-22: at AX3 everything scrolls as one (the presets in two columns
+    /// and the scaled numeral leave a pinned list no room), and the
+    /// selected voice is still on screen when the sheet opens.
+    func testAtAX3TheSelectedVoiceIsOnScreenWhenTheSheetOpens() throws {
+        let modelDirectory = KokoroPlaybackUITest.modelDirectory
+        guard FileManager.default.fileExists(atPath: modelDirectory + "/model.onnx") else {
+            throw XCTSkip("Kokoro model files not present on host at \(modelDirectory)")
+        }
+        let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-seed-classics", "1",
+                                         "-uitest-open-first-doc", "-uitest-reset-voice-pref",
+                                         "-uitest-kokoro-model-path", modelDirectory,
+                                         "-UIPreferredContentSizeCategoryName",
+                                         "UICTContentSizeCategoryAccessibilityXL"])
+        app.launch()
+        openListeningSheet(app)
+        let selected = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'voice.' AND selected == true"))
+            .firstMatch
+        XCTAssertTrue(selected.waitForExistence(timeout: 10), "A voice is selected")
+        XCTAssertTrue(wait(for: "hittable == true", selected, timeout: 5),
+                      "At AX3 the selected \(selected.identifier) should be on screen when the sheet opens")
+        dismissListeningSheet(app)
     }
 
     /// P034: the sheet opens at 60% of the screen without tapping a voice

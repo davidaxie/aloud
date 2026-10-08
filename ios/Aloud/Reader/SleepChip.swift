@@ -34,6 +34,10 @@ struct SleepChip: View {
                 ForEach(items.choices, id: \.self) { option in
                     Toggle(isOn: selection(option)) {
                         Text(option.title(endsAtChapter: sleepTimer.endsAtChapter))
+                        // How long that is: the menu's subtitle line.
+                        if option == .endOfChapter, let minutes = sleepTimer.untilStopMinutes, minutes > 0 {
+                            Text(ListeningEstimate.spokenPhrase(minutes: minutes))
+                        }
                     }
                 }
             }

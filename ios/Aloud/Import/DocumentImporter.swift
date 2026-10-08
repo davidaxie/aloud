@@ -608,6 +608,8 @@ struct ImportProgressOverlay: View {
             Text("Adding")
                 .font(Theme.font(.eyebrow))
                 .eyebrowTracking()
+                .textCase(.uppercase)
+                .accessibilityLabel(Text("Adding"))
                 .foregroundStyle(Theme.textFaint)
             Text(fileName)
                 .font(Theme.font(.callout))

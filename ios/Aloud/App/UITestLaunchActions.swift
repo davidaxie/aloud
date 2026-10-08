@@ -32,7 +32,14 @@ enum UITestLaunchActions {
                                              fraction: 1.0)
         }
         if UITestHooks.seedPlaceCount > 0, let first = model.documentStore.documents.first {
-            seedPlaces(UITestHooks.seedPlaceCount, in: first, history: model.placeHistory)
+            let newest = seedPlaces(UITestHooks.seedPlaceCount, in: first, history: model.placeHistory)
+            // `-uitest-playhead-at-newest-place`: the book resumes where it
+            // was last left, so the newest stop and the playhead share a
+            // (late) chapter, as after an ordinary listen.
+            if Self.playheadAtNewestPlace, let newest, first.sentenceCount > 0 {
+                model.documentStore.saveProgress(id: first.id, sentence: newest,
+                                                 fraction: Double(newest) / Double(first.sentenceCount))
+            }
         }
         if let kind = UITestHooks.openFixture,
            let url = try? UITestFixtures.write(kind, intoInbox: true) {
@@ -62,9 +69,12 @@ enum UITestLaunchActions {
     /// `count` stops through `document`, oldest first, an hour apart and far
     /// apart in the book, each a full listen from its own sentence, so the
     /// rules keep every one (`PlaceHistory.recording`).
-    @MainActor
-    private static func seedPlaces(_ count: Int, in document: LibraryDocument, history: PlaceHistoryStore) {
+    /// Returns the newest stop's sentence, nil when none was seeded.
+    @MainActor @discardableResult
+    private static func seedPlaces(_ count: Int, in document: LibraryDocument,
+                                   history: PlaceHistoryStore) -> Int? {
         let kept = min(count, PlaceHistory.limit)
+        var newest: Int?
         let spacing = max(document.sentenceCount / (kept + 1), PlaceHistory.samePlaceSentences + 1)
         let start = Date().addingTimeInterval(-Double(kept + 1) * 3_600)
         for index in 0..<kept {
@@ -76,7 +86,14 @@ enum UITestLaunchActions {
                                      startedAt: startedAt, stoppedAt: startedAt.addingTimeInterval(listened),
                                      listenedSeconds: listened, movedAway: false),
                            contentHash: document.contentHash)
+            newest = sentence
         }
+        return newest
+    }
+
+    /// Read here rather than in `UITestHooks`: only the places seed uses it.
+    private static var playheadAtNewestPlace: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uitest-playhead-at-newest-place")
     }
     #endif
 }

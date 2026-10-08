@@ -72,4 +72,65 @@ final class ListeningLintTests: XCTestCase {
     private static func files(in sources: [String: String], containing needle: String) -> [String] {
         sources.filter { $0.value.contains(needle) }.map(\.key).sorted()
     }
+
+    // MARK: - Critique round 1
+
+    /// R1-25: the selected voice's bar is Contents' bar: 3 pt accentStrong,
+    /// flush and full row height, hidden from VoiceOver; the natural-voice
+    /// eyebrow is textMuted, as Contents' eyebrows are.
+    func testTheSelectedVoiceBarMatchesContents() throws {
+        let path = "Settings/ListeningView.swift"
+        let s = try SourceTree.sources(only: [path])
+        let view = try XCTUnwrap(s[path])
+        let start = try XCTUnwrap(view.range(of: ".overlay(alignment: .leading) {"))
+        let bar = view[start.upperBound...].prefix(300)
+        XCTAssertTrue(bar.contains(".fill(Theme.accentStrong)"), String(bar))
+        XCTAssertTrue(bar.contains(".frame(width: 3)"), String(bar))
+        XCTAssertTrue(bar.contains(".accessibilityHidden(true)"), String(bar))
+        XCTAssertFalse(bar.contains(".padding(.leading, Theme.Space.xs)"), "the bar is flush: \(bar)")
+        XCTAssertFalse(bar.contains(".padding(.vertical, Theme.Space.xs)"), "the bar is full height: \(bar)")
+        let header = try XCTUnwrap(view.range(of: "Text(ListeningCopy.naturalVoicesHeader)"))
+        let eyebrow = view[header.upperBound...].prefix(300)
+        XCTAssertTrue(eyebrow.contains(".foregroundStyle(Theme.textMuted)"), String(eyebrow))
+    }
+
+    /// R1-29: the origin column is fixed-width and trailing-aligned, so the
+    /// origin sits on the gutter.
+    func testTheVoiceOriginSitsOnTheGutter() throws {
+        let path = "Settings/ListeningView.swift"
+        let s = try SourceTree.sources(only: [path])
+        let view = try XCTUnwrap(s[path])
+        XCTAssertTrue(view.contains(".frame(width: originColumnWidth, alignment: .trailing)"))
+        XCTAssertFalse(view.contains(".frame(width: originColumnWidth, alignment: .leading)"))
+        XCTAssertTrue(view.contains("@ScaledMetric(relativeTo: .caption) private var originColumnWidth: CGFloat = 80"))
+    }
+
+    /// R1-22: the sheet's list scrolls inside the 60% sheet, with the speed
+    /// pinned above it; the lifecycle work stays on the one container, and
+    /// the scroll to the selected voice on the inner list.
+    func testTheSpeedStaysInViewAboveAScrollingVoiceList() throws {
+        let paths = ["Settings/ListeningSheet.swift", "Settings/ListeningView.swift"]
+        let s = try SourceTree.sources(only: paths)
+        let sheet = try XCTUnwrap(s[paths[0]])
+        let view = try XCTUnwrap(s[paths[1]])
+        let chrome = try XCTUnwrap(sheet.range(of: ".sheetChrome(Self.detents, selection: $detent)"))
+        let interaction = try XCTUnwrap(sheet.range(of: ".presentationContentInteraction(.scrolls)"))
+        XCTAssertLessThan(chrome.lowerBound, interaction.lowerBound, "right after the sheet's chrome")
+        XCTAssertTrue(sheet.contains("ListeningView(pinsSpeed: true)"))
+        XCTAssertTrue(view.contains("struct ListeningSpeedControls: View"))
+        XCTAssertTrue(view.contains("struct ListeningVoiceList: View"))
+        XCTAssertTrue(view.contains("requested && !dynamicTypeSize.isAccessibilitySize"), "one scroll at AX sizes")
+        for once in [".onAppear { resolveSystemVoiceName() }", "playback.releaseNeuralEngineIfUnused()",
+                     "proxy.scrollTo(playback.voice.id)",
+                     ".publisher(for: AVSpeechEngine.installedVoicesDidChange)"] {
+            XCTAssertEqual(view.components(separatedBy: once).count - 1, 1, "'\(once)' runs from one place")
+        }
+        let page = try XCTUnwrap(view.range(of: "struct ListeningSettingsPage"))
+        XCTAssertTrue(view[page.upperBound...].contains(
+            "ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true)"))
+        let speed = try XCTUnwrap(view.range(of: "struct ListeningSpeedControls: View"))
+        let speedBody = view[speed.upperBound...].prefix(3000)
+        XCTAssertTrue(speedBody.contains(".padding(.bottom, Theme.Space.sm)"), "a small gap under the speed")
+        XCTAssertTrue(speedBody.contains(".font(Theme.font(.numeral))"), "R8's numeral stays")
+    }
 }

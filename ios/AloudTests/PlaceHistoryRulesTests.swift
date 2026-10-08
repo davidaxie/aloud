@@ -186,4 +186,55 @@ final class PlaceHistoryRulesTests: XCTestCase {
         XCTAssertNil(old.startedAt)
         XCTAssertEqual(PlaceHistory.recording(.recovered(from: old), into: []).map(\.sentence), [7])
     }
+
+    // MARK: - Where Contents opens (R1-21)
+
+    /// Six chapters, CHAPTER I to CHAPTER VI: a heading and three sentences
+    /// each, so chapter k's heading is sentence 4k.
+    @MainActor private static func chapteredNavigation() -> ReaderNavigation {
+        var texts: [String] = []
+        for numeral in ["I", "II", "III", "IV", "V", "VI"] {
+            texts.append("CHAPTER \(numeral)")
+            texts += (1...3).map { "Sentence \($0) of chapter \(numeral) goes on for a little while." }
+        }
+        let sentences = texts.enumerated().map { Sentence(id: $0.offset, text: $0.element, para: $0.offset, page: 0) }
+        let paragraphs = texts.indices.map { Paragraph(id: $0, sentenceIDs: $0..<($0 + 1), page: 0) }
+        let content = DocContent(title: "Chaptered", pageCount: 1, sentences: sentences,
+                                 paragraphs: paragraphs, contentHash: "opens-on-current")
+        return ReaderNavigation(content: content, kind: .text)
+    }
+
+    @MainActor func testWithNoStopsContentsOpensOnTheCurrentChapter() {
+        let navigation = Self.chapteredNavigation()
+        XCTAssertEqual(navigation.chapters.count, 6)
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: nil, playhead: 0, navigation: navigation))
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: nil, playhead: 22, navigation: navigation))
+    }
+
+    /// After a listen the newest stop is in the playhead's chapter, though
+    /// rarely its exact sentence: Contents opens on that chapter.
+    @MainActor func testAStopInTheCurrentChapterOpensOnIt() {
+        let navigation = Self.chapteredNavigation()
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: 21, playhead: 21, navigation: navigation))
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: 21, playhead: 23, navigation: navigation),
+                      "a few sentences on is the same chapter, not the exact sentence")
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: 23, playhead: 20, navigation: navigation),
+                      "the heading's sentence is its chapter")
+    }
+
+    /// P024: a stop in another chapter opens Contents at the top, so it shows.
+    @MainActor func testAStopInAnotherChapterOpensAtTheTop() {
+        let navigation = Self.chapteredNavigation()
+        XCTAssertFalse(PlaceHistory.opensOnCurrentChapter(newestStop: 21, playhead: 1, navigation: navigation))
+        XCTAssertFalse(PlaceHistory.opensOnCurrentChapter(newestStop: 1, playhead: 21, navigation: navigation))
+        XCTAssertFalse(PlaceHistory.opensOnCurrentChapter(newestStop: 19, playhead: 20, navigation: navigation),
+                       "the next sentence over a chapter break is another chapter")
+    }
+
+    @MainActor func testAStopInAnEarlyChapterOpensOnItWithThePlayhead() {
+        let navigation = Self.chapteredNavigation()
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: 2, playhead: 3, navigation: navigation))
+        XCTAssertTrue(PlaceHistory.opensOnCurrentChapter(newestStop: 0, playhead: 1, navigation: navigation))
+        XCTAssertFalse(PlaceHistory.opensOnCurrentChapter(newestStop: 2, playhead: 5, navigation: navigation))
+    }
 }

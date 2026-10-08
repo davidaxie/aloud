@@ -143,8 +143,17 @@ final class SleepTimerUITest: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 20))
         chip.tap()
 
-        XCTAssertTrue(app.buttons["End of book"].firstMatch.waitForExistence(timeout: 5),
-                      "A book without chapters offers End of book")
-        XCTAssertFalse(app.buttons["End of chapter"].firstMatch.exists)
+        // The item may carry its subtitle in its label, so it is found by its title's start.
+        let endOfBook = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "End of book")).firstMatch
+        XCTAssertTrue(endOfBook.waitForExistence(timeout: 5), "A book without chapters offers End of book")
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "End of chapter")).firstMatch.exists)
+
+        // R1-27: the item says how long that is, spelled out ("17 minutes").
+        let spoken = #"\d+ (minute|hour)"#
+        let subtitled = endOfBook.label.range(of: spoken, options: .regularExpression) != nil
+            || endOfBook.staticTexts.allElementsBoundByIndex.contains {
+                $0.label.range(of: spoken, options: .regularExpression) != nil
+            }
+        XCTAssertTrue(subtitled, "End of book shows the book's remaining time: '\(endOfBook.label)'")
     }
 }

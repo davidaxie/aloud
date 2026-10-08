@@ -108,7 +108,8 @@ extension MacContents {
     }
 }
 
-/// A place: when and where, over two lines of the sentence. On the Mac the
+/// A place: when and where, over two lines of the sentence and the ones
+/// after it in its paragraph (`PlaceRow.snippet`). On the Mac the
 /// place at the playhead is semibold, as the current chapter is (accent is
 /// never text); the panel adds its bar.
 struct MacContentsPlaceLabel: View {
@@ -123,7 +124,7 @@ struct MacContentsPlaceLabel: View {
                 .foregroundStyle(Theme.textFaint)
                 .lineLimit(1)
 
-            Text(row.text)
+            Text(row.snippet)
                 .font(row.isCurrent ? font.weight(.semibold) : font)
                 .foregroundStyle(Theme.text)
                 .lineLimit(2)

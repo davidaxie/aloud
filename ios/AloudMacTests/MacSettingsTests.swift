@@ -65,6 +65,23 @@ final class MacSettingsTests: XCTestCase {
         XCTAssertEqual(MacSettingsVoiceTab.listHeight(content: -1), 0)
     }
 
+    /// R1-22: the speed controls stay pinned above the voice list, so the
+    /// list's cap is what the pinned block leaves; only the list is measured.
+    func testThePinnedSpeedComesOutOfTheListsCap() {
+        let cap = MacSettingsVoiceTab.maxListHeight
+        XCTAssertEqual(MacSettingsVoiceTab.listHeight(content: 300, pinned: 170), 300)
+        XCTAssertEqual(MacSettingsVoiceTab.listHeight(content: 2000, pinned: 170), cap - 170)
+        XCTAssertEqual(170 + MacSettingsVoiceTab.listHeight(content: 2000, pinned: 170), cap,
+                       "the tab's list area stays capped")
+        let popoverCap = MacListeningPopover.maxHeight
+        XCTAssertEqual(MacListeningPopover.listHeight(content: 200, header: 44, pinned: 170), 200)
+        XCTAssertEqual(MacListeningPopover.listHeight(content: 2000, header: 44, pinned: 170), popoverCap - 44 - 170)
+        XCTAssertEqual(MacListeningPopover.listHeight(content: 2000, header: 44, pinned: 9000), 0)
+        XCTAssertTrue(ListeningView.pinsSpeed(true, dynamicTypeSize: .large))
+        XCTAssertFalse(ListeningView.pinsSpeed(true, dynamicTypeSize: .accessibility3), "one scroll at AX sizes")
+        XCTAssertFalse(ListeningView.pinsSpeed(false, dynamicTypeSize: .large))
+    }
+
     // MARK: - One home per preference
 
     /// Every preference the tabs hold, and the one view that binds it.

@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// R21: the three appearance controls in one view, so each preference has
-/// one home: text size (an A−/A+ stepper over the nine steps), System /
+/// one home: text size (a two-button stepper, a small and a large serif A,
+/// over the nine steps, its size in points beside its eyebrow), System /
 /// Light / Dark, and Word highlight. The reader's Aa sheet presents it and
 /// Settings pushes it (`AppearanceSettingsPage`). Everything persists at
 /// once; `ReaderTextView` rebuilds its attributed string when the size
@@ -32,8 +33,14 @@ struct AppearanceView: View {
     @AppStorage(AppearancePreference.prefKey)
     private var appearanceRaw = AppearancePreference.system.rawValue
 
-    /// The sample stops growing here so 35/40pt steps still fit the row.
-    private static let sampleMaxPoints: CGFloat = 32
+    /// The stepper's glyphs, about 15 and 24 pt, growing with Dynamic Type
+    /// up to the caps that keep them inside their 44 pt halves.
+    @ScaledMetric(relativeTo: .body) private var smallerGlyph: CGFloat = 15
+    @ScaledMetric(relativeTo: .body) private var largerGlyph: CGFloat = 24
+    private static let smallerGlyphMax: CGFloat = 20
+    private static let largerGlyphMax: CGFloat = 32
+    /// The readout's caption line, scaled with it (its hit region's overhang).
+    @ScaledMetric(relativeTo: .caption) private var readoutLine: CGFloat = 16
 
     var body: some View {
         ScrollView {
@@ -48,8 +55,8 @@ struct AppearanceView: View {
     private var sections: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xl) {
             VStack(alignment: .leading, spacing: Theme.Space.sm) {
-                // Sentence case, like every other label (R25).
-                sectionLabel(AppearanceCopy.textSize)
+                // Sentence case in source, like every other label (R25).
+                textSizeHeader
                 textSizeRow
             }
 
@@ -87,30 +94,20 @@ struct AppearanceView: View {
         textSizeStep = target
     }
 
-    /// A− / sample / A+: one step per tap, each end disabled at its limit.
-    /// The sample previews the reading serif at the chosen size. VoiceOver
-    /// hears the sample and readout as one adjustable size, so a swipe up
-    /// or down steps it without hunting for the buttons.
-    private var textSizeRow: some View {
-        HStack(spacing: 0) {
-            stepButton(bigger: false, systemImage: "textformat.size.smaller",
-                       label: "Smaller text", identifier: "appearance.textSize.smaller")
-
-            VStack(spacing: Theme.Space.xxs) {
-                // In the column's own weight: its bold face under Bold Text
-                // (`ReaderPageStyle.serif(size:bold:)`), J027.
-                Text("Aa")
-                    .font(Theme.readerSerif(min(currentPoints, Self.sampleMaxPoints),
-                                            weight: legibilityWeight == .bold ? .bold : .regular))
-                    .foregroundStyle(Theme.text)
-                    .frame(height: 40)
-                    .accessibilityHidden(true)
-                Text(AppearanceCopy.points(currentPoints))
-                    .font(Theme.font(.caption))
-                    .foregroundStyle(Theme.textMuted)
-                    .numericReadout(Double(currentPoints))
-            }
-            .frame(maxWidth: .infinity)
+    /// The size in points on the eyebrow's baseline, trailing. VoiceOver
+    /// hears it as the one adjustable size, so a swipe up or down steps it
+    /// without hunting for the buttons. Its 44 pt hit region overhangs the
+    /// row by the difference from its caption line, so the row stays the
+    /// eyebrow's height.
+    private var textSizeReadout: some View {
+        Text(AppearanceCopy.points(currentPoints))
+            .font(Theme.font(.caption))
+            .foregroundStyle(Theme.textMuted)
+            .numericReadout(Double(currentPoints))
+            .lineLimit(1)
+            .fixedSize()
+            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+            .padding(.vertical, -max(0, (44 - readoutLine) / 2))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(AppearanceCopy.textSize)
             .accessibilityValue(AppearanceCopy.spokenPoints(currentPoints))
@@ -122,33 +119,65 @@ struct AppearanceView: View {
                 }
             }
             .accessibilityIdentifier("appearance.textSize.value")
-
-            stepButton(bigger: true, systemImage: "textformat.size.larger",
-                       label: "Larger text", identifier: "appearance.textSize.larger")
-        }
-        .padding(Theme.Space.xs)
-        .background(Theme.surface2,
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
-                .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
     }
 
-    private func stepButton(bigger: Bool, systemImage: String, label: String,
+    /// The eyebrow on the gutter and the readout trailing, on one baseline;
+    /// stacked where the two can't share a line (AX5).
+    private var textSizeHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+                sectionLabel(AppearanceCopy.textSize)
+                textSizeReadout
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                sectionLabel(AppearanceCopy.textSize)
+                textSizeReadout
+            }
+        }
+    }
+
+    /// A two-button stepper, one step per tap, each end disabled at its
+    /// limit: a capsule on surface2 with a border and xxs padding, as the
+    /// Appearance row below it, split by a hairline into two equal halves.
+    /// Each half is a serif A, small and large, in the column's own weight
+    /// (its bold face under Bold Text, J027).
+    private var textSizeRow: some View {
+        HStack(spacing: 0) {
+            stepButton(bigger: false, glyphSize: min(smallerGlyph, Self.smallerGlyphMax),
+                       systemImage: "textformat.size.smaller",
+                       label: "Smaller text", identifier: "appearance.textSize.smaller")
+            stepButton(bigger: true, glyphSize: min(largerGlyph, Self.largerGlyphMax),
+                       systemImage: "textformat.size.larger",
+                       label: "Larger text", identifier: "appearance.textSize.larger")
+        }
+        // The halves are equal, so the split sits in the middle.
+        .overlay {
+            Rectangle()
+                .fill(Theme.Stroke.borderColor)
+                .frame(width: Theme.Stroke.borderWidth)
+                .padding(.vertical, Theme.Space.sm)
+                .accessibilityHidden(true)
+        }
+        .padding(Theme.Space.xxs)
+        .background(Theme.surface2, in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+    }
+
+    private func stepButton(bigger: Bool, glyphSize: CGFloat, systemImage: String, label: String,
                             identifier: String) -> some View {
         let enabled = ReaderTextSize.stepped(from: currentStep, bigger: bigger) != nil
         return Button {
             step(bigger: bigger)
         } label: {
-            Image(systemName: systemImage)
-                .font(.title3.weight(.semibold))
+            Text(verbatim: "A")
+                .font(Theme.readerSerif(glyphSize, weight: legibilityWeight == .bold ? .bold : .regular))
                 .foregroundStyle(enabled ? Theme.text : Theme.textFaint)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        // The glyph sits in a fixed 44pt button; a long press past the cap
-        // shows it large.
+        .buttonStyle(StepperHalfButtonStyle())
+        // The glyphs stop growing at their caps; a long press past them
+        // shows the half large.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .largeContentViewerIfAvailable {
             Label(label, systemImage: systemImage)
@@ -266,9 +295,21 @@ struct AppearanceView: View {
         Text(title)
             .font(Theme.font(.eyebrow))
             .eyebrowTracking()
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(title))
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// A text-size half pressed: Theme.surface in a capsule, at the press
+/// beat, never a scale.
+private struct StepperHalfButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Theme.surface : Color.clear, in: Capsule())
+            .animation(.easeOut(duration: Theme.Motion.press), value: configuration.isPressed)
     }
 }
 

@@ -4,10 +4,16 @@ import SwiftUI
 ///
 /// It opens at 60% of the screen, so the page and its highlighted
 /// sentence stay in view above it while voices are auditioned, as the Mac's
-/// capped popover leaves the page in view (P034). The list scrolls inside,
-/// opened at the selected voice, and a drag up takes the sheet to the full
-/// list. A fixed fraction, never the content's height, so the first frame
-/// is the last: nothing snaps as the content is measured.
+/// capped popover leaves the page in view (P034). A fixed fraction, never
+/// the content's height, so the first frame is the last: nothing snaps as
+/// the content is measured.
+///
+/// Below the accessibility sizes the speed controls stay pinned under the
+/// title and only the voice list scrolls, opened at the selected voice, so
+/// speed and voice are in view together (`ListeningView(pinsSpeed:)`); at
+/// those sizes the whole view scrolls as one. A swipe on the list scrolls
+/// it at either height (`presentationContentInteraction(.scrolls)`); a
+/// drag on the grabber or the title resizes the sheet.
 ///
 /// Two detents, so `sheetChrome` keeps the system drag indicator (the
 /// control VoiceOver resizes the sheet with) and the SheetGrabber steps
@@ -62,7 +68,7 @@ struct ListeningSheet: View {
             }
             .padding(.bottom, Theme.Space.xs)
 
-            ListeningView()
+            ListeningView(pinsSpeed: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // A size, never a window position: the sheet is hosted apart from
@@ -88,5 +94,7 @@ struct ListeningSheet: View {
         }
         .onDisappear { coveredHeight = nil }
         .sheetChrome(Self.detents, selection: $detent)
+        // This sheet only: its list scrolls rather than growing the sheet.
+        .presentationContentInteraction(.scrolls)
     }
 }

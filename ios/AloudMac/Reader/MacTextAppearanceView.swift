@@ -39,6 +39,8 @@ struct MacTextAppearanceView: View {
             Text(title)
                 .font(Theme.font(.eyebrow))
                 .eyebrowTracking()
+                .textCase(.uppercase)
+                .accessibilityLabel(Text(title))
                 .foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
             content()

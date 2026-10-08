@@ -98,7 +98,7 @@ final class PlaceHistoryRowsTests: XCTestCase {
             .map { row in
                 PlaceRow(index: row.index, sentence: row.sentence,
                          when: row.when.replacingOccurrences(of: "\u{202F}", with: " "),
-                         location: row.location, text: row.text, isCurrent: row.isCurrent)
+                         location: row.location, text: row.text, snippet: row.snippet, isCurrent: row.isCurrent)
             }
     }
 
@@ -169,5 +169,65 @@ final class PlaceHistoryRowsTests: XCTestCase {
         XCTAssertEqual(built.map(\.sentence), [5, 1])
         XCTAssertEqual(built.map(\.index), [0, 1])
         XCTAssertEqual(built.map(\.identifier), ["places.row.0", "places.row.1"])
+    }
+
+    // MARK: - Snippet (R1-24)
+
+    /// Two chapters; CHAPTER I's prose is three paragraphs: a short line of
+    /// dialogue and the narration after it, a one-sentence paragraph, then
+    /// a paragraph that opens inside a quotation. Straight quotes, as the
+    /// sentences store them.
+    private static func snippetContent() -> DocContent {
+        let lines: [(text: String, para: Int)] = [
+            ("CHAPTER I", 0),
+            ("\"Come in.\"", 1),
+            ("She stood at the door a long while, listening to the rain on the roof of the shed.", 1),
+            ("Nobody answered her.", 1),
+            ("He waited.", 2),
+            ("I shall go,\" he said.", 3),
+            ("And he went.", 3),
+            ("CHAPTER II", 4),
+            ("The morning came.", 5),
+        ]
+        let sentences = lines.enumerated().map { index, line in
+            Sentence(id: index, text: line.text, para: line.para, page: 0)
+        }
+        let paragraphs = (0...5).map { para in
+            let ids = sentences.filter { $0.para == para }.map(\.id)
+            return Paragraph(id: para, sentenceIDs: ids[0]..<(ids[ids.count - 1] + 1), page: 0)
+        }
+        return DocContent(title: "Snippets", pageCount: 1, sentences: sentences,
+                          paragraphs: paragraphs, contentHash: "places-snippet")
+    }
+
+    func testAShortSentenceGainsTheNextFromItsParagraph() throws {
+        let content = Self.snippetContent()
+        let row = try XCTUnwrap(rows([entry(1, now)], content: content, kind: .text, playhead: 0).first)
+        XCTAssertEqual(row.text, "\u{201C}Come in.\u{201D}", "the sentence itself, typeset, unchanged")
+        XCTAssertEqual(row.snippet,
+                       "\u{201C}Come in.\u{201D} She stood at the door a long while, listening to the rain "
+                       + "on the roof of the shed. Nobody answered her.",
+                       "the sentences after it in its paragraph, to about 160 characters")
+        XCTAssertTrue(row.accessibilityLabel.hasSuffix("\u{201C}Come in.\u{201D}"),
+                      "VoiceOver keeps reading the sentence alone: \(row.accessibilityLabel)")
+    }
+
+    func testTheSnippetNeverCrossesTheParagraphOrTheChapter() throws {
+        let content = Self.snippetContent()
+        let built = rows([entry(3, now), entry(4, now), entry(6, now)], content: content, kind: .text, playhead: 0)
+        XCTAssertEqual(built.map(\.snippet), ["Nobody answered her.", "He waited.", "And he went."],
+                       "a paragraph's last sentence gains nothing from the next paragraph or chapter")
+        XCTAssertEqual(built.map(\.text), built.map(\.snippet))
+    }
+
+    func testAStopInsideAQuotationStartsWithAnEllipsis() throws {
+        let content = Self.snippetContent()
+        let row = try XCTUnwrap(rows([entry(5, now)], content: content, kind: .text, playhead: 0).first)
+        XCTAssertEqual(row.text, "I shall go,\u{201D} he said.", "text stays the exact typeset sentence")
+        XCTAssertEqual(row.snippet, "\u{2026}I shall go,\u{201D} he said. And he went.",
+                       "an unmatched closing quote: an ellipsis, never an invented opening quote")
+        XCTAssertFalse(row.snippet.contains("\u{201C}"))
+        XCTAssertFalse(PlaceHistoryRows.opensInsideQuote("\u{201C}Come in.\u{201D}"))
+        XCTAssertFalse(PlaceHistoryRows.opensInsideQuote("Nobody answered her."))
     }
 }

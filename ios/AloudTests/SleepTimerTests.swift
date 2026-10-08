@@ -705,6 +705,65 @@ final class SleepTimerTests: XCTestCase {
         }
     }
 
+    // MARK: - How long End of chapter is (R1-27)
+
+    /// The menu's End of chapter says how long that is: exactly the chapter
+    /// line's time left, at 1x and at 2x, which both measure to where End
+    /// of chapter stops. Nothing loaded, nothing to say.
+    func testUntilStopMinutesIsTheChaptersTimeLeft() async {
+        let count = 12
+        let rig = PlaybackTestRig(sentences: count)
+        let timer = SleepTimer(timing: Self.fast, defaults: PlaybackTestRig.freshDefaults())
+        timer.attach(to: rig.controller)
+        await settle()
+        XCTAssertNil(timer.untilStopMinutes, "no book, no time")
+
+        let hash = "until-stop-chaptered"
+        let pages = Array(repeating: 0, count: 6) + Array(repeating: 1, count: 6)
+        let content = PlaybackTestRig.makeContent(hash: hash, count: count, wordsPerSentence: 400, pages: pages)
+        rig.controller.load(document: PlaybackTestRig.makeDocument(hash: hash, sentences: count, progressSentence: 1),
+                            content: content)
+        await settle()
+        _ = await rig.waitUntil(2) { timer.endsAtChapter && timer.untilStopMinutes != nil }
+        XCTAssertTrue(timer.endsAtChapter)
+        let navigation = ReaderNavigation(content: content, kind: .text)
+        func chapterLine(_ rate: Double) -> Int? {
+            navigation.positionLine(at: rig.controller.currentSentence, rate: rate, documentTitle: "Book").minutesLeft
+        }
+        XCTAssertEqual(timer.untilStopMinutes, chapterLine(1))
+
+        rig.controller.rate = 2
+        await settle()
+        XCTAssertEqual(timer.untilStopMinutes, chapterLine(2))
+        XCTAssertNotEqual(chapterLine(1), chapterLine(2), "the speed changes the time")
+        XCTAssertLessThan(timer.untilStopMinutes ?? .max,
+                          ListeningEstimate.minutes(words: 400 * count, wordsPerMinute: LibraryDocument.spokenWordsPerMinute * 2),
+                          "the chapter's rest, not the book's")
+    }
+
+    /// In a book without chapters End of chapter is End of book, so its
+    /// time is the book's remaining time (The Cask of Amontillado's case).
+    func testWithoutChaptersTheTimeIsTheBooksRemainingTime() async {
+        let count = 12
+        let rig = PlaybackTestRig(sentences: count)
+        let timer = SleepTimer(timing: Self.fast, defaults: PlaybackTestRig.freshDefaults())
+        timer.attach(to: rig.controller)
+        let hash = "until-stop-chapterless"
+        let content = PlaybackTestRig.makeContent(hash: hash, count: count, wordsPerSentence: 400)
+        rig.controller.load(document: PlaybackTestRig.makeDocument(hash: hash, sentences: count, progressSentence: 3),
+                            content: content)
+        await settle()
+        _ = await rig.waitUntil(2) { timer.untilStopMinutes != nil }
+        XCTAssertFalse(timer.endsAtChapter)
+        let navigation = ReaderNavigation(content: content, kind: .text)
+        let remaining = navigation.positionLine(at: rig.controller.currentSentence, rate: 1,
+                                                documentTitle: "Book").minutesLeft
+        XCTAssertEqual(timer.untilStopMinutes, remaining)
+        XCTAssertEqual(timer.untilStopMinutes,
+                       ListeningEstimate.minutes(words: navigation.wordsRemaining(from: rig.controller.currentSentence,
+                                                                                  through: count - 1)))
+    }
+
     // MARK: - Harness
 
     /// A text book of `sentences` (chapters by `pages`) loaded paused at

@@ -111,9 +111,11 @@ struct LicensesView: View {
             .font(Theme.font(.body).weight(.semibold))
             .foregroundStyle(Theme.text)
             .accessibilityAddTraits(.isHeader)
+        // Muted, as the Mac's credits are: accent text is a tap target, and
+        // a license name isn't one.
         let license = Text(entry.license)
-            .font(Theme.font(.caption))
-            .foregroundStyle(Theme.accentStrong)
+            .font(Theme.font(.caption).weight(.medium))
+            .foregroundStyle(Theme.textMuted)
         if dynamicTypeSize.isAccessibilitySize {
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                 name

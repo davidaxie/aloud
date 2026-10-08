@@ -153,4 +153,26 @@ final class AppLintTests: XCTestCase {
             pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
         }.map(\.key).sorted()
     }
+
+    /// R1-26: section eyebrows are capitals everywhere, as on Classics and
+    /// the Continue card: every eyebrow font is followed by
+    /// `.textCase(.uppercase)` (its words kept as written for VoiceOver and
+    /// Voice Control). The cover's author keeps its small caps, and the
+    /// theme defines the token.
+    func testEveryEyebrowIsCapitals() throws {
+        let sources = try SourceTree.appSources()
+        let exempt = ["Library/BookCover.swift", "Theme/AloudTheme.swift"]
+        var checked = 0
+        for (path, text) in sources where !exempt.contains(path) {
+            var from = text.startIndex
+            while let hit = text.range(of: "Theme.font(.eyebrow", range: from..<text.endIndex) {
+                checked += 1
+                let following = text[hit.lowerBound...].prefix(250)
+                XCTAssertTrue(following.contains(".textCase(.uppercase)"),
+                              "\(path): an eyebrow without capitals: \(String(following))")
+                from = hit.upperBound
+            }
+        }
+        XCTAssertGreaterThanOrEqual(checked, 8, "the lint reads the eyebrows")
+    }
 }

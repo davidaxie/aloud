@@ -102,6 +102,12 @@ final class SleepTimer: ObservableObject {
     /// The loaded book is text with a chapter list, so End of chapter ends a
     /// chapter rather than the book.
     @Published private(set) var endsAtChapter = false
+    /// Whole minutes from the playhead to where End of chapter stops
+    /// (`chapterBoundary`) at the current rate: the chapter's rest, or the
+    /// book's where End of chapter ends the book. Nil with no book, or
+    /// before its chapters are read. Set only when the minute changes, so
+    /// the menu redraws about once a minute and the player bar never.
+    @Published private(set) var untilStopMinutes: Int?
 
     var isArmed: Bool { option != .off }
 
@@ -169,7 +175,17 @@ final class SleepTimer: ObservableObject {
 
         playback.$currentSentence
             .receive(on: RunLoop.main)
-            .sink { [weak self] sentence in self?.sentenceChanged(sentence) }
+            .sink { [weak self] sentence in
+                self?.sentenceChanged(sentence)
+                self?.refreshUntilStop()
+            }
+            .store(in: &cancellables)
+
+        // The time to the stop follows the speed.
+        playback.$rate
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshUntilStop() }
             .store(in: &cancellables)
 
         // R24: the controller's own word that the book played to its end.
@@ -290,6 +306,7 @@ final class SleepTimer: ObservableObject {
             documentID = nil
             chapter = nil
             dropFade()
+            refreshUntilStop()
             return
         }
         let isNewLoad = document.id != documentID
@@ -463,6 +480,23 @@ final class SleepTimer: ObservableObject {
         guard playback?.content?.contentHash == hash, navigation?.hash != hash else { return }
         navigation = (hash, built)
         endsAtChapter = built.isChaptered
+        refreshUntilStop()
+    }
+
+    /// `untilStopMinutes` from the navigation already built, never building
+    /// one here: this runs on every sentence.
+    private func refreshUntilStop() {
+        var minutes: Int?
+        if let playback, let content = playback.content, !content.sentences.isEmpty,
+           let navigation, navigation.hash == content.contentHash {
+            let sentence = max(playback.currentSentence, 0)
+            let boundary = Self.chapterBoundary(navigation: navigation.value,
+                                                sentenceCount: content.sentences.count, at: sentence)
+            minutes = ListeningEstimate.minutes(
+                words: navigation.value.wordsRemaining(from: sentence, through: boundary),
+                wordsPerMinute: LibraryDocument.spokenWordsPerMinute * playback.rate)
+        }
+        if minutes != untilStopMinutes { untilStopMinutes = minutes }
     }
 
     // MARK: - Volume

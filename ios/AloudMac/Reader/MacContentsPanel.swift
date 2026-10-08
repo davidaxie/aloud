@@ -29,7 +29,9 @@ import SwiftUI
 /// the sentence, the one at the playhead semibold with the bar. A click is
 /// the chapter row's jump. The keyboard walks places, the toggle and the
 /// chapters as one list (`MacContents.ListLayout`), entering on the newest
-/// place; with places the list opens at the top.
+/// place. The list opens on the current chapter unless the newest stop is
+/// in another chapter, when it opens at the top so the stop shows
+/// (`PlaceHistory.opensOnCurrentChapter`).
 ///
 /// Chapters and labels are the reader's, derived once per document, as on
 /// the iPhone: deriving them here would rescan the book on every playhead
@@ -232,9 +234,16 @@ struct MacContentsPanel: View {
                 }
                 .padding(.vertical, Theme.Space.xs)
             }
-            // With places the list opens at the top, on the newest one;
-            // without, the flat ids are the chapter indices.
-            .onAppear { if rows.isEmpty { scrollToCurrent(proxy, current: current) } }
+            // On the current chapter when the newest stop is in it (or there
+            // are none); at the top, on the newest stop, when that stop is in
+            // another chapter. Chapters follow the places in the flat ids.
+            .onAppear {
+                if PlaceHistory.opensOnCurrentChapter(newestStop: rows.first?.sentence,
+                                                      playhead: playback.currentSentence,
+                                                      navigation: navigation) {
+                    scrollToCurrent(proxy, current: current.map { $0 + offset })
+                }
+            }
             .onChange(of: cursor) { _, row in
                 guard let row else { return }
                 // A place is keyed by its sentence (`PlaceKey`); the rest
@@ -262,6 +271,8 @@ struct MacContentsPanel: View {
         Text(title)
             .font(Theme.font(.eyebrow, scale: scale))
             .eyebrowTracking()
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(title))
             .foregroundStyle(Theme.textMuted)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -382,6 +393,8 @@ struct MacContentsPanel: View {
         Text(title)
             .font(Theme.font(.eyebrow, scale: scale))
             .eyebrowTracking()
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(title))
             .foregroundStyle(Theme.textMuted)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1013,9 +1026,19 @@ struct MacContentsSearchField: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
+    /// "Search this book" in textFaint at the field's size.
+    static func placeholder(fontSize: CGFloat) -> NSAttributedString {
+        NSAttributedString(string: MacContents.searchPrompt,
+                           attributes: [.foregroundColor: NSColor(Theme.textFaint),
+                                        .font: NSFont.systemFont(ofSize: fontSize)])
+    }
+
     func makeNSView(context: Context) -> MacContentsSearchFieldView {
         let field = MacContentsSearchFieldView()
         field.placeholderString = MacContents.searchPrompt
+        // textFaint, as the iPhone's field: 4.5:1 on its ground in both
+        // appearances, where the system placeholder grey is not.
+        field.placeholderAttributedString = Self.placeholder(fontSize: fontSize)
         field.setAccessibilityIdentifier("search.field")
         field.controlSize = .large
         field.font = .systemFont(ofSize: fontSize)
@@ -1032,7 +1055,10 @@ struct MacContentsSearchField: NSViewRepresentable {
     func updateNSView(_ field: MacContentsSearchFieldView, context: Context) {
         context.coordinator.parent = self
         if field.stringValue != text { field.stringValue = text }
-        if field.font?.pointSize != fontSize { field.font = .systemFont(ofSize: fontSize) }
+        if field.font?.pointSize != fontSize {
+            field.font = .systemFont(ofSize: fontSize)
+            field.placeholderAttributedString = Self.placeholder(fontSize: fontSize)
+        }
         guard context.coordinator.focusRequest != focusRequest else { return }
         context.coordinator.focusRequest = focusRequest
         // Not inside SwiftUI's update: the focus change reaches its state.

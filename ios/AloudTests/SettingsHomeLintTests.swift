@@ -195,4 +195,41 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertEqual(SourceTree.files(containing: "localizedDescription", in: sources), [],
                        "Failures read from the fixed copy table, never an error's own text")
     }
+
+    // MARK: - Critique round 1
+
+    /// R1-31: a license name is muted, never the link colour (accent text
+    /// is a tap target); each card's name stays its one heading.
+    func testLicenseNamesAreNotDrawnInTheLinkColour() throws {
+        let path = "Settings/LicensesView.swift"
+        let s = try SourceTree.sources(only: [path])
+        let licenses = try XCTUnwrap(s[path])
+        let start = try XCTUnwrap(licenses.range(of: "let license = Text(entry.license)"))
+        let license = licenses[start.upperBound...].prefix(160)
+        XCTAssertTrue(license.contains(".foregroundStyle(Theme.textMuted)"), String(license))
+        XCTAssertFalse(licenses.contains("Theme.accent"), "no accent-coloured text on Licenses")
+        XCTAssertFalse(licenses.contains("NavigationLink"), "a card is no link")
+        XCTAssertEqual(licenses.components(separatedBy: ".accessibilityAddTraits(.isHeader)").count - 1, 3,
+                       "the title, each card's name and the Classics card: one heading each")
+    }
+
+    /// R1-28: the Aa sheet's text size is a two-button stepper: a capsule
+    /// split in two equal 44 pt halves, the size readout beside the
+    /// eyebrow, still one adjustable element.
+    func testTheTextSizeControlIsATwoButtonStepper() throws {
+        let path = "Reader/AppearanceSheet.swift"
+        let s = try SourceTree.sources(only: [path])
+        let sheet = try XCTUnwrap(s[path])
+        for needle in ["Text(verbatim: \"A\")", ".frame(maxWidth: .infinity, minHeight: 44)",
+                       ".background(Theme.surface2, in: Capsule())", "ViewThatFits(in: .horizontal)",
+                       "HStack(alignment: .firstTextBaseline", ".buttonStyle(StepperHalfButtonStyle())",
+                       "configuration.isPressed ? Theme.surface : Color.clear",
+                       ".accessibilityIdentifier(\"appearance.textSize.value\")",
+                       ".accessibilityIdentifier(\"appearance.textSize.smaller\")",
+                       ".accessibilityIdentifier(\"appearance.textSize.larger\")"] {
+            XCTAssertTrue(sheet.contains(needle), "the stepper lacks \(needle)")
+        }
+        XCTAssertFalse(sheet.contains("Text(\"Aa\")"), "the separate sample is gone")
+        XCTAssertFalse(sheet.contains("scaleEffect"), "the halves never scale on press")
+    }
 }

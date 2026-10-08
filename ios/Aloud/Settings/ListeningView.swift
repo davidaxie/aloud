@@ -39,15 +39,24 @@ enum ListeningCopy {
 }
 
 /// R8: speed and voice in one place. The speed numeral, five presets and a
-/// 0.5–3× slider with a 1× detent; the eleven natural voices (eight stock,
-/// three Aloud blends) plus System; Read
+/// 0.5–3× slider with a 1× detent (`ListeningSpeedControls`); the eleven
+/// natural voices (eight stock, three Aloud blends) plus System; Read
 /// bracketed asides; and the natural-voice card (or its one unsupported
-/// line). Every pick is app-wide (R7) and heard where it is made: a voice tap
-/// re-speaks the current sentence, or a sample line with no book, through the
-/// playback graph — there is no second audio path. The System row names the
-/// voice it resolves to (M10, P035). Where better System voices come from
-/// is a link to System Settings on the Mac and, below a premium voice, a
-/// plain line on the iPhone, which has no link to that pane.
+/// line) (`ListeningVoiceList`). Every pick is app-wide (R7) and heard where
+/// it is made: a voice tap re-speaks the current sentence, or a sample line
+/// with no book, through the playback graph — there is no second audio
+/// path. The System row names the voice it resolves to (M10, P035). Where
+/// better System voices come from is a link to System Settings on the Mac
+/// and, below a premium voice, a plain line on the iPhone, which has no
+/// link to that pane.
+///
+/// With `pinsSpeed` the speed controls stay put above a hairline and only
+/// the voice list scrolls, so the speed is in view whichever voice is
+/// picked; at the accessibility sizes everything scrolls as one, because
+/// the two-column presets and the scaled numeral would leave the list no
+/// room. This view is the one container either way: it resolves the System
+/// voice and, as it goes, keeps the speed heard and releases the natural
+/// voice, once.
 ///
 /// The reader presents it in `ListeningSheet`; Settings pushes it as
 /// `ListeningSettingsPage`.
@@ -58,23 +67,29 @@ struct ListeningView: View {
     /// ground beneath it would leave its label under AA (the Settings
     /// page's bgTint). Nil: the tint sits on whatever is behind.
     private let selectedChipUnderlay: Color?
-    /// The content's natural height, for a content-sized container (the
-    /// Mac's popover and Settings tab; the iPhone's sheet opens at a fixed
-    /// fraction and passes none).
+    /// The speed controls pinned above the scrolling voice list (below the
+    /// accessibility sizes).
+    private let pinsSpeed: Bool
+    /// The scrolling list's natural height, for a content-sized container
+    /// (the Mac's popover and Settings tab; the iPhone's sheet opens at a
+    /// fixed fraction and passes none). Pinned, the speed block isn't in it.
     private let onContentHeight: ((CGFloat) -> Void)?
+    /// The pinned speed block's height, with its hairline: what a
+    /// content-sized container sets above the list.
+    private let onPinnedHeight: ((CGFloat) -> Void)?
 
-    init(showsInstalledModel: Bool = false, selectedChipUnderlay: Color? = nil,
-         onContentHeight: ((CGFloat) -> Void)? = nil) {
+    init(showsInstalledModel: Bool = false, selectedChipUnderlay: Color? = nil, pinsSpeed: Bool = false,
+         onContentHeight: ((CGFloat) -> Void)? = nil, onPinnedHeight: ((CGFloat) -> Void)? = nil) {
         self.showsInstalledModel = showsInstalledModel
         self.selectedChipUnderlay = selectedChipUnderlay
+        self.pinsSpeed = pinsSpeed
         self.onContentHeight = onContentHeight
+        self.onPinnedHeight = onPinnedHeight
     }
 
     @EnvironmentObject private var playback: PlaybackController
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var modelManager: ModelManager
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.openURL) private var openURL
 
     /// The System row's resolved voice, its name with its tier: read on
     /// appear and whenever System Settings adds or removes a voice, never
@@ -84,24 +99,58 @@ struct ListeningView: View {
     /// where better voices come from.
     @State private var systemVoiceQuality: AVSpeechSynthesisVoiceQuality?
 
-    /// Fixed-width origin column, so names and subtitles line up row to row.
-    @ScaledMetric(relativeTo: .caption) private var originColumnWidth: CGFloat = 80
+    /// Whether the speed stays pinned: asked for, and below the
+    /// accessibility sizes.
+    nonisolated static func pinsSpeed(_ requested: Bool, dynamicTypeSize: DynamicTypeSize) -> Bool {
+        requested && !dynamicTypeSize.isAccessibilitySize
+    }
 
     var body: some View {
+        layout
+            // Before the first frame, so the row never flashes its old subtitle.
+            .onAppear { resolveSystemVoiceName() }
+            .onReceive(NotificationCenter.default.publisher(for: AVSpeechEngine.installedVoicesDidChange)
+                .receive(on: RunLoop.main)) { _ in
+                resolveSystemVoiceName()
+            }
+            .onDisappear {
+                // A drag the sheet closed under never reached onEditingChanged;
+                // what was heard is what gets kept.
+                if playback.rate != model.globalRate { playback.selectRate(playback.rate) }
+                playback.releaseNeuralEngineIfUnused()
+            }
+    }
+
+    @ViewBuilder
+    private var layout: some View {
+        if Self.pinsSpeed(pinsSpeed, dynamicTypeSize: dynamicTypeSize) {
+            VStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay)
+                    ListeningHairline()
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    onPinnedHeight?(height)
+                }
+                list(withSpeed: false)
+            }
+        } else {
+            list(withSpeed: true)
+        }
+    }
+
+    /// The scrolling part, opened at the selected voice.
+    private func list(withSpeed: Bool) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    speedSection
-                    hairline()
-                    voiceSection
-                    hairline()
-                    PreferenceToggleRow(title: ListeningCopy.readAsidesTitle,
-                                        subtitle: ListeningCopy.readAsidesSubtitle,
-                                        isOn: readAsides)
-                        .padding(.horizontal, Theme.Space.sheetGutter)
-                        .padding(.vertical, Theme.Space.sm)
-                        .accessibilityIdentifier("listening.readAsides")
-                    footer
+                    if withSpeed {
+                        ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay)
+                        ListeningHairline()
+                    }
+                    ListeningVoiceList(showsInstalledModel: showsInstalledModel,
+                                       systemVoiceName: systemVoiceName,
+                                       systemVoiceQuality: systemVoiceQuality)
                 }
                 .padding(.bottom, Theme.Space.xl)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
@@ -112,28 +161,86 @@ struct ListeningView: View {
             .task {
                 // After the first layout, or there is nothing to scroll to.
                 // A nil anchor scrolls only as far as needed, so a voice
-                // already on screen leaves the speed controls in view.
+                // already on screen leaves what is above it in view.
                 await Task.yield()
                 proxy.scrollTo(playback.voice.id)
             }
         }
-        // Before the first frame, so the row never flashes its old subtitle.
-        .onAppear { resolveSystemVoiceName() }
-        .onReceive(NotificationCenter.default.publisher(for: AVSpeechEngine.installedVoicesDidChange)
-            .receive(on: RunLoop.main)) { _ in
-            resolveSystemVoiceName()
-        }
-        .onDisappear {
-            // A drag the sheet closed under never reached onEditingChanged;
-            // what was heard is what gets kept.
-            if playback.rate != model.globalRate { playback.selectRate(playback.rate) }
-            playback.releaseNeuralEngineIfUnused()
-        }
     }
 
-    // MARK: - Speed
+    /// The System row's subtitle names its voice where the platform does,
+    /// once resolved; until then, and with no voice to name, it keeps
+    /// `DeviceCopy.systemVoiceFallback`.
+    private func resolveSystemVoiceName() {
+        guard PlatformVoiceSetup.namesResolvedSystemVoice else { return }
+        let language = playback.systemVoiceLanguage
+        let name = AVSpeechEngine.resolvedVoiceDisplayName(reading: language)
+        if name != systemVoiceName { systemVoiceName = name }
+        let quality = AVSpeechEngine.resolvedVoiceQuality(reading: language)
+        if quality != systemVoiceQuality { systemVoiceQuality = quality }
+    }
 
-    private var speedSection: some View {
+    // MARK: - Rules
+
+    /// The hint shows where the platform has one and the System voice in
+    /// use is below premium, or none is installed to name.
+    nonisolated static func showsSystemVoicesHint(_ hint: String?,
+                                                  quality: AVSpeechSynthesisVoiceQuality?) -> Bool {
+        guard hint != nil else { return false }
+        guard let quality else { return true }
+        return quality.rawValue < AVSpeechSynthesisVoiceQuality.premium.rawValue
+    }
+
+    /// What a row says when its voice isn't what it names: a blend while
+    /// the blends couldn't load speaks as its fallback speaker (F073), and
+    /// the System voice in use while a natural voice is the stored pick
+    /// (`preferred`) only stands in for it (F095). Nil otherwise.
+    nonisolated static func standInNote(for voice: TtsVoice, blendsAvailable: Bool?,
+                                        standingInFor preferred: TtsVoice?) -> String? {
+        if blendsAvailable == false, let blend = KokoroVoiceBlends.blend(forVoiceID: voice.id) {
+            let speakerID = KokoroVoiceCatalog.voiceIDPrefix + blend.fallbackSpeaker
+            let speaker = KokoroVoiceCatalog.curatedVoices.first { $0.id == speakerID }?.name
+                ?? KokoroVoiceCatalog.defaultVoice.name
+            return ListeningCopy.blendStandIn(speaker: speaker)
+        }
+        if voice.engine != .kokoro, let preferred, preferred.engine == .kokoro {
+            return ListeningCopy.systemStandIn(for: preferred.name)
+        }
+        return nil
+    }
+
+    /// "en-US" + "male" → "US · male" for the natural voices; the System
+    /// voice has no origin to show.
+    static func origin(for voice: TtsVoice) -> String {
+        guard voice.engine == .kokoro else { return "" }
+        let region = voice.lang.split(separator: "-").last.map(String.init) ?? voice.lang
+        return voice.gender.isEmpty ? region : "\(region) · \(voice.gender)"
+    }
+
+    /// Starts with the visible name and subtitle, then the origin: the
+    /// System row says its resolved voice after its own name.
+    nonisolated static func accessibilityLabel(name: String, subtitle: String, origin: String) -> String {
+        // When the subtitle already is the origin, don't say it twice.
+        let spokenOrigin = subtitle == origin ? "" : origin.replacingOccurrences(of: " · ", with: ", ")
+        // A stand-in note's middle dot is read aloud as a word otherwise.
+        let spokenSubtitle = subtitle.replacingOccurrences(of: " · ", with: ", ")
+        return [name, spokenSubtitle, spokenOrigin].filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+}
+
+// MARK: - Speed
+
+/// The speed numeral, five presets and the 0.5–3× slider with its 1×
+/// detent: pinned above the voice list, or the list's first section at the
+/// accessibility sizes.
+struct ListeningSpeedControls: View {
+
+    let selectedChipUnderlay: Color?
+
+    @EnvironmentObject private var playback: PlaybackController
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
         VStack(spacing: Theme.Space.md) {
             Text(ListeningFormat.rate(playback.rate))
                 .font(Theme.font(.numeral))
@@ -175,7 +282,9 @@ struct ListeningView: View {
         }
         .padding(.horizontal, Theme.Space.sheetGutter)
         .padding(.top, Theme.Space.xs)
-        .padding(.bottom, Theme.Space.lg)
+        // A small gap to the hairline: pinned, every point here is one the
+        // voice list doesn't get.
+        .padding(.bottom, Theme.Space.sm)
     }
 
     /// One row of five, or two columns at accessibility sizes so "1.25×"
@@ -194,8 +303,8 @@ struct ListeningView: View {
         }
     }
 
-    /// Selected reads three ways: accentStrong semibold on accentSoft, and
-    /// the `.isSelected` trait.
+    /// Selected reads four ways: accentStrong semibold on accentSoft, its
+    /// edge (`Theme.Stroke.selected*`), and the `.isSelected` trait.
     private func presetButton(_ preset: Double) -> some View {
         let selected = SpeedScale.isSelected(preset, at: playback.rate)
         return Button {
@@ -212,7 +321,7 @@ struct ListeningView: View {
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 .background(selected ? selectedChipUnderlay ?? Color.clear : Color.clear,
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-                // Edged under Increase Contrast, so the selection isn't a faint tint alone.
+                // The selected edge, so the selection is never a tint alone.
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .strokeBorder(selected ? Theme.Stroke.selectedColor : Color.clear,
                                   lineWidth: Theme.Stroke.selectedWidth))
@@ -223,8 +332,43 @@ struct ListeningView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("listening.preset.\(ListeningFormat.identifierNumber(preset))")
     }
+}
 
-    // MARK: - Voices
+// MARK: - Voices
+
+/// The voices (the natural ones under their eyebrow, then System with its
+/// hint or link), Read bracketed asides, and the natural-voice card: the
+/// part of the view that scrolls.
+struct ListeningVoiceList: View {
+
+    let showsInstalledModel: Bool
+    let systemVoiceName: String?
+    let systemVoiceQuality: AVSpeechSynthesisVoiceQuality?
+
+    @EnvironmentObject private var playback: PlaybackController
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var modelManager: ModelManager
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openURL) private var openURL
+
+    /// A fixed-width, trailing-aligned origin column: subtitles wrap at one
+    /// width row to row, and the origin sits on the gutter, as the Classics
+    /// lengths do.
+    @ScaledMetric(relativeTo: .caption) private var originColumnWidth: CGFloat = 80
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            voiceSection
+            ListeningHairline()
+            PreferenceToggleRow(title: ListeningCopy.readAsidesTitle,
+                                subtitle: ListeningCopy.readAsidesSubtitle,
+                                isOn: readAsides)
+                .padding(.horizontal, Theme.Space.sheetGutter)
+                .padding(.vertical, Theme.Space.sm)
+                .accessibilityIdentifier("listening.readAsides")
+            footer
+        }
+    }
 
     @ViewBuilder
     private var voiceSection: some View {
@@ -232,13 +376,15 @@ struct ListeningView: View {
             Text(ListeningCopy.naturalVoicesHeader)
                 .font(Theme.font(.eyebrow))
                 .eyebrowTracking()
-                .foregroundStyle(Theme.textFaint)
+                .textCase(.uppercase)
+                .accessibilityLabel(Text(ListeningCopy.naturalVoicesHeader))
+                .foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
                 .padding(.horizontal, Theme.Space.sheetGutter)
                 .padding(.top, Theme.Space.lg)
                 .padding(.bottom, Theme.Space.xs)
             ForEach(model.kokoroEngine.voices) { voiceRow($0) }
-            hairline(inset: Theme.Space.sheetGutter)
+            ListeningHairline(inset: Theme.Space.sheetGutter)
         }
         // The single System row, always offered as the fallback.
         ForEach(model.engine.voices) { voiceRow($0) }
@@ -253,7 +399,7 @@ struct ListeningView: View {
     @ViewBuilder
     private var systemVoicesHint: some View {
         if let hint = DeviceCopy.systemVoicesHint,
-           Self.showsSystemVoicesHint(hint, quality: systemVoiceQuality) {
+           ListeningView.showsSystemVoicesHint(hint, quality: systemVoiceQuality) {
             Text(hint)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
@@ -264,15 +410,6 @@ struct ListeningView: View {
                 .padding(.bottom, Theme.Space.sm)
                 .accessibilityIdentifier("listening.systemVoicesHint")
         }
-    }
-
-    /// The hint shows where the platform has one and the System voice in
-    /// use is below premium, or none is installed to name.
-    nonisolated static func showsSystemVoicesHint(_ hint: String?,
-                                                  quality: AVSpeechSynthesisVoiceQuality?) -> Bool {
-        guard hint != nil else { return false }
-        guard let quality else { return true }
-        return quality.rawValue < AVSpeechSynthesisVoiceQuality.premium.rawValue
     }
 
     /// Mac only: opens Spoken Content, where premium System voices download
@@ -300,31 +437,20 @@ struct ListeningView: View {
         }
     }
 
-    /// The System row's subtitle names its voice where the platform does,
-    /// once resolved; until then, and with no voice to name, it keeps
-    /// `DeviceCopy.systemVoiceFallback`.
-    private func resolveSystemVoiceName() {
-        guard PlatformVoiceSetup.namesResolvedSystemVoice else { return }
-        let language = playback.systemVoiceLanguage
-        let name = AVSpeechEngine.resolvedVoiceDisplayName(reading: language)
-        if name != systemVoiceName { systemVoiceName = name }
-        let quality = AVSpeechEngine.resolvedVoiceQuality(reading: language)
-        if quality != systemVoiceQuality { systemVoiceQuality = quality }
-    }
-
     /// One whole-row button: a tap selects and speaks, and the sheet stays
-    /// open so voices can be compared. Selection is a 3pt bar, a semibold
-    /// name and `.isSelected`, never color alone.
+    /// open so voices can be compared. Selection is a 3pt accentStrong bar,
+    /// flush and full height as on Contents' rows, a semibold name and
+    /// `.isSelected`, never color alone.
     private func voiceRow(_ voice: TtsVoice) -> some View {
         let selected = voice.id == playback.voice.id
-        let origin = Self.origin(for: voice)
+        let origin = ListeningView.origin(for: voice)
         let resolvedName = voice.id == AVSpeechEngine.systemVoiceID ? systemVoiceName : nil
         // Read only for the System row in use: the stored pick it may be
         // standing in for (AppModel's engaged preference).
         let preferred = selected && voice.engine != .kokoro ? model.thermalGuard.preferredVoice() : nil
-        let note = Self.standInNote(for: voice,
-                                    blendsAvailable: model.kokoroEngine.blendsAvailable,
-                                    standingInFor: preferred)
+        let note = ListeningView.standInNote(for: voice,
+                                             blendsAvailable: model.kokoroEngine.blendsAvailable,
+                                             standingInFor: preferred)
         let subtitle = selected && playback.isPreparingVoice
             ? ListeningCopy.preparingVoice
             : ListeningCopy.subtitle(resolvedName ?? (voice.subtitle.isEmpty ? origin : voice.subtitle),
@@ -360,7 +486,7 @@ struct ListeningView: View {
                         .font(Theme.font(.caption))
                         .foregroundStyle(Theme.textFaint)
                         .lineLimit(1)
-                        .frame(width: originColumnWidth, alignment: .leading)
+                        .frame(width: originColumnWidth, alignment: .trailing)
                 }
             }
             .padding(.horizontal, Theme.Space.sheetGutter)
@@ -369,56 +495,19 @@ struct ListeningView: View {
             .overlay(alignment: .leading) {
                 if selected {
                     Rectangle()
-                        .fill(Theme.accent)
+                        .fill(Theme.accentStrong)
                         .frame(width: 3)
-                        .padding(.vertical, Theme.Space.xs)
-                        .padding(.leading, Theme.Space.xs)
+                        .accessibilityHidden(true)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .id(voice.id)
-        .accessibilityLabel(Self.accessibilityLabel(name: voice.name, subtitle: subtitle, origin: origin))
+        .accessibilityLabel(ListeningView.accessibilityLabel(name: voice.name, subtitle: subtitle, origin: origin))
         .accessibilityHint(playback.content == nil ? ListeningCopy.hintSample : ListeningCopy.hintSentence)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("voice.\(voice.id)")
-    }
-
-    /// What a row says when its voice isn't what it names: a blend while
-    /// the blends couldn't load speaks as its fallback speaker (F073), and
-    /// the System voice in use while a natural voice is the stored pick
-    /// (`preferred`) only stands in for it (F095). Nil otherwise.
-    nonisolated static func standInNote(for voice: TtsVoice, blendsAvailable: Bool?,
-                                        standingInFor preferred: TtsVoice?) -> String? {
-        if blendsAvailable == false, let blend = KokoroVoiceBlends.blend(forVoiceID: voice.id) {
-            let speakerID = KokoroVoiceCatalog.voiceIDPrefix + blend.fallbackSpeaker
-            let speaker = KokoroVoiceCatalog.curatedVoices.first { $0.id == speakerID }?.name
-                ?? KokoroVoiceCatalog.defaultVoice.name
-            return ListeningCopy.blendStandIn(speaker: speaker)
-        }
-        if voice.engine != .kokoro, let preferred, preferred.engine == .kokoro {
-            return ListeningCopy.systemStandIn(for: preferred.name)
-        }
-        return nil
-    }
-
-    /// "en-US" + "male" → "US · male" for the natural voices; the System
-    /// voice has no origin to show.
-    private static func origin(for voice: TtsVoice) -> String {
-        guard voice.engine == .kokoro else { return "" }
-        let region = voice.lang.split(separator: "-").last.map(String.init) ?? voice.lang
-        return voice.gender.isEmpty ? region : "\(region) · \(voice.gender)"
-    }
-
-    /// Starts with the visible name and subtitle, then the origin: the
-    /// System row says its resolved voice after its own name.
-    nonisolated static func accessibilityLabel(name: String, subtitle: String, origin: String) -> String {
-        // When the subtitle already is the origin, don't say it twice.
-        let spokenOrigin = subtitle == origin ? "" : origin.replacingOccurrences(of: " · ", with: ", ")
-        // A stand-in note's middle dot is read aloud as a word otherwise.
-        let spokenSubtitle = subtitle.replacingOccurrences(of: " · ", with: ", ")
-        return [name, spokenSubtitle, spokenOrigin].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     // MARK: - Read asides and footer
@@ -441,13 +530,16 @@ struct ListeningView: View {
                 .padding(.top, Theme.Space.sm)
         }
     }
+}
 
-    // MARK: - Bits
+/// One pixel of the screen it is drawn on (`hairlineHeight()`): the Mac
+/// draws this view in Settings and the Voice & Speed popover, on whichever
+/// display holds the window, not the main one.
+private struct ListeningHairline: View {
 
-    /// One pixel of the screen it is drawn on (`hairlineHeight()`): the Mac
-    /// draws this view in Settings and the Voice & Speed popover, on
-    /// whichever display holds the window, not the main one.
-    private func hairline(inset: CGFloat = 0) -> some View {
+    var inset: CGFloat = 0
+
+    var body: some View {
         Rectangle()
             .fill(Theme.Stroke.hairlineColor)
             .hairlineHeight()
@@ -456,9 +548,10 @@ struct ListeningView: View {
 }
 
 /// R7/R21: Settings' Voice & speed row pushes the same Listening view the
-/// reader's chip presents, with the installed-model card. On the Settings
-/// root's own ground, bgTint, so the paper doesn't change colour at the
-/// push (P041); the reader's sheet stays on surface. On bgTint a selected
+/// reader's chip presents, with the installed-model card, and with the
+/// speed pinned above the voices as in the sheet. On the Settings root's
+/// own ground, bgTint, so the paper doesn't change colour at the push
+/// (P041); the reader's sheet stays on surface. On bgTint a selected
 /// preset's tint alone leaves its label under AA in light, so it is drawn
 /// over surface2, the unselected chips' fill.
 struct ListeningSettingsPage: View {
@@ -466,7 +559,7 @@ struct ListeningSettingsPage: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2)
+        ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true)
             .background(Theme.bgTint.ignoresSafeArea())
             // An opaque bar on the page's own ground, never a hard scroll
             // edge on a pushed screen (see `ShelfScrollEdge`).

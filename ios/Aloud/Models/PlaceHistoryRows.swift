@@ -2,7 +2,7 @@ import Foundation
 
 /// One "Where you stopped" row, as Contents draws it and VoiceOver reads it,
 /// on both apps: when ("Yesterday, 10:41 PM") and where ("CHAPTER THREE")
-/// over the sentence, two lines of it.
+/// over the place's text, two lines of it.
 struct PlaceRow: Equatable, Identifiable {
     /// The row's position, newest first (0 is the newest place shown).
     let index: Int
@@ -11,10 +11,27 @@ struct PlaceRow: Equatable, Identifiable {
     /// The chapter (with its Part or Book) or the page; nil in a book
     /// without a chapter list, whose place is only its sentence.
     let location: String?
-    /// The whole sentence, typeset as the reader shows it.
+    /// The whole sentence, typeset as the reader shows it: what VoiceOver
+    /// reads and the Mac's cursor says.
     let text: String
+    /// What the row draws: the sentence and the ones after it in its
+    /// paragraph, enough of the book to know the place by
+    /// (`PlaceHistoryRows.snippet`). The row's line limit cuts it.
+    let snippet: String
     /// At the playhead: the current-chapter bar and `.isSelected`.
     let isCurrent: Bool
+
+    /// `snippet` defaults to the sentence alone.
+    init(index: Int, sentence: Int, when: String, location: String?, text: String,
+         snippet: String? = nil, isCurrent: Bool) {
+        self.index = index
+        self.sentence = sentence
+        self.when = when
+        self.location = location
+        self.text = text
+        self.snippet = snippet ?? text
+        self.isCurrent = isCurrent
+    }
 
     var id: Int { index }
 
@@ -50,8 +67,44 @@ enum PlaceHistoryRows {
                             when: PlaceHistoryCopy.when(entry.stoppedAt, now: now, calendar: calendar, locale: locale),
                             location: location(of: sentence, in: navigation),
                             text: ReaderTypography.typeset(sentence.text),
+                            snippet: snippet(at: entry.sentence, in: content, navigation: navigation),
                             isCurrent: entry.sentence == playhead)
         }
+    }
+
+    /// About how much text a row draws: more than its four lines hold at
+    /// the accessibility sizes' widths is never seen.
+    static let snippetLength = 160
+
+    /// The stop's sentence, then the sentences after it in its paragraph
+    /// while the text is under `snippetLength` characters: a short line of
+    /// dialogue gains the narration that follows it. Nothing before the
+    /// stop is added, and it never crosses into the next paragraph or
+    /// chapter. Typeset as one run, so quote direction keeps its context.
+    /// A stop that opens inside a quotation (a closing quote with no
+    /// opening one before it) starts with "…", as a cut search result
+    /// does; a quote mark is never added.
+    static func snippet(at index: Int, in content: DocContent, navigation: ReaderNavigation) -> String {
+        let sentences = content.sentences
+        guard sentences.indices.contains(index) else { return "" }
+        let stop = sentences[index]
+        let chapter = navigation.chapterIndex(containing: index)
+        var raw = stop.text
+        var next = index + 1
+        while raw.count < snippetLength, sentences.indices.contains(next),
+              sentences[next].para == stop.para,
+              navigation.chapterIndex(containing: next) == chapter {
+            raw += " " + sentences[next].text
+            next += 1
+        }
+        let typeset = ReaderTypography.typeset(raw)
+        return opensInsideQuote(ReaderTypography.typeset(stop.text)) ? "\u{2026}" + typeset : typeset
+    }
+
+    /// Whether `sentence` (typeset) closes a quotation it never opened.
+    static func opensInsideQuote(_ sentence: String) -> Bool {
+        guard let close = sentence.firstIndex(of: "\u{201D}") else { return false }
+        return !sentence[..<close].contains("\u{201C}")
     }
 
     /// A place named the way a search result names its hit, through the

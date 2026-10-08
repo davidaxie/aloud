@@ -35,7 +35,7 @@ struct ChapterLineContentsEntry: ViewModifier {
                 entered
                     .contextMenu {
                         Button(ContentsSearch.title, systemImage: "list.bullet", action: onOpenContents)
-                        Button(ContentsSearch.searchPrompt, systemImage: "magnifyingglass", action: searchThisBook)
+                        Button(ContentsSearch.searchMenuItem, systemImage: "magnifyingglass", action: searchThisBook)
                     }
             } else {
                 entered

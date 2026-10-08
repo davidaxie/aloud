@@ -197,7 +197,7 @@ final class ContentsSheetLintTests: XCTestCase {
                                to: "private func searchThisBook()")
         for needle in ["if PlatformContentsEntry.chapterLineOffersSearch {", ".contextMenu {",
                        "Button(ContentsSearch.title, systemImage: \"list.bullet\", action: onOpenContents)",
-                       "Button(ContentsSearch.searchPrompt, systemImage: \"magnifyingglass\", action: searchThisBook)",
+                       "Button(ContentsSearch.searchMenuItem, systemImage: \"magnifyingglass\", action: searchThisBook)",
                        ".accessibilityActions {", "@Environment(\\.dynamicTypeSize) private var dynamicTypeSize",
                        "if Self.offersMenu(dynamicTypeSize: dynamicTypeSize) {",
                        "!dynamicTypeSize.isAccessibilitySize"] {
@@ -217,5 +217,43 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertTrue(labels.contains("[Text(title), Text(\"Contents\")]"), labels)
         XCTAssertTrue(labels.contains("PlatformContentsEntry.chapterLineOffersSearch ? [Text(ContentsSearch.searchInputLabel)] : []"))
         XCTAssertTrue(line.contains("private static let contentsHint = \"Opens contents and search\""))
+    }
+
+    // MARK: - Critique round 1
+
+    /// R1-23: the placeholder is drawn in textFaint (4.73:1 light, 4.62:1
+    /// dark on surface2), not the system's grey; the title argument stays,
+    /// so VoiceOver still hears the field's name.
+    func testTheSearchPlaceholderMeetsAA() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let field = try region(of: sheet, from: "TextField(ContentsSearch.searchPrompt, text: $query,",
+                               to: ".focused($fieldFocused)")
+        XCTAssertTrue(field.contains("prompt: Text(ContentsSearch.searchPrompt).foregroundStyle(Theme."), field)
+        XCTAssertTrue(field.contains("foregroundStyle(Theme.textFaint)"), field)
+    }
+
+    /// R1-21: the sheet opens on the current chapter unless the newest stop
+    /// is in another chapter (`PlaceHistory.opensOnCurrentChapter`), never
+    /// at the top merely because the book has places.
+    func testContentsOpensOnTheCurrentChapterAfterAListen() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let list = try region(of: sheet, from: "private var chapterList: some View", to: "private func chapterRows(")
+        XCTAssertTrue(list.contains("if PlaceHistory.opensOnCurrentChapter(newestStop: placeRows.first?.sentence,"), list)
+        XCTAssertTrue(list.contains("scrollToCurrent(proxy)"), list)
+        XCTAssertFalse(list.contains("if placeRows.isEmpty { scrollToCurrent(proxy) }"), "places alone kept it at the top")
+    }
+
+    /// R1-24: a place row draws its snippet (the sentence and what follows
+    /// it in its paragraph); VoiceOver keeps the row's sentence label.
+    func testAPlaceRowDrawsItsSnippet() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let label = try region(of: sheet, from: "private struct ContentsPlaceLabel: View", to: "// MARK: - Result label")
+        XCTAssertTrue(label.contains("Text(row.snippet)"), label)
+        XCTAssertFalse(label.contains("Text(row.text)"), label)
+        XCTAssertTrue(label.contains(".lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))"), "P024's line limits stay")
+        XCTAssertTrue(sheet.contains(".accessibilityLabel(row.accessibilityLabel)"))
     }
 }

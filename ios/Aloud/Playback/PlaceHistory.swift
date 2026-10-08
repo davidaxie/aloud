@@ -166,6 +166,17 @@ enum PlaceHistory {
             && (expanded || !keepsOne)
     }
 
+    /// Whether Contents opens scrolled to the current chapter: with no
+    /// stops, or when the newest stop is in the playhead's chapter, where
+    /// the current chapter's row tells the listener the same place. When
+    /// the newest stop is in another chapter it opens at the top, so the
+    /// stop shows (P024). By chapter, not by sentence: a stop a few
+    /// sentences back from the playhead is still this chapter.
+    static func opensOnCurrentChapter(newestStop: Int?, playhead: Int, navigation: ReaderNavigation) -> Bool {
+        guard let newestStop else { return true }
+        return navigation.chapterIndex(containing: newestStop) == navigation.chapterIndex(containing: playhead)
+    }
+
     private static func keepsOneStop(atHalfHeight: Bool, hasChapterList: Bool, accessibilitySize: Bool) -> Bool {
         atHalfHeight && hasChapterList && !accessibilitySize
     }

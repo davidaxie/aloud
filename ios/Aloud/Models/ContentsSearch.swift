@@ -8,8 +8,12 @@ enum ContentsSearch {
 
     /// The sheet's and the panel's title, and the chapter line's menu item.
     static let title = "Contents"
-    /// The field's placeholder, and the chapter line's way straight to it.
+    /// The field's placeholder, and the chapter line's VoiceOver action
+    /// straight to it.
     static let searchPrompt = "Search this book"
+    /// The chapter line's context-menu item to the field: title case, as
+    /// iOS menu items are (the field's placeholder stays sentence case).
+    static let searchMenuItem = "Search This Book"
     /// The Voice Control name that opens Contents for a search.
     static let searchInputLabel = "Search"
     /// Backs out of a search: clears it and drops the keyboard (iPhone).
