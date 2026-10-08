@@ -1,3 +1,5 @@
+import CoreText
+import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
@@ -44,6 +46,86 @@ final class CardCopyTests: XCTestCase {
         let added = doc(title: cask.title, author: cask.author, wordCount: cask.words)
         XCTAssertEqual(BookshelfView.rowSubtitle(for: cask, rate: 2),
                        "\(cask.author) · \(added.listeningSubtitle(rate: 2))", "the Library card agrees")
+    }
+
+    /// P052: below the accessibility sizes a Classics row reads the title
+    /// over the author, and its trailing column always holds one caption, so
+    /// the lengths line up: the length at the app-wide speed, else the
+    /// library copy, else the add in progress, as on the Mac.
+    func testClassicsRowsTrailOneStatus() {
+        let cask = BookshelfBook(gutenbergID: 1063, title: "The Cask of Amontillado",
+                                 author: "Edgar Allan Poe", year: nil,
+                                 file: "1063-the-cask-of-amontillado.txt", words: 2317)
+        XCTAssertEqual(BookshelfView.rowByline(for: cask), "by Edgar Allan Poe")
+        XCTAssertEqual(BookshelfView.rowStatus(for: cask, rate: 1, inLibrary: false, adding: false), "14 min")
+        XCTAssertEqual(BookshelfView.rowStatus(for: cask, rate: 2, inLibrary: false, adding: false), "7 min")
+        XCTAssertEqual(BookshelfView.rowStatus(for: cask, rate: 2, inLibrary: true, adding: false), "In library")
+        XCTAssertEqual(BookshelfView.rowStatus(for: cask, rate: 2, inLibrary: true, adding: true), "Adding\u{2026}")
+        XCTAssertEqual(BookshelfView.rowStatus(for: cask, rate: 2, inLibrary: false, adding: true), "Adding\u{2026}")
+        for rate in [0.5, 1, 1.5, 2, 3] {
+            // The column's length is the stacked line's, and the featured card's.
+            XCTAssertEqual("\(cask.author) · \(BookshelfView.rowStatus(for: cask, rate: rate, inLibrary: false, adding: false))",
+                           BookshelfView.rowSubtitle(for: cask, rate: rate), "at \(rate)×")
+        }
+        // The spoken label is unchanged by the new layout.
+        XCTAssertEqual(BookshelfView.rowLabel(for: cask, rate: 1),
+                       "The Cask of Amontillado, by Edgar Allan Poe, about 14 minutes")
+    }
+
+    /// P052: the trailing column fits its widest status at every text size
+    /// below the accessibility sizes (where the row stacks instead), so no
+    /// length is ever cut short. With tabular digits every three-digit hour
+    /// count with minutes is equally wide; the longest classic runs past a
+    /// hundred hours at 1×.
+    func testTheClassicsStatusColumnFitsItsWidestStatus() {
+        let longest = BookshelfBook(gutenbergID: 1, title: "Long", author: "Author", year: nil,
+                                    file: "long.txt", words: 59_999 * Int(LibraryDocument.spokenWordsPerMinute))
+        let statuses = [
+            BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: false, adding: false),
+            BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: true, adding: false),
+            BookshelfView.rowStatus(for: longest, rate: 1, inLibrary: false, adding: true),
+        ]
+        XCTAssertEqual(statuses[0].filter(\.isNumber).count, 5, "a three-digit hour count: \(statuses[0])")
+        let sizes: [UIContentSizeCategory] = [.extraSmall, .small, .medium, .large,
+                                              .extraLarge, .extraExtraLarge, .extraExtraExtraLarge]
+        for size in sizes {
+            let traits = UITraitCollection(preferredContentSizeCategory: size)
+            let points = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .caption1,
+                                                                  compatibleWith: traits).pointSize
+            // Theme's caption: medium, tabular digits.
+            let medium = UIFont.systemFont(ofSize: points, weight: .medium)
+            let tabular = medium.fontDescriptor.addingAttributes([.featureSettings: [[
+                UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
+                UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
+            ]]])
+            let font = UIFont(descriptor: tabular, size: points)
+            let column = UIFontMetrics(forTextStyle: .caption1)
+                .scaledValue(for: BookshelfView.statusColumnWidth, compatibleWith: traits)
+            for status in statuses {
+                let width = (status as NSString).size(withAttributes: [.font: font]).width
+                XCTAssertLessThanOrEqual(width.rounded(.up), column,
+                                         "'\(status)' at \(size.rawValue) needs \(width) pt of \(column)")
+            }
+        }
+    }
+
+    /// P053: a row's hint drops for a finished library copy, and the copy
+    /// weighed is the one the row opens: the first in store order.
+    func testFinishedClassicsAreTheCopiesTheRowsOpen() {
+        func copy(_ id: Int?, progress: Double) -> LibraryDocument {
+            LibraryDocument(id: UUID(), title: "Title", fileName: "doc.txt", addedAt: Date(timeIntervalSince1970: 0),
+                            pageCount: 1, sentenceCount: 100, progressSentence: Int(progress * 99),
+                            progressFraction: progress, contentHash: UUID().uuidString, kind: .text,
+                            wordCount: 2_317, gutenbergID: id)
+        }
+        let documents = [copy(1063, progress: 1), copy(64317, progress: 0.4), copy(64317, progress: 1),
+                         copy(nil, progress: 1), copy(1342, progress: 0)]
+        XCTAssertEqual(BookshelfView.finishedClassicIDs(in: documents), [1063])
+        XCTAssertEqual(DocumentStore.existingClassic(gutenbergID: 64317, in: documents)?.isFinished, false,
+                       "the row opens the unfinished copy, so it still promises reading")
+        XCTAssertEqual(BookshelfView.finishedClassicIDs(in: []), [])
+        XCTAssertEqual(BookshelfView.rowHint(finished: true), "")
+        XCTAssertEqual(BookshelfView.rowHint(finished: false), "Opens and starts reading aloud")
     }
 
     /// The Great Gatsby, never started: 48,208 words at 1× is 292 minutes.
@@ -256,5 +338,177 @@ final class CardCopyTests: XCTestCase {
         guard number(2) < 60, number(3) < 60 else { return nil }
         let minutes = number(1) * 60 + number(2) + number(3)
         return match.range(at: 4).location == NSNotFound ? .length(minutes: minutes) : .left(minutes: minutes)
+    }
+}
+
+// MARK: - The Classics row as VoiceOver meets it
+
+/// P052 and P053 on a hosted Classics row: one button whose label the new
+/// layout leaves unchanged (side by side and stacked), whose hint says what
+/// happens, as a grid card's does, and which promises nothing for a finished
+/// library copy. Hosted in a window with the AX runtime's automation on, as
+/// ScrubAccessibilityTests does; only a host that vends no tree at all
+/// skips. Silent: the row's action does nothing.
+@MainActor
+final class ClassicsRowAccessibilityTests: XCTestCase {
+
+    private static let cask = BookshelfBook(gutenbergID: 1063, title: "The Cask of Amontillado",
+                                            author: "Edgar Allan Poe", year: nil,
+                                            file: "1063-the-cask-of-amontillado.txt", words: 2317)
+    private static let identifier = "bookshelf.row.1063"
+    private static let label = "The Cask of Amontillado, by Edgar Allan Poe, about 14 minutes"
+    private static let hint = "Opens and starts reading aloud"
+
+    private var window: UIWindow?
+    private var restoreAccessibility: (() -> Void)?
+
+    override func setUp() {
+        super.setUp()
+        restoreAccessibility = ClassicsAXRuntime.enable()
+    }
+
+    override func tearDown() {
+        closeWindow()
+        restoreAccessibility?()
+        restoreAccessibility = nil
+        super.tearDown()
+    }
+
+    func testABookNotYetAddedPromisesReadingAloud() async throws {
+        for stacked in [false, true] {
+            let row = try await hostRow(inLibrary: false, finished: false, stacked: stacked)
+            XCTAssertEqual(row.accessibilityLabel, Self.label, "stacked: \(stacked)")
+            XCTAssertEqual(row.accessibilityHint, Self.hint, "stacked: \(stacked)")
+            XCTAssertEqual(row.accessibilityHint, BookshelfView.rowHint(finished: false))
+            XCTAssertTrue(row.accessibilityTraits.contains(.button), "stacked: \(stacked)")
+            XCTAssertTrue(row.accessibilityValue?.isEmpty ?? true, "no status yet: \(row.accessibilityValue ?? "")")
+        }
+    }
+
+    func testAFinishedCopyPromisesNothing() async throws {
+        let row = try await hostRow(inLibrary: true, finished: true, stacked: false)
+        XCTAssertEqual(row.accessibilityLabel, Self.label)
+        XCTAssertEqual(row.accessibilityValue, "In library")
+        XCTAssertTrue(row.accessibilityHint?.isEmpty ?? true,
+                      "a finished copy opens paused, so no hint: \(row.accessibilityHint ?? "")")
+    }
+
+    func testAnUnfinishedCopyStillPromisesReadingAloud() async throws {
+        let row = try await hostRow(inLibrary: true, finished: false, stacked: false)
+        XCTAssertEqual(row.accessibilityValue, "In library")
+        XCTAssertEqual(row.accessibilityHint, Self.hint)
+    }
+
+    // MARK: Hosting
+
+    /// The row alone in a real window, then its element in the tree SwiftUI
+    /// builds for it.
+    private func hostRow(inLibrary: Bool, finished: Bool, stacked: Bool) async throws -> NSObject {
+        closeWindow()
+        let row = ClassicsRowButton(book: Self.cask, rate: 1, inLibrary: inLibrary, adding: false,
+                                    finished: finished, stacked: stacked) {}
+        let controller = UIHostingController(rootView: VStack(spacing: 0) { row; Spacer() }.background(Theme.bg))
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+        } else {
+            window = UIWindow()
+        }
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.view.layoutIfNeeded()
+        self.window = window
+
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let found = find(Self.identifier) { return found }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard vendsTree else { throw XCTSkip("This test host builds no SwiftUI accessibility tree") }
+        throw ClassicsRowMissing()
+    }
+
+    private func closeWindow() {
+        window?.isHidden = true
+        window?.rootViewController = nil
+        window = nil
+    }
+
+    private var vendsTree: Bool {
+        guard let root = window?.rootViewController?.view else { return false }
+        if let elements = root.accessibilityElements, !elements.isEmpty { return true }
+        let count = root.accessibilityElementCount()
+        return count > 0 && count != NSNotFound
+    }
+
+    /// A breadth-first walk over accessibility children and subviews.
+    private func find(_ identifier: String) -> NSObject? {
+        guard let root = window?.rootViewController?.view else { return nil }
+        var queue: [NSObject] = [root]
+        var next = 0
+        while next < queue.count, next < 5_000 {
+            let node = queue[next]
+            next += 1
+            if Self.identifier(of: node) == identifier { return node }
+            if let elements = node.accessibilityElements {
+                queue.append(contentsOf: elements.compactMap { $0 as? NSObject })
+            } else {
+                let count = node.accessibilityElementCount()
+                if count > 0, count != NSNotFound {
+                    for index in 0..<count {
+                        if let child = node.accessibilityElement(at: index) as? NSObject { queue.append(child) }
+                    }
+                }
+            }
+            if let view = node as? UIView { queue.append(contentsOf: view.subviews) }
+        }
+        return nil
+    }
+
+    private static func identifier(of node: NSObject) -> String? {
+        if let identified = node as? UIAccessibilityIdentification { return identified.accessibilityIdentifier }
+        guard node.responds(to: NSSelectorFromString("accessibilityIdentifier")) else { return nil }
+        return node.value(forKey: "accessibilityIdentifier") as? String
+    }
+}
+
+/// The tree is there, the row isn't: a real failure, never a skip.
+private struct ClassicsRowMissing: Error, CustomStringConvertible {
+    var description: String { "The accessibility tree has no Classics row" }
+}
+
+/// SwiftUI builds its accessibility tree only for an assistive client; the
+/// AX runtime's own switches stand in for one, as in
+/// ScrubAccessibilityTests. Private API, in the test target only.
+private enum ClassicsAXRuntime {
+    private typealias Getter = @convention(c) () -> Int32
+    private typealias Setter = @convention(c) (Int32) -> Void
+
+    private static let library: UnsafeMutableRawPointer? = {
+        let path = "/usr/lib/libAccessibility.dylib"
+        let root = ProcessInfo.processInfo.environment["IPHONE_SIMULATOR_ROOT"] ?? ""
+        return dlopen(root + path, RTLD_NOW) ?? dlopen(path, RTLD_NOW)
+    }()
+
+    private static func symbol<T>(_ name: String, as type: T.Type) -> T? {
+        guard let library, let address = dlsym(library, name) else { return nil }
+        return unsafeBitCast(address, to: type)
+    }
+
+    /// Turns automation and app accessibility on; the closure puts back
+    /// what was there.
+    static func enable() -> () -> Void {
+        let switches = [("_AXSAutomationEnabled", "_AXSSetAutomationEnabled"),
+                        ("_AXSApplicationAccessibilityEnabled", "_AXSApplicationAccessibilitySetEnabled")]
+        var restores: [() -> Void] = []
+        for (getterName, setterName) in switches {
+            guard let get = symbol(getterName, as: Getter.self),
+                  let set = symbol(setterName, as: Setter.self) else { continue }
+            let before = get()
+            set(1)
+            restores.append { set(before) }
+        }
+        return { restores.forEach { $0() } }
     }
 }

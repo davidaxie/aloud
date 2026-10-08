@@ -14,8 +14,11 @@ struct BookshelfView: View {
     @State private var results: [BookshelfBook]?
     /// The classics already in the library. The store is read through the
     /// model rather than observed: it republishes on every progress save,
-    /// even with this screen under the reader, and only this set matters.
+    /// even with this screen under the reader, and only these sets matter.
     @State private var libraryIDs: Set<Int> = []
+    /// The classics whose library copy is finished: those rows open paused,
+    /// so their hint promises nothing, as a finished grid card's doesn't.
+    @State private var finishedIDs: Set<Int> = []
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,6 +47,10 @@ struct BookshelfView: View {
                     prompt: Text("Title or author"))
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
+        // The keyboard's Search key takes the top result, as a tap on it
+        // would: the same haptic and busy guard. With nothing found it does
+        // nothing; the no-results line already says why.
+        .onSubmit(of: .search) { openTopResult() }
         .onChange(of: query, initial: true) {
             let found = model.bookshelfIndex.search(query)
             // Once, as the list empties; typing on into nothing stays quiet.
@@ -56,6 +63,8 @@ struct BookshelfView: View {
         .onReceive(model.documentStore.$documents) { documents in
             let ids = Set(documents.compactMap(\.gutenbergID))
             if ids != libraryIDs { libraryIDs = ids }
+            let finished = Self.finishedClassicIDs(in: documents)
+            if finished != finishedIDs { finishedIDs = finished }
         }
         .navigationTitle("Classics")
         .navigationBarTitleDisplayMode(.inline)
@@ -106,6 +115,10 @@ struct BookshelfView: View {
         Text(section.title)
             .font(Theme.font(.eyebrow))
             .eyebrowTracking()
+            // Capitals, as the shelf's other eyebrows are drawn; VoiceOver
+            // and Voice Control keep the title as written.
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(section.title))
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Theme.Space.screenGutter)
@@ -117,20 +130,12 @@ struct BookshelfView: View {
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
     }
 
-    /// One VoiceOver element: a Button already merges its label's text.
     private func row(_ book: BookshelfBook) -> some View {
-        let inLibrary = libraryIDs.contains(book.id)
-        let adding = importer.addingClassicID == book.id
-        let label = Self.rowLabel(for: book, rate: model.globalRate)
-        return Button { listen(to: book) } label: {
-            BookshelfRow(book: book, rate: model.globalRate, inLibrary: inLibrary, adding: adding,
-                         stacked: dynamicTypeSize.isAccessibilitySize)
-        }
-        .buttonStyle(ShelfRowButtonStyle())
-        .accessibilityLabel(label)
-        .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
-        .accessibilityHint("Double-tap to listen")
-        .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
+        ClassicsRowButton(book: book, rate: model.globalRate,
+                          inLibrary: libraryIDs.contains(book.id),
+                          adding: importer.addingClassicID == book.id,
+                          finished: finishedIDs.contains(book.id),
+                          stacked: dynamicTypeSize.isAccessibilitySize) { listen(to: book) }
     }
 
     // MARK: Row copy
@@ -143,9 +148,50 @@ struct BookshelfView: View {
         book.listeningMinutes(rate: rate)
     }
 
-    /// "Edgar Allan Poe · 7 min" at 2×.
+    /// The stacked row's second line at accessibility sizes: the author and
+    /// the length at the app-wide speed, as the featured card shows them.
     nonisolated static func rowSubtitle(for book: BookshelfBook, rate: Double) -> String {
         "\(book.author) · \(ListeningEstimate.phrase(minutes: rowMinutes(of: book, rate: rate)))"
+    }
+
+    /// The side-by-side row's line under the title: the author alone, with
+    /// the length in the trailing column.
+    nonisolated static func rowByline(for book: BookshelfBook) -> String {
+        "by \(book.author)"
+    }
+
+    /// The side-by-side row's trailing column, never empty, so the lengths
+    /// line up down the list: the add in progress, else the library copy,
+    /// else the length at the app-wide speed.
+    nonisolated static func rowStatus(for book: BookshelfBook, rate: Double,
+                                      inLibrary: Bool, adding: Bool) -> String {
+        if adding { return "Adding\u{2026}" }
+        if inLibrary { return "In library" }
+        return ListeningEstimate.phrase(minutes: rowMinutes(of: book, rate: rate))
+    }
+
+    /// The trailing column's width at the default text size; it scales with
+    /// the caption style. It fits the widest status, a three-digit hour count
+    /// with minutes in tabular digits (the longest classic runs past 100
+    /// hours at 1×).
+    nonisolated static let statusColumnWidth: CGFloat = 84
+
+    /// What the row does, as the grid cards say it. A finished library copy
+    /// opens paused at its end, so it promises nothing.
+    nonisolated static func rowHint(finished: Bool) -> String {
+        finished ? "" : "Opens and starts reading aloud"
+    }
+
+    /// The classics whose library copy is finished. The copy is the one a
+    /// row opens: the first in store order, as `DocumentStore` finds it.
+    nonisolated static func finishedClassicIDs(in documents: [LibraryDocument]) -> Set<Int> {
+        var seen: Set<Int> = []
+        var finished: Set<Int> = []
+        for document in documents {
+            guard let id = document.gutenbergID, seen.insert(id).inserted else { continue }
+            if document.isFinished { finished.insert(id) }
+        }
+        return finished
     }
 
     /// "The Cask of Amontillado, by Edgar Allan Poe, about 7 minutes" at 2×.
@@ -168,13 +214,49 @@ struct BookshelfView: View {
         if startsPlaying { TransportHaptics.emit(.play) }
         importer.addClassic(book)
     }
+
+    /// The keyboard's Search key: the top result, through the tap's path.
+    private func openTopResult() {
+        guard let first = results?.first else { return }
+        listen(to: first)
+    }
+}
+
+// MARK: - Row button
+
+/// One VoiceOver element: a Button already merges its label's text. Plain
+/// values in, so a hosted test can read what VoiceOver hears without the
+/// app's models.
+struct ClassicsRowButton: View {
+    let book: BookshelfBook
+    /// The app-wide speed the length is shown at.
+    let rate: Double
+    let inLibrary: Bool
+    let adding: Bool
+    /// The library copy is finished, so the row opens it paused.
+    let finished: Bool
+    let stacked: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            BookshelfRow(book: book, rate: rate, inLibrary: inLibrary, adding: adding, stacked: stacked)
+        }
+        .buttonStyle(ShelfRowButtonStyle())
+        .accessibilityLabel(BookshelfView.rowLabel(for: book, rate: rate))
+        .accessibilityValue(adding ? "Adding" : inLibrary ? "In library" : "")
+        .accessibilityHint(BookshelfView.rowHint(finished: finished))
+        .accessibilityIdentifier("bookshelf.row.\(book.gutenbergID)")
+    }
 }
 
 // MARK: - Row
 
-/// Text only: the title, then the author and length; the status trails, or
-/// drops under the author at accessibility sizes, where a trailing column
-/// would squeeze the title.
+/// Text only: the title over the author, and a trailing column that always
+/// holds one status (the length, the library copy or the add in progress),
+/// so the lengths line up down the list. At accessibility sizes, where a
+/// trailing column would squeeze the title, the row stacks: the author and
+/// length share a line, and any status drops under them.
 private struct BookshelfRow: View {
     let book: BookshelfBook
     /// The app-wide speed the length is shown at.
@@ -183,21 +265,29 @@ private struct BookshelfRow: View {
     let adding: Bool
     let stacked: Bool
 
+    @ScaledMetric(relativeTo: .caption) private var statusWidth = BookshelfView.statusColumnWidth
+
     var body: some View {
         Group {
             if stacked {
                 VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                    lines
-                    status
+                    title
+                    detail(BookshelfView.rowSubtitle(for: book, rate: rate))
+                    stackedStatus
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(spacing: Theme.Space.sm) {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
                     VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                        lines
+                        title
+                        detail(BookshelfView.rowByline(for: book))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    status
+                    Text(BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding))
+                        .font(Theme.font(.caption))
+                        .foregroundStyle(Theme.textMuted)
+                        .lineLimit(1)
+                        .frame(width: statusWidth, alignment: .trailing)
                 }
             }
         }
@@ -214,22 +304,25 @@ private struct BookshelfRow: View {
         }
     }
 
-    @ViewBuilder
-    private var lines: some View {
+    private var title: some View {
         Text(book.title)
             .font(Theme.font(.headline))
             .foregroundStyle(Theme.text)
-        Text(BookshelfView.rowSubtitle(for: book, rate: rate))
+    }
+
+    private func detail(_ text: String) -> some View {
+        Text(text)
             .font(Theme.font(.footnote))
             .foregroundStyle(Theme.textMuted)
     }
 
     /// Words, not a spinner: it holds still under Reduce Motion and says
-    /// what the row's spoken value says.
+    /// what the row's spoken value says. The length is already on the line
+    /// above it, so only a status shows here.
     @ViewBuilder
-    private var status: some View {
+    private var stackedStatus: some View {
         if adding || inLibrary {
-            Text(adding ? "Adding\u{2026}" : "In library")
+            Text(BookshelfView.rowStatus(for: book, rate: rate, inLibrary: inLibrary, adding: adding))
                 .font(Theme.font(.subhead))
                 .foregroundStyle(Theme.textMuted)
                 .fixedSize()
