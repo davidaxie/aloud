@@ -251,9 +251,11 @@ final class UndoJumpTests: XCTestCase {
 
     /// A scrub that opens an offer says so once, after the scrub's own
     /// value; scrubbing on extends that offer and says nothing more. A move
-    /// between jumps opens a new offer, said again.
+    /// between jumps opens a new offer, said again. (The rule as the iPhone
+    /// runs it, on either host.)
     func testAnOfferIsAnnouncedOnceWhenItOpens() throws {
         let rig = pausedRig(wordsPerSentence: 10)
+        rig.controller.announcesUndoOffer = true
         rig.clearRecordings()
         rig.controller.jump(to: 20, origin: .scrub)
         XCTAssertNotNil(rig.controller.undoableJump)
@@ -271,10 +273,30 @@ final class UndoJumpTests: XCTestCase {
     /// A nearby tap offers nothing, so it says nothing.
     func testNoOfferNoAnnouncement() {
         let rig = pausedRig()
+        rig.controller.announcesUndoOffer = true
         rig.clearRecordings()
         rig.controller.jump(to: 12, origin: .sentence)
         XCTAssertNil(rig.controller.undoableJump)
         XCTAssertEqual(offersAnnounced(rig), 0)
+    }
+
+    /// The announcement is the iPhone's alone (R1-39): the controller
+    /// takes the platform's flag, and on the Mac an offer opens as it did
+    /// before, its chip slot and Edit menu showing it with nothing said.
+    func testOnlyThePlatformThatAnnouncesTheOfferSaysIt() {
+        let rig = pausedRig(wordsPerSentence: 10)
+        XCTAssertEqual(rig.controller.announcesUndoOffer, PlatformAccessibility.announcesUndoOffer)
+        rig.clearRecordings()
+        rig.controller.jump(to: 20, origin: .scrub)
+        XCTAssertNotNil(rig.controller.undoableJump)
+        let expected = PlatformAccessibility.announcesUndoOffer ? 1 : 0
+        XCTAssertEqual(offersAnnounced(rig), expected, "\(rig.announcements)")
+
+        rig.controller.announcesUndoOffer = false
+        rig.controller.skip(seconds: 15)
+        rig.controller.jump(to: 35, origin: .chapter)
+        XCTAssertNotNil(rig.controller.undoableJump, "the offer itself still opens")
+        XCTAssertEqual(offersAnnounced(rig), expected, "turned off, a new offer says nothing")
     }
 
     /// With VoiceOver or Switch Control running, the offer outlives the

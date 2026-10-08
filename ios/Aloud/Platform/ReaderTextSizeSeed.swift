@@ -75,13 +75,17 @@ extension ReaderTextSize {
 
 extension PlatformAccessibility {
     /// VoiceOver or Switch Control is running: an offer on screen (Undo
-    /// jump) stays up long enough to be reached.
+    /// jump) stays up long enough to be reached (R1-39).
     @MainActor static var assistiveTechRunning: Bool {
         UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning
     }
+
+    /// A new Undo jump offer is announced once (R1-39), so a VoiceOver
+    /// listener knows there is a place to go back to.
+    static let announcesUndoOffer = true
 }
 #elseif os(macOS)
-import AppKit
+import Foundation
 
 /// The reader's first-launch text size, per platform. macOS gives apps no
 /// system text size to follow, so the Mac starts at 19 pt (step 2): about
@@ -105,10 +109,15 @@ extension ReaderTextSize {
 }
 
 extension PlatformAccessibility {
-    /// VoiceOver or Switch Control is on: an offer on screen (Undo jump)
-    /// stays up long enough to be reached.
+    /// R1-39 is the iPhone's. The Mac's Undo jump offer keeps its 10 s
+    /// with VoiceOver or Switch Control on, since Command-Z and the Edit
+    /// menu take it from anywhere: the offer reads no assistive tech here.
     @MainActor static var assistiveTechRunning: Bool {
-        NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
+        false
     }
+
+    /// The Mac says nothing new when an Undo jump offer opens: its chip
+    /// slot and the Edit menu show it, as before R1-39.
+    static let announcesUndoOffer = false
 }
 #endif

@@ -184,7 +184,17 @@ final class CritiqueCaptureTests: XCTestCase {
         }
     }
 
+    /// 24 and 25 show the page following the system text size (R1-38),
+    /// which it does only while the reader's text size is unchosen. This
+    /// walk resets the library alone: a size the simulator already stores
+    /// as chosen (a stepper or pinch from another UI test, or a size off
+    /// the Large seed when the seed was first recorded) keeps that size,
+    /// and both shots then render at it. The walk can't tell, so notes.txt
+    /// carries the caveat. Run it on a fresh install (or with the text
+    /// size and its seed cleared) until a UITestHooks flag that clears
+    /// both before AppModel seeds lands, and pass that flag here.
     func test06ReaderLargeText() {
+        note("24, 25: assume an unchosen reader text size (the walk cannot reset it yet)")
         if openReader(["-uitest-force-light", "-UIPreferredContentSizeCategoryName",
                        "UICTContentSizeCategoryXXL"]) != nil {
             snap("24-reader-xxlarge")
@@ -233,7 +243,8 @@ final class CritiqueCaptureTests: XCTestCase {
         return app
     }
 
-    /// The seeded Gatsby, opened straight into the reader.
+    /// The seeded Gatsby, opened straight into the reader. The reader's
+    /// text size is whatever the simulator stores (see test06).
     private func openReader(_ extra: [String]) -> XCUIApplication? {
         let app = launch(["-uitest-reset-library", "-uitest-seed-first-classic",
                           "-uitest-open-first-doc"] + extra)

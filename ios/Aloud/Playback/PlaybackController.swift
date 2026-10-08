@@ -223,8 +223,12 @@ final class PlaybackController: ObservableObject {
     /// reaching the chip takes longer than a glance. Tests shorten it.
     var assistiveUndoJumpLifetime: TimeInterval = 30
     /// Whether VoiceOver or Switch Control is running now
-    /// (`PlatformAccessibility.assistiveTechRunning`). Tests replace it.
+    /// (`PlatformAccessibility.assistiveTechRunning`; never on the Mac,
+    /// whose offer keeps its 10 s). Tests replace it.
     var assistiveTechRunning: () -> Bool = { PlatformAccessibility.assistiveTechRunning }
+    /// Whether a new offer is announced (`PlatformAccessibility.announcesUndoOffer`:
+    /// the iPhone's R1-39; the Mac says nothing new). Tests set it.
+    var announcesUndoOffer = PlatformAccessibility.announcesUndoOffer
 
     /// M19: how long the engine runs on once nothing plays before it stops
     /// (`PlatformTuning.idleEngineStopDelay`); nil keeps it running. Tests
@@ -1416,8 +1420,8 @@ final class PlaybackController: ObservableObject {
                                             serial: jumpSerial)
                 // A new place to go back to, said once (queued, after the
                 // scrub's new value); a jump that only extends the offer
-                // says nothing more.
-                announce(UndoJumpCopy.available)
+                // says nothing more. The iPhone's alone (R1-39).
+                if announcesUndoOffer { announce(UndoJumpCopy.available) }
             }
             restartUndoTimer()
         }

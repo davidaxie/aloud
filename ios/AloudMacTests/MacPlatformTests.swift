@@ -212,6 +212,16 @@ final class MacPlatformTests: XCTestCase {
         XCTAssertTrue(PlatformAccessibility.reduceMotionCenter === NSWorkspace.shared.notificationCenter)
     }
 
+    // MARK: R1-39 · the Undo jump offer
+
+    /// R1-39 is the iPhone's: on the Mac a new offer says nothing new and
+    /// keeps its 10 s with VoiceOver or Switch Control on (Command-Z takes
+    /// it from anywhere), so the shared controller behaves as before.
+    func testTheUndoOfferKeepsTheMacsBehaviour() {
+        XCTAssertFalse(PlatformAccessibility.announcesUndoOffer)
+        XCTAssertFalse(PlatformAccessibility.assistiveTechRunning)
+    }
+
     // MARK: S10 · Now Playing
 
     /// A muted Mac process never takes Now Playing from the listener.

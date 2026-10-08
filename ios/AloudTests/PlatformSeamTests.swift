@@ -526,6 +526,12 @@ final class PlatformSeamTests: XCTestCase {
                        UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning)
     }
 
+    /// The iPhone announces a new Undo jump offer; the Mac's half keeps
+    /// its silence (MacPlatformTests).
+    func testTheIPhoneAnnouncesTheUndoOffer() {
+        XCTAssertTrue(PlatformAccessibility.announcesUndoOffer)
+    }
+
     // MARK: - Helpers
 
     private func solidImage(_ color: UIColor, size: CGSize, scale: CGFloat) -> UIImage {
