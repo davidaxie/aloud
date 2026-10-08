@@ -82,6 +82,28 @@ final class MacCommandActionsTests: XCTestCase {
         }
     }
 
+    /// R1-42: Forward 15 is enabled only where a skip would move, so the
+    /// Playback menu, the Dock menu and → agree with the bar's dimmed
+    /// glyph on the last sentence; Back 15 stays, and Forward comes back
+    /// once there is somewhere to go.
+    func testForward15IsDisabledWhereItCannotMove() {
+        let (rig, actions) = makeActions(sentences: 12)
+        rig.loadDefault(at: 10)
+        XCTAssertTrue(actions.isEnabled(.forward15), "one sentence left to reach")
+
+        rig.controller.seek(to: 11, andPlay: false)
+        XCTAssertFalse(rig.controller.canSkipForward)
+        XCTAssertFalse(actions.isEnabled(.forward15), "the last sentence: nowhere to go")
+        XCTAssertFalse(MacCommandState(actions: actions).snapshot.isEnabled(.forward15), "the menu item greys out")
+        XCTAssertFalse(actions.perform(.forward15), "→ is swallowed")
+        XCTAssertEqual(rig.controller.currentSentence, 11)
+        XCTAssertTrue(actions.isEnabled(.back15), "Back 15 stays")
+
+        XCTAssertTrue(actions.perform(.back15))
+        XCTAssertLessThan(rig.controller.currentSentence, 11)
+        XCTAssertTrue(actions.isEnabled(.forward15), "and Forward 15 comes back")
+    }
+
     func testSkipsUseTheOneSkip() {
         let (rig, actions) = makeActions(sentences: 40)
         rig.loadDefault(at: 20)

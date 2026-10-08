@@ -28,3 +28,15 @@ struct UndoableJump: Equatable, Sendable {
     /// A sentence tap offers Undo only past this many sentences.
     static let tapThreshold = 3
 }
+
+extension PlaybackController {
+    /// Whether Forward 15 would move: true exactly when `skip(seconds:)`
+    /// forward lands somewhere new, so false with no book and on the last
+    /// sentence, the end of the book included. The bars dim the control
+    /// and the Mac's menus and → key follow it. Back 15 has no such rule:
+    /// at the end it restarts the last sentence and leaves the end.
+    var canSkipForward: Bool {
+        guard let content, !content.sentences.isEmpty else { return false }
+        return max(currentSentence, 0) < content.sentences.count - 1
+    }
+}

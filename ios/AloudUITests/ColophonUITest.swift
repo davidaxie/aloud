@@ -114,6 +114,14 @@ final class ColophonUITest: XCTestCase {
         XCTAssertTrue(readerText(app).label.hasPrefix("The End"), "got '\(readerText(app).label)'")
         XCTAssertTrue(moreClassics(app).exists)
         XCTAssertFalse(hapticLog(app).contains("finished"), "a reopen is no end heard: \(hapticLog(app))")
+
+        // At the end Forward 15 has nowhere to go, so it is dimmed (VoiceOver
+        // says so); Back 15 restarts the last sentence, so it stays.
+        let forward = app.buttons["player.forward15"].firstMatch
+        let back = app.buttons["player.back15"].firstMatch
+        XCTAssertTrue(forward.waitForExistence(timeout: 5))
+        XCTAssertFalse(forward.isEnabled, "Forward 15 is dimmed at the end")
+        XCTAssertTrue(back.isEnabled, "Back 15 still restarts the last sentence")
     }
 
     func testListenAgainPlaysFromTheFirstSentence() {

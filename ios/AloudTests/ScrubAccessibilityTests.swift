@@ -119,6 +119,55 @@ final class ScrubAccessibilityTests: XCTestCase {
         XCTAssertEqual(rig.controller.status, .paused)
     }
 
+    /// R1-48: while an Undo jump offer is live, the one adjustable
+    /// "Position" element carries it as a named action beside its chapter
+    /// step, so VoiceOver and Switch Control reach it; invoking it restores
+    /// the sentence and the pause. With no offer there is no action.
+    func testTheScrubCarriesUndoJumpOnlyWhileItIsOffered() async throws {
+        let (rig, _, _) = hostBar(pausedAt: 1)
+        let undoName = ReaderChip.undoJump.title
+        let scrub = try await findScrub()
+        XCTAssertNil(rig.controller.undoableJump)
+        XCTAssertFalse(Self.actionNames(scrub).contains(undoName), "no offer, no action: \(Self.actionNames(scrub))")
+
+        scrub.accessibilityIncrement()
+        let moved = await rig.waitUntil(2) { rig.controller.currentSentence == 2 }
+        XCTAssertTrue(moved, "the step lands on chapter 2, got \(rig.controller.currentSentence)")
+        XCTAssertNotNil(rig.controller.undoableJump, "a scrub step offers Undo jump")
+
+        let offered = await rig.waitUntil(2) {
+            self.host?.find("player.scrub").map { Self.actionNames($0).contains(undoName) } ?? false
+        }
+        XCTAssertTrue(offered, "the offer's action on Position")
+        let live = try XCTUnwrap(host?.find("player.scrub"))
+        XCTAssertTrue(live.accessibilityTraits.contains(.adjustable), "still the adjustable scrub")
+        XCTAssertEqual(try XCTUnwrap(host).all(labelled: "Position").count, 1, "still one Position element")
+        let undo = try XCTUnwrap(live.accessibilityCustomActions?.first { $0.name == undoName })
+        Self.invoke(undo)
+
+        let restored = await rig.waitUntil(2) { rig.controller.currentSentence == 1 }
+        XCTAssertTrue(restored, "Undo jump returns to sentence 1, got \(rig.controller.currentSentence)")
+        XCTAssertEqual(rig.controller.status, .paused, "and to the pause it left")
+        XCTAssertNil(rig.controller.undoableJump, "the offer is spent")
+        let withdrawn = await rig.waitUntil(2) {
+            self.host?.find("player.scrub").map { !Self.actionNames($0).contains(undoName) } ?? false
+        }
+        XCTAssertTrue(withdrawn, "the action goes with the offer")
+    }
+
+    static func actionNames(_ element: NSObject) -> [String] {
+        (element.accessibilityCustomActions ?? []).map(\.name)
+    }
+
+    /// Runs a custom action the way VoiceOver does.
+    static func invoke(_ action: UIAccessibilityCustomAction) {
+        if let handler = action.actionHandler {
+            _ = handler(action)
+        } else {
+            _ = (action.target as? NSObject)?.perform(action.selector, with: action)
+        }
+    }
+
     /// P008: the thumb and the touch-down feedback are decoration. The
     /// scrub is still one adjustable "Position" element, and nothing else
     /// in the bar answers to that name.
@@ -273,6 +322,38 @@ final class ContentsSheetAccessibilityTests: XCTestCase {
         XCTAssertFalse(memory.consumeSearchFocus(), "once")
         XCTAssertEqual(ReaderMessageLine.positionInputLabels(title: "Test Book").count, 3,
                        "the title, Contents and Search")
+    }
+
+    /// R1-48: the position line names Undo jump only when the bar hands it
+    /// one (while an offer is live); given none, as on the Mac, it has no
+    /// such action and keeps its search.
+    func testThePositionLineOffersUndoJumpOnlyWhenGivenOne() async throws {
+        final class Undos { var count = 0 }
+        let undos = Undos()
+        let undoName = ReaderChip.undoJump.title
+        let position = ReaderPositionLine(kind: .book, title: "Test Book", minutesLeft: 3)
+        let offered = AccessibilityHost(
+            ReaderMessageLine(message: nil, position: position,
+                              onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {},
+                              onUndoJump: { undos.count += 1 }),
+            keepAlive: [undos])
+        host = offered
+        let line = try await offered.require("reader.chapterLine")
+        let undo = try XCTUnwrap(line.accessibilityCustomActions?.first { $0.name == undoName },
+                                 "actions: \(ScrubAccessibilityTests.actionNames(line))")
+        ScrubAccessibilityTests.invoke(undo)
+        XCTAssertEqual(undos.count, 1, "the action undoes the jump")
+        offered.close()
+
+        let plain = AccessibilityHost(
+            ReaderMessageLine(message: nil, position: position,
+                              onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {}),
+            keepAlive: [])
+        host = plain
+        let plainLine = try await plain.require("reader.chapterLine")
+        let names = ScrubAccessibilityTests.actionNames(plainLine)
+        XCTAssertFalse(names.contains(undoName), "no offer, no action: \(names)")
+        XCTAssertTrue(names.contains(ContentsSearch.searchPrompt), "the search action stays: \(names)")
     }
 
     func testTheErrorLineHasNoSearchAction() async throws {

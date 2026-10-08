@@ -20,6 +20,14 @@ struct ReaderMessageLine: View {
     let onOpenContents: () -> Void
     let onRetry: () -> Void
     let onBackFiveMinutes: () -> Void
+    /// Where each arm's ink sits in its 44pt row: centred, or (`.bottom`,
+    /// the iPhone bar) on the row's foot, by the scrub it describes. Only
+    /// the ink moves; the rows and their hit areas stay as they are.
+    var rowAlignment: VerticalAlignment = .center
+    /// Undo jump as a named action on the position line, while a jump can
+    /// be undone: focus lands here after a Contents pick. Nil on the Mac,
+    /// where ⌘Z covers it.
+    var onUndoJump: (() -> Void)? = nil
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Set by the Mac's reader; `.standard` on the iPhone, where the band
@@ -33,14 +41,18 @@ struct ReaderMessageLine: View {
 
     private var slotKey: String { message?.slotKey ?? "position" }
 
+    /// Every arm's frame, and the slot's: leading, on `rowAlignment`, so a
+    /// crossfade between slots never moves the ink.
+    private var rowFrameAlignment: Alignment { Alignment(horizontal: .leading, vertical: rowAlignment) }
+
     var body: some View {
         // The ZStack overlaps the outgoing and incoming slots during the
         // crossfade; in the bar's VStack they would stack for a frame.
         // Opacity only, so Reduce Motion needs no gate.
-        ZStack(alignment: .leading) {
+        ZStack(alignment: rowFrameAlignment) {
             slot
                 .padding(.horizontal, Theme.Space.screenGutter)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: rowFrameAlignment)
                 .id(slotKey)
                 .transition(.opacity)
         }
@@ -72,27 +84,35 @@ struct ReaderMessageLine: View {
         Button(action: onOpenContents) {
             Group {
                 if Self.stacksPosition(dynamicTypeSize: dynamicTypeSize, scale: chromeScale) {
-                    VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                        positionTitle
-                            .lineLimit(2)
-                        positionDetail(position.detail)
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                            positionTitle
+                                .lineLimit(2)
+                            positionDetail(position.detail)
+                        }
+                        .layoutPriority(1)
+                        Spacer(minLength: 0)
+                        contentsGlyph
                     }
                 } else {
                     HStack(spacing: Theme.Space.xs) {
-                        positionTitle
-                            .lineLimit(1)
-                        // The time never truncates; a long chapter title does.
-                        positionDetail("\u{00B7} " + position.detail)
-                            .fixedSize()
+                        HStack(alignment: .firstTextBaseline, spacing: 0) {
+                            positionTitle
+                                .lineLimit(1)
+                            // The time never truncates; a long chapter title
+                            // does. The first dot takes the detail's own
+                            // space-dot-space, so the gaps either side of
+                            // every dot match.
+                            positionDetail("\u{00A0}\u{00B7} " + position.detail)
+                                .fixedSize()
+                        }
                         Spacer(minLength: 0)
-                        Image(systemName: "chevron.up")
-                            .font(Theme.font(.caption, scale: chromeScale))
-                            .foregroundStyle(Theme.textFaint)
-                            .accessibilityHidden(true)
+                        contentsGlyph
                     }
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .rowInk(rowAlignment)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: rowFrameAlignment)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -104,6 +124,21 @@ struct ReaderMessageLine: View {
         .accessibilityInputLabels(Self.positionInputLabels(title: position.title))
         .accessibilityIdentifier("reader.chapterLine")
         .modifier(ChapterLineContentsEntry(onOpenContents: onOpenContents, offersSearchAction: true))
+        .accessibilityActions {
+            if let onUndoJump {
+                Button(ReaderChip.undoJump.title, action: onUndoJump)
+            }
+        }
+    }
+
+    /// Contents' own icon (the line's long-press menu uses it too): the
+    /// line opens Contents, a sheet on the iPhone and a side panel on the
+    /// Mac. Beside the title at every text size.
+    private var contentsGlyph: some View {
+        Image(systemName: "list.bullet")
+            .font(Theme.font(.caption, scale: chromeScale))
+            .foregroundStyle(Theme.textFaint)
+            .accessibilityHidden(true)
     }
 
     private var positionTitle: some View {
@@ -135,7 +170,8 @@ struct ReaderMessageLine: View {
                 Spacer(minLength: 0)
             }
             .font(Self.detailFont(chromeScale))
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .rowInk(rowAlignment)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: rowFrameAlignment)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -185,7 +221,8 @@ struct ReaderMessageLine: View {
                 Spacer(minLength: 0)
             }
             .font(Self.detailFont(chromeScale))
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .rowInk(rowAlignment)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: rowFrameAlignment)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -201,7 +238,9 @@ struct ReaderMessageLine: View {
             Text(StopCopy.backFiveMinutes)
                 .font(Self.titleFont(chromeScale))
                 .foregroundStyle(Theme.accentStrong)
-                .frame(minWidth: 44, minHeight: 44)
+                // On the reason's line, wherever the row sets its ink.
+                .rowInk(rowAlignment)
+                .frame(minWidth: 44, minHeight: 44, alignment: Alignment(horizontal: .center, vertical: rowAlignment))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -225,7 +264,8 @@ struct ReaderMessageLine: View {
                 .font(Self.detailFont(chromeScale))
                 .foregroundStyle(message == .preparingVoice ? Theme.textMuted : Theme.text)
                 .numericReadout(progress ?? 0)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .rowInk(rowAlignment)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: rowFrameAlignment)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -258,8 +298,33 @@ extension ReaderMessageLine {
     }
 
     /// Whether the position line sets its title, on up to two lines, over its
-    /// detail: at the accessibility sizes, and in the Mac's Largest band.
+    /// detail, with the Contents glyph beside the title's first line: at the
+    /// accessibility sizes, and in the Mac's Largest band.
     nonisolated static func stacksPosition(dynamicTypeSize: DynamicTypeSize, scale: ChromeScale) -> Bool {
         dynamicTypeSize.isAccessibilitySize || PlatformTypeRamp.wrapsChapterLine(in: scale)
+    }
+
+    /// Each arm's least height: one full touch row.
+    nonisolated static let rowHeight: CGFloat = 44
+    /// How far a `.bottom` row lifts its ink off the row's foot.
+    nonisolated static let footInset: CGFloat = Theme.Space.xxs
+
+    /// The lift for ink `inkHeight` tall in a `.bottom` row: `footInset`,
+    /// less where the ink nearly fills the row, so the row never grows and
+    /// the ink never rises past its top. Zero once the ink is a row tall.
+    nonisolated static func footLift(inkHeight: CGFloat) -> CGFloat {
+        min(footInset, max(rowHeight - inkHeight, 0))
+    }
+}
+
+private extension View {
+    /// On a `.bottom` row, sets the ink `ReaderMessageLine.footLift` above
+    /// the row's foot (an alignment guide, so no frame or hit area changes).
+    /// Nothing on a centred row.
+    func rowInk(_ alignment: VerticalAlignment) -> some View {
+        alignmentGuide(.bottom) { dimensions in
+            guard alignment == .bottom else { return dimensions[.bottom] }
+            return dimensions[.bottom] + ReaderMessageLine.footLift(inkHeight: dimensions.height)
+        }
     }
 }

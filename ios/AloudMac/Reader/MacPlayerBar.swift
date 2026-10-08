@@ -45,11 +45,14 @@ struct MacPlayerBar: View {
         VStack(spacing: 0) {
             // The shared line pads itself by the gutter; the rows under it
             // take the same inset, so all three share one left edge.
+            // Centred in its row; no Undo jump action, as ⌘Z covers it.
             ReaderMessageLine(message: message,
                               position: position,
                               onOpenContents: onToggleContents,
                               onRetry: retry,
-                              onBackFiveMinutes: backFiveMinutes)
+                              onBackFiveMinutes: backFiveMinutes,
+                              rowAlignment: .center,
+                              onUndoJump: nil)
             MacScrub(document: document, content: content, navigation: navigation)
                 .padding(.horizontal, Theme.Space.screenGutter)
                 .onPreferenceChange(MacScrubPressKey.self) { target in
@@ -147,6 +150,9 @@ struct MacPlayerBar: View {
                 .accessibilitySortPriority(order)
         case .forward15:
             skipButton(.forward15, systemImage: "goforward.15", identifier: "player.forward15")
+                // Dimmed where it can't move, as the menus and → are
+                // (`MacCommandActions.isEnabled`); Back 15 stays.
+                .disabled(!playback.canSkipForward)
                 .padding(.leading, Theme.Space.xl)
                 .frame(maxWidth: row.contains(.sleep) ? nil : .infinity, alignment: .leading)
                 .accessibilitySortPriority(order)
@@ -434,7 +440,8 @@ struct MacChipButtonStyle: ButtonStyle {
 
 /// A transport glyph (back and forward 15): textMuted that turns Theme.text
 /// under the pointer, in a 32 pt square hit region (36 and 40 in the larger
-/// bands).
+/// bands). Disabled (Forward 15 on the last sentence) it is textFaint with
+/// no hover or press colour, as the iPhone's `ReaderGlyphButtonStyle`.
 struct MacGlyphButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         MacGlyphFace(label: configuration.label, isPressed: configuration.isPressed)

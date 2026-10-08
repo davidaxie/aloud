@@ -188,8 +188,12 @@ final class PlayerBarLintTests: XCTestCase {
             XCTAssertTrue(body.contains(".largeContentViewerIfAvailable"),
                           "\(button) is capped with no Large Content Viewer")
         }
-        let buttons = try NSRegularExpression(pattern: #"\bButton\s*[({]"#)
-            .numberOfMatches(in: line, range: NSRange(line.startIndex..., in: line))
+        let buttonPattern = try NSRegularExpression(pattern: #"\bButton\s*[({]"#)
+        // A named VoiceOver action (Undo jump) is written as a Button but
+        // never drawn, so it needs no Large Content Viewer.
+        let actions = Self.closure(after: ".accessibilityActions", in: line) ?? ""
+        let buttons = buttonPattern.numberOfMatches(in: line, range: NSRange(line.startIndex..., in: line))
+            - buttonPattern.numberOfMatches(in: actions, range: NSRange(actions.startIndex..., in: actions))
         XCTAssertEqual(buttons, 5, "the lint reads every button in the chapter line")
         XCTAssertEqual(line.components(separatedBy: ".largeContentViewerIfAvailable").count - 1, buttons,
                        "every button in the chapter line offers the Large Content Viewer")
@@ -219,6 +223,52 @@ final class PlayerBarLintTests: XCTestCase {
         XCTAssertTrue(code.contains("DragGesture(minimumDistance: ScrubGesture.minimumDistance)"))
         XCTAssertTrue(code.contains(".simultaneousGesture(touchDownGesture)"))
         XCTAssertTrue(code.contains("@GestureState private var isTouchingScrub"), "a system cancel must clear it")
+    }
+
+    /// Round 1 (R1-42, R1-44, R1-45, R1-48) in both bars: Forward 15 alone
+    /// dims where it can't move; the scrub's base capsule takes the scrub
+    /// track and its Increase Contrast edge under the fill; the iPhone sets
+    /// the line's ink on its row's foot and the track high in its row, and
+    /// hands the line Undo jump while it is offered; the Mac keeps the line
+    /// centred with no Undo action (⌘Z covers it).
+    func testBothBarsDimForwardEdgeTheTrackAndPlaceTheLine() throws {
+        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift"])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot,
+                                                only: ["Reader/MacPlayerBar.swift", "Reader/MacScrub.swift"])
+        let bar = Self.code(try XCTUnwrap(s["Reader/PlayerBarView.swift"]))
+        let macBar = Self.code(try XCTUnwrap(macSources["Reader/MacPlayerBar.swift"]))
+        let macScrub = Self.code(try XCTUnwrap(macSources["Reader/MacScrub.swift"]))
+        let compact = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+
+        for (name, source) in [("PlayerBarView", bar), ("MacPlayerBar", macBar)] {
+            XCTAssertEqual(source.components(separatedBy: ".disabled(!playback.canSkipForward)").count - 1, 1,
+                           "\(name): Forward 15 alone dims")
+            let forward = try XCTUnwrap(source.range(of: "\"player.forward15\""), name)
+            let dimmed = try XCTUnwrap(source.range(of: ".disabled(!playback.canSkipForward)"), name)
+            XCTAssertLessThan(forward.lowerBound, dimmed.lowerBound, "\(name): on the forward skip")
+            XCTAssertLessThan(source.distance(from: forward.upperBound, to: dimmed.lowerBound), 400,
+                              "\(name): right after the forward skip")
+        }
+        let base = "Capsule() .fill(Theme.scrubTrack) .overlay(Capsule().strokeBorder(Theme.trackEdge, lineWidth: 1))"
+        for (name, source) in [("PlayerBarView", bar), ("MacScrub", macScrub)] {
+            XCTAssertTrue(compact(source).contains(base), "\(name): the base capsule alone is edged")
+            XCTAssertFalse(source.contains("Capsule().fill(Theme.track)"), "\(name): the scrub has its own track")
+        }
+
+        let line = compact(try XCTUnwrap(bar.components(separatedBy: "ReaderMessageLine(message:").dropFirst().first))
+        XCTAssertTrue(line.contains("rowAlignment: .bottom"), "the iPhone line sits by its scrub")
+        XCTAssertTrue(line.contains("onUndoJump: playback.undoableJump != nil ? undoJump : nil"),
+                      "Undo jump only while it is offered")
+        XCTAssertTrue(compact(bar).contains(".padding(.top, Self.trackInset) .frame(maxHeight: .infinity, alignment: .top)"),
+                      "the track sits high in its unchanged row")
+        XCTAssertFalse(bar.contains(".frame(maxHeight: .infinity, alignment: .center)"))
+        let representation = compact(try XCTUnwrap(Self.closure(after: ".accessibilityRepresentation", in: bar)))
+        XCTAssertTrue(representation.contains(".accessibilityActions { if playback.undoableJump != nil {"),
+                      "Position carries Undo jump while it is offered")
+        let macLine = compact(try XCTUnwrap(macBar.components(separatedBy: "ReaderMessageLine(message:")
+            .dropFirst().first))
+        XCTAssertTrue(macLine.contains("rowAlignment: .center"), "the Mac line stays centred")
+        XCTAssertTrue(macLine.contains("onUndoJump: nil"), "the Mac's Undo jump is ⌘Z")
     }
 
     /// P007: native checkmark items over the shared rule, on both apps.

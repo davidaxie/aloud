@@ -113,6 +113,27 @@ final class PlayerBarLayoutTests: XCTestCase {
         XCTAssertGreaterThan(long, short + 20, "the AX3 chapter line should wrap the long title")
     }
 
+    /// R1-44: the scrub's line sits `trackInset` from the top of its 44pt
+    /// row, by the chapter line it describes, and the row itself is
+    /// unchanged: the resting and pressed thumbs and the Reduce Motion
+    /// ring (on the resting track) all stay inside it.
+    func testTheScrubLineSitsHighInItsRowAndEveryThumbStillFits() {
+        let row: CGFloat = 44
+        XCTAssertEqual(PlayerBarView.trackInset, 14)
+        let cases: [(track: CGFloat, mark: CGFloat)] = [
+            (ScrubThumb.trackHeight, ScrubThumb.diameter),
+            (ScrubThumb.pressedTrackHeight, ScrubThumb.pressedDiameter),
+            (ScrubThumb.trackHeight, ScrubThumb.ringDiameter),
+        ]
+        for (track, mark) in cases {
+            let centre = PlayerBarView.trackInset + track / 2
+            XCTAssertGreaterThanOrEqual(centre - mark / 2, 0, "a \(mark) pt mark clears the row's top")
+            XCTAssertLessThanOrEqual(centre + mark / 2, row, "a \(mark) pt mark clears the row's foot")
+        }
+        XCTAssertLessThan(PlayerBarView.trackInset + ScrubThumb.trackHeight / 2, row / 2,
+                          "the line sits above the row's middle, nearer the chapter line")
+    }
+
     /// The scrub drag (chapter line, track fill, preview) must end with the
     /// touch even when the system cancels the drag, which never calls
     /// onEnded. @GestureState is reset on cancel; plain @State stayed frozen

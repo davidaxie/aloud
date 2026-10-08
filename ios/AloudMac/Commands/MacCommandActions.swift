@@ -88,7 +88,10 @@ struct MacCommandActions {
         if isRootAlertShown, needsMainWindow(command) || command.actsOnFocusedBook { return false }
         switch command {
         case .playPause: return playback.document != nil || continueBook != nil
-        case .back15, .forward15, .sleepTimer: return hasBook
+        case .back15, .sleepTimer: return hasBook
+        // Only where a skip would move, so the bar's glyph, the Playback
+        // and Dock menus and → agree (the last sentence, the end).
+        case .forward15: return hasBook && playback.canSkipForward
         case .previousChapter: return chapterTarget(forward: false) != nil
         case .nextChapter: return chapterTarget(forward: true) != nil
         case .followVoice: return followVoice != nil

@@ -58,7 +58,32 @@ final class ReaderChromeBandTests: XCTestCase {
         XCTAssertEqual(EnvironmentValues().chromeScale, .standard, "nothing on the iPhone sets a band")
     }
 
-    /// The offer row and the line's chevron take the band through
+    /// R1-43: the Contents glyph sits beside the title in both layouts, so
+    /// it shows at every text size (it was dropped when the line stacked),
+    /// and the inline line sets its first dot with the detail's own spacing.
+    /// A source pin: skips where the checkout can't be read (the Mac host).
+    func testTheContentsGlyphShowsInBothLayouts() throws {
+        let path = "Reader/ReaderMessageLine.swift"
+        let s = try SourceTree.sources(only: [path])
+        let source = try XCTUnwrap(s[path])
+        let start = try XCTUnwrap(source.range(of: "private var positionLine: some View"))
+        let end = try XCTUnwrap(source.range(of: "private var contentsGlyph", range: start.upperBound..<source.endIndex))
+        let line = source[start.upperBound..<end.lowerBound]
+        let stackedStart = try XCTUnwrap(line.range(of: "if Self.stacksPosition("))
+        let split = try XCTUnwrap(line.range(of: "} else {", range: stackedStart.upperBound..<line.endIndex))
+        let stacked = line[stackedStart.upperBound..<split.lowerBound]
+        let inline = line[split.upperBound...]
+        XCTAssertTrue(stacked.contains("contentsGlyph"), "the stacked line: " + String(stacked))
+        XCTAssertTrue(inline.contains("contentsGlyph"), "the inline line: " + String(inline))
+        XCTAssertFalse(source.contains("\"chevron.up\""), "the line opens Contents, not a mini-player")
+        XCTAssertTrue(source.contains("Image(systemName: \"list.bullet\")"))
+        XCTAssertTrue(inline.contains("\"\\u{00A0}\\u{00B7} \" + position.detail"),
+                      "the first dot's gaps match the detail's: " + String(inline))
+        XCTAssertTrue(inline.contains("HStack(alignment: .firstTextBaseline, spacing: 0)"),
+                      "the title and its detail sit with no gap of their own: " + String(inline))
+    }
+
+    /// The offer row and the line's Contents glyph take the band through
     /// `Theme.font`, which leaves the iPhone's styles as they were.
     func testTheBandLeavesTheIPhonesStylesAlone() {
         #if os(iOS)

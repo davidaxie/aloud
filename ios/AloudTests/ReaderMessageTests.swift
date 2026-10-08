@@ -185,4 +185,23 @@ final class ReaderMessageTests: XCTestCase {
         XCTAssertEqual(Set(all).count, all.count, "slot keys never collide")
         XCTAssertFalse(all.contains("position"), "\"position\" is reserved for the nil slot")
     }
+
+    /// R1-44: a line set on its row's foot (the iPhone bar) lifts its ink
+    /// 4pt off the foot, less as the ink nearly fills the 44pt row, and not
+    /// at all once it is a row tall: the ink never rises past the row's
+    /// top and the row never grows.
+    func testTheFootLiftNeverGrowsTheRow() {
+        XCTAssertEqual(ReaderMessageLine.rowHeight, 44)
+        XCTAssertEqual(ReaderMessageLine.footInset, 4)
+        XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 18), 4, "one line at the default size")
+        XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 40), 4)
+        XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 42), 2)
+        XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 44), 0)
+        XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 90), 0, "a stacked line fills its own row")
+        for height in stride(from: CGFloat(0), through: 100, by: 0.5) {
+            let lift = ReaderMessageLine.footLift(inkHeight: height)
+            XCTAssertGreaterThanOrEqual(lift, 0)
+            XCTAssertLessThanOrEqual(height + lift, max(ReaderMessageLine.rowHeight, height), "\(height) pt of ink")
+        }
+    }
 }

@@ -177,6 +177,51 @@ final class SkipTargetTests: XCTestCase {
         XCTAssertEqual(transitions, 0)
     }
 
+    /// R1-42: Forward 15 is enabled exactly when a forward skip would move:
+    /// the first and a middle sentence, never the last or the end, and
+    /// never with no book.
+    func testCanSkipForwardIsExactlyWhetherForwardMoves() {
+        let rig = PlaybackTestRig(sentences: 6, wordsPerSentence: 10)
+        XCTAssertFalse(rig.controller.canSkipForward, "no book")
+
+        rig.loadDefault()
+        for sentence in [0, 3, 5] {
+            rig.controller.seek(to: sentence, andPlay: false)
+            XCTAssertEqual(rig.controller.currentSentence, sentence)
+            let predicted = rig.controller.canSkipForward
+            rig.controller.skip(seconds: PlaybackController.skipInterval)
+            XCTAssertEqual(predicted, rig.controller.currentSentence != sentence,
+                           "sentence \(sentence): canSkipForward \(predicted), landed \(rig.controller.currentSentence)")
+        }
+        XCTAssertEqual(rig.controller.currentSentence, 5)
+        XCTAssertFalse(rig.controller.canSkipForward, "the last sentence")
+
+        let ended = PlaybackTestRig(sentences: 6, wordsPerSentence: 10)
+        var finished = ended.document
+        finished.progressSentence = 5
+        finished.progressFraction = 1
+        ended.controller.load(document: finished, content: ended.content)
+        XCTAssertTrue(ended.controller.isAtEnd, "a Finished book opens at its end")
+        XCTAssertFalse(ended.controller.canSkipForward, "the end")
+        let before = ended.controller.currentSentence
+        ended.controller.skip(seconds: PlaybackController.skipInterval)
+        XCTAssertEqual(ended.controller.currentSentence, before, "Forward has nowhere to go at the end")
+        XCTAssertTrue(ended.controller.isAtEnd, "and leaves the end alone")
+    }
+
+    /// R1-42: a disabled glyph draws faint and never presses, whatever
+    /// Reduce Motion says; an enabled one keeps its press.
+    func testADisabledSkipGlyphIsFaintAndNeverPresses() {
+        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: false, isEnabled: false), Theme.textFaint)
+        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: true, isEnabled: false), Theme.textFaint)
+        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: false, isEnabled: true), Theme.textMuted)
+        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: true, isEnabled: true), Theme.text)
+        XCTAssertEqual(ReaderGlyphButtonStyle.scale(isPressed: true, isEnabled: false, reduceMotion: false), 1)
+        XCTAssertEqual(ReaderGlyphButtonStyle.scale(isPressed: true, isEnabled: true, reduceMotion: false),
+                       ReaderGlyphButtonStyle.pressedScale)
+        XCTAssertEqual(ReaderGlyphButtonStyle.scale(isPressed: true, isEnabled: true, reduceMotion: true), 1)
+    }
+
     func testAPausedBackPastThreeSecondsReCuesTheSameSentence() {
         let rig = PlaybackTestRig(sentences: 40, wordsPerSentence: 10)
         rig.loadDefault(at: 20)

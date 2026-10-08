@@ -112,6 +112,19 @@ final class PlayButtonStateTests: XCTestCase {
         XCTAssertEqual(MotionStyle.glyph(reduceMotion: false), .pop)
     }
 
+    /// R1-47: the Play circles (the bar's, the Continue card's and the
+    /// Mac's, which draws through the same style) settle on a press only
+    /// with motion on; under Reduce Motion they darken alone.
+    @MainActor
+    func testThePlayCirclePressScalesOnlyWithMotion() {
+        XCTAssertEqual(AccentCircleButtonStyle.pressedScale, 0.94)
+        XCTAssertEqual(AccentCircleButtonStyle.scale(isPressed: true, reduceMotion: false), 0.94)
+        XCTAssertEqual(AccentCircleButtonStyle.scale(isPressed: true, reduceMotion: true), 1,
+                       "Reduce Motion: the colour alone")
+        XCTAssertEqual(AccentCircleButtonStyle.scale(isPressed: false, reduceMotion: false), 1)
+        XCTAssertEqual(AccentCircleButtonStyle.scale(isPressed: false, reduceMotion: true), 1)
+    }
+
     func testPlayCircleTokens() {
         XCTAssertEqual(Theme.PlayCircle.diameter, 54)
         XCTAssertGreaterThanOrEqual(Theme.PlayCircle.compactDiameter, 44, "still a full hit target")

@@ -92,9 +92,22 @@ struct ReaderChipPressStyle: ButtonStyle {
 
 /// A transport glyph (back and forward 15): textMuted at rest, so Play
 /// stays the heaviest mark in the bar; Theme.text and a slight settle while
-/// pressed (the colour alone under Reduce Motion).
+/// pressed (the colour alone under Reduce Motion). Disabled (Forward 15 on
+/// the last sentence) it is textFaint and never presses.
 struct ReaderGlyphButtonStyle: ButtonStyle {
     static let pressedScale: CGFloat = 0.94
+
+    /// The glyph's colour: faint while disabled, whatever the press.
+    static func tint(isPressed: Bool, isEnabled: Bool) -> Color {
+        guard isEnabled else { return Theme.textFaint }
+        return isPressed ? Theme.text : Theme.textMuted
+    }
+
+    /// The glyph's scale: settled only while an enabled glyph is pressed
+    /// with motion on.
+    static func scale(isPressed: Bool, isEnabled: Bool, reduceMotion: Bool) -> CGFloat {
+        isPressed && isEnabled && !reduceMotion ? pressedScale : 1
+    }
 
     func makeBody(configuration: Configuration) -> some View {
         ReaderGlyphFace(label: configuration.label, isPressed: configuration.isPressed)
@@ -106,11 +119,13 @@ private struct ReaderGlyphFace<Label: View>: View {
     let isPressed: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         label
-            .foregroundStyle(isPressed ? Theme.text : Theme.textMuted)
-            .scaleEffect(isPressed && !reduceMotion ? ReaderGlyphButtonStyle.pressedScale : 1)
+            .foregroundStyle(ReaderGlyphButtonStyle.tint(isPressed: isPressed, isEnabled: isEnabled))
+            .scaleEffect(ReaderGlyphButtonStyle.scale(isPressed: isPressed, isEnabled: isEnabled,
+                                                      reduceMotion: reduceMotion))
             .animation(.easeOut(duration: Theme.Motion.press), value: isPressed)
     }
 }

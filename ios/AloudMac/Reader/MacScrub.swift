@@ -44,7 +44,11 @@ struct MacScrub: View {
             let span = press?.span ?? model.span
             let shown = press?.target ?? model.playhead
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.track)
+                // The edge strokes the unfilled track alone (clear unless
+                // Increase Contrast is on); the fill draws over it.
+                Capsule()
+                    .fill(Theme.scrubTrack)
+                    .overlay(Capsule().strokeBorder(Theme.trackEdge, lineWidth: 1))
                 Capsule()
                     .fill(Theme.accent)
                     // A finished book fills the track (its last sentence

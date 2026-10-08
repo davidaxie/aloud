@@ -163,23 +163,62 @@ final class ThemeTokenContrastTests: XCTestCase {
     }
 
     /// A selected option (an Appearance segment, a speed preset) differed
-    /// from its neighbours only by a 12% `accentSoft` tint, 1.14:1, and
-    /// Increase Contrast left it so. Under Increase Contrast its edge
-    /// (`selectedEdge`) now reaches 3:1 on every solid ground and on the
-    /// fill itself; it stays clear otherwise (H056).
-    func testIncreaseContrastEdgesTheSelectedOption() {
+    /// from its neighbours only by a 12% `accentSoft` tint, 1.14:1 (H056).
+    /// Its edge (`Stroke.selectedColor`, `accentStrong`) is drawn in every
+    /// appearance now, not only under Increase Contrast (R1-46), and
+    /// reaches 3:1 on every solid ground and on the fill itself.
+    func testTheSelectedOptionIsAlwaysEdged() {
+        for appearance in Appearance.all {
+            XCTAssertEqual(resolve(Theme.Stroke.selectedColor, appearance).alpha, 1, accuracy: 0.001,
+                           "the edge is opaque, \(appearance)")
+            for ground in Self.solidGrounds {
+                let onGround = contrast(Theme.Stroke.selectedColor, on: ground.color, appearance)
+                XCTAssertGreaterThanOrEqual(onGround, 3, "selected edge on \(ground.name), \(appearance): "
+                                            + String(format: "%.2f:1", onGround))
+                let onFill = contrast(Theme.Stroke.selectedColor, on: Theme.accentSoft, over: ground.color, appearance)
+                XCTAssertGreaterThanOrEqual(onFill, 3, "selected edge on accentSoft over \(ground.name), \(appearance): "
+                                            + String(format: "%.2f:1", onFill))
+            }
+        }
+    }
+
+    // MARK: Scrub track (R1-45)
+
+    /// The scrub's fill stays the 3:1 non-text minimum on its own track in
+    /// every appearance (light is `track`, already 3.10:1).
+    func testTheScrubFillStaysThreeToOneOnTheScrubTrack() {
+        for appearance in Appearance.all {
+            let ratio = contrast(Theme.accent, on: Theme.scrubTrack, appearance)
+            XCTAssertGreaterThanOrEqual(ratio, 3, "accent on scrubTrack, \(appearance): "
+                                        + String(format: "%.2f:1", ratio))
+        }
+    }
+
+    /// In dark mode the unfilled scrub reads on the bar's surface at 0%
+    /// (`track` there was 1.15:1, so the line vanished), with and without
+    /// Increase Contrast.
+    func testTheDarkScrubTrackReadsOnTheBar() {
+        for appearance in Appearance.all where appearance.dark {
+            let ratio = contrast(Theme.scrubTrack, on: Theme.surface, appearance)
+            XCTAssertGreaterThanOrEqual(ratio, 1.5, "scrubTrack on surface, \(appearance): "
+                                        + String(format: "%.2f:1", ratio))
+            XCTAssertGreaterThan(ratio, contrast(Theme.track, on: Theme.surface, appearance),
+                                 "lifted from track, \(appearance)")
+        }
+    }
+
+    /// The scrub track's edge is clear by default and, under Increase
+    /// Contrast, a 3:1 boundary on the grounds the bars sit on.
+    func testIncreaseContrastEdgesTheScrubTrack() {
         for appearance in Appearance.all {
             guard appearance.highContrast else {
-                XCTAssertEqual(resolve(Theme.selectedEdge, appearance).alpha, 0, accuracy: 0.001, "\(appearance)")
+                XCTAssertEqual(resolve(Theme.trackEdge, appearance).alpha, 0, accuracy: 0.001, "\(appearance)")
                 continue
             }
-            for ground in Self.solidGrounds {
-                let onGround = contrast(Theme.selectedEdge, on: ground.color, appearance)
-                XCTAssertGreaterThanOrEqual(onGround, 3, "selectedEdge on \(ground.name), \(appearance): "
-                                            + String(format: "%.2f:1", onGround))
-                let onFill = contrast(Theme.selectedEdge, on: Theme.accentSoft, over: ground.color, appearance)
-                XCTAssertGreaterThanOrEqual(onFill, 3, "selectedEdge on accentSoft over \(ground.name), \(appearance): "
-                                            + String(format: "%.2f:1", onFill))
+            for ground in [("surface", Theme.surface), ("bg", Theme.bg), ("bgTint", Theme.bgTint)] {
+                let ratio = contrast(Theme.trackEdge, on: ground.1, appearance)
+                XCTAssertGreaterThanOrEqual(ratio, 3, "trackEdge on \(ground.0), \(appearance): "
+                                            + String(format: "%.2f:1", ratio))
             }
         }
     }

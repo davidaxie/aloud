@@ -59,16 +59,22 @@ struct PlayerBarView: View {
 
     /// The skip glyphs read a step lighter than Play.
     private static let skipGlyphFont = Font.title3.weight(.medium)
+    /// The scrub line's offset from the top of its 44pt touch row.
+    nonisolated static let trackInset: CGFloat = 14
 
     var body: some View {
         // Line, track and transport are each at least a 44pt-tall hit row,
         // so the rows sit flush and only the bottom takes padding.
         VStack(spacing: 0) {
+            // The line's ink sits on its row's foot, with the scrub it
+            // describes; Undo jump is one of its actions while it is offered.
             ReaderMessageLine(message: message,
                               position: position,
                               onOpenContents: { showContents = true },
                               onRetry: retry,
-                              onBackFiveMinutes: backFiveMinutes)
+                              onBackFiveMinutes: backFiveMinutes,
+                              rowAlignment: .bottom,
+                              onUndoJump: playback.undoableJump != nil ? undoJump : nil)
                 // The bar's height budget: past the chips' cap a wrapping
                 // line would leave only a few lines of the page.
                 .dynamicTypeSize(...PlayerBarLayout.chipTypeCap)
@@ -134,7 +140,11 @@ struct PlayerBarView: View {
             let grows = isTouchingScrub && !reduceMotion
             let thumb = grows ? ScrubThumb.pressedDiameter : ScrubThumb.diameter
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.track)
+                // The edge strokes the unfilled track alone (clear unless
+                // Increase Contrast is on); the fill draws over it.
+                Capsule()
+                    .fill(Theme.scrubTrack)
+                    .overlay(Capsule().strokeBorder(Theme.trackEdge, lineWidth: 1))
                 Capsule()
                     .fill(Theme.accent)
                     .frame(width: fill)
@@ -145,11 +155,15 @@ struct PlayerBarView: View {
                     .offset(x: ScrubThumb.offset(fill: fill, diameter: thumb, width: width))
             }
             .animation(.easeOut(duration: Theme.Motion.press), value: isTouchingScrub)
-            .frame(maxHeight: .infinity, alignment: .center)
+            // The line sits high in its 44pt row, near the chapter line it
+            // describes; the pressed thumb and the Reduce Motion ring still
+            // fit inside the row.
+            .padding(.top, Self.trackInset)
+            .frame(maxHeight: .infinity, alignment: .top)
             .overlay(alignment: .topLeading) {
                 if let drag {
                     dragPreview(for: drag, width: width)
-                        // Bottom edge on the row's top, ~20pt above the line:
+                        // Bottom edge on the row's top, ~14pt above the line:
                         // a taller label grows upward, never over the track.
                         .alignmentGuide(.top) { $0[.bottom] }
                 }
@@ -188,6 +202,13 @@ struct PlayerBarView: View {
                                                                 forward: direction == .increment,
                                                                 rate: playback.rate) {
                         playback.jump(to: target, origin: .scrub)
+                    }
+                }
+                // Undo jump beside the step while it is offered, so VoiceOver
+                // and Switch Control reach it from the scrub that made it.
+                .accessibilityActions {
+                    if playback.undoableJump != nil {
+                        Button(ReaderChip.undoJump.title, action: undoJump)
                     }
                 }
                 .accessibilityIdentifier("player.scrub")
@@ -366,6 +387,9 @@ struct PlayerBarView: View {
             skipButton(seconds: PlaybackController.skipInterval, systemImage: "goforward.15",
                        label: "Forward 15 seconds", inputLabel: "Forward 15",
                        identifier: "player.forward15", target: layout.skipTarget)
+                // Dimmed where it can't move (the last sentence, the end);
+                // Back 15 stays, as at the end it restarts the last sentence.
+                .disabled(!playback.canSkipForward)
                 .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .forward15))
         }
         .fixedSize()
@@ -466,6 +490,12 @@ struct PlayerBarView: View {
     /// audio. No haptic: skips aren't in R20's vocabulary (TransportHaptics).
     private func skip(_ seconds: TimeInterval) {
         playback.skip(seconds: seconds)
+    }
+
+    /// Undo jump from the scrub's or the chapter line's named action: the
+    /// same restore as the chip's tap.
+    private func undoJump() {
+        playback.undoJump()
     }
 
     /// A sleep stop's Back 5 min: a user-started play, so it ticks like one.

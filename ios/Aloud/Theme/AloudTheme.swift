@@ -61,11 +61,25 @@ enum Theme {
                               highContrast: (0x8E7C5C, 0x7A6A4E))
     static let lineStrong = dynamic(light: 0xD7CBB1, dark: 0x3E3423,
                                     highContrast: (0x7D6B4C, 0x8C7B5D))
-    /// The unfilled part of a progress bar (the scrub, cover progress, the
-    /// download and import bars) and the disabled Download capsule: the
-    /// pale line in every contrast, so the `accent` fill stays ≥ 3:1 on it
-    /// (3.10:1 light, 6.04:1 dark) and Increase Contrast never erases it.
+    /// The unfilled part of a progress bar (cover progress, the download
+    /// and import bars) and the disabled Download capsule: the pale line in
+    /// every contrast, so the `accent` fill stays ≥ 3:1 on it (3.10:1
+    /// light, 6.04:1 dark) and Increase Contrast never erases it. The
+    /// player bars' scrubs draw on `scrubTrack` instead.
     static let track = dynamic(light: 0xE9E1D0, dark: 0x2B2417)
+    /// The scrub's unfilled track, on the bar's `surface`. Light is `track`
+    /// (any darker takes the `accent` fill under 3:1); dark is lifted to
+    /// ≥ 1.5:1 on `surface` so the line reads at 0% (`track` was 1.15:1),
+    /// with the fill still ≥ 4:1 on it. The base capsule only, under the fill.
+    static let scrubTrack = dynamic(light: 0xE9E1D0, dark: 0x453A28,
+                                    highContrast: (0xE9E1D0, 0x4A3F2C))
+    /// The scrub track's 1pt edge: clear by default, and `lineStrong`'s
+    /// Increase Contrast value (≥ 3:1 on surface, bg and bgTint) when that
+    /// is on, so the pale light track keeps a visible boundary. Stroke the
+    /// base capsule only, never the fill.
+    static let trackEdge = dynamic(light: 0x7D6B4C, dark: 0x8C7B5D,
+                                   lightAlpha: 0, darkAlpha: 0, highContrastAlpha: 1,
+                                   highContrast: (0x7D6B4C, 0x8C7B5D))
 
     // MARK: Accent family (one hue only)
 
@@ -80,14 +94,6 @@ enum Theme {
                                       highContrast: (0x7A4C17, 0xEBC690))
     static let accentSoft = dynamic(light: 0xA87434, dark: 0xC99A5B,
                                     lightAlpha: 0.12, darkAlpha: 0.20)
-    /// The edge on a selected option drawn as an `accentSoft` fill (an
-    /// Appearance segment, a speed preset). Clear by default; Increase
-    /// Contrast takes it to `accentStrong`, ≥ 3:1 on every solid ground and
-    /// on the fill itself, so the selection never rests on a 12% tint and
-    /// a heavier label alone. Stroke it only on the selected option.
-    static let selectedEdge = dynamic(light: 0x8A5B22, dark: 0xE0B478,
-                                      lightAlpha: 0, darkAlpha: 0, highContrastAlpha: 1,
-                                      highContrast: (0x7A4C17, 0xEBC690))
     /// Sentence fill, drawn beneath the text: findable at a glance against
     /// the page (1.35:1 light, 1.66:1 dark) while body text on it stays
     /// ≥ 9.4:1. Increase Contrast raises it to 34%.
@@ -260,10 +266,13 @@ enum Theme {
         /// 1pt of `line`: card and chip borders.
         static let borderWidth: CGFloat = 1
         static let borderColor = Theme.line
-        /// 1.5pt of `selectedEdge` on the selected option only (clear
-        /// unless Increase Contrast is on).
+        /// 1.5pt of `accentStrong` on a selected option drawn as an
+        /// `accentSoft` fill (an Appearance segment, a speed preset), in
+        /// every appearance: ≥ 3:1 on every solid ground and on the fill
+        /// itself, so a selection never rests on a 12% tint and a heavier
+        /// label alone. Stroke it on the selected option only.
         static let selectedWidth: CGFloat = 1.5
-        static let selectedColor = Theme.selectedEdge
+        static let selectedColor = Theme.accentStrong
     }
 
     // MARK: Elevation (R3)
@@ -406,18 +415,40 @@ private struct NumericReadout: ViewModifier {
 }
 
 /// Solid accent circle (Play). Darkens to `accentStrong` while
-/// pressed and settles with a slight scale — no opacity flash.
+/// pressed and settles with a slight scale — no opacity flash. Under
+/// Reduce Motion it darkens alone.
 struct AccentCircleButtonStyle: ButtonStyle {
     var diameter: CGFloat = Theme.PlayCircle.diameter
 
+    static let pressedScale: CGFloat = 0.94
+
+    /// The circle's scale: settled while pressed, unless Reduce Motion is on.
+    static func scale(isPressed: Bool, reduceMotion: Bool) -> CGFloat {
+        isPressed && !reduceMotion ? pressedScale : 1
+    }
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        AccentCircleFace(label: configuration.label, isPressed: configuration.isPressed, diameter: diameter)
+    }
+}
+
+/// The circle itself: a view, so it can read Reduce Motion. The colour
+/// still eases on a press either way.
+private struct AccentCircleFace<Label: View>: View {
+    let label: Label
+    let isPressed: Bool
+    let diameter: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        label
             .frame(width: diameter, height: diameter)
             .background(
-                Circle().fill(configuration.isPressed ? Theme.accentStrong : Theme.accent)
+                Circle().fill(isPressed ? Theme.accentStrong : Theme.accent)
             )
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.easeOut(duration: Theme.Motion.press), value: configuration.isPressed)
+            .scaleEffect(AccentCircleButtonStyle.scale(isPressed: isPressed, reduceMotion: reduceMotion))
+            .animation(.easeOut(duration: Theme.Motion.press), value: isPressed)
     }
 }
 

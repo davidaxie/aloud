@@ -359,6 +359,36 @@ final class MacPlayerBarTests: XCTestCase {
         }
     }
 
+    /// R1-44 and R1-48 on the shared line: the iPhone sets its ink on the
+    /// row's foot, which moves no row (the line measures the same either
+    /// way, in every band and stacked or not), and the line's defaults are
+    /// the Mac's: centred, with no Undo jump action (⌘Z covers it).
+    func testTheLinesRowAlignmentMovesNoRowAndTheMacKeepsItsDefaults() {
+        let short = ReaderPositionLine(kind: .chapter(number: 1, count: 61), title: "Chapter I", minutesLeft: 8)
+        let long = ReaderPositionLine(
+            kind: .chapter(number: 24, count: 61),
+            title: "Chapter XXIV. In Which the Travellers, Having Crossed the Frozen Sea, Come at Last to the Northern Shore",
+            minutesLeft: 8)
+        func height(_ position: ReaderPositionLine, _ alignment: VerticalAlignment, _ scale: ChromeScale) -> CGFloat {
+            let line = ReaderMessageLine(message: nil, position: position,
+                                         onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {},
+                                         rowAlignment: alignment)
+                .environment(\.chromeScale, scale)
+                .frame(width: MacPlayerBarLayout.minColumnWidth + 2 * Theme.Space.screenGutter)
+            return NSHostingView(rootView: line).fittingSize.height
+        }
+        for scale in ChromeScale.allCases {
+            for position in [short, long] {
+                XCTAssertEqual(height(position, .bottom, scale), height(position, .center, scale), accuracy: 0.5,
+                               "\(scale), \(position.title.count) characters")
+            }
+        }
+        let line = ReaderMessageLine(message: nil, position: short,
+                                     onOpenContents: {}, onRetry: {}, onBackFiveMinutes: {})
+        XCTAssertEqual(line.rowAlignment, .center, "the Mac bar's line stays centred")
+        XCTAssertNil(line.onUndoJump, "no Undo jump action unless the bar hands one over")
+    }
+
     /// The shared line's height in a bar at the minimum column, with
     /// `scale` in its environment as `MacReaderScreen` sets it.
     private func measuredChapterLineHeight(_ position: ReaderPositionLine, scale: ChromeScale) -> CGFloat {
