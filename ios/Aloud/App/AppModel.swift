@@ -171,9 +171,7 @@ final class AppModel: ObservableObject {
                                     initialState: .nominal)
         // Low Power Mode or heat shrinks the look-ahead where the platform
         // says so (PlatformPlaybackTuning.lookAheadUnderStrain).
-        playback.isUnderStrain = { [unowned thermalGuard] in
-            thermalGuard.isHot || ProcessInfo.processInfo.isLowPowerModeEnabled
-        }
+        playback.isUnderStrain = Self.strain(of: thermalGuard) { ProcessInfo.processInfo.isLowPowerModeEnabled }
         neuralPrewarm = NeuralPrewarm(
             playback: playback,
             kokoro: kokoroEngine,
@@ -278,6 +276,15 @@ final class AppModel: ObservableObject {
     /// Open-in and Share to Aloud.
     func handleOpenURL(_ url: URL) {
         Self.routeOpenIn(url, router: router, importer: importer)
+    }
+
+    /// What the controller asks before each top-up (P009,
+    /// `PlaybackController.isUnderStrain`): heat at `.serious` or hotter, or
+    /// Low Power Mode. Static so tests hold the very closure AppModel
+    /// installs, with Low Power Mode answered by them.
+    static func strain(of thermalGuard: ThermalGuard,
+                       isLowPowerMode: @escaping () -> Bool) -> @MainActor () -> Bool {
+        { [weak thermalGuard] in (thermalGuard?.isHot ?? false) || isLowPowerMode() }
     }
 
     /// The import overlay and its failure alert belong to the Library root,

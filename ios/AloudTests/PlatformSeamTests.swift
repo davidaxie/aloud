@@ -211,7 +211,9 @@ final class PlatformSeamTests: XCTestCase {
         // P009 and P010: the strain and the heat reach the controller and the
         // pre-warm. The heat gate holds on both apps (AppModel is shared), as
         // R11's heat policy does: never a platform flag around it.
-        XCTAssertTrue(model.contains("playback.isUnderStrain = "))
+        XCTAssertTrue(model.contains(
+            "playback.isUnderStrain = Self.strain(of: thermalGuard) { ProcessInfo.processInfo.isLowPowerModeEnabled }"),
+            "the strain AppModel installs is the one ThermalGuardTests drive")
         XCTAssertTrue(model.contains("heat: thermalGuard.$isHot.eraseToAnyPublisher()"))
     }
 

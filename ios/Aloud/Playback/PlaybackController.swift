@@ -506,7 +506,12 @@ final class PlaybackController: ObservableObject {
         var landingWithin: Int? = nil
         var outgoingThrough: Int? = nil
     }
-    private var handoff: VoiceHandoff?
+    private var handoff: VoiceHandoff? {
+        // A cut no longer pending never silences the render side.
+        didSet { if handoff?.outgoingThrough == nil { cutSplice.disarm() } }
+    }
+    /// P009: the render side of a splice cut short (`CutSpliceSilencer`).
+    private let cutSplice = CutSpliceSilencer()
     private var isSettingVoiceQuietly = false
     /// The voice a pending switch is moving to, still on its way in behind
     /// `voice` (its engine warming, or its first clips queued past the
@@ -1515,11 +1520,14 @@ final class PlaybackController: ObservableObject {
 
     // MARK: - Playback core
 
-    private func startPlayback(at index: Int) {
+    /// `keepingPlaying`: a cut-short splice whose first clip is ready
+    /// (`landCutShortSplice`) restarts with the status left playing, so the
+    /// busy ring never flashes for a voice switch.
+    private func startPlayback(at index: Int, keepingPlaying: Bool = false) {
         guard let content, !content.sentences.isEmpty else { return }
         let target = min(max(index, 0), content.sentences.count - 1)
         invalidateSchedule()
-        status = .buffering
+        if !(keepingPlaying && status == .playing) { status = .buffering }
         if voice.engine == .kokoro, let kokoro, !kokoro.isWarm {
             setPreparingVoice(true)   // first synthesis pays the model load
         }
@@ -1751,8 +1759,13 @@ final class PlaybackController: ObservableObject {
     /// boundary. `.dataRendered`, never the sentence's `.dataPlayedBack` end:
     /// that comes one output latency later (a Bluetooth route's ~0.2 s), with
     /// the unit already inside the next sentence's first word. The clips
-    /// already queued keep playing at the right speed.
-    private func scheduleBoundaryMarker(compression: Double, in format: AVAudioFormat, token: UInt64) {
+    /// already queued keep playing at the right speed. The same marker
+    /// times a splice cut short (`sentence`, the clip it precedes): the
+    /// mixer goes to zero on the audio thread as it renders, before the hop
+    /// (`CutSpliceSilencer`), and the cut lands from there
+    /// (`cutSpliceRendered`).
+    private func scheduleBoundaryMarker(compression: Double, in format: AVAudioFormat,
+                                        sentence: Int, token: UInt64) {
         guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1),
               let channels = marker.floatChannelData else {
             playingCompression = compression
@@ -1761,9 +1774,13 @@ final class PlaybackController: ObservableObject {
         }
         marker.frameLength = 1
         for channel in 0..<Int(format.channelCount) { channels[channel][0] = 0 }
+        let silencer = cutSplice
         player.scheduleBuffer(marker, at: nil, options: [], completionCallbackType: .dataRendered) { [weak self] _ in
+            let cut = silencer.markerRendered(sentence, token: token)
             Task { @MainActor [weak self] in
-                guard let self, token == self.playToken else { return }
+                guard let self else { return }
+                if cut { self.cutSpliceRendered(at: sentence, token: token) }
+                guard token == self.playToken else { return }
                 self.playingCompression = compression
                 self.applyTimePitchRate(atBoundary: true)
             }
@@ -1784,7 +1801,7 @@ final class PlaybackController: ObservableObject {
 
         let compression = clip.nativeSpeed > 0 ? clip.nativeSpeed : 1
         if lastScheduledCompression != nil {
-            scheduleBoundaryMarker(compression: compression, in: format, token: token)
+            scheduleBoundaryMarker(compression: compression, in: format, sentence: index, token: token)
         } else {
             // A schedule's first clip: the node is stopped, so the unit
             // switches at once.
@@ -1883,24 +1900,13 @@ final class PlaybackController: ObservableObject {
         if frozenSentenceElapsed != nil { frozenSentenceElapsed = 0 }
         // The frame ticker prunes only while the word tint is on.
         wordTiming.prune(before: currentSentence)
-        // A splice cut short (R11's cooling switch on a deep queue): the
-        // outgoing voice's clips still queued from here on are dropped, and
-        // the incoming voice reads on from this sentence, its first clip
-        // already warmed (`primeHandoff`). Inside a pause's ramp too: the
-        // node would otherwise keep those clips for the resume. The ramp
-        // ends here (pausing the node), so the next Play starts afresh from
-        // this sentence; the pause's own place moves here with it.
-        if let pending = handoff, pending.outgoingThrough != nil,
-           let splice = pending.spliceAt, currentSentence >= splice {
-            commitHandoff()
-            if isActive {
-                startPlayback(at: currentSentence)
-            } else {
-                invalidateSchedule()
-                stampResumeAnchor()
-                placeStopMovedByPauseRamp()
-                cuePrefetch()
-            }
+        if handoff?.outgoingThrough != nil {
+            // A splice cut short lands from the render side, as the marker
+            // ahead of it renders (`cutSpliceRendered`); here only when that
+            // marker can no longer do it. Nothing is topped up meanwhile:
+            // the queue runs past the splice, where it is dropped, and the
+            // restart there queues afresh.
+            if !cutSplice.isTaking(currentSentence, token: token) { _ = landCutShortSplice() }
             return
         }
         // The first clip in the incoming voice is now the one playing.
@@ -1928,6 +1934,84 @@ final class PlaybackController: ObservableObject {
         cuePrefetch()
     }
 
+    /// A splice cut short (R11's cooling switch on a deep queue), reached:
+    /// the outgoing voice's clips still queued from here on are dropped, and
+    /// the incoming voice reads on from this sentence, its first clip
+    /// already warmed (`primeHandoff`), so the status stays playing. Inside a
+    /// pause's ramp too: the node would otherwise keep those clips for the
+    /// resume. The ramp ends here (pausing the node), so the next Play
+    /// starts afresh from this sentence; the pause's own place moves here
+    /// with it. False before the splice.
+    private func landCutShortSplice() -> Bool {
+        guard let pending = handoff, pending.outgoingThrough != nil,
+              let splice = pending.spliceAt, currentSentence >= splice else { return false }
+        commitHandoff()
+        if isActive {
+            startPlayback(at: currentSentence, keepingPlaying: isClipReady(at: currentSentence, in: voice))
+        } else {
+            invalidateSchedule()
+            stampResumeAnchor()
+            placeStopMovedByPauseRamp()
+            cuePrefetch()
+        }
+        return true
+    }
+
+    /// P009: the marker ahead of a cut-short splice rendered, and the
+    /// outgoing voice's clip there is rendering silent (`CutSpliceSilencer`).
+    /// The cut lands now, one output latency (a Bluetooth route's ~0.2 s)
+    /// before the sentence ahead of it reports itself heard: that sentence's
+    /// ending plays out of the output's own buffer, and nothing of the
+    /// dropped clip is heard. The level comes back once the queue is flushed
+    /// (`invalidateSchedule`), or here when nothing lands.
+    private func cutSpliceRendered(at sentence: Int, token: UInt64) {
+        cutSplice.land(sentence, token: token)
+        // Not a flush (the system stopping the engine calls every completion
+        // at once) and no restart since.
+        if token == playToken, audioEngine.isRunning {
+            if currentSentence < sentence, isActive || isRampingToPause {
+                // Rendered to its end: the sentence before ends here, and
+                // its own callback finds the restart's token.
+                sentenceFinished(sentence - 1, token: token)
+            } else {
+                // Already past the sentence before, or paused with the
+                // silenced clip still on the node (the pause's ramp ended
+                // first): the place moves to it, as a ramp crossing it would.
+                currentSentence = max(currentSentence, sentence)
+                _ = landCutShortSplice()
+            }
+            // The switch dropped meanwhile (a pick of the voice reading):
+            // the silenced clip's opening went unheard, so it starts again.
+            if cutSplice.isSilencing {
+                if isActive {
+                    startPlayback(at: currentSentence, keepingPlaying: isClipReady(at: currentSentence, in: voice))
+                } else if status == .paused {
+                    invalidateSchedule()
+                }
+            }
+        }
+        reopenCutSplice(clearing: false)
+    }
+
+    /// Lifts a cut-short splice's silence back to the requested level;
+    /// `clearing` also forgets what the render side was waiting for.
+    private func reopenCutSplice(clearing: Bool) {
+        cutSplice.unsilence(restoring: Self.effectiveOutputVolume(requestedOutputVolume, muted: isOutputMuted),
+                            clearing: clearing)
+    }
+
+    /// Whether sentence `index` plays in `voice` without waiting on
+    /// synthesis: its clip cached, or a beat of silence.
+    private func isClipReady(at index: Int, in voice: TtsVoice) -> Bool {
+        guard let content, content.sentences.indices.contains(index) else { return false }
+        if skippedSentences.contains(index) { return true }
+        let spoken = SentenceSegmenter.spokenText(content.sentences[index].text, skipBrackets: skipBrackets)
+        if spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        let key = AudioClipCache.key(voice: voice, skipBrackets: skipBrackets, contentHash: content.contentHash,
+                                     nativeSpeed: nativePace(for: voice), sentenceID: index)
+        return cache.clip(forKey: key) != nil
+    }
+
     private func invalidateSchedule() {
         // A restart (a seek, a skip, a voice change) takes a dry spell over:
         // it ends here, given up, never carried into the new start's wait.
@@ -1948,6 +2032,9 @@ final class PlaybackController: ObservableObject {
         frozenSentenceElapsed = nil
         player.stop()
         onAudioScheduleEvent?(.stopped)
+        // A clip a cut-short splice silenced went with the queue: the level
+        // comes back for whatever plays next.
+        reopenCutSplice(clearing: true)
         wordTiming.reset()   // player.stop() rewound the node's sample time
     }
 
@@ -2127,11 +2214,14 @@ final class PlaybackController: ObservableObject {
         }
         var splice = min(lastScheduled + 1, content.sentences.count)
         // Too deep a queue for the switch's limit: it lands at the next
-        // boundary, where the clips queued past it are dropped.
+        // boundary the render hasn't reached (the main actor hears of each
+        // one an output latency late), where the clips queued past it are
+        // dropped; its marker silences them as it renders.
         if let limit = pending.landingWithin, splice - currentSentence > max(limit, 1),
-           currentSentence + 1 < content.sentences.count {
+           currentSentence + 1 < content.sentences.count,
+           let next = cutSplice.arm(after: currentSentence, through: lastScheduled, token: playToken) {
             pending.outgoingThrough = lastScheduled
-            splice = currentSentence + 1
+            splice = next
         }
         pending.spliceAt = splice
         handoff = pending
@@ -2392,13 +2482,17 @@ final class PlaybackController: ObservableObject {
 
     /// The ONLY writer of the main mixer volume. Every ramp, fade, edge and
     /// restore goes through it, so a test mute can never be ramped back up.
+    /// It writes through `CutSpliceSilencer`, whose own writes are a cut
+    /// splice's zero and the restore of this level.
     /// Before the graph exists it only records the level: `connectGraph`
     /// writes it the moment the mixer is connected, before the engine can
     /// start, so the mute holds without building the output at launch.
     private func setOutputVolume(_ volume: Float) {
         requestedOutputVolume = volume
         if graphFormat != nil {
-            audioEngine.mainMixerNode.outputVolume = Self.effectiveOutputVolume(volume, muted: isOutputMuted)
+            // Through the cut-short splice's silencer: a ramp step never
+            // lifts its silence.
+            cutSplice.write(Self.effectiveOutputVolume(volume, muted: isOutputMuted))
         }
         onAudioEdge?(.volume(volume))
         #if DEBUG
@@ -2556,6 +2650,7 @@ final class PlaybackController: ObservableObject {
             engine.connect(timePitch, to: engine.mainMixerNode, format: format)
         }
         graphFormat = format
+        cutSplice.attach(audioEngine.mainMixerNode)   // the mixer every level write reaches
         // A reconnect re-asserts the requested level (never louder than the
         // mute, never a jump out of a fade).
         setOutputVolume(requestedOutputVolume)
@@ -2865,6 +2960,121 @@ final class PlaybackController: ObservableObject {
     }
 }
 
+/// P009: the render side of a splice cut short (R11's cooling switch on an
+/// iPhone's deep queue). The marker ahead of the splice's clip reports
+/// itself rendered from the audio thread, one output latency before the
+/// sentence ending ahead of it is heard, and the main mixer goes to zero
+/// right there: the outgoing voice's clip renders silent until the main
+/// actor drops it. Never the player node's own volume, which a node feeding
+/// an effect (the time-pitch unit) ignores. Every main-mixer write passes
+/// through `write`, so no ramp step lifts the silence meanwhile. The lock
+/// guards the marks only: no mixer is written while it is held.
+final class CutSpliceSilencer: @unchecked Sendable {
+    private struct Mark: Equatable {
+        let sentence: Int
+        let token: UInt64
+    }
+
+    private let lock = NSLock()
+    /// The main mixer, once the graph is connected (`attach`).
+    private var mixer: AVAudioMixerNode?
+    private var armed: Mark?
+    /// Silenced at, the main actor not yet told.
+    private var fired: Mark?
+    /// The last marker rendered: the render is inside that sentence's clip.
+    private var rendered: Mark?
+    private var silencing = false
+    private var silencedAt: Int?
+
+    /// Arms the first sentence past `current` whose marker hasn't rendered
+    /// under `token`; nil, arming nothing, past `last` (the last queued).
+    func arm(after current: Int, through last: Int, token: UInt64) -> Int? {
+        lock.withLock {
+            let reached = rendered.flatMap { $0.token == token ? $0.sentence : nil } ?? current
+            let sentence = max(current, reached) + 1
+            guard sentence <= last else { return nil }
+            armed = Mark(sentence: sentence, token: token)
+            return sentence
+        }
+    }
+
+    func disarm() {
+        lock.withLock { armed = nil }
+    }
+
+    /// The main mixer of the graph just connected.
+    func attach(_ mixer: AVAudioMixerNode) {
+        lock.withLock { self.mixer = mixer }
+    }
+
+    /// From the audio thread: the marker ahead of `sentence`'s clip
+    /// rendered. True when that is the armed splice, now silenced.
+    func markerRendered(_ sentence: Int, token: UInt64) -> Bool {
+        let silenced: AVAudioMixerNode?? = lock.withLock {
+            let mark = Mark(sentence: sentence, token: token)
+            if rendered.map({ $0.token < token || ($0.token == token && $0.sentence < sentence) }) ?? true {
+                rendered = mark
+            }
+            guard armed == mark else { return nil }
+            armed = nil
+            fired = mark
+            silencing = true
+            silencedAt = sentence
+            return .some(mixer)
+        }
+        guard let mixer = silenced else { return false }
+        Self.set(mixer, to: 0)
+        return true
+    }
+
+    /// Whether the render side lands the cut at `sentence`: armed there,
+    /// or silenced there with the main actor not yet told.
+    func isTaking(_ sentence: Int, token: UInt64) -> Bool {
+        lock.withLock {
+            let mark = Mark(sentence: sentence, token: token)
+            return armed == mark || fired == mark
+        }
+    }
+
+    /// The main actor has heard of the cut at `sentence`.
+    func land(_ sentence: Int, token: UInt64) {
+        lock.withLock {
+            if fired == Mark(sentence: sentence, token: token) { fired = nil }
+        }
+    }
+
+    /// Writes `level` to the mixer, or zero while silenced. A cut silencing
+    /// it between the read and the write still wins.
+    func write(_ level: Float) {
+        let (mixer, silenced) = lock.withLock { (self.mixer, silencing) }
+        Self.set(mixer, to: silenced ? 0 : level)
+        if !silenced, isSilencing { Self.set(mixer, to: 0) }
+    }
+
+    /// Lifts the silence back to `level`, unless another cut silenced it
+    /// since, its landing still to come; `clearing` (the queue flushed)
+    /// also forgets the armed and silenced marks.
+    func unsilence(restoring level: Float, clearing: Bool) {
+        let lifted: AVAudioMixerNode?? = lock.withLock {
+            if clearing { armed = nil; fired = nil }
+            guard silencing, fired == nil else { return nil }
+            silencing = false
+            return .some(mixer)
+        }
+        guard let mixer = lifted else { return }
+        Self.set(mixer, to: level)
+        if isSilencing { Self.set(mixer, to: 0) }
+    }
+
+    var isSilencing: Bool { lock.withLock { silencing } }
+    var lastSilencedSentence: Int? { lock.withLock { silencedAt } }
+
+    /// The app's one write of the main mixer's level.
+    private static func set(_ mixer: AVAudioMixerNode?, to level: Float) {
+        mixer?.outputVolume = level
+    }
+}
+
 #if DEBUG
 // MARK: - Test seams (DEBUG)
 
@@ -2882,6 +3092,11 @@ extension PlaybackController {
     /// Whether the engine runs now (M19's idle stop). Reading it never
     /// builds the output.
     var isEngineRunning: Bool { audioEngine.isRunning }
+
+    /// P009: whether a cut-short splice holds the mixer at zero now, and the
+    /// sentence whose marker last did so.
+    var isSilencingCutSplice: Bool { cutSplice.isSilencing }
+    var cutSpliceSilencedAt: Int? { cutSplice.lastSilencedSentence }
 
     /// Delivers `.AVAudioEngineConfigurationChange` for this controller's
     /// engine, as the system would after an output change.

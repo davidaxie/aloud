@@ -74,6 +74,27 @@ final class ThermalGuardTests: XCTestCase {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
+    /// Sentences queued past the one playing.
+    private static func ahead(_ rig: PlaybackTestRig) -> Int {
+        (scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence
+    }
+
+    /// The look-ahead reaches the strained count and never passes it: two
+    /// sentences on an iPhone, the whole queue on a Mac.
+    private func assertLookAheadStaysStrained(_ rig: PlaybackTestRig,
+                                              file: StaticString = #filePath, line: UInt = #line) async {
+        let expected = PlaybackController.lookAheadCount(
+            characterCounts: rig.content.sentences.map(\.text.count), rate: 1,
+            seconds: PlatformPlaybackTuning.lookAheadSeconds, range: PlatformPlaybackTuning.lookAheadSentences,
+            strainedCap: PlatformPlaybackTuning.lookAheadUnderStrain)
+        let reached = await rig.waitUntil(2) { Self.ahead(rig) >= expected }
+        XCTAssertTrue(reached, file: file, line: line)
+        await elapse(0.1)
+        XCTAssertLessThanOrEqual(Self.ahead(rig), expected, "never past the strained count", file: file, line: line)
+        if PlatformPlaybackTuning.lookAheadUnderStrain != nil { XCTAssertEqual(expected, 2, file: file, line: line) }
+        rig.controller.pause()
+    }
+
     // MARK: - Serious: the System voice while it cools
 
     func testSeriousSwitchesToSystemGaplesslyAtASentenceStart() async throws {
@@ -142,6 +163,59 @@ final class ThermalGuardTests: XCTestCase {
         rig.controller.pause()
     }
 
+    /// P009: the cut is timed from the render side. The marker ahead of
+    /// the splice's clip silences it as it renders, before any hop to the
+    /// main actor (an output latency after it, the sentence before would
+    /// only now report itself heard), and the level stays down until the
+    /// natural voice's queue is flushed. The restart in the System voice,
+    /// its first clip already warmed, never shows the busy ring.
+    func testACutShortSpliceIsSilentFromItsMarkerUntilTheQueueIsFlushed() async throws {
+        guard PlatformPlaybackTuning.coolingSwitchLandsWithin != nil else {
+            throw XCTSkip("a Mac splices after its whole queue")
+        }
+        let rig = makeRig(deepQueue: true)
+        try await startPlaying(rig)
+        let deep = PlatformPlaybackTuning.lookAheadSentences.upperBound
+        let filled = await rig.waitUntil(2) { Self.ahead(rig) >= deep }
+        try XCTSkipUnless(filled && rig.controller.status == .playing, "the queue never filled")
+        let thermal = makeGuard(rig)
+        final class Levels {
+            var silentAtFlush: Bool?
+            var silentAtFirstSystemClip: Bool?
+        }
+        let levels = Levels()
+        let record = rig.controller.onAudioScheduleEvent
+        rig.controller.onAudioScheduleEvent = { [weak controller = rig.controller] event in
+            switch event {
+            case .stopped where levels.silentAtFlush == nil:
+                levels.silentAtFlush = controller?.isSilencingCutSplice
+            case .scheduled(_, let voiceID) where voiceID == Self.system.id && levels.silentAtFirstSystemClip == nil:
+                levels.silentAtFirstSystemClip = controller?.isSilencingCutSplice
+            default:
+                break
+            }
+            record?(event)
+        }
+        let statusMark = rig.statuses.count
+        let mark = rig.events.count
+
+        thermal.thermalStateChanged(.serious)
+        let systemQueued = await rig.waitUntil(2) {
+            Self.scheduled(Array(rig.events[mark...])).contains { $0.voiceID == Self.system.id }
+        }
+        XCTAssertTrue(systemQueued)
+        let firstSystem = try XCTUnwrap(Self.scheduled(Array(rig.events[mark...])).first { $0.voiceID == Self.system.id })
+        XCTAssertEqual(rig.controller.cutSpliceSilencedAt, firstSystem.sentence,
+                       "the marker ahead of the splice silenced the natural voice's clip there")
+        XCTAssertEqual(levels.silentAtFlush, true, "silent from the marker until the natural voice's clips are flushed")
+        XCTAssertEqual(levels.silentAtFirstSystemClip, false, "the level is back for the System voice")
+        XCTAssertFalse(rig.controller.isSilencingCutSplice)
+        XCTAssertFalse(rig.statuses[statusMark...].contains(.buffering), "the switch never shows the busy ring")
+        XCTAssertEqual(rig.controller.status, .playing)
+        XCTAssertEqual(rig.controller.voice, Self.system)
+        rig.controller.pause()
+    }
+
     /// P009: a pause whose 120 ms ramp crosses a cut-short splice drops
     /// the natural voice's queued clips there too, so the Play after it
     /// reads on in the System voice from the splice, never resuming the
@@ -199,19 +273,44 @@ final class ThermalGuardTests: XCTestCase {
         let rig = makeRig(deepQueue: true)
         rig.controller.isUnderStrain = { true }
         try await startPlaying(rig)
-        let range = PlatformPlaybackTuning.lookAheadSentences
-        let expected = PlaybackController.lookAheadCount(
-            characterCounts: rig.content.sentences.map(\.text.count), rate: 1,
-            seconds: PlatformPlaybackTuning.lookAheadSeconds, range: range,
-            strainedCap: PlatformPlaybackTuning.lookAheadUnderStrain)
-        let reached = await rig.waitUntil(2) {
-            (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence >= expected
+        await assertLookAheadStaysStrained(rig)
+    }
+
+    /// The strain AppModel installs (`AppModel.strain`), hot before Play:
+    /// the look-ahead shrinks where the platform says so.
+    func testHeatShrinksTheLookAheadThroughAppModelsStrain() async throws {
+        let rig = makeRig(deepQueue: true)
+        let thermal = makeGuard(rig)
+        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { false }
+        thermal.thermalStateChanged(.serious)
+        try await startPlaying(rig, in: Self.system)
+        await assertLookAheadStaysStrained(rig)
+        XCTAssertTrue(thermal.isHot, "heat, not Low Power Mode, held it")
+    }
+
+    /// The same closure in Low Power Mode, cool: the look-ahead shrinks too.
+    func testLowPowerModeShrinksTheLookAheadThroughAppModelsStrain() async throws {
+        let rig = makeRig(deepQueue: true)
+        let thermal = makeGuard(rig)
+        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { true }
+        try await startPlaying(rig)
+        await assertLookAheadStaysStrained(rig)
+        XCTAssertFalse(thermal.isHot, "Low Power Mode, not heat, held it")
+    }
+
+    /// Cool and on full power, the closure leaves an iPhone its whole queue.
+    func testNeitherHeatNorLowPowerKeepsTheWholeLookAhead() async throws {
+        guard PlatformPlaybackTuning.lookAheadUnderStrain != nil else {
+            throw XCTSkip("a Mac keeps its whole queue either way")
         }
-        XCTAssertTrue(reached)
-        await elapse(0.1)
-        let ahead = (Self.scheduled(rig.events).map(\.sentence).max() ?? -1) - rig.controller.currentSentence
-        XCTAssertLessThanOrEqual(ahead, expected, "never past the strained count")
-        if PlatformPlaybackTuning.lookAheadUnderStrain != nil { XCTAssertEqual(expected, 2) }
+        let rig = makeRig(deepQueue: true)
+        let thermal = makeGuard(rig)
+        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { false }
+        try await startPlaying(rig)
+        let deep = PlatformPlaybackTuning.lookAheadSentences.upperBound
+        let filled = await rig.waitUntil(2) { Self.ahead(rig) >= deep }
+        XCTAssertTrue(filled, "six sentences past the one playing")
+        XCTAssertFalse(thermal.isHot)
         rig.controller.pause()
     }
 

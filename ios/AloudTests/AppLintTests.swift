@@ -43,7 +43,9 @@ final class AppLintTests: XCTestCase {
     }
 
     /// R19/R20: PlaybackController.setOutputVolume is the mixer's only
-    /// writer in either app, so the mute and every ramp hold everywhere. The
+    /// writer in either app (through CutSpliceSilencer's one write, which
+    /// adds only a cut splice's zero and the restore of that level), so the
+    /// mute and every ramp hold everywhere. The
     /// Mac's own files set no volume at all (AVSpeech's utterance volume is
     /// the shared engine's).
     func testOneOutputVolumeWriter() throws {
