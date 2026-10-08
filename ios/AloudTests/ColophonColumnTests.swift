@@ -229,15 +229,37 @@ final class ColophonColumnTests: XCTestCase {
     /// short enough that the end of the text can reach it: the deep bottom
     /// inset is 45% of the screen, and the colophon plus that inset must
     /// cover the 72% of the view below the line.
-    func testAReopenPlacesTheColophonOnTheLandingLine() throws {
+    func testAReopenPlacesTheColophonOnTheChip() throws {
         let (coordinator, textView) = try makeColumn(height: 560, active: 159, colophon: colophon)
         coordinator.placeActiveSentence()
         settleLayout(textView)
 
+        // R1-19: the end block sits just above the More classics chip (the
+        // viewport is measured above it), not with its top at 28%.
         let viewport = try XCTUnwrap(coordinator.viewport())
-        let top = try colophonRect(coordinator, textView).minY
-        XCTAssertEqual(top, viewport.minY + FollowBand.landing * viewport.height, accuracy: 1,
-                       "the colophon's top at 28%")
+        XCTAssertEqual(try colophonRect(coordinator, textView).maxY, viewport.maxY, accuracy: 1,
+                       "the colophon's bottom on the chip line")
+        let lastRange = (textView.textStorage.string as NSString).range(of: "Line 159 is short.")
+        let last = try XCTUnwrap(rect(of: lastRange, in: textView))
+        XCTAssertGreaterThanOrEqual(last.minY, viewport.minY, "the last sentence still shows")
+    }
+
+    /// R1-19: the highlight fades out under the colophon and is back at
+    /// once when it clears; the active sentence never moves.
+    func testTheHighlightFadesUnderTheColophonAndComesBack() throws {
+        let (coordinator, textView) = try makeColumn(active: 159)
+        XCTAssertEqual(textView.highlightLayer.sentenceOpacity, 1)
+        coordinator.setColophon(colophon, animated: true)
+        XCTAssertEqual(textView.highlightLayer.sentenceOpacity, 0, "no fill under the colophon")
+        XCTAssertEqual(textView.highlightLayer.markOpacity, 0, "and no mark")
+        XCTAssertEqual(coordinator.activeSentence, 159, "the active sentence is unchanged")
+
+        coordinator.setColophon(nil, animated: true)   // Listen again, Back 15, a jump or Undo
+        XCTAssertEqual(textView.highlightLayer.sentenceOpacity, 1, "back at once")
+        XCTAssertEqual(textView.highlightLayer.markOpacity, 1)
+
+        let (_, reopenedView) = try makeColumn(active: 159, colophon: colophon)
+        XCTAssertEqual(reopenedView.highlightLayer.sentenceOpacity, 0, "a reopen at the end is already faded")
     }
 
     /// The voice reaches the end low in the band; the colophon below it is
@@ -252,8 +274,8 @@ final class ColophonColumnTests: XCTestCase {
         settleLayout(textView)
 
         let viewport = try XCTUnwrap(coordinator.viewport())
-        XCTAssertTrue(FollowBand.contains(try colophonRect(coordinator, textView), in: viewport),
-                      "the colophon is in the band")
+        XCTAssertEqual(try colophonRect(coordinator, textView).maxY, viewport.maxY, accuracy: 1,
+                       "the colophon lands on the chip line (R1-19)")
         XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "and stays put")
         XCTAssertTrue(coordinator.isFollowing)
     }

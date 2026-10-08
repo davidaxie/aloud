@@ -552,8 +552,10 @@ struct ReaderColumnView: NSViewRepresentable {
             }
             sentenceRanges = built.sentenceRanges
             // A fresh column, a reopen included, shows the colophon in
-            // place: only an end reached on screen fades in.
+            // place: only an end reached on screen fades in, and the
+            // highlight is already out under it (R1-19).
             shownColophon = parent.colophon
+            page?.highlight.setSentenceHidden(parent.colophon != nil)
             endMarkRange = built.endMarkRange
             removeColophonVeil()
             builtHash = content.contentHash
@@ -889,6 +891,11 @@ struct ReaderColumnView: NSViewRepresentable {
             shownColophon = colophon
             follow.cachedActiveRect = nil   // the follow target moved (`followRange`)
             removeColophonVeil()
+            // R1-19: the highlight fades out under the colophon (opacity
+            // only, so Reduce Motion keeps it), and is back at once, before
+            // the next highlight draws, when it clears.
+            page?.highlight.setSentenceHidden(colophon != nil,
+                                              fadeDuration: appearing && animated ? Theme.Motion.colophon : nil)
             if colophon != nil, isFollowing { followIfNeeded(animated: true) }
             if appearing, animated { fadeInColophon() }
             updateFollowChip()
@@ -960,11 +967,38 @@ struct ReaderColumnView: NSViewRepresentable {
                 return
             }
             let appearance = textView.effectiveAppearance
-            page.highlight.showSentence(segments(for: sentenceRanges[shown]),
+            let heading = headingFontSize(at: sentenceRanges[shown])
+            let containerWidth = textView.textContainer?.size.width ?? 0
+            page.highlight.showSentence(glyphSegments(for: shown),
                                         fill: appearance.resolvedCGColor(Theme.highlightBg),
                                         mark: appearance.resolvedCGColor(Theme.accent),
                                         gutterX: textView.textContainerOrigin.x,
+                                        style: heading == nil ? .body : .heading, em: heading ?? 0,
+                                        trailingEdge: containerWidth > 0
+                                            ? textView.textContainerOrigin.x + containerWidth : nil,
                                         animated: animated, reduceMotion: reduceMotion())
+        }
+
+        /// R1-17: a centred sentence is a chapter heading (the only centred
+        /// ones): its font's size, else nil.
+        private func headingFontSize(at range: NSRange) -> CGFloat? {
+            guard let storage = textView?.textStorage, range.location < storage.length,
+                  let style = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+                    as? NSParagraphStyle, style.alignment == .center else { return nil }
+            return (storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)?.pointSize
+                ?? builtFontSize
+        }
+
+        /// R1-18: sentence `id`'s word frames, so each highlighted row ends at
+        /// its last glyph, not at a trailing space; its lines if it has none.
+        private func glyphSegments(for id: Int) -> [HighlightLayers.Segment] {
+            let words = (wordRanges(for: id) ?? []).compactMap { $0 }.flatMap { segments(for: $0) }
+            return words.isEmpty ? segments(for: sentenceRanges[id]) : words
+        }
+
+        /// The sentence fill's and margin mark's opacity (R1-19); for tests.
+        var highlightOpacity: (sentence: Float, mark: Float)? {
+            page.map { ($0.highlight.sentenceOpacity, $0.highlight.markOpacity) }
         }
 
         /// Word layer: an accent underline under the spoken word. With

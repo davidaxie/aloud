@@ -162,6 +162,37 @@ final class ReaderChromeUITest: XCTestCase {
         XCTAssertEqual(stringValue(of: scrub), position, "A still press should not move the position")
     }
 
+    // MARK: - The Aa sheet (R1-14)
+
+    /// With Aa up, a tap on the page closes the sheet and plays nothing:
+    /// the play status, the playhead and the position are unchanged. Muted
+    /// like every UI test, and nothing starts playing.
+    func testATapOnThePageClosesTheAppearanceSheet() throws {
+        let app = openSeededReader()
+        let scrub = element("player.scrub", in: app)
+        XCTAssertTrue(scrub.waitForExistence(timeout: 10))
+        let start = try XCTUnwrap(waitForSentence(in: app, timeout: 10) { _ in true },
+                                  "The playhead probe should appear")
+        let play = app.buttons["player.play"].firstMatch
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        let status = play.label
+        let position = stringValue(of: scrub)
+
+        app.buttons["reader.appearance"].firstMatch.tap()
+        let done = app.buttons["appearance.done"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "Aa should open its sheet")
+        app.textViews["reader.text"].firstMatch
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: done)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "The tap should close the sheet")
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        XCTAssertEqual(play.label, status, "The tap should not start or stop playback")
+        XCTAssertNil(waitForSentence(in: app, timeout: 1) { $0 != start },
+                     "The tap should leave the playhead on sentence \(start)")
+        XCTAssertEqual(stringValue(of: scrub), position, "The tap should not move the position")
+    }
+
     // MARK: - Contents
 
     func testContentsSearch() {

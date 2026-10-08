@@ -130,6 +130,24 @@ enum FollowBand {
         return max(previous, (slotHeight + Theme.Space.sm).rounded(.up))
     }
 
+    /// R1-19: the contentOffset.y that ends the book on the chip: the
+    /// colophon's bottom on the viewport's bottom edge (measured above the
+    /// More classics chip, `obscuredBottom(showsChip: true)`), clamped so
+    /// the last sentence's top stays below the top chrome. Where the last
+    /// sentence and the colophon don't fit together (the accessibility
+    /// sizes), the colophon shows in full first: on the chip if it fits the
+    /// viewport alone, else its top under the chrome. Clamped to `range`.
+    static func colophonLandingOffsetY(colophon: CGRect, lastSentence: CGRect?, viewport: CGRect,
+                                       contentOffsetY: CGFloat, range: ClosedRange<CGFloat>) -> CGFloat {
+        let onTheChip = colophon.maxY - viewport.maxY
+        var shift = onTheChip
+        if let lastSentence { shift = min(shift, lastSentence.minY - viewport.minY) }
+        if shift < onTheChip {
+            shift = colophon.height <= viewport.height ? onTheChip : colophon.minY - viewport.minY
+        }
+        return min(max(contentOffsetY + shift, range.lowerBound), range.upperBound)
+    }
+
     /// Both at once: the bar with the chip floating over it, and a sheet
     /// resting over the page, whichever reaches further up the text.
     static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,

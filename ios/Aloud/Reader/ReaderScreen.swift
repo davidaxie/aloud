@@ -24,8 +24,6 @@ struct ReaderScreen: View {
     /// Carries the in-app Appearance override (and `-uitest-force-dark`);
     /// the nav bar is resolved and pinned from it (see `Theme.bgResolved`).
     @Environment(\.colorScheme) private var colorScheme
-    /// At the accessibility sizes the bar shows the title alone (P046).
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @AppStorage(ReaderTextSize.prefKey) private var textSizeStep = ReaderTextSize.defaultStep
 
@@ -63,6 +61,9 @@ struct ReaderScreen: View {
     /// How far the chip slot reaches above the bar: the tallest chip seen
     /// and its padding, a running maximum (`FollowBand.chipReach`, P049).
     @State private var chipReach: CGFloat = 0
+    /// The open's signpost (R1-16), from the load starting to the column's
+    /// first string; ended as given up if the reader goes first.
+    @State private var openSignpost: BudgetSignposts.Interval?
     /// The page's width, measured before the text loads, so the column's
     /// first build is set for its real measure (P043).
     @State private var pageWidth: CGFloat?
@@ -102,7 +103,10 @@ struct ReaderScreen: View {
                     bookTitle: liveDocument.title,
                     bookAuthor: liveDocument.author,
                     pageWidth: pageWidth,
-                    onPinchTextSize: pinchTextSize)
+                    onPinchTextSize: pinchTextSize,
+                    // R1-14: with Aa up, a tap on the page closes the sheet.
+                    onDismissTap: showAppearanceSheet ? { showAppearanceSheet = false } : nil,
+                    onColumnShown: { BudgetSignposts.live.end(&openSignpost) })
                 .ignoresSafeArea(edges: .bottom)
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .named(Self.space)).maxY
@@ -156,9 +160,9 @@ struct ReaderScreen: View {
         .overlay(alignment: .topLeading) { sentenceProbe }
         #endif
         .navigationBarTitleDisplayMode(.inline)
-        // The system back button, chevron only (VoiceOver: "Back"), which
-        // also brings back the edge swipe to the Library.
-        .toolbarRole(.editor)
+        // The back button is the plain system button, as on Classics and
+        // Settings (with the edge swipe to the Library), and the title sits
+        // centred between it and Aa like every other screen's.
         // Paper, explicitly: the bar is the page's own color in both modes.
         // A static color resolved for THIS scheme (a dynamic one resolved in
         // the bar's light traits under an in-app Dark override: cream bar),
@@ -181,6 +185,7 @@ struct ReaderScreen: View {
         .task {
             await load()
         }
+        .onDisappear { BudgetSignposts.live.end(&openSignpost, gaveUp: true) }
     }
 
     // MARK: - Chrome
@@ -204,6 +209,7 @@ struct ReaderScreen: View {
                 .accessibilityIdentifier("reader.title")
                 .accessibilityAction(.magicTap) { togglePlayback() }
         }
+        .withoutGlassCapsule()
         ToolbarItem(placement: .topBarTrailing) {
             Button { showAppearanceSheet = true } label: {
                 Text("Aa")
@@ -229,22 +235,21 @@ struct ReaderScreen: View {
         return author
     }
 
-    /// The title over the author, as the Mac's window names both; the title
-    /// alone at the accessibility sizes, where two lines crowd the bar.
-    @ViewBuilder
+    /// The title over the author, as the Mac's window names both, at every
+    /// size: capped at xxLarge, where the bar caps its text anyway and both
+    /// lines fit.
     private var titleLines: some View {
-        if let author = shownAuthor, !dynamicTypeSize.isAccessibilitySize {
-            VStack(spacing: 0) {
-                titleText
+        VStack(spacing: 0) {
+            titleText
+            if let author = shownAuthor {
                 Text(author)
                     .font(Theme.font(.caption))
                     .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-        } else {
-            titleText
         }
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 
     private var titleText: some View {
@@ -372,6 +377,8 @@ struct ReaderScreen: View {
 
     private func load() async {
         guard content == nil else { return }
+        BudgetSignposts.live.end(&openSignpost, gaveUp: true)
+        openSignpost = BudgetSignposts.live.begin(.readerOpen)
 
         do {
             // UI-test hook (no-op in Release): `-uitest-fail-reader-load`
@@ -379,19 +386,17 @@ struct ReaderScreen: View {
             if UITestHooks.failReaderLoad { throw CocoaError(.fileReadCorruptFile) }
             let loaded = try await store.content(for: document)
             // Popped or replaced while the text loaded: never load this book
-            // over the one now showing.
-            guard !Task.isCancelled else { return }
+            // over the one now showing, and never start its audio.
+            guard !Task.isCancelled else {
+                BudgetSignposts.live.end(&openSignpost, gaveUp: true)
+                return
+            }
             content = loaded
-            navigation = ReaderNavigation(content: loaded, kind: document.kind)
 
+            // Audio first (R1-16): the voice starts while the page is set.
             // Reconciliation may have reset progress; load the live record so
             // the controller cues at the saved sentence.
             playback.load(document: liveDocument, content: loaded)
-            store.noteOpened(id: document.id)
-            // The System row names its voice on the Voice & speed sheet's
-            // first frame (P035): rank the pick for this book's language
-            // now, off the main thread, so that frame finds it cached.
-            AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage)
 
             // UI-test hook (no-op in Release): `-uitest-seek-text <substring>`
             // cues the playhead at the first sentence containing the
@@ -407,7 +412,26 @@ struct ReaderScreen: View {
             // without -uitest-allow-autoplay. A reader reopened at launch
             // waits at its place for Play.
             if router.takeAutoplayRequest(for: document.id) { playback.startAutoplay() }
+
+            // The System row names its voice on the Voice & speed sheet's
+            // first frame (P035): rank the pick for this book's language
+            // now, off the main thread, so that frame finds it cached.
+            AVSpeechEngine.warmSystemVoice(reading: playback.systemVoiceLanguage)
+
+            // Chapters and labels are pure: derived off the main thread, and
+            // shown (with the column) only for the book still loaded here.
+            let input = OffMain((loaded, document.kind))
+            let derived = await Task.detached(priority: .userInitiated) { () -> OffMain<ReaderNavigation> in
+                OffMain(ReaderNavigation(content: input.value.0, kind: input.value.1))
+            }.value
+            guard !Task.isCancelled, content?.contentHash == loaded.contentHash else {
+                BudgetSignposts.live.end(&openSignpost, gaveUp: true)
+                return
+            }
+            navigation = derived.value
+            store.noteOpened(id: document.id)
         } catch {
+            BudgetSignposts.live.end(&openSignpost, gaveUp: true)
             loadFailed = true
         }
     }
@@ -433,14 +457,13 @@ struct ReaderScreen: View {
         if playback.userPlayAction != plays { TransportHaptics.emit(.play) }
     }
 
-    /// A pinch on the page stepped the size (P044): stored like the Aa
-    /// sheet's stepper, so the column reflows keeping the place, with the
-    /// selection tick and the new size spoken.
+    /// A pinch on the page ended (P044, R1-15): its net step, stored like
+    /// the Aa sheet's stepper and the new size spoken, once per pinch. The
+    /// column has ticked each step and reflowed once itself.
     private func pinchTextSize(_ delta: Int) {
         let next = ReaderPinch.clamped(textSizeStep, by: delta)
         guard next != textSizeStep else { return }
         textSizeStep = next
-        TransportHaptics.emit(.preset)
         A11yAnnounce.post(ReaderMenuCopy.textSize(points: ReaderTextSize.points(forStep: next)))
     }
 
@@ -448,6 +471,19 @@ struct ReaderScreen: View {
     private func togglePlayback() {
         TransportHaptics.emitToggle(isActive: playback.isActive)
         playback.togglePlayPause()
+    }
+}
+
+private extension ToolbarContent {
+    /// Centred, iOS 26 would set the title in a glass capsule, like a
+    /// button (as `PaperTitleItem` opts out); earlier systems draw none.
+    @ToolbarContentBuilder
+    func withoutGlassCapsule() -> some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            self.sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
     }
 }
 

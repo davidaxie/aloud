@@ -1334,6 +1334,178 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertTrue(isInBand(coordinator))
     }
 
+    // MARK: One reflow per pinch (R1-15)
+
+    private final class Stored {
+        var deltas: [Int] = []
+        var ticks = 0
+    }
+
+    private func pinch(_ coordinator: ReaderTextView.Coordinator, _ states: [(UIGestureRecognizer.State, CGFloat)]) {
+        for (state, scale) in states {
+            coordinator.handlePinch(state: state, scale: scale, at: CGPoint(x: 195, y: 300))
+        }
+    }
+
+    func testAPinchReflowsOnceWhenItEnds() throws {
+        let (coordinator, _) = try makeColumn()
+        let stored = Stored()
+        coordinator.parent.onPinchTextSize = { stored.deltas.append($0) }
+        coordinator.pinchTick = { stored.ticks += 1 }
+        let builds = coordinator.columnBuilds
+
+        pinch(coordinator, [(.began, 1)])
+        for scale: CGFloat in [1.2, 1.4, 1.6] {   // past 1.15, 1.15², 1.15³
+            pinch(coordinator, [(.changed, scale)])
+            XCTAssertEqual(coordinator.columnBuilds, builds, "nothing rebuilds while the fingers move")
+        }
+        XCTAssertEqual(stored.ticks, 3, "a tick at each step")
+        XCTAssertEqual(stored.deltas, [], "nothing stored mid-pinch")
+
+        pinch(coordinator, [(.ended, 1.6)])
+        XCTAssertEqual(coordinator.columnBuilds, builds + 1, "one reflow for the whole pinch")
+        XCTAssertEqual(stored.deltas, [3], "the net step, stored once")
+        XCTAssertEqual(coordinator.builtFontSize, ReaderTextSize.points(forStep: ReaderTextSize.defaultStep + 3))
+        XCTAssertNil(coordinator.pinchPreview, "the live preview is gone")
+    }
+
+    func testAPinchIsClampedToTheStepper() throws {
+        let (coordinator, _) = try makeColumn()
+        let stored = Stored()
+        coordinator.parent.onPinchTextSize = { stored.deltas.append($0) }
+        coordinator.pinchTick = { stored.ticks += 1 }
+        pinch(coordinator, [(.began, 1), (.changed, 6), (.changed, 9), (.ended, 9)])
+        let top = ReaderTextSize.steps.count - 1
+        XCTAssertEqual(stored.deltas, [top - ReaderTextSize.defaultStep])
+        XCTAssertEqual(stored.ticks, 1, "the clamp ticks once")
+        XCTAssertEqual(coordinator.builtFontSize, ReaderTextSize.points(forStep: top))
+    }
+
+    func testACancelledPinchAppliesNothing() throws {
+        let (coordinator, _) = try makeColumn()
+        let stored = Stored()
+        coordinator.parent.onPinchTextSize = { stored.deltas.append($0) }
+        coordinator.pinchTick = { stored.ticks += 1 }
+        let builds = coordinator.columnBuilds
+        pinch(coordinator, [(.began, 1), (.changed, 1.6), (.cancelled, 1.6)])
+        XCTAssertEqual(coordinator.columnBuilds, builds, "no build")
+        XCTAssertEqual(stored.deltas, [], "the stored step is unchanged")
+        XCTAssertEqual(coordinator.builtFontSize, 19)
+        XCTAssertNil(coordinator.pinchPreview)
+        pinch(coordinator, [(.began, 1), (.changed, 1.2), (.failed, 1.2)])
+        XCTAssertEqual(coordinator.columnBuilds, builds)
+        XCTAssertEqual(stored.deltas, [])
+    }
+
+    /// The cost of one reflow 60% into a long chaptered book (1.2M
+    /// characters) at step 6. The baseline is recorded per machine in
+    /// Xcode's test report.
+    func testReflowDeepInALongChapteredBook() throws {
+        let filler = String(repeating: "and the river ran on past the houses ", count: 3)
+        let count = 10_000
+        let sentences = (0..<count).map {
+            Sentence(id: $0, text: "Sentence \($0) \(filler)to the sea.", para: $0 / 5, page: $0 / 400 + 1)
+        }
+        let paragraphs = (0..<(count / 5)).map {
+            Paragraph(id: $0, sentenceIDs: ($0 * 5)..<($0 * 5 + 5), page: $0 / 80 + 1)
+        }
+        let book = DocContent(title: "Long", pageCount: count / 400, sentences: sentences,
+                              paragraphs: paragraphs, contentHash: "follow-long-chaptered")
+        XCTAssertGreaterThan(sentences.reduce(0) { $0 + $1.text.count }, 1_200_000)
+        let (coordinator, _) = try makeColumn(content: book, chapterAt: 1)
+        coordinator.setActiveSentence(count * 6 / 10, scroll: false)
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        measure(metrics: [XCTClockMetric()], options: options) {
+            coordinator.reflowKeepingPlace(fontSize: ReaderTextSize.points(forStep: 6))
+        }
+        XCTAssertEqual(coordinator.builtFontSize, ReaderTextSize.points(forStep: 6))
+    }
+
+    // MARK: With the Aa sheet up (R1-14)
+
+    func testWithTheSheetUpATapClosesItAndPlaysNothing() throws {
+        let taps = Taps()
+        let (coordinator, textView) = try makeColumn(taps: taps)
+        let stored = Stored()
+        coordinator.parent.onDismissTap = { stored.ticks += 1 }
+        coordinator.handleTap(at: firstLine(textView), isDecelerating: false)
+        XCTAssertEqual(stored.ticks, 1, "the tap closed the sheet")
+        XCTAssertEqual(taps.sentences, [], "and played nothing")
+
+        coordinator.parent.onDismissTap = nil
+        coordinator.handleTap(at: firstLine(textView), isDecelerating: false)
+        XCTAssertEqual(taps.sentences.count, 1, "with no sheet, a tap plays at once")
+    }
+
+    // MARK: A fresh column, built off the main thread (R1-16)
+
+    private final class Shown {
+        var count = 0
+    }
+
+    private func freshParent(_ content: DocContent, shown: Shown) -> ReaderTextView {
+        var parent = ReaderTextView(content: content, fontSize: 19, activeSentence: 0, activeWord: -1,
+                                    voiceOffscreen: .constant(nil), textUnderTopBar: .constant(false),
+                                    onTapSentence: { _ in })
+        parent.onColumnShown = { shown.count += 1 }
+        return parent
+    }
+
+    func testAStaleAsyncBuildIsDiscardedAndReplaced() async throws {
+        let first = lines(40)
+        let second = lines(60)
+        let shown = Shown()
+        let coordinator = ReaderTextView.Coordinator(parent: freshParent(first, shown: shown))
+        let textView = ReaderUITextView(usingTextLayoutManager: true)
+        textView.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        coordinator.install(on: textView)
+
+        coordinator.buildFreshColumn()
+        XCTAssertNotNil(coordinator.freshBuild, "built off the main thread")
+        XCTAssertEqual(coordinator.columnBuilds, 0, "the paper stays bare meanwhile")
+        // The book changes mid-build.
+        coordinator.parent = freshParent(second, shown: shown)
+        await coordinator.columnSettled()
+
+        XCTAssertEqual(coordinator.builtHash, second.contentHash, "replaced by the current book")
+        XCTAssertEqual(coordinator.columnBuilds, 1, "the stale string never reached the page")
+        XCTAssertTrue(textView.textStorage.string.contains("Line 59 is short."))
+        XCTAssertEqual(shown.count, 1, "one first frame")
+        XCTAssertTrue(coordinator.isFollowing, "a fresh column starts on the voice")
+    }
+
+    // MARK: The end of the book lands on the chip (R1-19)
+
+    func testTheColophonLandsJustAboveTheChip() {
+        let viewport = CGRect(x: 0, y: 1000, width: 390, height: 600)
+        let last = CGRect(x: 24, y: 1440, width: 342, height: 50)
+        let colophon = CGRect(x: 24, y: 1500, width: 342, height: 120)
+        let y = FollowBand.colophonLandingOffsetY(colophon: colophon, lastSentence: last, viewport: viewport,
+                                                  contentOffsetY: 1000, range: 0...5000)
+        let landed = viewport.offsetBy(dx: 0, dy: y - 1000)
+        XCTAssertEqual(colophon.maxY, landed.maxY, accuracy: 1, "the colophon's bottom on the chip line")
+        XCTAssertGreaterThanOrEqual(last.minY, landed.minY, "the last sentence's top below the top chrome")
+    }
+
+    func testAnEndBlockTooTallShowsTheColophonInFullFirst() {
+        let viewport = CGRect(x: 0, y: 1000, width: 390, height: 600)
+        let last = CGRect(x: 24, y: 800, width: 342, height: 500)
+        let colophon = CGRect(x: 24, y: 1310, width: 342, height: 400)
+        let y = FollowBand.colophonLandingOffsetY(colophon: colophon, lastSentence: last, viewport: viewport,
+                                                  contentOffsetY: 1000, range: 0...5000)
+        XCTAssertEqual(colophon.maxY, viewport.offsetBy(dx: 0, dy: y - 1000).maxY, accuracy: 1,
+                       "the colophon whole, on the chip")
+        let huge = CGRect(x: 24, y: 1310, width: 342, height: 700)
+        let top = FollowBand.colophonLandingOffsetY(colophon: huge, lastSentence: last, viewport: viewport,
+                                                    contentOffsetY: 1000, range: 0...5000)
+        XCTAssertEqual(huge.minY, viewport.offsetBy(dx: 0, dy: top - 1000).minY, accuracy: 1,
+                       "taller than the screen: its top under the chrome")
+        XCTAssertEqual(FollowBand.colophonLandingOffsetY(colophon: colophon, lastSentence: last, viewport: viewport,
+                                                         contentOffsetY: 1000, range: 0...1100), 1100,
+                       "within the resting range")
+    }
+
     // MARK: The colophon, scrolled back from (P048)
 
     /// Twin of the Mac's testScrolledBackFromTheColophonThePageIsTheLabelAgain.

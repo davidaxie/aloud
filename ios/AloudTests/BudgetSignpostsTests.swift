@@ -97,7 +97,8 @@ final class BudgetSignpostsTests: XCTestCase {
 
     func testTheIntervalsAreTheFiveBudgetsAndTheDrySpells() {
         XCTAssertEqual(Budget.allCases.map(\.rawValue),
-                       ["launch", "modelCheck", "modelVerify", "kokoroWarmup", "firstAudio", "catchingUp"])
+                       ["launch", "modelCheck", "modelVerify", "kokoroWarmup", "firstAudio", "catchingUp",
+                        "readerOpen"])
         for budget in Budget.allCases {
             XCTAssertEqual(budget.name.description, budget.rawValue, "Instruments lists it by its budget")
         }
@@ -113,6 +114,20 @@ final class BudgetSignpostsTests: XCTestCase {
         signposts.end(signposts.begin(.firstAudio, .warm))
         signposts.end(signposts.begin(.firstAudio, .cold), gaveUp: true)
         XCTAssertEqual(recorder.trace(.firstAudio), ["begin warm", "end", "begin cold", "gave up"])
+    }
+
+    /// R1-16: the reader's open, ended as given up when the reader goes
+    /// before its column shows.
+    func testTheReaderOpenIsAnInterval() {
+        let recorder = Recorder()
+        let signposts = recorder.signposts
+        var open: BudgetSignposts.Interval? = signposts.begin(.readerOpen)
+        signposts.end(&open)
+        signposts.end(&open, gaveUp: true)
+        var popped: BudgetSignposts.Interval? = signposts.begin(.readerOpen)
+        signposts.end(&popped, gaveUp: true)
+        XCTAssertEqual(recorder.trace(.readerOpen), ["begin", "end", "begin", "gave up"])
+        XCTAssertEqual(recorder.unpaired, [])
     }
 
     func testAnOptionalEndsOnceAndClears() {

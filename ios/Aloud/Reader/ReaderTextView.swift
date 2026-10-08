@@ -80,6 +80,13 @@ struct ReaderTextView: UIViewRepresentable {
     /// A pinch on the page crossed a threshold: step the text size by this
     /// many steps (P044).
     var onPinchTextSize: (Int) -> Void = { _ in }
+    /// R1-14: set while the Aa sheet is up. A tap on the page then closes
+    /// the sheet and plays nothing; VoiceOver's Play from here and the
+    /// menu's still play (they call `onTapSentence` directly).
+    var onDismissTap: (() -> Void)? = nil
+    /// R1-16: a fresh column's first string is on the page (the end of the
+    /// reader's open, `BudgetSignposts.Budget.readerOpen`).
+    var onColumnShown: () -> Void = {}
 
     func makeUIView(context: Context) -> ReaderUITextView {
         let textView = ReaderUITextView(usingTextLayoutManager: true)
@@ -96,20 +103,13 @@ struct ReaderTextView: UIViewRepresentable {
             // A text-size step keeps the reader's place: the voice while
             // following, else the passage at the top of the screen.
             // Following is left as it was (mirrors the Mac's changeTextSize).
-            // The checks below then pick up anything else this update moved.
-            coordinator.reflowKeepingPlace(fontSize: fontSize)
+            // Quick steps coalesce (R1-15): the one reflow trails the last
+            // step, and the checks below pick up anything else meanwhile.
+            coordinator.reflowSoon()
         } else if coordinator.builtHash != content.contentHash {
-            coordinator.rebuild(content: content, fontSize: fontSize)
-            // A fresh column starts on the voice.
-            coordinator.lastFollowRequest = followRequest
-            coordinator.isFollowing = true
-            coordinator.setActiveSentence(activeSentence, scroll: false)
-            // Re-apply the word tint from CURRENT state — while paused no
-            // word tick arrives to restore it (mirrors rebuildForTraitChange).
-            coordinator.setActiveWord(activeWord)
-            // The placement aims at the spoken word in a tall sentence.
-            coordinator.setSpokenWord(followWord, follows: false)
-            Task { @MainActor in coordinator.placeActiveSentence() }
+            // A fresh column is set off the main thread (R1-16): the paper
+            // stays bare until it lands, then it starts on the voice.
+            coordinator.buildFreshColumn()
             return
         }
 
@@ -373,7 +373,7 @@ struct ReaderTextView: UIViewRepresentable {
 
         func rebuild(content: DocContent, fontSize: CGFloat) {
             guard let textView else { return }
-            cancelGlide()
+            cancelFreshBuild()
             // The gutter follows the size (P043): set it before the text
             // lays out, and set the text for the measure it leaves.
             textView.readingFontSize = fontSize
@@ -384,11 +384,114 @@ struct ReaderTextView: UIViewRepresentable {
                                                   colophon: parent.colophon,
                                                   columnWidth: width,
                                                   traits: textView.traitCollection)
+            apply(BuiltColumn(built), content: content, fontSize: fontSize, width: width,
+                  colophon: parent.colophon)
+        }
+
+        /// What a fresh column was set for: a string built for another
+        /// book, size, measure or look never reaches the page.
+        struct ColumnKey: Equatable {
+            let hash: String
+            let fontSize: CGFloat
+            let width: CGFloat?
+            let look: TraitLook
+        }
+
+        /// The fresh column being set off the main thread, and its key.
+        private(set) var freshBuild: Task<Void, Never>?
+        private var freshBuildKey: ColumnKey?
+
+        private func currentColumnKey() -> ColumnKey? {
+            guard let textView else { return nil }
+            let fontSize = parent.fontSize
+            return ColumnKey(hash: parent.content.contentHash, fontSize: fontSize,
+                             width: columnWidth(fontSize: fontSize), look: TraitLook(textView.traitCollection))
+        }
+
+        /// R1-16: a fresh column (a book opening) is built off the main
+        /// thread: the bold flag, the live ink, the measure and the size are
+        /// read here, the string and its sentence ranges are made in a
+        /// detached task, and back on main the string is set only if the
+        /// book, size, measure and look still match; else it is built again
+        /// for what they are now. The ink stays dynamic, so light/dark only
+        /// recolors. The paper stays bare until then (R20: no spinner).
+        func buildFreshColumn() {
+            guard let textView else { return }
+            let content = parent.content
+            let fontSize = parent.fontSize
+            textView.readingFontSize = fontSize
+            textView.applyColumnInsets()
+            guard let key = currentColumnKey(), key != freshBuildKey else { return }   // already on its way
+            freshBuild?.cancel()
+            freshBuildKey = key
+            let input = OffMain((content, parent.isChapterBook, parent.colophon,
+                                 textView.traitCollection.legibilityWeight == .bold,
+                                 ReaderInk.live(traits: textView.traitCollection)))
+            let colophon = parent.colophon
+            freshBuild = Task { @MainActor [weak self] in
+                let built = await Task.detached(priority: .userInitiated) { () -> OffMain<BuiltColumn> in
+                    let (content, isChapterBook, colophon, bold, ink) = input.value
+                    return OffMain(BuiltColumn(ReaderColumnText.makeAttributedString(
+                        content: content, fontSize: fontSize, isChapterBook: isChapterBook,
+                        colophon: colophon, columnWidth: key.width, bold: bold, ink: ink)))
+                }.value
+                guard let self, !Task.isCancelled, self.freshBuildKey == key else { return }
+                self.freshBuild = nil
+                self.freshBuildKey = nil
+                guard self.currentColumnKey() == key else {
+                    self.buildFreshColumn()   // stale: set it again for what it is now
+                    return
+                }
+                self.apply(built.value, content: content, fontSize: fontSize, width: key.width,
+                           colophon: colophon)
+                if self.shownColophon != self.parent.colophon {
+                    self.setColophon(self.parent.colophon, animated: false)
+                }
+                self.startOnTheVoice()
+                self.parent.onColumnShown()
+            }
+        }
+
+        /// Waits for the fresh column in flight, a replacement included;
+        /// for tests.
+        func columnSettled() async {
+            while let build = freshBuild { await build.value }
+        }
+
+        private func cancelFreshBuild() {
+            freshBuild?.cancel()
+            freshBuild = nil
+            freshBuildKey = nil
+        }
+
+        /// A fresh column starts on the voice, from the CURRENT state: the
+        /// word tint too, since while paused no word tick arrives to restore
+        /// it (mirrors rebuildForTraitChange), and the placement aims at the
+        /// spoken word in a tall sentence.
+        private func startOnTheVoice() {
+            lastFollowRequest = parent.followRequest
+            isFollowing = true
+            setActiveSentence(parent.activeSentence, scroll: false)
+            setActiveWord(parent.activeWord)
+            setSpokenWord(parent.followWord, follows: false)
+            Task { @MainActor [weak self] in self?.placeActiveSentence() }
+        }
+
+        /// Puts a built string on the page and resets everything measured
+        /// on the old one.
+        private func apply(_ built: BuiltColumn, content: DocContent, fontSize: CGFloat, width: CGFloat?,
+                           colophon: ReaderColophon?) {
+            guard let textView else { return }
+            cancelGlide()
+            pendingReflow?.cancel()
+            pendingReflow = nil
             textView.attributedText = built.string
             sentenceRanges = built.sentenceRanges
             // A fresh column, a reopen included, shows the colophon in place:
-            // only an end reached on screen fades in (`setColophon`).
-            shownColophon = parent.colophon
+            // only an end reached on screen fades in (`setColophon`), and the
+            // highlight is already out under it (R1-19).
+            shownColophon = colophon
+            textView.highlightLayer.setSentenceHidden(colophon != nil)
             endMarkRange = built.endMarkRange
             removeColophonVeil()
             builtHash = content.contentHash
@@ -506,6 +609,25 @@ struct ReaderTextView: UIViewRepresentable {
             view.subviews.forEach(redraw)
         }
 
+        /// How long a text-size step waits for the next before the column
+        /// reflows (R1-15): three quick A+ taps cost one rebuild. The stored
+        /// step and the sheet's readout move at once.
+        static let reflowDelay: Duration = .milliseconds(150)
+        private var pendingReflow: Task<Void, Never>?
+
+        /// The size changed: reflow once the steps stop (`reflowDelay`).
+        func reflowSoon() {
+            pendingReflow?.cancel()
+            pendingReflow = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.reflowDelay)
+                guard let self, !Task.isCancelled else { return }
+                self.pendingReflow = nil
+                guard self.builtHash == self.parent.content.contentHash,
+                      self.builtFontSize != self.parent.fontSize else { return }
+                self.reflowKeepingPlace(fontSize: self.parent.fontSize)
+            }
+        }
+
         /// Rebuilds for a change that reflows the book (a text-size step,
         /// Bold Text) and keeps the reader's place: the voice while
         /// following (the spoken word in a tall sentence), else the passage
@@ -594,6 +716,11 @@ struct ReaderTextView: UIViewRepresentable {
             shownColophon = colophon
             follow.cachedActiveRect = nil   // the follow target moved (`followRange`)
             removeColophonVeil()
+            // R1-19: the highlight fades out under the colophon (opacity
+            // only, so Reduce Motion keeps it), and is back at once, before
+            // the next highlight draws, when it clears.
+            textView.highlightLayer.setSentenceHidden(colophon != nil,
+                                                      fadeDuration: appearing && animated ? Theme.Motion.colophon : nil)
             if colophon != nil, isFollowing { followIfNeeded(animated: true) }
             if appearing, animated { fadeInColophon() }
             updateFollowChip()
@@ -662,14 +789,35 @@ struct ReaderTextView: UIViewRepresentable {
                 return
             }
             let traits = textView.traitCollection
+            let heading = headingFontSize(at: sentenceRanges[activeSentence])
+            let containerWidth = textView.textContainer.size.width
             textView.highlightLayer.showSentence(
-                segments(for: sentenceRanges[activeSentence]),
+                glyphSegments(for: activeSentence),
                 fill: UIColor(Theme.highlightBg).resolvedColor(with: traits),
                 mark: UIColor(Theme.accent).resolvedColor(with: traits),
                 // The mark follows the gutter, never nearer the screen's edge
                 // than 8 pt (P043's narrow gutter at the largest sizes).
                 gutterX: max(textView.textContainerInset.left, ReaderUITextView.minimumMarkGutter),
+                style: heading == nil ? .body : .heading, em: heading ?? 0,
+                trailingEdge: containerWidth > 0 ? textView.textContainerInset.left + containerWidth : nil,
                 animated: animated)
+        }
+
+        /// R1-17: a centred sentence is a chapter heading (the only centred
+        /// ones): its font's size, else nil.
+        private func headingFontSize(at range: NSRange) -> CGFloat? {
+            guard let storage = textView?.textStorage, range.location < storage.length,
+                  let style = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+                    as? NSParagraphStyle, style.alignment == .center else { return nil }
+            return (storage.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont)?.pointSize
+                ?? builtFontSize
+        }
+
+        /// R1-18: sentence `id`'s word frames, so each highlighted row ends at
+        /// its last glyph, not at a trailing space; its lines if it has none.
+        private func glyphSegments(for id: Int) -> [HighlightLayers.Segment] {
+            let words = (wordRanges(for: id) ?? []).compactMap { $0 }.flatMap { segments(for: $0) }
+            return words.isEmpty ? segments(for: sentenceRanges[id]) : words
         }
 
         /// Word layer: an accent underline under the spoken word, drawn in
@@ -798,7 +946,8 @@ struct ReaderTextView: UIViewRepresentable {
             }
             guard let sentence = activeSentenceRect(), let viewport = viewport() else { return }
             let rect = followedRect(sentence: sentence, in: viewport)
-            guard !FollowBand.contains(rect, in: viewport),
+            // The colophon always lands on the chip (R1-19), in the band or not.
+            guard shownColophon != nil || !FollowBand.contains(rect, in: viewport),
                   let target = rect == sentence ? landingTarget() : landingOffset(for: rect) else { return }
             // Nothing within a point: pinned at an end of the text.
             switch ReaderFollowEngine.move(to: target, in: scrollState(viewport: viewport),
@@ -887,6 +1036,15 @@ struct ReaderTextView: UIViewRepresentable {
             guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
             follow.cachedActiveRect = rect
             guard let viewport = viewport() else { return nil }
+            if shownColophon != nil {
+                // R1-19: the end block sits just above the More classics chip
+                // (the viewport is measured above it), the live end and a
+                // reopen alike.
+                let last = sentenceRanges.last.flatMap { boundingRect(for: $0) }
+                return FollowBand.colophonLandingOffsetY(colophon: rect, lastSentence: last, viewport: viewport,
+                                                         contentOffsetY: textView?.contentOffset.y ?? 0,
+                                                         range: restingOffsets())
+            }
             return landingOffset(for: followedRect(sentence: rect, in: viewport))
         }
 
@@ -1269,16 +1427,91 @@ struct ReaderTextView: UIViewRepresentable {
         // MARK: Pinch to size (P044)
 
         @objc func handlePinch(_ pinch: UIPinchGestureRecognizer) {
-            switch pinch.state {
+            handlePinch(state: pinch.state, scale: pinch.scale,
+                        at: textView.map { pinch.location(in: $0) } ?? .zero)
+        }
+
+        /// Steps the pinch has crossed since it began, clamped against the
+        /// built step; nothing is stored or rebuilt until it ends.
+        private(set) var pinchSteps = 0
+        /// The page as it was when the pinch began, scaled live under the
+        /// fingers (a snapshot on the page's paper; the text view's own
+        /// offset and transform are never touched).
+        private(set) var pinchPreview: UIView?
+        /// The selection tick at each step crossed.
+        var pinchTick: () -> Void = { TransportHaptics.emit(.preset) }
+
+        /// One reflow per pinch (R1-15): `.changed` only counts steps,
+        /// ticks and scales the preview; `.ended` stores the net step once
+        /// (`onPinchTextSize`, which speaks the size once) and reflows once
+        /// through `reflowKeepingPlace`; a cancelled or failed pinch applies
+        /// nothing.
+        func handlePinch(state: UIGestureRecognizer.State, scale: CGFloat, at location: CGPoint) {
+            switch state {
             case .began:
                 pinchAnchor = 1
+                pinchSteps = 0
+                showPinchPreview()
             case .changed:
-                let step = ReaderPinch.step(scale: pinch.scale, anchor: pinchAnchor)
+                let step = ReaderPinch.step(scale: scale, anchor: pinchAnchor)
                 pinchAnchor = step.anchor
-                if step.delta != 0 { parent.onPinchTextSize(step.delta) }
+                guard step.delta != 0 else { return }
+                let built = builtStep
+                let next = ReaderPinch.clamped(built + pinchSteps, by: step.delta) - built
+                guard next != pinchSteps else { return }
+                pinchSteps = next
+                pinchTick()
+                scalePinchPreview(about: location)
+            case .ended:
+                let steps = pinchSteps
+                let built = builtStep
+                endPinch()
+                guard steps != 0 else { return }
+                parent.onPinchTextSize(steps)
+                reflowKeepingPlace(fontSize: ReaderTextSize.points(forStep: built + steps))
             default:
-                pinchAnchor = 1
+                endPinch()
             }
+        }
+
+        /// The stepper's step nearest the size the column is built at.
+        private var builtStep: Int {
+            ReaderTextSize.steps.indices.min(by: {
+                abs(ReaderTextSize.steps[$0] - builtFontSize) < abs(ReaderTextSize.steps[$1] - builtFontSize)
+            }) ?? ReaderTextSize.defaultStep
+        }
+
+        private func showPinchPreview() {
+            guard let textView, pinchPreview == nil, builtFontSize > 0,
+                  let snapshot = textView.snapshotView(afterScreenUpdates: false) else { return }
+            // In content coordinates, over the visible page.
+            let cover = UIView(frame: textView.bounds)
+            cover.backgroundColor = UIColor(Theme.bg).resolvedColor(with: textView.traitCollection)
+            cover.isUserInteractionEnabled = false
+            cover.accessibilityElementsHidden = true
+            cover.clipsToBounds = true
+            snapshot.frame = cover.bounds
+            cover.addSubview(snapshot)
+            textView.addSubview(cover)
+            pinchPreview = cover
+        }
+
+        /// Scales the preview to the pending size about the pinch.
+        private func scalePinchPreview(about location: CGPoint) {
+            guard let cover = pinchPreview, let snapshot = cover.subviews.first, builtFontSize > 0 else { return }
+            let scale = ReaderTextSize.points(forStep: builtStep + pinchSteps) / builtFontSize
+            let dx = location.x - cover.frame.midX
+            let dy = location.y - cover.frame.midY
+            snapshot.transform = CGAffineTransform(translationX: dx, y: dy)
+                .scaledBy(x: scale, y: scale)
+                .translatedBy(x: -dx, y: -dy)
+        }
+
+        private func endPinch() {
+            pinchPreview?.removeFromSuperview()
+            pinchPreview = nil
+            pinchAnchor = 1
+            pinchSteps = 0
         }
 
         /// The tap recognizer fired for the touch that `touchLanded` saw.
@@ -1294,6 +1527,11 @@ struct ReaderTextView: UIViewRepresentable {
             if isDecelerating {
                 deceleratingAfterDrag = false
                 userScrollEnded()
+                return
+            }
+            // R1-14: with the Aa sheet up, a tap closes it and plays nothing.
+            if let dismiss = parent.onDismissTap {
+                dismiss()
                 return
             }
             guard let offset = characterOffset(at: point),
@@ -1545,11 +1783,21 @@ struct ReaderTextView: UIViewRepresentable {
             guard let textView, textView.window != nil,
                   let id = (configuration.identifier as? NSNumber)?.intValue,
                   sentenceRanges.indices.contains(id) else { return nil }
-            let rects = segments(for: sentenceRanges[id]).map { NSValue(cgRect: $0.frame.insetBy(dx: -4, dy: -2)) }
-            guard !rects.isEmpty else { return nil }
-            let parameters = UIPreviewParameters(textLineRects: rects)
+            // A snapshot of the sentence's on-screen lines (R1-13): lifting
+            // the text view itself would hide the whole column behind the
+            // menu. Taken fresh for each preview, the dismissal's included.
+            let lines = segments(for: sentenceRanges[id]).map { $0.frame.insetBy(dx: -4, dy: -2) }
+            let clipped = lines.map { $0.intersection(textView.bounds) }.filter { !$0.isNull && !$0.isEmpty }
+            guard let union = clipped.dropFirst().reduce(clipped.first, { $0?.union($1) }),
+                  let snapshot = textView.resizableSnapshotView(from: union, afterScreenUpdates: false,
+                                                                withCapInsets: .zero) else { return nil }
+            let parameters = UIPreviewParameters(textLineRects: clipped.map {
+                NSValue(cgRect: $0.offsetBy(dx: -union.minX, dy: -union.minY))
+            })
             parameters.backgroundColor = UIColor(Theme.bg).resolvedColor(with: textView.traitCollection)
-            return UITargetedPreview(view: textView, parameters: parameters)
+            return UITargetedPreview(view: snapshot, parameters: parameters,
+                                     target: UIPreviewTarget(container: textView,
+                                                             center: CGPoint(x: union.midX, y: union.midY)))
         }
 
         /// The preview above the menu: the sentence in the reading serif on
@@ -1820,6 +2068,28 @@ final class ReaderSentencePreview: UIViewController {
         let fits = label.sizeThatFits(CGSize(width: max(width, 1), height: .greatestFiniteMagnitude))
         preferredContentSize = CGSize(width: width + 2 * pad, height: ceil(fits.height) + 2 * pad)
     }
+}
+
+// MARK: - Off-main column builds (R1-16)
+
+/// A built column string, handed from the detached build back to main.
+struct BuiltColumn {
+    let string: NSAttributedString
+    let sentenceRanges: [NSRange]
+    let endMarkRange: NSRange
+
+    init(_ built: (string: NSAttributedString, sentenceRanges: [NSRange], endMarkRange: NSRange)) {
+        string = built.string
+        sentenceRanges = built.sentenceRanges
+        endMarkRange = built.endMarkRange
+    }
+}
+
+/// A value carried across the detached build's boundary. Safe because each
+/// side only reads it, and the string is never mutated after it is built.
+struct OffMain<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }
 
 // MARK: - Pinch to size (P044)

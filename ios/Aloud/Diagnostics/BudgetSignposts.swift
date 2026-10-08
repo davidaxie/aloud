@@ -35,6 +35,9 @@ struct BudgetSignposts: Sendable {
         /// ready, so the listener heard silence. Its budget is none; each
         /// one is a stall M19 counts.
         case catchingUp
+        /// The reader's open (R1-16): from its load starting to the
+        /// column's first string on the page. Audio starts inside it.
+        case readerOpen
 
         /// The interval's name as Instruments lists it (`rawValue`, as the
         /// static string the signposter takes).
@@ -46,6 +49,7 @@ struct BudgetSignposts: Sendable {
             case .kokoroWarmup: return "kokoroWarmup"
             case .firstAudio: return "firstAudio"
             case .catchingUp: return "catchingUp"
+            case .readerOpen: return "readerOpen"
             }
         }
     }

@@ -1262,6 +1262,22 @@ final class ReaderColumnViewTests: XCTestCase {
 
     /// One page in its window, and the inputs it was last given.
     @MainActor
+    /// R1-19: at the end of the book the sentence fill and its mark fade
+    /// out under the colophon, and are back at once when it clears; the
+    /// highlighted sentence itself never moves.
+    func testTheHighlightFadesUnderTheColophonAndComesBack() throws {
+        let page = try makePage(sentences: 40, active: 39)
+        XCTAssertEqual(page.coordinator.highlightOpacity?.sentence, 1)
+        page.update(activeSentence: 39, colophon: ReaderColophon(title: "Column", author: nil, words: 900, rate: 1))
+        XCTAssertEqual(page.coordinator.highlightOpacity?.sentence, 0, "no fill under the colophon")
+        XCTAssertEqual(page.coordinator.highlightOpacity?.mark, 0, "and no mark")
+        XCTAssertEqual(page.coordinator.highlightedSentence, 39, "the sentence is still the active one")
+
+        page.coordinator.setColophon(nil, animated: true)   // Listen again, Back 15, a jump or Undo
+        XCTAssertEqual(page.coordinator.highlightOpacity?.sentence, 1, "back at once")
+        XCTAssertEqual(page.coordinator.highlightOpacity?.mark, 1)
+    }
+
     private final class Page {
         let window: NSWindow
         let scrollView: ReaderScrollView

@@ -53,7 +53,52 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertTrue(screen.contains("ReaderTitleCopy.label(title: liveDocument.title, author:"),
                       "the title bar's header names the author")
         XCTAssertTrue(screen.contains("Text(author)"), "the author's line under the title")
-        XCTAssertTrue(screen.contains("isAccessibilitySize"), "the title alone at the accessibility sizes")
+        // R1-20: the author at every size, the block capped where the bar
+        // caps its text, and the title centred like every other screen's.
+        XCTAssertTrue(screen.contains(".dynamicTypeSize(...DynamicTypeSize.xxLarge)"),
+                      "the title block is capped at xxLarge, where both lines fit")
+        XCTAssertFalse(screen.contains("isAccessibilitySize"), "the author shows at the accessibility sizes too")
+        XCTAssertFalse(screen.contains(".toolbarRole("), "no role that moves the title to the leading side")
+        XCTAssertTrue(screen.contains(".sharedBackgroundVisibility(.hidden)"), "no glass capsule behind the title")
+    }
+
+    /// R1-13: the sentence menu lifts a snapshot of the sentence's lines,
+    /// never the text view, which would hide the whole column behind it.
+    func testTheSentenceMenuLiftsASnapshot() throws {
+        let path = "Reader/ReaderTextView.swift"
+        let s = try SourceTree.sources(only: [path])
+        let view = try XCTUnwrap(s[path])
+        XCTAssertFalse(view.contains("UITargetedPreview(view: textView"), "lifting the text view blanks the page")
+        XCTAssertTrue(view.contains("resizableSnapshotView(from: union"), "a snapshot of the lines on screen")
+        XCTAssertTrue(view.contains("UIPreviewTarget(container: textView"))
+    }
+
+    /// R1-14: the Aa sheet's dismissal lives in the column's tap, not in
+    /// `tapSentence`, which VoiceOver's Play from here and the menu share.
+    func testATapWithTheSheetUpOnlyClosesIt() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let s = try SourceTree.sources(only: [path])
+        let screen = try XCTUnwrap(s[path])
+        XCTAssertTrue(screen.contains("onDismissTap: showAppearanceSheet ? { showAppearanceSheet = false } : nil"))
+        let tap = try XCTUnwrap(screen.range(of: "private func tapSentence("))
+        let body = screen[tap.lowerBound...].prefix(200)
+        XCTAssertFalse(body.contains("showAppearanceSheet"), String(body))
+    }
+
+    /// R1-16: opening a book starts its audio before chapters and labels
+    /// are derived, and derives them off the main thread.
+    func testOpeningABookStartsAudioFirst() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let s = try SourceTree.sources(only: [path])
+        let screen = try XCTUnwrap(s[path])
+        let start = try XCTUnwrap(screen.range(of: "private func load() async"))
+        let load = String(screen[start.lowerBound...])
+        let order = ["content = loaded", "playback.load(document:", "UITestHooks.seekText",
+                     "playback.startAutoplay()", "Task.detached(priority: .userInitiated)",
+                     "navigation = derived.value", "store.noteOpened"]
+        let offsets = try order.map { try XCTUnwrap(load.range(of: $0), $0).lowerBound }
+        XCTAssertEqual(offsets, offsets.sorted(), "audio first, then navigation, then the store")
+        XCTAssertTrue(load.contains("BudgetSignposts.live.begin(.readerOpen)"))
     }
 
     /// P050: the reader's type comes from the theme's tokens: no raw
