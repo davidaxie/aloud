@@ -108,8 +108,11 @@ final class SleepTimerUITest: XCTestCase {
                       "The chip should offer +15 min during the fade, got '\(chip.label)'")
         chip.tap()
 
-        let extended = NSPredicate(format: "label BEGINSWITH '15:00' OR label BEGINSWITH '14:5'")
-        XCTAssertTrue(wait(for: extended, on: chip, timeout: 5), "The timer reads 15:00, got '\(chip.label)'")
+        // The chip shows "15:00", but VoiceOver (and so XCUITest) reads the
+        // shared spoken label, `SleepTimer.chipSpokenLabel`: the time left in
+        // words, rounded up, so anything from 15:00 down to 14:01 says 15.
+        XCTAssertTrue(wait(for: "label == %@", "15 minutes left, sleep timer", on: chip, timeout: 5),
+                      "The timer reads 15 minutes, got '\(chip.label)'")
         XCTAssertEqual(stringValue(of: app.buttons["player.play"].firstMatch), "playing")
     }
 

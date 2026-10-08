@@ -20,6 +20,12 @@ final class KokoroPlaybackUITest: XCTestCase {
     /// HonestStopsUITest use the same model.
     static let modelDirectory = "/Users/Shared/AloudKokoroModel"
 
+    /// The Great Gatsby's first sentence of prose, about 6 s of speech at 1x.
+    /// The book otherwise opens cued on its chapter heading, "I": an audition
+    /// of that is under a second of "playing", shorter than the waiter's
+    /// one-second poll, so the wait could miss it and sit out its timeout.
+    private static let cuedSentence = "In my younger and more vulnerable years"
+
     override func setUp() {
         continueAfterFailure = false
     }
@@ -36,6 +42,9 @@ final class KokoroPlaybackUITest: XCTestCase {
             "-uitest-reset-library",
             "-uitest-seed-first-classic",
             "-uitest-open-first-doc",
+            // Cued (not playing) on a full sentence, so the audition below
+            // stays "playing" for several polls.
+            "-uitest-seek-text", Self.cuedSentence,
             "-uitest-reset-voice-pref",
             "-uitest-kokoro-model-path", Self.modelDirectory,
         ])
