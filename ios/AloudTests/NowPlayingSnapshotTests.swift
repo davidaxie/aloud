@@ -133,15 +133,28 @@ final class NowPlayingSnapshotTests: XCTestCase {
         XCTAssertEqual(ended.playbackRate, 0)
     }
 
-    func testOnlyPlayingReportsTheRate() {
+    func testOnlyPlayingOrBufferingReportsTheRate() {
         let navigation = makeNavigation()
-        for status in [PlayerStatus.idle, .buffering, .paused, .ended, .error] {
+        for status in [PlayerStatus.idle, .paused, .ended, .error] {
             XCTAssertEqual(snapshot(navigation, at: 4, status: status, rate: 1.5).playbackRate, 0, "\(status)")
         }
         let playing = snapshot(navigation, at: 4, status: .playing, rate: 1.5)
         XCTAssertEqual(playing.playbackRate, 1.5)
         XCTAssertEqual(playing.nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] as? Double, 1.5)
         XCTAssertEqual(playing.nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] as? Double, 1)
+    }
+
+    /// A sentence still buffering is a start on its way (L025): the system
+    /// hears the playing rate, as the app's circle shows Pause, and the push
+    /// when its audio starts differs, so the clock re-anchors at the heard time.
+    func testABufferingSentenceReportsThePlayingRateAndReanchorsWhenItStarts() throws {
+        let navigation = makeNavigation()
+        let buffering = snapshot(navigation, at: 4, status: .buffering, rate: 1.5)
+        let playing = snapshot(navigation, at: 4, status: .playing, rate: 1.5)
+        XCTAssertEqual(buffering.playbackRate, 1.5)
+        XCTAssertEqual(buffering.nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] as? Double, 1.5)
+        XCTAssertEqual(try XCTUnwrap(buffering.elapsed), try XCTUnwrap(playing.elapsed), accuracy: 1e-9)
+        XCTAssertNotEqual(buffering, playing, "the start's push would be skipped as unchanged")
     }
 
     /// Before navigation is built the push is identity only.

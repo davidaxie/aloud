@@ -299,6 +299,9 @@ final class PlaybackController: ObservableObject {
     /// sample. A surface deciding whether a tap is a Play (its haptic, a
     /// "play unless playing" guard) asks this, not `isActive`.
     var isListenerPlaying: Bool { audition == nil && isActive }
+    /// R8 with no book loaded: a voice sample is being made or heard
+    /// (`speakSample`; status stays `.idle`). A remote Pause cuts it.
+    private(set) var isSpeakingSample = false
 
     /// Mirrored from the word-highlight pref (AppModel). The karaoke frame
     /// ticker runs at 30 fps only while this is on, to feed the reader's
@@ -732,10 +735,12 @@ final class PlaybackController: ObservableObject {
         restoreResumeAnchor(for: document)
         if !content.sentences.isEmpty {
             // Play from the end starts at the top (Listen again): warm that.
+            // Either way the outgoing book's queued warm-ups are dropped
+            // first, so they never hold up this book's first Play.
             if status == .ended {
-                cuePrefetch(from: 0, through: 1, voice: voice)
+                cuePrefetch(from: 0, through: 1, voice: voice, replacingWarmUps: true)
             } else {
-                cuePrefetch()
+                cuePrefetch(moved: true)
             }
         }
     }
@@ -762,6 +767,10 @@ final class PlaybackController: ObservableObject {
         if let document { discardStop(for: document.id) }
         audition = nil
         invalidateSchedule()
+        // The closed book's queued warm-ups go too: nothing will read them.
+        Task { [scheduler, voice] in
+            await scheduler.prefetch([], voice: voice, replacingWarmUps: true)
+        }
         document = nil
         content = nil
         systemVoiceLanguage = nil
@@ -869,6 +878,12 @@ final class PlaybackController: ObservableObject {
         // A pause is the last word: no interruption's end resumes past it.
         // (`.began` sets the flag after its own stop has paused.)
         resumeAfterInterruption = false
+        // No book: the only audio is a voice sample (status stays `.idle`),
+        // and a Pause cuts it, heard or still being made.
+        if content == nil {
+            if isSpeakingSample { invalidateSchedule() }
+            return
+        }
         // R8: the listener was at the end, not paused on the last sentence.
         if isActive, audition?.restore == .ended {
             returnAuditionToTheEnd(rampsOut: rampsOut)
@@ -1061,12 +1076,22 @@ final class PlaybackController: ObservableObject {
     func stop(because reason: StopReason) {
         // Any later stop (headphones gone mid-call, heat) outranks an earlier
         // interruption's resume, even while already paused.
+        let interruptionWouldResume = resumeAfterInterruption
         resumeAfterInterruption = false
         // No book: the only audio is a voice sample (status stays `.idle`).
         // It is cut too, heard or still being made, so it never carries on
         // from the speaker once the headphones are gone.
         if content == nil { invalidateSchedule(); return }
-        guard isActive else { return }
+        guard isActive else {
+            // Paused by an interruption that would have resumed: this later
+            // stop is now why the book stays paused when it ends, so it
+            // replaces the interruption's reason and its pending line.
+            if interruptionWouldResume, let document,
+               stopped == PlaybackStop(reason: .interrupted, documentID: document.id) {
+                record(reason)
+            }
+            return
+        }
         let auditioning = audition != nil
         pause(rampsOut: false)
         guard !auditioning else { return }
@@ -1874,6 +1899,7 @@ final class PlaybackController: ObservableObject {
         playToken &+= 1
         scheduleTask?.cancel()
         hasActiveSchedule = false
+        isSpeakingSample = false
         lastScheduledCompression = nil
         setPreparingVoice(false)
         frozenSentenceElapsed = nil
@@ -2225,11 +2251,16 @@ final class PlaybackController: ObservableObject {
     private func speakSample(in voice: TtsVoice) {
         invalidateSchedule()
         let token = playToken
+        isSpeakingSample = true
         if voice.engine == .kokoro, let kokoro, !kokoro.isWarm {
             setPreparingVoice(true)
         }
         Task { [weak self] in
             guard let self else { return }
+            // A line that never starts is no sample speaking; a newer one
+            // (another token) keeps its own flag.
+            var started = false
+            defer { if !started, token == self.playToken { self.isSpeakingSample = false } }
             await self.scheduler.cancelPending()
             guard token == self.playToken, self.content == nil else { return }
             let made: SynthesizedAudio
@@ -2260,10 +2291,12 @@ final class PlaybackController: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self, token == self.playToken else { return }
                     self.player.stop()
+                    self.isSpeakingSample = false
                 }
             }
             self.onAudioScheduleEvent?(.scheduled(sentence: -1, voiceID: voice.id))
             self.player.play()
+            started = true
             // Status never changes for a sample: the idle wait starts again
             // here, so the engine never stops under the line.
             self.armIdleEngineStop()

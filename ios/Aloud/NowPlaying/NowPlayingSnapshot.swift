@@ -10,7 +10,10 @@ import MediaPlayer   // for the info keys only
 /// - Time is 1x media time at the shared 165 wpm. The rate rides on
 ///   `playbackRate` while playing (0 otherwise), so (duration - elapsed) /
 ///   rate is the in-app time left and the system extrapolates between
-///   updates at the right speed.
+///   updates at the right speed. A sentence still buffering counts as
+///   playing, as the in-app circle shows Pause: the lock screen's button
+///   and the Mac's transport state (read from the rate) agree with it, and
+///   the push when its audio starts re-anchors the system's clock.
 /// - Elapsed counts the heard part of the current sentence, never past its
 ///   end, and equals duration at the end of the book.
 /// - The artist is the author, else "Aloud"; the album is the chapter
@@ -25,6 +28,10 @@ struct NowPlayingSnapshot: Equatable {
     let duration: TimeInterval?
     let elapsed: TimeInterval?
     let playbackRate: Double
+    /// Buffering publishes the playing rate too; this keeps the two apart,
+    /// so the push when the audio starts re-anchors the elapsed time the
+    /// system ran on while the sentence was still being made.
+    let isBuffering: Bool
 
     /// `navigation` nil (not built yet) gives identity only: title, artist
     /// and rate. `sentenceElapsed` is real seconds heard of `sentence`.
@@ -32,7 +39,8 @@ struct NowPlayingSnapshot: Equatable {
          status: PlayerStatus, rate: Double, sentenceElapsed: TimeInterval) {
         self.title = title
         self.artist = Self.artist(for: author)
-        self.playbackRate = status == .playing ? rate : 0
+        self.playbackRate = status == .playing || status == .buffering ? rate : 0
+        self.isBuffering = status == .buffering
         guard let navigation else {
             album = nil
             span = nil

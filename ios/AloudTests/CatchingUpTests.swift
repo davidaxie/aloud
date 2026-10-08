@@ -301,4 +301,37 @@ final class CatchingUpTests: XCTestCase {
         XCTAssertEqual(queued, [20, 21], "only the new cue is warmed")
         held.release()
     }
+
+    /// Opening another book paused (a Finished one at its end, or plain)
+    /// drops the outgoing book's queued warm-ups, so they never hold up its
+    /// first Play (L001); closing the book drops its own.
+    func testOpeningOrClosingABookDropsTheOldBooksWarmUps() async throws {
+        for finished in [false, true] {
+            let held = HeldEngine(voices: [PlaybackTestRig.voiceA], holding: 0)
+            addTeardownBlock { held.release() }
+            let rig = PlaybackTestRig(sentences: 40, extraRoutes: [PlaybackTestRig.voiceA.id: held])
+            rig.loadDefault(at: 10)
+            let parked = await rig.waitUntil { held.isHolding }
+            try XCTSkipUnless(parked, "the cue's warm-up never started")
+            let oldBook = await poll { await rig.scheduler.queuedKeys.contains { $0.hasPrefix("rig-hash") } }
+            XCTAssertTrue(oldBook, "the old book's next sentence is queued")
+
+            let hash = "next-book-\(finished)"
+            let other = PlaybackTestRig.makeDocument(hash: hash, sentences: 6, progressSentence: finished ? 5 : 2,
+                                                     progressFraction: finished ? 1 : 0)
+            rig.controller.load(document: other, content: PlaybackTestRig.makeContent(hash: hash, count: 6))
+            XCTAssertEqual(rig.controller.isAtEnd, finished)
+            let prefix = String(hash.prefix(12))
+            let settled = await poll { await rig.scheduler.queuedKeys.filter { $0.hasPrefix(prefix) }.count == 2 }
+            XCTAssertTrue(settled, "finished \(finished): the new cue is warmed")
+            let queued = await rig.scheduler.queuedKeys
+            XCTAssertTrue(queued.allSatisfy { $0.hasPrefix(prefix) }, "finished \(finished): \(queued)")
+
+            rig.controller.unload()
+            let dropped = await poll(1) { await rig.scheduler.queuedKeys.isEmpty }
+            let left = await rig.scheduler.queuedKeys
+            XCTAssertTrue(dropped, "a closed book stops warming: \(left)")
+            held.release()
+        }
+    }
 }

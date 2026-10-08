@@ -177,6 +177,35 @@ final class StopReasonTests: XCTestCase {
         }
     }
 
+    /// Headphones gone during an interruption that would have resumed
+    /// (L002): they are now why the book stays paused, so their reason
+    /// replaces the interruption's, and theirs is the line announced, at
+    /// once in the foreground or when the app comes back.
+    func testHeadphonesLostDuringAnInterruptionBecomeTheStop() {
+        let headphones = StopReason.headphonesDisconnected.spokenText
+        for foreground in [false, true] {
+            let rig = interruptedRig()
+            rig.appActive = foreground
+
+            rig.audioSession.onRouteRequiresPause?()
+
+            XCTAssertEqual(rig.controller.stopped, stop(.headphonesDisconnected, rig), "foreground \(foreground)")
+            XCTAssertEqual(rig.stopStore.load(), stop(.headphonesDisconnected, rig), "persisted")
+            XCTAssertEqual(rig.announcements, foreground ? [headphones] : [])
+
+            rig.audioSession.onInterruption?(.ended(shouldResume: true))
+            XCTAssertFalse(rig.controller.isActive, "the end starts nothing")
+            rig.appActive = true
+            rig.controller.sceneDidBecomeActive()
+            XCTAssertEqual(rig.announcements, [headphones], "foreground \(foreground): once, and never the call's line")
+        }
+        // A route loss over an ordinary pause still records nothing.
+        let paused = interruptedRig()
+        paused.controller.pause()
+        paused.audioSession.onRouteRequiresPause?()
+        XCTAssertEqual(paused.controller.stopped, stop(.interrupted, paused))
+    }
+
     /// Undo back to a Finished book is the listener's move too: the book
     /// stays at its end, never restarting from sentence 0 on its own when
     /// the interruption that stopped the jumped-to playback ends.

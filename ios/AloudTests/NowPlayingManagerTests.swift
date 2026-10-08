@@ -403,6 +403,19 @@ final class NowPlayingManagerTests: XCTestCase {
         }
     }
 
+    /// With no book, only Pause and Play/Pause cut a voice sample (L028);
+    /// Play still continues the last book, and a loaded book takes its own.
+    func testOnlyAPauseCutsTheNoBookSample() {
+        for command in NowPlayingManager.RemoteTransportCommand.allCases {
+            let cuts = command == .pause || command == .togglePlayPause
+            XCTAssertEqual(NowPlayingManager.cutsSampleWithNoBook(command, hasBook: false, speakingSample: true),
+                           cuts, "\(command)")
+            XCTAssertFalse(NowPlayingManager.cutsSampleWithNoBook(command, hasBook: false, speakingSample: false))
+            XCTAssertFalse(NowPlayingManager.cutsSampleWithNoBook(command, hasBook: true, speakingSample: true),
+                           "a loaded book takes its own \(command)")
+        }
+    }
+
     // MARK: - Library changes
 
     /// A rename republishes the title and renders the art once more; a
@@ -478,13 +491,14 @@ final class NowPlayingManagerTests: XCTestCase {
 
     /// The transport state set beside the info (on the Mac; a no-op on the
     /// iPhone) reads the published rate, the same signal the lock screen
-    /// reads: stopped with nothing published, playing while the rate moves,
-    /// paused otherwise, the end of the book included.
+    /// reads: stopped with nothing published, playing while the rate moves
+    /// (a buffering sentence included, L025: the app's own button reads
+    /// Pause then), paused otherwise, the end of the book included.
     func testThePublishedStateFollowsThePublishedRate() {
         XCTAssertEqual(NowPlayingManager.state(for: nil), .stopped)
         let table: [(status: PlayerStatus, state: NowPlayingState)] = [
             (.playing, .playing), (.paused, .paused), (.ended, .paused),
-            (.buffering, .paused), (.idle, .paused), (.error, .paused),
+            (.buffering, .playing), (.idle, .paused), (.error, .paused),
         ]
         for row in table {
             let info = NowPlayingSnapshot(title: "T", author: nil, navigation: nil, sentence: 0,

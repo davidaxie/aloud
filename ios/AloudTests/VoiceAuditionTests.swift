@@ -241,6 +241,35 @@ final class VoiceAuditionTests: XCTestCase {
         XCTAssertFalse(rig.controller.isPreparingVoice)
     }
 
+    /// A headset Pause or Play/Pause during the no-book sample (L028) cuts
+    /// the sample, as a route loss does, and never continues the last book.
+    func testARemotePauseDuringTheNoBookSampleCutsItAndContinuesNothing() async throws {
+        for command in [NowPlayingManager.RemoteTransportCommand.togglePlayPause, .pause] {
+            let held = HeldSampleEngine()
+            defer { held.release() }   // a failed assertion never leaves the line parked
+            let rig = PlaybackTestRig(extraRoutes: [PlaybackTestRig.voiceB.id: held])
+            let manager = NowPlayingManager(publish: { _ in }, renderArtwork: { _ in nil })
+            manager.observe(playback: rig.controller)
+            var continued = 0
+            manager.onPlayWithNoBook = { continued += 1 }
+            rig.controller.selectVoice(PlaybackTestRig.voiceB)
+            let asked = await rig.waitUntil { held.requests > 0 }
+            XCTAssertTrue(asked, "the sample line is being made")
+            XCTAssertTrue(rig.controller.isSpeakingSample, "\(command)")
+
+            manager.handle(command)
+
+            XCTAssertEqual(continued, 0, "\(command) continued the last book")
+            XCTAssertFalse(rig.controller.isSpeakingSample, "\(command) left the sample going")
+            held.release()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            XCTAssertFalse(rig.events.contains { Self.sentence(of: $0) == -1 },
+                           "\(command): the sample started anyway: \(rig.events)")
+            XCTAssertNil(rig.controller.document)
+            XCTAssertEqual(rig.controller.status, .idle)
+        }
+    }
+
     // MARK: - Re-picking the selected voice
 
     func testReselectingCurrentVoiceWritesNothing() async throws {

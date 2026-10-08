@@ -192,6 +192,10 @@ final class NowPlayingManager {
             continuePlayback?.cancel()
             return
         }
+        if Self.cutsSampleWithNoBook(command, hasBook: hasBook, speakingSample: playback.isSpeakingSample) {
+            playback.pause()
+            return
+        }
         if Self.continuesWithNoBook(command, hasBook: hasBook) {
             onPlayWithNoBook?()
             return
@@ -204,6 +208,14 @@ final class NowPlayingManager {
     /// and the skips have nothing to act on.
     static func continuesWithNoBook(_ command: RemoteTransportCommand, hasBook: Bool) -> Bool {
         !hasBook && (command == .play || command == .togglePlayPause)
+    }
+
+    /// With nothing loaded but a voice sample speaking (or being made),
+    /// Pause and Play/Pause cut the sample, as for a route loss: a press
+    /// meant to silence it never starts the last book. Play still does.
+    static func cutsSampleWithNoBook(_ command: RemoteTransportCommand, hasBook: Bool,
+                                     speakingSample: Bool) -> Bool {
+        !hasBook && speakingSample && (command == .pause || command == .togglePlayPause)
     }
 
     /// With nothing loaded yet but a Continue load running (the first
@@ -248,7 +260,9 @@ final class NowPlayingManager {
     }
 
     /// Stopped when nothing is published; playing while the published rate
-    /// moves (the snapshot pushes 0 whenever it isn't playing); else paused.
+    /// moves (the snapshot pushes 0 unless a sentence plays or buffers, so a
+    /// buffering start reads playing, as the app's own Pause does); else
+    /// paused.
     static func state(for info: [String: Any]?) -> NowPlayingState {
         guard let info else { return .stopped }
         let rate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0
