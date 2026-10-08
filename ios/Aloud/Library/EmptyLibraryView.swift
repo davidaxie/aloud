@@ -130,7 +130,7 @@ struct EmptyLibraryView: View {
                 .frame(maxWidth: .infinity, minHeight: proxy.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
-            .shelfScrollEdge()
+            .shelfScrollEdge(rule: true)
         }
     }
 

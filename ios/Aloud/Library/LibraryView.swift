@@ -53,7 +53,9 @@ struct LibraryView: View {
     @State private var shelfWidth: CGFloat = 0
     /// Whether the clipboard holds text, for the paste item and link. Read
     /// without the paste prompt; the text itself is read only on a tap.
-    @State private var clipboardHasText = UIPasteboard.general.hasStrings
+    /// Read on appear, not here: RootView builds a LibraryView on every
+    /// import progress tick, and an initial value runs each time.
+    @State private var clipboardHasText = false
 
     /// The shelf as the feed has it.
     private var shelf: ShelfLayout { feed.layout }
@@ -143,6 +145,15 @@ struct LibraryView: View {
         }
         // Back from the reader, Classics or Settings: the saves made
         // meanwhile, once, so the Continue card shows the new place at once.
+        // On appear too: an interactive back swipe shows the Library for the
+        // whole gesture, before the pop completes and the path empties, and
+        // the book loaded under the reader belongs on the shelf by then. A
+        // current shelf is left alone; saves made during the swipe are
+        // rebuilt once the pop completes.
+        .onAppear {
+            feedShelf { $0.libraryShown(store.documents, loadedID: loadedID, stop: model.playback.stopped) }
+            refreshClipboard()
+        }
         .onChange(of: router.path.isEmpty) { _, shows in
             guard shows else { return }
             feedShelf { $0.libraryShown(store.documents, loadedID: loadedID, stop: model.playback.stopped) }
@@ -329,7 +340,7 @@ struct LibraryView: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
             shelfWidth = width
         }
-        .modifier(ShelfScrollEdge())
+        .modifier(ShelfScrollEdge(showsScrollRule: true))
     }
 
     private var documentGrid: some View {
@@ -590,26 +601,36 @@ private struct ContinueHero<Actions: View, MenuItems: View>: View {
 /// under it.
 ///
 /// The opaque bar draws no edge of its own, so covers slid under a bar of
-/// their own colour: a hairline fades in once anything has scrolled under
-/// it (`ShelfEdgeRule`), and none shows at rest, as on the Mac.
+/// their own colour: on the shelves (the Library, its empty state and
+/// Classics), which opt in with `showsScrollRule`, a hairline fades in once
+/// anything has scrolled under it (`ShelfEdgeRule`), and none shows at
+/// rest, as on the Mac. The other screens sharing the opaque bar keep it
+/// plain until someone looks at them with the rule.
 struct ShelfScrollEdge: ViewModifier {
     var ground: Color = Theme.bg
+    /// The hairline under the bar once content scrolls under it.
+    var showsScrollRule = false
 
     @State private var scrolledUnder = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content
+            let bar = content
                 .toolbarBackground(ground, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    ShelfEdgeRule.shows(contentOffsetY: geometry.contentOffset.y,
-                                        topInset: geometry.contentInsets.top)
-                } action: { _, scrolled in
-                    scrolledUnder = scrolled
-                }
-                .overlay(alignment: .top) { rule }
+            if showsScrollRule {
+                bar
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        ShelfEdgeRule.shows(contentOffsetY: geometry.contentOffset.y,
+                                            topInset: geometry.contentInsets.top)
+                    } action: { _, scrolled in
+                        scrolledUnder = scrolled
+                    }
+                    .overlay(alignment: .top) { rule }
+            } else {
+                bar
+            }
         } else {
             content
         }

@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// R4 and R10 end to end: the empty Library's shape, the + menu, every entry
@@ -176,18 +177,35 @@ final class LibraryEntryUITests: XCTestCase {
 
     /// P015: a small text file is added before the overlay's 0.8 s delay,
     /// so no scrim flashes and + never leaves the bar; the book still
-    /// opens, as a pick does (R4).
+    /// opens, as a pick does (R4). + shows only once the seeded book is on
+    /// the shelf, and the reader's push slides the bar out before the book
+    /// has loaded, so + is checked from its first sighting until the
+    /// reader starts coming in.
     func testAQuickAddNeverShowsTheOverlay() {
         let app = XCUIApplication.aloud([reset, seed, systemVoice, "-uitest-pick-fixture", "text"])
         app.launch()
 
+        let add = app.buttons["library.add"].firstMatch
+        var plusSeen = false
         let deadline = Date().addingTimeInterval(4)
         while Date() < deadline, !readerText(app).exists {
             XCTAssertFalse(overlay(app).exists, "a quick add shows no overlay")
+            // Read + first: a push starting after this read still shows
+            // in the reader check below it.
+            let plusHittable = add.isHittable
+            if plusSeen, !plusHittable {
+                XCTAssertTrue(readerIsComing(app), "+ left the bar during a quick add")
+            }
+            plusSeen = plusSeen || plusHittable
             usleep(100_000)
         }
         XCTAssertTrue(readerText(app).waitForExistence(timeout: 15), "the picked file opens")
         XCTAssertFalse(overlay(app).exists)
+    }
+
+    /// The reader is on its way in: pushed (its bar's Aa), or loaded.
+    private func readerIsComing(_ app: XCUIApplication) -> Bool {
+        app.buttons["reader.appearance"].firstMatch.exists || readerText(app).exists
     }
 
     /// P015: a slow add shows the overlay once the delay has passed, and
@@ -231,6 +249,80 @@ final class LibraryEntryUITests: XCTestCase {
         let featured = app.buttons["library.featured"].firstMatch
         XCTAssertTrue(featured.waitForExistence(timeout: 5))
         XCTAssertTrue(featured.isHittable)
+    }
+
+    // MARK: - Paste Text (P017)
+
+    /// Text copied in another app (here, the test runner) is added from
+    /// + > Paste Text once the system's paste prompt is allowed: one book,
+    /// titled from the first line, opened. Pasting the same text again
+    /// opens that book and adds no second copy.
+    func testPasteTextAddsTheClipboardOnceAndOpensIt() {
+        let title = "A Pasted Article"
+        UIPasteboard.general.string = """
+            \(title)
+
+            The first paragraph of an article copied to listen to later. It runs on for a second sentence.
+
+            A second paragraph closes it.
+            """
+        addTeardownBlock { UIPasteboard.general.items = [] }
+        let app = XCUIApplication.aloud([reset, seed, systemVoice])
+        app.launch()
+
+        let add = app.buttons["library.add"].firstMatch
+        XCTAssertTrue(add.waitForExistence(timeout: 15), "+ shows once the library holds a book")
+        XCTAssertTrue(waitForLibraryCount(1, in: app, timeout: 10), "the seeded classic")
+
+        pasteFromTheAddMenu(app)
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the pasted text opens")
+        let readerTitle = app.descendants(matching: .any)["reader.title"].firstMatch
+        XCTAssertTrue(readerTitle.waitForExistence(timeout: 5))
+        XCTAssertEqual(readerTitle.label, title, "titled from its first line")
+        tapSystemBack(app)
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForLibraryCount(2, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
+
+        pasteFromTheAddMenu(app)
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the same text opens its book")
+        XCTAssertEqual(readerTitle.label, title)
+        tapSystemBack(app)
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        XCTAssertFalse(waitForLibraryCount(3, in: app, timeout: 3), "a second paste adds no copy")
+        XCTAssertEqual(libraryCount(app), 2)
+    }
+
+    /// + > Paste Text, then Allow on the system's paste prompt if it asks
+    /// (it can't when the simulator already allows pasting from the runner).
+    private func pasteFromTheAddMenu(_ app: XCUIApplication,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        app.buttons["library.add"].firstMatch.tap()
+        let paste = app.buttons["Paste Text"].firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), file: file, line: line)
+        XCTAssertTrue(paste.isEnabled, "the clipboard holds text, so Paste Text is on", file: file, line: line)
+        paste.tap()
+        // The prompt is the system's, served outside the app, whose main
+        // thread waits on the answer: look for it there first.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allows = [springboard.buttons["Allow Paste"].firstMatch, app.buttons["Allow Paste"].firstMatch]
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let allow = allows.first(where: { $0.exists }) {
+                allow.tap()
+                return
+            }
+            if readerText(app).exists { return }
+            usleep(200_000)
+        }
+    }
+
+    private func waitForLibraryCount(_ count: Int, in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if libraryCount(app) == count { return true }
+            usleep(200_000)
+        } while Date() < deadline
+        return false
     }
 
     // MARK: - Delete to empty

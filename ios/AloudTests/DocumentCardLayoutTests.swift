@@ -163,4 +163,29 @@ final class DocumentCardLayoutTests: XCTestCase {
                                  "\(size) fixture: the title should need more than two lines")
         }
     }
+
+    // MARK: - Pressed plate (P019)
+
+    /// Pressed, a surface2 plate reaches `outset` (Theme.Space.xs, 8 pt)
+    /// past the card on every side; at rest nothing is drawn round it. A
+    /// 40 pt label padded 16 pt, rendered at 2x: pixel x 24 is 12 pt in,
+    /// 4 pt outside the label and inside the plate; pixel x 4 is 2 pt in,
+    /// past the plate's edge at 8 pt. Here, not in ShelfFeedTests, because
+    /// RenderedPixels is UIKit and the Mac host leaves it out.
+    func testThePressedPlateDrawsOnlyWhilePressed() throws {
+        XCTAssertEqual(ShelfPlateButtonStyle().outset, Theme.Space.xs)
+        XCTAssertEqual(Theme.Space.xs, 8, "the pixels below assume an 8 pt plate")
+        func render(pressed: Bool) throws -> RenderedPixels {
+            let view = ShelfPlateButtonStyle.Plated(isPressed: pressed) {
+                Color.clear.frame(width: 40, height: 40)
+            }
+            .padding(16)
+            return try XCTUnwrap(RenderedPixels(view, size: CGSize(width: 72, height: 72)))
+        }
+        let pressed = try render(pressed: true)
+        let resting = try render(pressed: false)
+        XCTAssertGreaterThan(pressed.rgba(x: 24, y: 72).a, 200, "on the plate, 4 pt outside the card")
+        XCTAssertEqual(resting.rgba(x: 24, y: 72).a, 0, "no plate at rest")
+        XCTAssertEqual(pressed.rgba(x: 4, y: 72).a, 0, "the plate stops 8 pt out")
+    }
 }

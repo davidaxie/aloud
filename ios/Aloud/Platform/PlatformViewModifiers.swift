@@ -27,9 +27,10 @@ extension View {
     }
 
     /// An opaque navigation bar in the screen's own `ground` (see
-    /// `ShelfScrollEdge`).
-    func shelfScrollEdge(ground: Color = Theme.bg) -> some View {
-        modifier(ShelfScrollEdge(ground: ground))
+    /// `ShelfScrollEdge`); `rule` adds its hairline once content scrolls
+    /// under it.
+    func shelfScrollEdge(ground: Color = Theme.bg, rule: Bool = false) -> some View {
+        modifier(ShelfScrollEdge(ground: ground, showsScrollRule: rule))
     }
 
     /// A menu lists its first item nearest the control that opens it.
@@ -81,8 +82,8 @@ extension View {
     }
 
     /// The window paints its own toolbar ground (paper, no separator), so a
-    /// screen has no bar edge to set.
-    func shelfScrollEdge(ground: Color = Theme.bg) -> some View {
+    /// screen has no bar edge or rule to set.
+    func shelfScrollEdge(ground: Color = Theme.bg, rule: Bool = false) -> some View {
         self
     }
 

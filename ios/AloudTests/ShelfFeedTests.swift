@@ -64,6 +64,37 @@ final class ShelfFeedTests: XCTestCase {
         XCTAssertEqual(feed.layout.hero?.progressSentence, 7)
     }
 
+    /// An interactive back swipe shows the Library before the pop completes
+    /// (the path still holds the reader). Its start rebuilds the shelf, so
+    /// the grid book opened under the reader is already the hero; a save
+    /// made during the swipe, while the reader is still on top, marks it
+    /// stale again, and the completed pop rebuilds it once more.
+    func testASwipeBackRebuildsAtItsStartAndAgainOnCompletion() {
+        var feed = ShelfFeed()
+        _ = feed.publish([started, other], loadedID: started.id, libraryShows: true)
+        XCTAssertEqual(feed.layout.hero?.id, started.id)
+        XCTAssertEqual(feed.layout.grid.map(\.id), [other.id])
+
+        // The grid book opens: the reader is pushed before the book loads.
+        var reading = other
+        reading.progressSentence = 2
+        _ = feed.publish([started, reading], loadedID: other.id, libraryShows: false)
+        XCTAssertEqual(feed.layout.hero?.id, started.id, "covered: the old shelf stands")
+
+        XCTAssertTrue(feed.libraryShown([started, reading], loadedID: other.id), "the swipe starts")
+        XCTAssertEqual(feed.layout.hero?.id, other.id, "the book being read is the hero mid-swipe")
+        XCTAssertEqual(feed.layout.hero?.progressSentence, 2)
+        XCTAssertEqual(feed.layout.grid.map(\.id), [started.id], "and has left the grid")
+
+        reading.progressSentence = 3
+        XCTAssertTrue(feed.publish([started, reading], loadedID: other.id, libraryShows: false), "a save mid-swipe")
+        XCTAssertTrue(feed.isStale)
+        XCTAssertTrue(feed.libraryShown([started, reading], loadedID: other.id), "the pop completes")
+        XCTAssertEqual(feed.layout.hero?.progressSentence, 3)
+        XCTAssertFalse(feed.libraryShown([started, reading], loadedID: other.id), "current: left alone")
+        XCTAssertEqual(feed.builds, 3)
+    }
+
     /// After a relaunch nothing is loaded, and a book a sleep timer stopped
     /// in its last minute reads Finished: the controller's stop keeps it the
     /// hero, as the launch restore and remote Play have it (F045).
@@ -318,23 +349,8 @@ final class ShelfFeedTests: XCTestCase {
 
     // MARK: - Pressed plate (P019)
 
-    /// Pressed, a surface2 plate reaches `outset` past the card; at rest
-    /// nothing is drawn round it. Rendered at 2x, so pixel (24, 72) is 12 pt
-    /// in from the edge: on the plate, 4 pt past the 40 pt label.
-    func testThePressedPlateDrawsOnlyWhilePressed() throws {
-        func render(pressed: Bool) throws -> RenderedPixels {
-            let view = ShelfPlateButtonStyle.Plated(isPressed: pressed) {
-                Color.clear.frame(width: 40, height: 40)
-            }
-            .padding(16)
-            return try XCTUnwrap(RenderedPixels(view, size: CGSize(width: 72, height: 72)))
-        }
-        let pressed = try render(pressed: true)
-        let resting = try render(pressed: false)
-        XCTAssertGreaterThan(pressed.rgba(x: 24, y: 72).a, 200, "the plate, 4 pt past the card")
-        XCTAssertEqual(resting.rgba(x: 24, y: 72).a, 0, "no plate at rest")
-        XCTAssertEqual(pressed.rgba(x: 4, y: 72).a, 0, "the plate stops at its outset")
-    }
+    // The rendered plate is measured in DocumentCardLayoutTests, beside the
+    // other UIKit-rendered card tests the Mac host leaves out.
 
     func testThePressScalesOnlyWithMotion() {
         XCTAssertTrue(ShelfPlateButtonStyle.drawsPlate(isPressed: true))

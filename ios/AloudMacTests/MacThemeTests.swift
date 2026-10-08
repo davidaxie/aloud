@@ -232,7 +232,7 @@ final class MacThemeTests: XCTestCase {
             AnyView(Text("Play").largeContentViewerIfAvailable()),
             AnyView(Image(systemName: "play.fill").largeContentViewerIfAvailable { Label("Play", systemImage: "play.fill") }),
             AnyView(Text("Licenses").toolbarColorSchemeOnPhone(.dark)),
-            AnyView(Text("Library").shelfScrollEdge()),
+            AnyView(Text("Library").shelfScrollEdge(rule: true)),
             AnyView(Text("Voice").shelfScrollEdge(ground: Theme.surface)),
             AnyView(Menu("Sleep") { Text("Off") }.menuOrderNearestFirst()),
         ]

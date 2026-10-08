@@ -39,7 +39,7 @@ struct BookshelfView: View {
         }
         .background(Theme.bg.ignoresSafeArea())
         .scrollDismissesKeyboard(.immediately)
-        .modifier(ShelfScrollEdge())
+        .modifier(ShelfScrollEdge(showsScrollRule: true))
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                     prompt: Text("Title or author"))
         .autocorrectionDisabled()

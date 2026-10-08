@@ -91,7 +91,8 @@ final class LibraryLintTests: XCTestCase {
         let sources = try SourceTree.sources(in: SourceTree.macRoot, only: files)
         let library = try XCTUnwrap(sources[files[0]])
         let feedPath = "Library/ShelfFeed.swift"
-        let feed = try XCTUnwrap(try SourceTree.sources(only: [feedPath])[feedPath])
+        let feedSources = try SourceTree.sources(only: [feedPath])
+        let feed = try XCTUnwrap(feedSources[feedPath])
         XCTAssertTrue(feed.contains("ShelfLayout(for: documents, loadedID: loadedID, stop: stop)"),
                       "the shared feed builds the shelf with the stop")
         XCTAssertEqual(library.components(separatedBy: "stop: model.playback.stopped").count - 1, 3,
@@ -245,7 +246,8 @@ final class LibraryLintTests: XCTestCase {
     /// drew the wordmark as a button. The leading item opts out there, and
     /// only there; both branches place the same wordmark.
     func testTheWordmarkSitsOnThePaper() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         let item = body(ofStruct: "PaperTitleItem", in: text)
         XCTAssertTrue(item.contains("ToolbarContent"), "a toolbar content of its own")
         let modern = try XCTUnwrap(item.range(of: "if #available(iOS 26.0, *) {"))
@@ -263,7 +265,8 @@ final class LibraryLintTests: XCTestCase {
     /// P014: the gear and + are one ink and one weight, so the trailing
     /// group reads as one control.
     func testTheGearAndPlusShareOneInk() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         for name in ["private var settingsButton: some View {", "private var addMenu: some View {"] {
             let start = try XCTUnwrap(text.range(of: name), name)
             let control = text[start.upperBound...].prefix(1400)
@@ -300,7 +303,8 @@ final class LibraryLintTests: XCTestCase {
                       "never a shelf reachable under a visible scrim, nor one hidden once the add ends")
 
         let macPath = "Library/MacImportOverlay.swift"
-        let mac = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])[macPath])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
+        let mac = try XCTUnwrap(macSources[macPath])
         XCTAssertTrue(mac.contains("static let revealDelay: Duration = ImportOverlayReveal.delay"))
     }
 
@@ -330,6 +334,11 @@ final class LibraryLintTests: XCTestCase {
         let paste = try XCTUnwrap(items.range(of: "Label(PasteTextAction.menuTitle, systemImage: PasteTextAction.systemImage)"))
         XCTAssertLessThan(shared.lowerBound, paste.lowerBound, "after the shared two")
         XCTAssertTrue(items[paste.upperBound...].prefix(80).contains(".disabled(!clipboardHasText)"))
+        // RootView rebuilds LibraryView on every import progress tick, and a
+        // @State initial value runs each time: no pasteboard query there.
+        XCTAssertTrue(library.contains("@State private var clipboardHasText = false"))
+        let appear = try XCTUnwrap(library.range(of: ".onAppear {"))
+        XCTAssertTrue(library[appear.upperBound...].prefix(200).contains("refreshClipboard()"))
         XCTAssertEqual(items.components(separatedBy: "Button {").count - 1, 2, "exactly the ForEach's and Paste's")
         let tap = try XCTUnwrap(library.range(of: "private func pasteText() {"))
         let body = library[tap.upperBound...].prefix(260)
@@ -346,7 +355,8 @@ final class LibraryLintTests: XCTestCase {
     /// P018: the shelf's gaps are PhoneShelfMetrics', so captions stand
     /// clear of the next row's covers; the gutter and the AX column stay.
     func testTheShelfKeepsItsRhythm() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         XCTAssertTrue(text.contains("LazyVGrid(columns: columns, spacing: PhoneShelfMetrics.rowSpacing)"))
         XCTAssertTrue(text.contains("VStack(spacing: PhoneShelfMetrics.heroToGrid)"))
         XCTAssertTrue(text.contains(".padding(.top, PhoneShelfMetrics.topPadding)"))
@@ -391,14 +401,21 @@ final class LibraryLintTests: XCTestCase {
     /// covered Library builds nothing per sentence and rebuilds once on
     /// return, as the Mac's does.
     func testTheCoveredShelfIsNotRebuilt() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         XCTAssertTrue(text.contains("@State private var feed = ShelfFeed()"))
         XCTAssertFalse(text.contains("ShelfLayout(for:"), "no shelf built outside the feed")
         XCTAssertEqual(text.components(separatedBy: "libraryShows: shows) }").count - 1, 2, "both publishes")
         let shown = try XCTUnwrap(text.range(of: ".onChange(of: router.path.isEmpty) { _, shows in"))
         XCTAssertTrue(text[shown.upperBound...].prefix(200).contains("$0.libraryShown(store.documents"))
-        let mac = try XCTUnwrap(try SourceTree.sources(in: SourceTree.macRoot,
-                                                       only: [Self.macLibraryFile])[Self.macLibraryFile])
+        // An interactive back swipe shows the Library before the path
+        // empties: the stale shelf is rebuilt as it appears, too.
+        let appear = try XCTUnwrap(text.range(of: ".onAppear {"))
+        XCTAssertTrue(text[appear.upperBound...].prefix(160).contains("feedShelf { $0.libraryShown(store.documents"),
+                      String(text[appear.upperBound...].prefix(160)))
+        XCTAssertLessThan(appear.lowerBound, shown.lowerBound, "beside the completed pop's rebuild")
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: [Self.macLibraryFile])
+        let mac = try XCTUnwrap(macSources[Self.macLibraryFile])
         XCTAssertTrue(mac.contains("@State private var shelfFeed = ShelfFeed()"))
         XCTAssertFalse(mac.contains("struct MacShelfFeed"), "one feed, in the shared core")
         XCTAssertTrue(mac.contains("ShelfLayout.focusAfterRemoving(target.id, in: shelf)"), "one focus rule too")
@@ -409,7 +426,8 @@ final class LibraryLintTests: XCTestCase {
     /// it, none at rest; only where the bar is opaque paper (iOS 26), since
     /// earlier bars draw their own.
     func testTheBarRuleFadesInOnScroll() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         let edge = body(ofStruct: "ShelfScrollEdge", in: text)
         let modern = try XCTUnwrap(edge.range(of: "if #available(iOS 26.0, *) {"))
         let otherwise = try XCTUnwrap(edge.range(of: "} else {", range: modern.upperBound..<edge.endIndex))
@@ -423,13 +441,43 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(edge.contains(".opacity(scrolledUnder ? 1 : 0)"))
         XCTAssertTrue(edge.contains("reduceMotion ? nil : .easeOut(duration: Theme.Motion.press)"))
         XCTAssertFalse(SwiftLiterals.code(in: edge).contains("scrollEdgeEffectStyle"))
+
+        // Opt-in: the shelves draw it; the other screens sharing the opaque
+        // bar (Settings, Licenses, the voice page, the appearance sheet) don't.
+        XCTAssertTrue(edge.contains("var showsScrollRule = false"))
+        let optIn = try XCTUnwrap(ios26.range(of: "if showsScrollRule {"))
+        let scrollWatch = try XCTUnwrap(ios26.range(of: ".onScrollGeometryChange(for: Bool.self)"))
+        XCTAssertLessThan(optIn.lowerBound, scrollWatch.lowerBound, "no scroll watch where the rule is off")
+        XCTAssertTrue(text.contains(".modifier(ShelfScrollEdge(showsScrollRule: true))"), "the Library's grid")
+        let shelves = ["Library/EmptyLibraryView.swift": ".shelfScrollEdge(rule: true)",
+                       "Bookshelf/BookshelfView.swift": ".modifier(ShelfScrollEdge(showsScrollRule: true))"]
+        let others = ["Settings/SettingsView.swift", "Settings/LicensesView.swift",
+                      "Settings/ListeningView.swift", "Reader/AppearanceSheet.swift"]
+        let edges = try SourceTree.sources(only: Array(shelves.keys) + others)
+        for (path, call) in shelves {
+            let source = try XCTUnwrap(edges[path], path)
+            XCTAssertTrue(source.contains(call), path)
+        }
+        for path in others {
+            let source = try XCTUnwrap(edges[path], path)
+            XCTAssertTrue(source.contains("ScrollEdge("), "\(path) still sets the opaque bar")
+            XCTAssertFalse(source.contains("showsScrollRule: true"), path)
+            XCTAssertFalse(source.contains("rule: true"), path)
+        }
+        let seamPath = "Platform/PlatformViewModifiers.swift"
+        let seamSources = try SourceTree.sources(only: [seamPath])
+        let seam = try XCTUnwrap(seamSources[seamPath])
+        XCTAssertTrue(seam.contains("modifier(ShelfScrollEdge(ground: ground, showsScrollRule: rule))"))
+        XCTAssertEqual(seam.components(separatedBy: "func shelfScrollEdge(ground: Color = Theme.bg, rule: Bool = false)").count - 1,
+                       2, "both halves of the seam take the rule")
     }
 
     /// P022: after a Delete VoiceOver lands on a neighbour, read off the
     /// shelf before the book leaves it, and after Mark as finished on the
     /// Continue card it follows the book to its grid card.
     func testVoiceOverFocusFollowsDeleteAndFinish() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         XCTAssertTrue(text.contains("@AccessibilityFocusState private var voFocus: UUID?"))
         XCTAssertTrue(text.contains(".accessibilityFocused($voFocus, equals: document.id)"), "every grid card")
         XCTAssertTrue(text.contains("focus: $voFocus,"), "the Continue card")
@@ -445,7 +493,8 @@ final class LibraryLintTests: XCTestCase {
     /// P023: Delete sits in its own section of the long-press menu; the
     /// VoiceOver actions stay one flat list.
     func testDeleteHasItsOwnMenuSection() throws {
-        let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
         XCTAssertTrue(text.contains(".accessibilityActions { documentActions(for: document) }"))
         XCTAssertTrue(text.contains(".contextMenu { contextMenuActions(for: document) }"))
         XCTAssertTrue(text.contains("} menu: {\n                        contextMenuActions(for: hero)"))
@@ -461,12 +510,14 @@ final class LibraryLintTests: XCTestCase {
     func testTheShelfHearsTheUnattendedStop() throws {
         let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
         let derivations = text.components(separatedBy: .newlines).filter { $0.contains("feedShelf { $0.") }
-        XCTAssertEqual(derivations.count, 3, "both publishes and the Library showing again")
+        XCTAssertEqual(derivations.count, 4,
+                       "both publishes, the Library appearing (a back swipe's start) and the pop completing")
         for line in derivations {
             XCTAssertTrue(line.contains("stop: model.playback.stopped"), line)
         }
         let feedPath = "Library/ShelfFeed.swift"
-        let feed = try XCTUnwrap(try SourceTree.sources(only: [feedPath])[feedPath])
+        let feedSources = try SourceTree.sources(only: [feedPath])
+        let feed = try XCTUnwrap(feedSources[feedPath])
         XCTAssertTrue(feed.contains("layout = ShelfLayout(for: documents, loadedID: loadedID, stop: stop)"))
     }
 
