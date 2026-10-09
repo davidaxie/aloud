@@ -4,8 +4,9 @@ import XCTest
 
 /// Batch B5 of the iPhone parity plan: one text-size step rule for every
 /// control (P039), Settings' rows saying their values (P040) and the Voice
-/// & speed sheet's opening detent (P034). The shared parts run on both
-/// hosts; the iPhone's own views only on the iOS host.
+/// & speed sheet's opening detent (P034), and the license texts both apps
+/// ship (R2-20). The shared parts run on both hosts; the iPhone's own views
+/// only on the iOS host.
 final class SheetsAndSettingsTests: XCTestCase {
 
     // MARK: - P039: one step rule
@@ -35,7 +36,6 @@ final class SheetsAndSettingsTests: XCTestCase {
         XCTAssertEqual(AppearanceCopy.spokenPoints(40), "40 point")
         XCTAssertEqual(AppearanceCopy.textSize, "Text size")
         XCTAssertEqual(AppearanceCopy.appearance, "Appearance")
-        XCTAssertEqual(AppearanceCopy.done, "Done")
     }
 
     // MARK: - P040: the rows say their values
@@ -52,6 +52,13 @@ final class SheetsAndSettingsTests: XCTestCase {
     }
 
     #if os(iOS)
+    /// R2-17: the reader sheets close with one button, named Close; Voice
+    /// Control also answers to the Aa sheet's old Done.
+    func testTheReaderSheetsCloseWithOneNamedButton() {
+        XCTAssertEqual(SheetCopy.close, "Close")
+        XCTAssertEqual(SheetCopy.closeInputLabels, ["Close", "Done"])
+    }
+
     /// The rows' spoken labels: the title first, so Voice Control still
     /// matches it, then the value in words.
     func testTheSettingsRowsSayTheirValuesAfterTheirTitles() {
@@ -93,4 +100,34 @@ final class SheetsAndSettingsTests: XCTestCase {
         XCTAssertEqual(ListeningSheet.detents, [.fraction(0.6), .large])
     }
     #endif
+
+    // MARK: - R2-20: the license texts ship in both apps
+
+    /// R2-20: every component's license text ships in the app bundle (both
+    /// apps' Resources/Licenses), and is the license it names. Hosted on
+    /// both apps, never in the iPhone-only lint suite, so a Licenses folder
+    /// missing from either app's bundle fails here.
+    func testEveryLicenseTextShipsInTheBundle() throws {
+        let expected = ["sherpa-onnx": ["Apache License", "Version 2.0, January 2004"],
+                        "ONNX Runtime": ["MIT License", "Copyright (c) Microsoft Corporation",
+                                         "Permission is hereby granted"],
+                        "Kokoro voice model": ["Apache License", "Version 2.0, January 2004"],
+                        "espeak-ng": ["GNU GENERAL PUBLIC LICENSE", "Version 3, 29 June 2007"]]
+        XCTAssertEqual(Set(LicensesView.entries.map(\.id)), Set(expected.keys))
+        for entry in LicensesView.entries {
+            XCTAssertNotNil(entry.textResource, "\(entry.id) ships its license's text")
+            let url = try XCTUnwrap(LicensesView.licenseTextURL(for: entry), "\(entry.id)'s text is in Bundle.main")
+            let text = try String(contentsOf: url, encoding: .utf8)
+            for needle in expected[entry.id] ?? [] {
+                XCTAssertTrue(text.contains(needle), "\(entry.id): \(needle)")
+            }
+            XCTAssertFalse(LicenseText.paragraphs(of: text).isEmpty, entry.id)
+        }
+    }
+
+    /// R2-20: a license file's hard line breaks reflow into paragraphs.
+    func testALicenseTextReflowsIntoParagraphs() {
+        XCTAssertEqual(LicenseText.paragraphs(of: "MIT License\n\nPermission is\n  granted,\r\nfree.\n\n\n"),
+                       ["MIT License", "Permission is granted, free."])
+    }
 }

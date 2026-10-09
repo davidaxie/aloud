@@ -71,8 +71,6 @@ enum AppearanceCopy {
     static let textSize = "Text size"
     /// The System / Light / Dark control's name.
     static let appearance = "Appearance"
-    /// Closes the reader's sheet, which leaves the page live behind it.
-    static let done = "Done"
     /// A scheme choice's place among the three, as VoiceOver says it on the
     /// stacked segments at accessibility sizes: its index, then the count.
     static func position(_ index: Int, of count: Int) -> String { "\(index) of \(count)" }

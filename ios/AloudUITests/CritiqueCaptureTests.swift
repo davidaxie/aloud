@@ -120,8 +120,8 @@ final class CritiqueCaptureTests: XCTestCase {
             if wait(app.descendants(matching: .any)["appearance.scheme"].firstMatch, "Aa sheet") {
                 settle()
                 snap("15-aa-sheet")
-                let done = app.buttons["appearance.done"].firstMatch
-                if done.exists { done.tap() } else { closeSheet(app, header: app.staticTexts["appearance.title"].firstMatch) }
+                let close = app.buttons["appearance.close"].firstMatch
+                if close.exists { close.tap() } else { closeSheet(app, header: app.staticTexts["appearance.title"].firstMatch) }
                 settle()
             }
         }

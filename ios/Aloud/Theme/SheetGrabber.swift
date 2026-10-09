@@ -50,6 +50,11 @@ enum SheetCopy {
 /// takes its own row above the title, and VoiceOver still meets the
 /// heading first.
 ///
+/// The button's frame reaches past the title's row, a few points into the
+/// content below where the gap under the header is small (Voice & speed,
+/// Aa). The header sits above its siblings, so the content drawn after it
+/// never takes those touches and the whole frame stays the button's.
+///
 /// The circle is solid surface2 with a border, never glass: the sheets
 /// stand on a solid surface.
 struct SheetHeader: View {
@@ -91,6 +96,7 @@ struct SheetHeader: View {
                     }
             }
         }
+        .zIndex(1)
     }
 
     // Wraps, centred inside the gutters, rather than truncating at the

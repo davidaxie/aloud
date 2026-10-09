@@ -179,12 +179,13 @@ final class ReaderChromeUITest: XCTestCase {
         let position = stringValue(of: scrub)
 
         app.buttons["reader.appearance"].firstMatch.tap()
-        let done = app.buttons["appearance.done"].firstMatch
-        XCTAssertTrue(done.waitForExistence(timeout: 5), "Aa should open its sheet")
+        // The sheet's header close button (R2-17) marks it open.
+        let close = app.buttons["appearance.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "Aa should open its sheet")
         app.textViews["reader.text"].firstMatch
             .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
 
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: done)
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "The tap should close the sheet")
         XCTAssertTrue(play.waitForExistence(timeout: 5))
         XCTAssertEqual(play.label, status, "The tap should not start or stop playback")

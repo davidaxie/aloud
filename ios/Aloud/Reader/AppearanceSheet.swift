@@ -101,13 +101,16 @@ struct AppearanceView: View {
     /// row below it. A small serif A, the size in points, a large serif A,
     /// as the Mac's capsule reads, with a hairline each side of the size.
     /// Each A is set in the column's own weight (its bold face under Bold
-    /// Text, J027) and takes at least 44 pt of the row.
+    /// Text, J027) and takes at least 44 pt of the row's width.
     ///
     /// The size between the halves is the one adjustable element VoiceOver
     /// hears, so a swipe up or down steps it without hunting for the
-    /// buttons. Its accessibility shape is its whole frame, at least 64 by
-    /// 44 pt, never the text's own bounds, so the audit's hit region reads
-    /// a full target.
+    /// buttons. Its accessibility shape is its whole frame, at least 64 pt
+    /// wide, never the text's own bounds, so the audit's hit region reads
+    /// a full target. The row is `Theme.SheetTarget.minimum` tall, the
+    /// sheets' close button's headroom, so in the Aa sheet, which iOS draws
+    /// scaled by about 0.98 at its fitted detent, the readout and both
+    /// halves still measure 44 pt on screen.
     private var textSizeRow: some View {
         HStack(spacing: 0) {
             stepButton(bigger: false, glyphSize: min(smallerGlyph, Self.smallerGlyphMax),
@@ -119,7 +122,7 @@ struct AppearanceView: View {
                 .numericReadout(Double(currentPoints))
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .padding(.horizontal, Theme.Space.xs)
-                .frame(minWidth: 64, minHeight: 44)
+                .frame(minWidth: 64, minHeight: Theme.SheetTarget.minimum)
                 .layoutPriority(1)
                 .contentShape(Rectangle())
                 .accessibilityElement(children: .ignore)
@@ -163,7 +166,7 @@ struct AppearanceView: View {
             Text(verbatim: "A")
                 .font(Theme.readerSerif(glyphSize, weight: legibilityWeight == .bold ? .bold : .regular))
                 .foregroundStyle(enabled ? Theme.text : Theme.textFaint)
-                .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
+                .frame(minWidth: 44, maxWidth: .infinity, minHeight: Theme.SheetTarget.minimum)
                 .contentShape(Capsule())
         }
         .buttonStyle(StepperHalfButtonStyle())
@@ -319,7 +322,7 @@ struct AppearanceSheet: View {
 
     /// Seeded near the default-size layout so the first frame barely moves.
     @State private var headerHeight: CGFloat = 50
-    @State private var contentHeight: CGFloat = 304
+    @State private var contentHeight: CGFloat = 306
 
     var body: some View {
         VStack(spacing: 0) {

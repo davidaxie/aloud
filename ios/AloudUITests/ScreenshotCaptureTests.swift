@@ -127,8 +127,8 @@ final class ScreenshotCaptureTests: XCTestCase {
         sleep(1)
         save(shot(), to: shotsDir + "/09-appearance-sheet.png")
         // The page is live behind the sheet (P037): a swipe there would
-        // scroll it, so the sheet's own Done closes it.
-        app.buttons["appearance.done"].firstMatch.tap()
+        // scroll it, so the sheet's header close button (R2-17) closes it.
+        app.buttons["appearance.close"].firstMatch.tap()
         XCTAssertTrue(readerText.waitForExistence(timeout: 10))
 
         // 10 — The sleep chip's menu.

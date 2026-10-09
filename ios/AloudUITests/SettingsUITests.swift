@@ -249,11 +249,18 @@ final class SettingsUITests: XCTestCase {
         XCTAssertEqual(size.label, "Text size")
         XCTAssertEqual(stringValue(of: size), "19 point")
         // R2-16: the readout's element is its whole frame, never the text's
-        // own bounds (31 by 14 pt), so its hit region is a full target.
+        // own bounds (31 by 14 pt), so its hit region is a full target. Its
+        // row keeps the close button's headroom (Theme.SheetTarget), so the
+        // readout and both halves still read 44 pt in this scaled sheet.
         XCTAssertGreaterThanOrEqual(settledFrame(of: size).height, 44 - 0.01, "The size readout is 44 pt tall")
         XCTAssertGreaterThanOrEqual(settledFrame(of: size).width, 44 - 0.01, "The size readout is 44 pt wide")
         let smaller = app.buttons["appearance.textSize.smaller"].firstMatch
         let larger = app.buttons["appearance.textSize.larger"].firstMatch
+        for half in [smaller, larger] {
+            let frame = settledFrame(of: half)
+            XCTAssertGreaterThanOrEqual(frame.height, 44 - 0.01, "\(half.identifier) is a full target")
+            XCTAssertGreaterThanOrEqual(frame.width, 44 - 0.01, "\(half.identifier) is a full target")
+        }
         XCTAssertLessThan(smaller.frame.midX, size.frame.midX, "Smaller text, then the size")
         XCTAssertLessThan(size.frame.midX, larger.frame.midX, "the size, then Larger text")
         app.buttons["appearance.textSize.larger"].firstMatch.tap()

@@ -236,26 +236,6 @@ final class SettingsHomeLintTests: XCTestCase {
                        "the pushed page's one heading")
     }
 
-    /// R2-20: every component's license text ships in the app bundle (both
-    /// apps' Resources/Licenses), and is the license it names.
-    func testEveryLicenseTextShipsInTheBundle() throws {
-        let expected = ["sherpa-onnx": ["Apache License", "Version 2.0, January 2004"],
-                        "ONNX Runtime": ["MIT License", "Copyright (c) Microsoft Corporation",
-                                         "Permission is hereby granted"],
-                        "Kokoro voice model": ["Apache License", "Version 2.0, January 2004"],
-                        "espeak-ng": ["GNU GENERAL PUBLIC LICENSE", "Version 3, 29 June 2007"]]
-        XCTAssertEqual(Set(LicensesView.entries.map(\.id)), Set(expected.keys))
-        for entry in LicensesView.entries {
-            XCTAssertNotNil(entry.textResource, "\(entry.id) ships its license's text")
-            let url = try XCTUnwrap(LicensesView.licenseTextURL(for: entry), "\(entry.id)'s text is in Bundle.main")
-            let text = try String(contentsOf: url, encoding: .utf8)
-            for needle in expected[entry.id] ?? [] {
-                XCTAssertTrue(text.contains(needle), "\(entry.id): \(needle)")
-            }
-            XCTAssertFalse(LicenseText.paragraphs(of: text).isEmpty, entry.id)
-        }
-    }
-
     /// R2-20: each card links its component's source, over https.
     func testEveryLicenseLinksItsSource() {
         let expected = ["sherpa-onnx": "github.com/k2-fsa/sherpa-onnx",
@@ -288,12 +268,6 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertEqual(LicensesView.classicsTitle, "Bundled classics")
     }
 
-    /// R2-20: a license file's hard line breaks reflow into paragraphs.
-    func testALicenseTextReflowsIntoParagraphs() {
-        XCTAssertEqual(LicenseText.paragraphs(of: "MIT License\n\nPermission is\n  granted,\r\nfree.\n\n\n"),
-                       ["MIT License", "Permission is granted, free."])
-    }
-
     /// R2-21: Settings' row separators are drawn at the border's weight
     /// and colour (the system draws them a full point wide), as quiet as
     /// the Licenses cards' edges, never the main screen's strong hairline.
@@ -308,8 +282,9 @@ final class SettingsHomeLintTests: XCTestCase {
 
     /// R1-28, R2-16: the Aa sheet's text size is a stepper in one capsule:
     /// the smaller A, the size readout, the larger A, as the Mac's reads,
-    /// each A at least 44 pt wide, the readout still one adjustable element.
-    /// The eyebrow above it is a plain section label.
+    /// each A at least 44 pt wide and as tall as the readout, the readout
+    /// still one adjustable element. The eyebrow above it is a plain section
+    /// label.
     func testTheTextSizeControlIsATwoButtonStepper() throws {
         let path = "Reader/AppearanceSheet.swift"
         let s = try SourceTree.sources(only: [path])
@@ -328,7 +303,8 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertLessThan(smaller.lowerBound, readout.lowerBound, "the readout follows the smaller A")
         XCTAssertLessThan(readout.lowerBound, larger.lowerBound, "and comes before the larger A")
         XCTAssertEqual(row.components(separatedBy: "{ stepperHairline }").count - 1, 2, "a hairline each side")
-        for needle in ["Text(verbatim: \"A\")", ".frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)",
+        for needle in ["Text(verbatim: \"A\")",
+                       ".frame(minWidth: 44, maxWidth: .infinity, minHeight: Theme.SheetTarget.minimum)",
                        ".background(Theme.surface2, in: Capsule())", ".buttonStyle(StepperHalfButtonStyle())",
                        "configuration.isPressed ? Theme.surface : Color.clear",
                        ".accessibilityIdentifier(\"appearance.textSize.value\")",
@@ -341,10 +317,12 @@ final class SettingsHomeLintTests: XCTestCase {
     }
 
     /// R1-28, R2-16: the size readout is one adjustable element over its
-    /// whole frame, at least 64 by 44 pt. An element made with
+    /// whole frame, at least 64 pt wide. An element made with
     /// `.accessibilityElement(children: .ignore)` takes the text's own
     /// bounds (31 by 14 pt), so its accessibility shape is set to the
-    /// frame: the audit's hit region then reads a full target.
+    /// frame: the audit's hit region then reads a full target. Its height
+    /// keeps the sheets' headroom (R2-15): the Aa sheet is drawn scaled by
+    /// about 0.98 at its fitted detent, where a 44 pt frame measures 43.2.
     func testTheTextSizeReadoutIsOneFull44PointElement() throws {
         let path = "Reader/AppearanceSheet.swift"
         let s = try SourceTree.sources(only: [path])
@@ -354,7 +332,8 @@ final class SettingsHomeLintTests: XCTestCase {
                                             range: start.upperBound..<sheet.endIndex))
         let row = sheet[start.upperBound..<end.lowerBound].split(whereSeparator: \.isWhitespace).joined(separator: " ")
         XCTAssertTrue(row.contains(".accessibilityIdentifier(\"appearance.textSize.value\")"), row)
-        let frame = try XCTUnwrap(row.range(of: ".frame(minWidth: 64, minHeight: 44)"), row)
+        let frame = try XCTUnwrap(row.range(of: ".frame(minWidth: 64, minHeight: Theme.SheetTarget.minimum)"), row)
+        XCTAssertFalse(row.contains("minHeight: 44)"), "a bare 44 pt reads 43.2 on screen in the scaled sheet")
         let element = try XCTUnwrap(row.range(of: ".accessibilityElement(children: .ignore)"), row)
         XCTAssertLessThan(frame.lowerBound, element.lowerBound, "the element wraps the 44 pt frame")
         let block = row[element.lowerBound...].prefix(600)
@@ -377,7 +356,7 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertTrue(sheet.contains("AppearanceView(topPadding: Theme.Space.xs, onContentHeight:"))
         let page = try XCTUnwrap(sheet.range(of: "struct AppearanceSettingsPage"))
         XCTAssertTrue(sheet[page.upperBound...].contains("AppearanceView()\n"), "the page keeps the default")
-        XCTAssertTrue(sheet.contains("@State private var contentHeight: CGFloat = 304"), "the seed follows the layout")
+        XCTAssertTrue(sheet.contains("@State private var contentHeight: CGFloat = 306"), "the seed follows the layout")
     }
 
     /// R2-15, R2-17: the three reader sheets share one header: grabber,
@@ -412,7 +391,8 @@ final class SettingsHomeLintTests: XCTestCase {
                        ".padding(.horizontal, Theme.Space.sheetGutter + Theme.SheetTarget.minimum)",
                        "if dynamicTypeSize.isAccessibilitySize {", ".accessibilitySortPriority(1)",
                        ".accessibilityAddTraits(.isHeader)", ".fixedSize(horizontal: false, vertical: true)",
-                       "static let closeTrailing = Theme.Space.sheetGutter - (Theme.SheetTarget.minimum - circle) / 2"] {
+                       "static let closeTrailing = Theme.Space.sheetGutter - (Theme.SheetTarget.minimum - circle) / 2",
+                       "}\n        .zIndex(1)\n    }"] {
             XCTAssertTrue(header.contains(needle), "SheetHeader lacks \(needle)")
         }
         for glass in ["glassEffect", "Material", "ultraThin"] {
@@ -420,5 +400,39 @@ final class SettingsHomeLintTests: XCTestCase {
         }
         XCTAssertTrue(chrome.contains("static let close = \"Close\""))
         XCTAssertTrue(chrome.contains("static let closeInputLabels = [\"Close\", \"Done\"]"))
+    }
+
+    /// R2-17: the Aa sheet's lone Done is gone from its copy table, and no
+    /// UI test still looks for it: each finds the header's close button.
+    func testNothingStillLooksForTheAaSheetsOldDone() throws {
+        let copyPath = "Models/ReaderAppearance.swift"
+        let app = try SourceTree.sources(only: [copyPath])
+        let ui = try SourceTree.sources(in: SourceTree.uiTestsRoot)
+        let copy = try XCTUnwrap(app[copyPath])
+        XCTAssertFalse(copy.contains("static let done"), "AppearanceCopy.done has no reader left")
+        XCTAssertEqual(SourceTree.files(containing: "appearance.done", in: ui), [], "the Aa sheet has no Done")
+        for path in ["ReaderChromeUITest.swift", "ScreenshotCaptureTests.swift", "CritiqueCaptureTests.swift"] {
+            let test = try XCTUnwrap(ui[path], path)
+            XCTAssertTrue(test.contains("app.buttons[\"appearance.close\"]"), path)
+        }
+    }
+
+    /// R2-20: the license-text tests are hosted on both apps: outside the
+    /// lint files the Mac's test target leaves out (project.yml) and outside
+    /// the iPhone-only block, so a Licenses folder missing from the Mac's
+    /// bundle fails a test.
+    func testTheLicenseTextTestsRunOnBothApps() throws {
+        let testsRoot = SourceTree.iosRoot.appendingPathComponent("AloudTests", isDirectory: true)
+        let tests = try SourceTree.sources(in: testsRoot)
+        let hostedPath = "SheetsAndSettingsTests.swift"
+        let hosted = try XCTUnwrap(tests[hostedPath])
+        let iOSOnlyEnd = try XCTUnwrap(hosted.range(of: "#endif", options: .backwards))
+        // Split so this file's own needles never match.
+        for name in ["testEveryLicenseTextShipsInTheBundle()", "testALicenseTextReflowsIntoParagraphs()"] {
+            let declaration = "func " + name
+            XCTAssertEqual(SourceTree.files(containing: declaration, in: tests), [hostedPath], name)
+            let test = try XCTUnwrap(hosted.range(of: declaration), name)
+            XCTAssertLessThan(iOSOnlyEnd.lowerBound, test.lowerBound, "\(name) runs on the Mac host too")
+        }
     }
 }
