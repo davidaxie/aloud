@@ -8,10 +8,6 @@ struct AloudApp: App {
     @AppStorage(AppearancePreference.prefKey)
     private var appearanceRaw = AppearancePreference.system.rawValue
 
-    init() {
-        SliderAppearance.apply()
-    }
-
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -44,35 +40,6 @@ struct AloudApp: App {
 
     private var effectiveScheme: ColorScheme? {
         UITestHooks.forcedColorScheme ?? AppearancePreference(rawValue: appearanceRaw)?.colorScheme
-    }
-}
-
-/// R2-34: the stock sliders' unfilled track (the Voice & speed sheet's speed
-/// slider) in the scrub's warm track, never the system's cold grey; under
-/// Increase Contrast it takes the scrub's edge token, so the track keeps a
-/// ≥ 3:1 boundary. The filled part keeps its `.tint(Theme.accent)` and the
-/// thumb stays the system's own. Set once on the appearance proxy, before
-/// any slider is made; the colour resolves in each slider's traits, so the
-/// in-app appearance override and Increase Contrast follow live.
-///
-/// The Increase Contrast trade-off, kept on purpose until the sheet is
-/// re-shot: the edge token fills the whole unfilled track, so the track
-/// keeps its 3:1 boundary on the sheet, but the accent fill is only 1.28:1
-/// (light) and 1.62:1 (dark) against it, and the value reads from the thumb
-/// and the sheet's readout rather than the split. The scrub's answer, a
-/// pale track with a 1 pt edge, needs a custom track image; that fixes the
-/// track's drawn height while the filled side keeps the system's, and a
-/// trait-scoped proxy never unsets it when Increase Contrast goes off, so
-/// it waits for a capture of the stock slider on the current system.
-enum SliderAppearance {
-    static let unfilledTrack = UIColor { traits in
-        let token = traits.accessibilityContrast == .high ? Theme.trackEdge : Theme.scrubTrack
-        return UIColor(token).resolvedColor(with: traits)
-    }
-
-    @MainActor
-    static func apply() {
-        UISlider.appearance().maximumTrackTintColor = unfilledTrack
     }
 }
 

@@ -72,10 +72,12 @@ final class CoverLintTests: XCTestCase {
                        "no shared side padding narrows the author's line again")
     }
 
-    /// R2-30: below xxLarge the cover is a text book's only title, so the
+    /// R2-30: through Large the cover is a text book's only title, so the
     /// title takes up to four lines; the author's first line is kept (the
     /// title's priority leaves the author its least height, one line), and
     /// the face no longer leans on a caption below repeating the author.
+    /// R3-12: above Large, where the cover's pinned type stops growing, the
+    /// card's caption names the book again.
     func testTheCoverIsTheShelfsTitleBelowXXLarge() throws {
         let path = "Library/BookCover.swift", cardPath = "Library/DocumentCardView.swift"
         let s = try SourceTree.sources(only: [path, cardPath])
@@ -90,7 +92,9 @@ final class CoverLintTests: XCTestCase {
         XCTAssertFalse(text.contains("caption below repeats"), "the face no longer relies on the card's caption")
         XCTAssertTrue(card.contains("if Self.showsCaption(kind: document.kind, at: dynamicTypeSize) {"),
                       "the card keys its caption on the record's kind, never the art drawn")
-        XCTAssertTrue(card.contains("kind == .pdf || wrapsInFull(at: size)"), "a PDF always, text from xxLarge")
+        XCTAssertTrue(card.contains("kind == .pdf || size > .large"), "a PDF always, text above Large")
+        XCTAssertFalse(card.contains("kind == .pdf || wrapsInFull(at: size)"),
+                       "the caption no longer waits for the full-title size")
     }
 
     /// R2-31: the small face is a clothbound book in shapes only, drawn

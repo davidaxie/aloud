@@ -131,13 +131,35 @@ final class ListeningLintTests: XCTestCase {
         let speed = try XCTUnwrap(view.range(of: "struct ListeningSpeedControls: View"))
         let speedBody = view[speed.upperBound...].prefix(3000)
         XCTAssertTrue(speedBody.contains(".padding(.bottom, Theme.Space.sm)"), "a small gap under the speed")
-        XCTAssertTrue(speedBody.contains(".font(Theme.font(.numeral))"), "R8's numeral stays")
+        // R3-10: the rate reads on the slider's row below AX sizes; the
+        // numeral only at AX sizes (a deliberate change from R8).
+        let compact = speedBody.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertTrue(compact.contains("if Self.showsNumeral(at: dynamicTypeSize) { Text(ListeningFormat.rate(playback.rate)) "
+                                       + ".font(Theme.font(.numeral))"),
+                      "the rate reads on the slider's row below AX sizes; the numeral only at AX sizes")
+        XCTAssertTrue(compact.contains("HStack(spacing: Theme.Space.sm) { speedTrack SpeedReadout(rate: playback.rate) }"),
+                      "below AX sizes the readout sits on the track's row")
+        XCTAssertTrue(view.contains("nonisolated static func showsNumeral(at size: DynamicTypeSize) -> Bool {\n"
+                                    + "        size.isAccessibilitySize\n"), "the numeral's sizes")
+        XCTAssertEqual(view.components(separatedBy: ".font(Theme.font(.numeral))").count - 1, 1, "one numeral")
+        let readout = try XCTUnwrap(view.range(of: "struct SpeedReadout: View"))
+        let readoutBody = view[readout.upperBound...].prefix(1200)
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        for needle in ["ZStack(alignment: .trailing) { Text(ListeningFormat.rate(Self.widestRate)) "
+                       + ".font(Theme.font(.callout)) .monospacedDigit() .hidden()",
+                       "Text(ListeningFormat.rate(rate)) .font(Theme.font(.callout)) .monospacedDigit() "
+                       + ".foregroundStyle(Theme.text) .numericReadout(rate)",
+                       ".accessibilityHidden(true)"] {
+            XCTAssertTrue(readoutBody.contains(needle), "the readout: \(needle)")
+        }
     }
 
     /// R2-18: on the Settings page's bgTint an unselected preset's surface2
     /// fill alone doesn't read as a chip, so that page edges every preset
     /// at the border's weight; the selected one keeps its 1.5 pt edge. The
-    /// reader's sheet and the Mac keep the default: no edge on the others.
+    /// reader's sheet and the Mac keep the default: no edge on the others
+    /// except under Increase Contrast (R3-11), where every surface edges
+    /// them in the darkened line token.
     func testTheSettingsPageEdgesEverySpeedPreset() throws {
         let paths = ["Settings/ListeningView.swift", "Settings/ListeningSheet.swift"]
         let s = try SourceTree.sources(only: paths)
@@ -147,8 +169,12 @@ final class ListeningLintTests: XCTestCase {
         let preset = try XCTUnwrap(view.range(of: "private func presetButton("))
         let body = view[preset.upperBound...].prefix(2400).split(whereSeparator: \.isWhitespace).joined(separator: " ")
         XCTAssertTrue(body.contains(".strokeBorder(selected ? Theme.Stroke.selectedColor "
-                                    + ": (edgesUnselectedChips ? Theme.Stroke.borderColor : Color.clear), "
-                                    + "lineWidth: selected ? Theme.Stroke.selectedWidth : Theme.Stroke.borderWidth)"), body)
+                                    + ": (Self.edgesUnselected(asked: edgesUnselectedChips, contrast: contrast) "
+                                    + "? Theme.Stroke.borderColor : Color.clear), "
+                                    + "lineWidth: selected ? Theme.Stroke.selectedWidth : Theme.Stroke.borderWidth)"),
+                      "no edge on the others except under Increase Contrast: \(body)")
+        XCTAssertTrue(view.contains("@Environment(\\.colorSchemeContrast) private var contrast"), "it reads the contrast")
+        XCTAssertTrue(view.contains("asked || contrast == .increased"), "asked, or Increase Contrast on any surface")
         XCTAssertTrue(body.contains(".background(selected ? Theme.accentSoft : Theme.surface2,"), "the fills stay")
         XCTAssertEqual(view.components(separatedBy: "edgesUnselectedChips: edgesUnselectedChips)").count - 1, 2,
                        "both speed blocks, pinned and in the list, hear it")

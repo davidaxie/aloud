@@ -159,20 +159,21 @@ final class DocumentCardLayoutTests: XCTestCase {
 
     /// A PDF's card keeps its caption at every size: two lines of title and
     /// one of author below xxLarge, the whole of both from xxLarge (L016).
-    /// A text book's card sets them only from xxLarge; below, its cover
-    /// names it (R2-30), so a long title makes the card no taller.
+    /// A text book's card sets them only above Large (R3-12), two lines and
+    /// one at xLarge as a PDF's do; through Large its cover names it
+    /// (R2-30), so a long title makes the card no taller.
     func testTheTwoColumnCardKeepsItsLimits() {
         let width = Self.twoColumns
         let title = Theme.font(.headline)
-        for size in [DynamicTypeSize.large, .xxxLarge] {
+        for size in [DynamicTypeSize.large, .xLarge, .xxxLarge] {
             let wraps = DocumentCardView.wrapsInFull(at: size)
-            XCTAssertEqual(cardExtra(width: width, size: size, kind: .pdf),
-                           textExtra(titleLimit: wraps ? nil : 2, authorLimit: wraps ? nil : 1,
-                                     width: width, size: size),
+            let limited = textExtra(titleLimit: wraps ? nil : 2, authorLimit: wraps ? nil : 1,
+                                    width: width, size: size)
+            XCTAssertEqual(cardExtra(width: width, size: size, kind: .pdf), limited,
                            accuracy: 1, "\(size) PDF: \(wraps ? "the whole title and author" : "two lines of title and one of author")")
-            XCTAssertEqual(cardExtra(width: width, size: size, kind: .text),
-                           wraps ? textExtra(titleLimit: nil, authorLimit: nil, width: width, size: size) : 0,
-                           accuracy: 1, "\(size) text: \(wraps ? "the whole title and author" : "no title or author under the cover")")
+            let captioned = size > .large
+            XCTAssertEqual(cardExtra(width: width, size: size, kind: .text), captioned ? limited : 0,
+                           accuracy: 1, "\(size) text: \(captioned ? "the caption, as a PDF's" : "no title or author under the cover")")
             XCTAssertGreaterThan(textHeight(Self.title, font: title, lineLimit: nil, width: width, size: size),
                                  textHeight(Self.title, font: title, lineLimit: 2, width: width, size: size) + 10,
                                  "\(size) fixture: the title should need more than two lines")
@@ -181,24 +182,29 @@ final class DocumentCardLayoutTests: XCTestCase {
 
     // MARK: - One name per book (R2-30)
 
-    /// The caption rule: a PDF always; a text book from xxLarge, the
-    /// accessibility sizes included.
-    func testTheCaptionShowsForAPDFAlwaysAndForTextFromXXLarge() {
+    /// The caption rule: a PDF always; a text book above Large (R3-12),
+    /// so from xLarge, where the cover's type, pinned at Large, stops
+    /// growing, the accessibility sizes included. The full-title wrap still
+    /// starts at xxLarge (L016).
+    func testTheCaptionShowsForAPDFAlwaysAndForTextAboveLarge() {
         for size in DynamicTypeSize.allCases {
             XCTAssertTrue(DocumentCardView.showsCaption(kind: .pdf, at: size), "\(size) PDF")
-            XCTAssertEqual(DocumentCardView.showsCaption(kind: .text, at: size), size >= .xxLarge, "\(size) text")
+            XCTAssertEqual(DocumentCardView.showsCaption(kind: .text, at: size), size > .large, "\(size) text")
+            XCTAssertEqual(DocumentCardView.wrapsInFull(at: size), size >= .xxLarge, "\(size): the wrap stays")
         }
+        XCTAssertTrue(DocumentCardView.showsCaption(kind: .text, at: .xLarge), "xLarge names the book")
+        XCTAssertFalse(DocumentCardView.showsCaption(kind: .text, at: .large), "Large keeps one name per book")
         XCTAssertTrue(DocumentCardView.showsCaption(kind: .text, at: .accessibility3))
     }
 
-    /// R2-30: below xxLarge a text book's typographic cover already sets
+    /// R2-30: through Large a text book's typographic cover already sets
     /// its title and author, so the card is the cover, the spacing and one
-    /// line of the listening caption: each book is named once. From
-    /// xxLarge, and for a PDF at any size, the full caption stays.
-    func testBelowXXLargeATextCardIsTheCoverAndOneCaptionLine() {
+    /// line of the listening caption: each book is named once. Above Large
+    /// (R3-12), and for a PDF at any size, the full caption stays.
+    func testThroughLargeATextCardIsTheCoverAndOneCaptionLine() {
         let width = Self.twoColumns
         let cover = CoverGeometry.height(forWidth: width)
-        for size in [DynamicTypeSize.xSmall, .large, .xLarge] {
+        for size in [DynamicTypeSize.xSmall, .large] {
             let document = doc(title: Self.title, author: Self.author)
             let line = document.listeningSubtitle(rate: 1)
             XCTAssertFalse(line.isEmpty, "fixture: the card should show its listening line")
@@ -207,7 +213,7 @@ final class DocumentCardLayoutTests: XCTestCase {
                            cover + Theme.Space.sm + caption,
                            accuracy: 1, "\(size): the cover, the spacing and one caption line")
         }
-        for size in [DynamicTypeSize.large, .xxLarge] {
+        for size in [DynamicTypeSize.large, .xLarge, .xxLarge] {
             for kind in [DocKind.pdf, .text] where DocumentCardView.showsCaption(kind: kind, at: size) {
                 let document = doc(title: "Emma", author: "Jane Austen", kind: kind)
                 let wraps = DocumentCardView.wrapsInFull(at: size)
@@ -226,9 +232,9 @@ final class DocumentCardLayoutTests: XCTestCase {
         }
     }
 
-    /// R2-30: the cover is now the shelf's only title and author below
-    /// xxLarge, so on the iPhone's shortest grid cover (an iPhone SE's
-    /// 163pt at xLarge) a long title's four lines still leave the author
+    /// R2-30: the cover is the shelf's only title and author through
+    /// Large, and sets both above it too, so on the iPhone's shortest grid
+    /// cover (an iPhone SE's 163pt at xLarge) a long title's four lines still leave the author
     /// its line: the named cover differs from the bare one in its lower
     /// third, where the author sits. iPhone type only, since the Mac host
     /// leaves this file out; the Mac's 136pt cover is checked with the
@@ -242,63 +248,6 @@ final class DocumentCardLayoutTests: XCTestCase {
             let inked = lowerThird.filter { named.maxChannelDifference(to: bare, row: $0) > 24 }
             XCTAssertFalse(inked.isEmpty, "\(width)pt: the author was cut")
         }
-    }
-
-    // MARK: - The speed slider's track (R2-34)
-
-    /// R2-34: the stock sliders' unfilled track (the Voice & speed sheet's
-    /// speed slider) resolves to the scrub's warm track in light and dark,
-    /// and to the scrub's Increase Contrast edge under Increase Contrast,
-    /// never the system's cold grey. Here because it is UIKit, which the
-    /// Mac host leaves out with this file; the app sets it at launch. At
-    /// normal contrast the accent fill reads against the pale track (3:1
-    /// and up); under Increase Contrast the split is the recorded trade-off
-    /// in SliderAppearance's notes (about 1.3:1 light, 1.6:1 dark), the
-    /// track's own edge taking the 3:1 instead, and is measured here so a
-    /// change to either token shows up as a changed ratio.
-    func testTheSliderTrackIsTheScrubsWarmTrack() throws {
-        func rgba(_ color: UIColor) -> [CGFloat] {
-            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            color.getRed(&r, green: &g, blue: &b, alpha: &a)
-            return [r, g, b, a]
-        }
-        for style in [UIUserInterfaceStyle.light, .dark] {
-            for contrast in [UIAccessibilityContrast.normal, .high] {
-                let traits = UITraitCollection(traitsFrom: [UITraitCollection(userInterfaceStyle: style),
-                                                            UITraitCollection(accessibilityContrast: contrast)])
-                let token = contrast == .high ? Theme.trackEdge : Theme.scrubTrack
-                let got = rgba(SliderAppearance.unfilledTrack.resolvedColor(with: traits))
-                let want = rgba(UIColor(token).resolvedColor(with: traits))
-                for (channel, value) in got.enumerated() {
-                    XCTAssertEqual(value, want[channel], accuracy: 0.002, "\(style.rawValue) \(contrast.rawValue): \(got) vs \(want)")
-                }
-                XCTAssertEqual(got[3], 1, accuracy: 0.002, "an opaque track in every mode")
-                XCTAssertGreaterThan(got[0], got[2] + 0.02, "a warm track, red over blue: \(got)")
-
-                let split = Self.contrast(rgba(UIColor(Theme.accent).resolvedColor(with: traits)), got)
-                if contrast == .high {
-                    XCTAssertEqual(split, style == .dark ? 1.62 : 1.28, accuracy: 0.05,
-                                   "\(style.rawValue): the recorded Increase Contrast split")
-                } else {
-                    XCTAssertGreaterThanOrEqual(split, 3, "\(style.rawValue): the fill reads against the track")
-                }
-            }
-        }
-        let s = try SourceTree.sources(only: ["App/AloudApp.swift"])
-        let app = try XCTUnwrap(s["App/AloudApp.swift"])
-        XCTAssertTrue(app.contains("init() {\n        SliderAppearance.apply()\n    }"), "set once at launch")
-        XCTAssertTrue(app.contains("UISlider.appearance().maximumTrackTintColor = unfilledTrack"))
-    }
-
-    /// WCAG contrast between two opaque gamma-encoded sRGB colours given
-    /// as [r, g, b, a].
-    private static func contrast(_ a: [CGFloat], _ b: [CGFloat]) -> CGFloat {
-        func luminance(_ c: [CGFloat]) -> CGFloat {
-            func linear(_ v: CGFloat) -> CGFloat { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
-            return 0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
-        }
-        let (x, y) = (luminance(a), luminance(b))
-        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
     }
 
     // MARK: - Pressed plate (P019)

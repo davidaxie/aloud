@@ -133,29 +133,13 @@ struct PlayerBarView: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let span = drag?.span ?? navigation.scrubSpan(at: playhead)
-            let fill = max(ScrubThumb.trackHeight,
-                           width * navigation.scrubFill(of: drag?.target ?? playhead, in: span,
-                                                        isFinished: drag == nil && playback.isAtEnd))
-            // A held track thickens and its thumb grows; under Reduce
-            // Motion nothing grows and a soft ring fades in instead.
-            let grows = isTouchingScrub && !reduceMotion
-            let thumb = grows ? ScrubThumb.pressedDiameter : ScrubThumb.diameter
-            ZStack(alignment: .leading) {
-                // The edge strokes the unfilled track alone (clear unless
-                // Increase Contrast is on); the fill draws over it.
-                Capsule()
-                    .fill(Theme.scrubTrack)
-                    .overlay(Capsule().strokeBorder(Theme.trackEdge, lineWidth: 1))
-                Capsule()
-                    .fill(Theme.accent)
-                    .frame(width: fill)
-            }
-            .frame(height: grows ? ScrubThumb.pressedTrackHeight : ScrubThumb.trackHeight)
-            .overlay(alignment: .leading) {
-                scrubThumb(diameter: thumb)
-                    .offset(x: ScrubThumb.offset(fill: fill, diameter: thumb, width: width))
-            }
-            .animation(.easeOut(duration: Theme.Motion.press), value: isTouchingScrub)
+            // The shared warm track (R3-09): a held track thickens and its
+            // thumb grows; under Reduce Motion nothing grows and a soft ring
+            // fades in instead.
+            WarmTrack(fraction: navigation.scrubFill(of: drag?.target ?? playhead, in: span,
+                                                     isFinished: drag == nil && playback.isAtEnd),
+                      isHeld: isTouchingScrub,
+                      reduceMotion: reduceMotion)
             // The line sits high in its 44pt row, near the chapter line it
             // describes, seated by its centre: a press thickens it evenly
             // and the thumb stays under the finger. The pressed thumb and
@@ -250,21 +234,6 @@ struct PlayerBarView: View {
     private var touchDownGesture: some Gesture {
         DragGesture(minimumDistance: ScrubGesture.touchDownDistance)
             .updating($isTouchingScrub) { _, touching, _ in touching = true }
-    }
-
-    /// The accent thumb at the end of the fill. Decoration: the scrub is one
-    /// adjustable element to assistive tech.
-    private func scrubThumb(diameter: CGFloat) -> some View {
-        Circle()
-            .fill(Theme.accent)
-            .frame(width: diameter, height: diameter)
-            .background {
-                Circle()
-                    .fill(Theme.accentSoft)
-                    .frame(width: ScrubThumb.ringDiameter, height: ScrubThumb.ringDiameter)
-                    .opacity(isTouchingScrub && reduceMotion ? 1 : 0)
-            }
-            .accessibilityHidden(true)
     }
 
     private func scrubTarget(atX x: CGFloat, width: CGFloat, in span: ClosedRange<Int>) -> Int {

@@ -274,9 +274,10 @@ private struct PlainFace: View {
 
 /// Type only, no imagery: the headline serif title in the upper part over a
 /// thin accent rule, and the author as a small-caps eyebrow at the foot.
-/// Below xxLarge this face is the shelf's only title and author (the card
-/// under it shows just the listening line, R2-30), so the title takes up
-/// to four lines and the author always keeps at least its first.
+/// Through Large this face is the shelf's only title and author (the card
+/// under it shows just the listening line, R2-30; above Large the card's
+/// scalable caption names the book too, R3-12), so the title takes up to
+/// four lines and the author always keeps at least its first.
 private struct TypographicFace: View {
     let title: String
     let author: String?
@@ -299,7 +300,7 @@ private struct TypographicFace: View {
                     // least height, one line, before the title is offered
                     // the rest, so the title scales, then truncates, rather
                     // than cut the author: the cover is the only place a
-                    // text book's card names its author below xxLarge.
+                    // text book's card names its author through Large.
                     .layoutPriority(1)
                 CoverRule(size: CoverGeometry.ruleSize(forWidth: width))
                     .padding(.top, Theme.Space.sm)

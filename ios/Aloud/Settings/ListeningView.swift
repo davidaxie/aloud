@@ -38,8 +38,9 @@ enum ListeningCopy {
     }
 }
 
-/// R8: speed and voice in one place. The speed numeral, five presets and a
-/// 0.5–3× slider with a 1× detent (`ListeningSpeedControls`); the eleven
+/// R8: speed and voice in one place. Five presets and a 0.5–3× speed track
+/// with a 1× detent, its live rate beside it (the numeral above the presets
+/// at the accessibility sizes) (`ListeningSpeedControls`); the eleven
 /// natural voices (eight stock, three Aloud blends) plus System; Read
 /// bracketed asides; and the natural-voice card (or its one unsupported
 /// line) (`ListeningVoiceList`). Every pick is app-wide (R7) and heard where
@@ -120,7 +121,7 @@ struct ListeningView: View {
                 resolveSystemVoiceName()
             }
             .onDisappear {
-                // A drag the sheet closed under never reached onEditingChanged;
+                // A drag the sheet closed under never reached its release;
                 // what was heard is what gets kept.
                 if playback.rate != model.globalRate { playback.selectRate(playback.rate) }
                 playback.releaseNeuralEngineIfUnused()
@@ -238,9 +239,11 @@ struct ListeningView: View {
 
 // MARK: - Speed
 
-/// The speed numeral, five presets and the 0.5–3× slider with its 1×
-/// detent: pinned above the voice list, or the list's first section at the
-/// accessibility sizes.
+/// The five presets and the 0.5–3× speed track with its 1× detent (R8):
+/// pinned above the voice list, or the list's first section at the
+/// accessibility sizes. Below those sizes the live rate reads on the
+/// track's own row; at them the large numeral above the presets reads it
+/// instead (R3-10, a deliberate change from R8's numeral at every size).
 struct ListeningSpeedControls: View {
 
     let selectedChipUnderlay: Color?
@@ -249,35 +252,102 @@ struct ListeningSpeedControls: View {
 
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The speed drag in progress. Gesture state, so a system cancel clears
+    /// it as a lifted finger does, and either way the release persists.
+    @GestureState private var speedDrag: SpeedTrack.Drag?
 
     var body: some View {
         VStack(spacing: Theme.Space.md) {
-            Text(ListeningFormat.rate(playback.rate))
-                .font(Theme.font(.numeral))
-                .foregroundStyle(Theme.text)
-                .numericReadout(playback.rate)
-                .frame(maxWidth: .infinity)
-                .accessibilityHidden(true)   // the slider speaks the same value
+            if Self.showsNumeral(at: dynamicTypeSize) {
+                Text(ListeningFormat.rate(playback.rate))
+                    .font(Theme.font(.numeral))
+                    .foregroundStyle(Theme.text)
+                    .numericReadout(playback.rate)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityHidden(true)   // the slider speaks the same value
+            }
 
             presets
 
+            if Self.showsNumeral(at: dynamicTypeSize) {
+                speedTrack
+            } else {
+                // The rate on the track's own row: no numeral repeating the
+                // selected preset above, and a voice row more in view.
+                HStack(spacing: Theme.Space.sm) {
+                    speedTrack
+                    SpeedReadout(rate: playback.rate)
+                }
+            }
+        }
+        .padding(.horizontal, Theme.Space.sheetGutter)
+        .padding(.top, Theme.Space.xs)
+        // A small gap to the hairline: pinned, every point here is one the
+        // voice list doesn't get.
+        .padding(.bottom, Theme.Space.sm)
+    }
+
+    /// The large numeral reads the rate only at the accessibility sizes,
+    /// where the view scrolls and the presets stand in two columns; below
+    /// them the readout beside the track does (R3-10).
+    nonisolated static func showsNumeral(at size: DynamicTypeSize) -> Bool {
+        size.isAccessibilitySize
+    }
+
+    /// Whether an unselected preset carries the border: where the caller
+    /// asks (Settings' bgTint, R2-18), and on every surface under Increase
+    /// Contrast (R3-11), where a surface2 chip on surface is otherwise
+    /// about 1.1:1 and the line token darkens to 3:1 or better.
+    nonisolated static func edgesUnselected(asked: Bool, contrast: ColorSchemeContrast) -> Bool {
+        asked || contrast == .increased
+    }
+
+    // MARK: Track
+
+    /// The speed track (R3-09): the scrub's warm track and accent thumb in
+    /// a 44pt row, never the stock slider's glass thumb. A sideways drag
+    /// moves the speed live (the audio follows) and ticks once on arriving
+    /// at 1×; the release is the one persisted pick. A drag that starts
+    /// more downward than sideways is left to the sheet. To assistive tech
+    /// it is the stock slider, as the scrub is.
+    private var speedTrack: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            WarmTrack(fraction: SpeedTrack.fraction(of: playback.rate),
+                      isHeld: speedDrag?.engagement == .horizontal,
+                      reduceMotion: reduceMotion)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(speedGesture(width: width))
+        }
+        // A full 44pt touch row around the 4pt line.
+        .frame(height: 44)
+        // Lifted or cancelled, the gesture state resets: a drag that moved
+        // the speed persists it then, as the stock slider's end of editing did.
+        .onChange(of: speedDrag) { old, new in
+            if new == nil, old?.engagement == .horizontal { playback.selectRate(playback.rate) }
+        }
+        // A slider to assistive tech (the scrub's pattern): shapes with only
+        // an adjustable action read as a plain element, not a slider. This
+        // swaps the accessibility alone; the drag stays on the track.
+        .accessibilityRepresentation {
             Slider(value: Binding(get: { playback.rate },
                                   set: { raw in
+                                      // An assistive write has no drag to end:
+                                      // it is its own pick.
                                       let snapped = SpeedScale.snap(raw)
                                       if SpeedScale.landsOnDetent(from: playback.rate, to: snapped) {
                                           TransportHaptics.emit(.detent)
                                       }
-                                      playback.rate = snapped
+                                      playback.selectRate(snapped)
                                   }),
-                   in: SpeedScale.range,
-                   onEditingChanged: { editing in
-                       // The drag moves the audio live; the release is the
-                       // one persisted pick.
-                       if !editing { playback.selectRate(playback.rate) }
-                   })
-                // No step: a stepped slider can't hold the 1× detent.
-                .tint(Theme.accent)
-                .frame(minHeight: 44)
+                   in: SpeedScale.range)
+                // The whole touch row, so the element's frame is the one the
+                // drag uses: a Slider's own ideal height is a thin track.
+                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: .infinity)
                 .accessibilityLabel("Speed")
                 .accessibilityValue(ListeningFormat.rate(playback.rate))
                 .accessibilityAdjustableAction { direction in
@@ -290,12 +360,29 @@ struct ListeningSpeedControls: View {
                 }
                 .accessibilityIdentifier("listening.speed.slider")
         }
-        .padding(.horizontal, Theme.Space.sheetGutter)
-        .padding(.top, Theme.Space.xs)
-        // A small gap to the hairline: pinned, every point here is one the
-        // voice list doesn't get.
-        .padding(.bottom, Theme.Space.sm)
     }
+
+    /// The scrub's drag on the speed scale: nothing until 8pt of travel,
+    /// then only a sideways drag moves the speed, snapped to 0.05 with the
+    /// 1× detent, ticking once on arriving at 1×.
+    private func speedGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: ScrubGesture.minimumDistance)
+            .updating($speedDrag) { value, state, _ in
+                let drag = SpeedTrack.Drag.next(after: state, translation: value.translation,
+                                                rate: playback.rate)
+                state = drag
+                guard drag.engagement == .horizontal else { return }
+                let target = SpeedTrack.rate(startX: value.startLocation.x, x: value.location.x,
+                                             startRate: drag.startRate, width: width)
+                guard target != playback.rate else { return }
+                if SpeedScale.landsOnDetent(from: playback.rate, to: target) {
+                    TransportHaptics.emit(.detent)
+                }
+                playback.rate = target
+            }
+    }
+
+    // MARK: Presets
 
     /// One row of five, or two columns at accessibility sizes so "1.25×"
     /// never wraps inside its button.
@@ -332,10 +419,12 @@ struct ListeningSpeedControls: View {
                 .background(selected ? selectedChipUnderlay ?? Color.clear : Color.clear,
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 // The selected edge, so the selection is never a tint alone;
-                // where asked, a border on the others, so each reads as a chip.
+                // where asked or under Increase Contrast, a border on the
+                // others, so each reads as a chip.
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .strokeBorder(selected ? Theme.Stroke.selectedColor
-                                           : (edgesUnselectedChips ? Theme.Stroke.borderColor : Color.clear),
+                                           : (Self.edgesUnselected(asked: edgesUnselectedChips, contrast: contrast)
+                                                ? Theme.Stroke.borderColor : Color.clear),
                                   lineWidth: selected ? Theme.Stroke.selectedWidth : Theme.Stroke.borderWidth))
                 .contentShape(Rectangle())
         }
@@ -343,6 +432,106 @@ struct ListeningSpeedControls: View {
         .accessibilityLabel(ListeningCopy.spokenRate(preset))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("listening.preset.\(ListeningFormat.identifierNumber(preset))")
+    }
+}
+
+/// The live rate beside the speed track below the accessibility sizes
+/// (R3-10): callout with monospaced digits, trailing, in the widest rate's
+/// width, so the track beside it never resizes under a finger as the rate
+/// gains digits. Hidden from VoiceOver: the slider speaks the same value.
+struct SpeedReadout: View {
+
+    let rate: Double
+
+    /// A three-digit rate: as wide as any the scale holds, the digits being
+    /// monospaced.
+    static let widestRate = 2.75
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Text(ListeningFormat.rate(Self.widestRate))
+                .font(Theme.font(.callout))
+                .monospacedDigit()
+                .hidden()
+            Text(ListeningFormat.rate(rate))
+                .font(Theme.font(.callout))
+                .monospacedDigit()
+                .foregroundStyle(Theme.text)
+                .numericReadout(rate)
+        }
+        .fixedSize()
+        .accessibilityHidden(true)
+    }
+}
+
+/// The speed track's rules (R3-09), pure so tests read them without a
+/// view: where a rate sits on the track, which rate a drag lands on, and
+/// whether a drag is the track's at all.
+enum SpeedTrack {
+
+    /// A drag's direction, decided once it has travelled 8pt.
+    enum Engagement: Equatable {
+        /// Under 8pt along either axis yet.
+        case undecided
+        /// Sideways first: the track's, until the finger lifts.
+        case horizontal
+        /// Downward first: the sheet's or the list's; the speed never moves.
+        case vertical
+    }
+
+    /// A speed drag: its direction and the speed it began at.
+    struct Drag: Equatable {
+        var engagement: Engagement
+        /// The speed before this drag moved it.
+        let startRate: Double
+
+        /// The drag after one frame, from the gesture state before it (nil
+        /// at a drag's first frame); `rate` is the speed now, kept as the
+        /// start only on that first frame.
+        static func next(after state: Drag?, translation: CGSize, rate: Double) -> Drag {
+            Drag(engagement: SpeedTrack.engagement(after: state?.engagement, translation: translation),
+                 startRate: state?.startRate ?? rate)
+        }
+    }
+
+    /// Half the 44pt target: a touch this near the thumb's centre grabs it.
+    static let grabRadius: CGFloat = 22
+
+    private static var span: Double { SpeedScale.range.upperBound - SpeedScale.range.lowerBound }
+
+    /// Where `rate` sits along the track, 0...1.
+    static func fraction(of rate: Double) -> Double {
+        guard rate.isFinite else { return 0 }
+        return min(max((rate - SpeedScale.range.lowerBound) / span, 0), 1)
+    }
+
+    /// The rate under `x` on a track `width` wide, as the scrub maps x to
+    /// a sentence: clamped to the scale, snapped to 0.05, the 1× detent
+    /// magnetic.
+    static func rate(atX x: CGFloat, width: CGFloat) -> Double {
+        SpeedScale.snap(SpeedScale.range.lowerBound + ScrubGesture.fraction(atX: x, width: width) * span)
+    }
+
+    /// The rate a drag lands on. One that began on the thumb carries it by
+    /// the finger's travel, so the thumb keeps its place under the finger
+    /// and never jumps at the first frame; one that began elsewhere on the
+    /// track takes the rate under the finger, as the scrub does.
+    static func rate(startX: CGFloat, x: CGFloat, startRate: Double, width: CGFloat) -> Double {
+        guard width > 0 else { return SpeedScale.snap(startRate) }
+        let thumb = WarmTrack.thumbCentre(fraction: fraction(of: startRate), width: width)
+        guard abs(startX - thumb) <= grabRadius else { return rate(atX: x, width: width) }
+        return SpeedScale.snap(startRate + Double((x - startX) / width) * span)
+    }
+
+    /// Decided once and kept: a drag is the track's when its first 8pt are
+    /// more sideways than down, so a sheet drag that crosses the row, or
+    /// drifts sideways later, never moves the speed.
+    static func engagement(after state: Engagement?, translation: CGSize) -> Engagement {
+        if let state, state != .undecided { return state }
+        let across = abs(translation.width), down = abs(translation.height)
+        if across >= ScrubGesture.minimumDistance, across > down { return .horizontal }
+        if down >= ScrubGesture.minimumDistance, down >= across { return .vertical }
+        return .undecided
     }
 }
 

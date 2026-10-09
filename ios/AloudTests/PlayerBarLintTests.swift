@@ -245,12 +245,13 @@ final class PlayerBarLintTests: XCTestCase {
 
     /// Round 1 (R1-42, R1-44, R1-45, R1-48) in both bars: Forward 15 alone
     /// dims where it can't move; the scrub's base capsule takes the scrub
-    /// track and its Increase Contrast edge under the fill; the iPhone sets
-    /// the line's ink on its row's foot and the track high in its row, and
+    /// track and its Increase Contrast edge under the fill, drawn once in
+    /// the shared WarmTrack both scrubs use (R3-09); the iPhone sets the
+    /// line's ink on its row's foot and the track high in its row, and
     /// hands the line Undo jump while it is offered; the Mac keeps the line
     /// centred with no Undo action (⌘Z covers it).
     func testBothBarsDimForwardEdgeTheTrackAndPlaceTheLine() throws {
-        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift"])
+        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift", "Theme/WarmTrack.swift"])
         let macSources = try SourceTree.sources(in: SourceTree.macRoot,
                                                 only: ["Reader/MacPlayerBar.swift", "Reader/MacScrub.swift"])
         let bar = Self.code(try XCTUnwrap(s["Reader/PlayerBarView.swift"]))
@@ -267,11 +268,19 @@ final class PlayerBarLintTests: XCTestCase {
             XCTAssertLessThan(source.distance(from: forward.upperBound, to: dimmed.lowerBound), 400,
                               "\(name): right after the forward skip")
         }
+        let track = Self.code(try XCTUnwrap(s["Theme/WarmTrack.swift"]))
         let base = "Capsule() .fill(Theme.scrubTrack) .overlay(Capsule().strokeBorder(Theme.trackEdge, lineWidth: 1))"
+        XCTAssertTrue(compact(track).contains(base), "WarmTrack: the base capsule alone is edged")
+        XCTAssertFalse(track.contains("Capsule().fill(Theme.track)"), "WarmTrack: the scrub has its own track")
         for (name, source) in [("PlayerBarView", bar), ("MacScrub", macScrub)] {
-            XCTAssertTrue(compact(source).contains(base), "\(name): the base capsule alone is edged")
-            XCTAssertFalse(source.contains("Capsule().fill(Theme.track)"), "\(name): the scrub has its own track")
+            XCTAssertEqual(source.components(separatedBy: "WarmTrack(fraction:").count - 1, 1,
+                           "\(name) draws the shared warm track")
+            XCTAssertFalse(source.contains(".fill(Theme.scrubTrack)"), "\(name) keeps no copy of the track's drawing")
+            XCTAssertFalse(source.contains("ScrubThumb.ringDiameter"), "\(name) keeps no copy of the thumb")
         }
+        XCTAssertTrue(compact(macScrub).contains("isHeld: press != nil, reduceMotion: reduceMotion)"),
+                      "the Mac's press holds the track, with the Reduce Motion ring")
+        XCTAssertTrue(macScrub.contains("static let rowHeight: CGFloat = 24"), "the Mac's row is unchanged")
 
         let line = compact(try XCTUnwrap(bar.components(separatedBy: "ReaderMessageLine(message:").dropFirst().first))
         XCTAssertTrue(line.contains("rowAlignment: .bottom"), "the iPhone line sits by its scrub")
@@ -280,8 +289,12 @@ final class PlayerBarLintTests: XCTestCase {
         // Seated by its centre, never its top edge: a press thickens the
         // line evenly and its thumb holds still under the finger.
         XCTAssertTrue(compact(bar).contains(
-            ".animation(.easeOut(duration: Theme.Motion.press), value: isTouchingScrub) .modifier(ScrubLineSeat())"),
+            "isHeld: isTouchingScrub, reduceMotion: reduceMotion) .modifier(ScrubLineSeat())"),
                       "the line and its thumb sit in the seat, high in their unchanged row")
+        XCTAssertTrue(compact(track).contains(".animation(.easeOut(duration: Theme.Motion.press), value: isHeld)"),
+                      "a press thickens the line and grows the thumb in the shared track")
+        XCTAssertTrue(track.contains(".opacity(isHeld && reduceMotion ? 1 : 0)"), "Reduce Motion fades a ring in")
+        XCTAssertTrue(track.contains("let grows = isHeld && !reduceMotion"), "and grows nothing")
         let seat = compact(try XCTUnwrap(Self.closure(after: "struct ScrubLineSeat: ViewModifier", in: bar)))
         XCTAssertTrue(seat.contains(".frame(height: ScrubThumb.pressedTrackHeight) "
                                     + ".padding(.top, PlayerBarView.trackCentre - ScrubThumb.pressedTrackHeight / 2) "

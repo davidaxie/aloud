@@ -188,11 +188,12 @@ final class FeelUITests: XCTestCase {
         Double(value.replacingOccurrences(of: "×", with: ""))
     }
 
-    /// Where the thumb sits for `rate`: the track runs inside the slider's
-    /// frame, inset by about half a thumb at each end.
+    /// Where the thumb sits for `rate`: the warm track (R3-09) spans the
+    /// slider element's whole 44pt row, and its 12pt thumb is centred on
+    /// the fill's end, kept inside the track at either end.
     private static func point(on slider: XCUIElement, at rate: Double) -> XCUICoordinate {
-        let inset: CGFloat = 14
-        let x = inset + fraction(of: rate) * (slider.frame.width - 2 * inset)
+        let radius: CGFloat = 6
+        let x = min(max(fraction(of: rate) * slider.frame.width, radius), slider.frame.width - radius)
         return slider.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
             .withOffset(CGVector(dx: x, dy: 0))
     }

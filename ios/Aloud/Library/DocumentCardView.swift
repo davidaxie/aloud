@@ -1,12 +1,13 @@
 import SwiftUI
 
 /// One shelf card: the one 2:3 cover (R22) over its caption. A typographic
-/// cover already sets the title and the author, so below xxLarge a text
+/// cover already sets the title and the author, so through Large a text
 /// book's caption is the listening line alone (its length, the time left,
 /// or finished; no line when the length is unknown), and each book is
 /// named once (R2-30). A PDF's cover is its page, so its card always sets
 /// the serif title, the author and the listening line, as every card does
-/// from xxLarge, where they wrap in full (`showsCaption`). Both apps.
+/// above Large, where the cover's pinned type stops growing with the
+/// reader's size (R3-12; `showsCaption`). Both apps.
 struct DocumentCardView: View {
     let document: LibraryDocument
     let rate: Double
@@ -46,13 +47,16 @@ struct DocumentCardView: View {
 
     /// Whether the card sets the title and author under its cover (R2-30):
     /// always for a PDF, whose cover is a page that may set neither; and
-    /// from xxLarge, where they wrap in full (the accessibility sizes among
-    /// them, whose 64pt hero cover is textless). Below that a text book's
-    /// cover already names it, and the card adds only the listening line.
-    /// Keyed on the record's kind, never on the art drawn, so a PDF's card
-    /// never reflows when its page lands or fails to.
+    /// above Large (R3-12), where the cover's type, pinned at Large, no
+    /// longer grows with the reader's size, so the scalable caption names
+    /// the book (the accessibility sizes among them, whose 64pt hero cover
+    /// is textless). From xxLarge that caption also wraps in full
+    /// (`wrapsInFull`). Through Large a text book's cover already names it,
+    /// and the card adds only the listening line. Keyed on the record's
+    /// kind, never on the art drawn, so a PDF's card never reflows when its
+    /// page lands or fails to.
     static func showsCaption(kind: DocKind, at size: DynamicTypeSize) -> Bool {
-        kind == .pdf || wrapsInFull(at: size)
+        kind == .pdf || size > .large
     }
 
     /// What Voice Control answers to ("Tap The Great Gatsby"): the title
@@ -94,9 +98,10 @@ struct DocumentCardView: View {
 
     // MARK: Details
 
-    /// The full caption where `showsCaption` says so, else the listening
-    /// line alone: the typographic cover above already sets the title and
-    /// the author (R2-30). A book of unknown length then shows no caption.
+    /// The full caption where `showsCaption` says so (a PDF, or any card
+    /// above Large), else the listening line alone: through Large the
+    /// typographic cover above already sets the title and the author
+    /// (R2-30). A book of unknown length then shows no caption.
     @ViewBuilder
     private var details: some View {
         if Self.showsCaption(kind: document.kind, at: dynamicTypeSize) {

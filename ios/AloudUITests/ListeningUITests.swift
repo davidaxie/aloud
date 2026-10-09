@@ -134,6 +134,9 @@ final class ListeningUITests: XCTestCase {
         let slider = app.sliders["listening.speed.slider"].firstMatch
         XCTAssertTrue(slider.waitForExistence(timeout: 5))
         XCTAssertEqual(stringValue(of: slider), "1.5×")
+        // R3-09: the stock slider stands in for the warm track to assistive
+        // tech, framed to the track's whole 44pt touch row.
+        XCTAssertGreaterThanOrEqual(slider.frame.height, 43.5, "the slider element is the 44pt row")
     }
 
     func testVoiceRowsHaveNoNestedButtons() {

@@ -87,8 +87,10 @@ struct MacSettingsVoiceTab: View {
 
     /// Seeded near the not-installed layout so the first frame barely moves.
     @State private var contentHeight: CGFloat = 400
-    /// The pinned speed block, with its hairline.
-    @State private var pinnedHeight: CGFloat = 160
+    /// The pinned speed block, with its hairline: the presets' row and the
+    /// speed track's row with their spacing and padding (no numeral below
+    /// the accessibility sizes, R3-10), so the first frame barely moves.
+    @State private var pinnedHeight: CGFloat = 125
 
     var body: some View {
         VStack(spacing: 0) {

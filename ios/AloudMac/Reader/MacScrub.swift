@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The scrub on the Mac (M9, mac-ux §3.7): a 4 pt track in a 24 pt row
-/// that spans the current chapter (the whole document for PDFs and
-/// chapterless books), so a long book still scrubs at sentence precision.
+/// The scrub on the Mac (M9, mac-ux §3.7): the iPhone's 4 pt warm track and
+/// accent thumb (`WarmTrack`) in a 24 pt row that spans the current chapter
+/// (the whole document for PDFs and chapterless books), so a long book
+/// still scrubs at sentence precision.
 ///
 /// A pointer shows its target before it clicks: hovering previews the
 /// target sentence's first six words and its time into the span. A click
@@ -22,6 +23,7 @@ struct MacScrub: View {
 
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.chromeScale) private var chromeScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The press in progress, which the fill and the preview follow. Gesture
     /// state, so it lives exactly as long as the press, a cancelled one too.
@@ -35,7 +37,6 @@ struct MacScrub: View {
     @State private var previewWidth: CGFloat = 180
 
     static let rowHeight: CGFloat = 24
-    static let trackHeight: CGFloat = 4
 
     var body: some View {
         GeometryReader { proxy in
@@ -43,22 +44,15 @@ struct MacScrub: View {
             let model = self.model
             let span = press?.span ?? model.span
             let shown = press?.target ?? model.playhead
-            ZStack(alignment: .leading) {
-                // The edge strokes the unfilled track alone (clear unless
-                // Increase Contrast is on); the fill draws over it.
-                Capsule()
-                    .fill(Theme.scrubTrack)
-                    .overlay(Capsule().strokeBorder(Theme.trackEdge, lineWidth: 1))
-                Capsule()
-                    .fill(Theme.accent)
-                    // A finished book fills the track (its last sentence
-                    // was heard, not just begun); a press shows its target.
-                    .frame(width: max(Self.trackHeight,
-                                      width * navigation.scrubFill(of: shown, in: span,
-                                                                   isFinished: press == nil && playback.isAtEnd)))
-            }
-            .frame(height: Self.trackHeight)
-            .frame(maxHeight: .infinity, alignment: .center)
+            // The iPhone's warm track and accent thumb (R3-09). A finished
+            // book fills the track (its last sentence was heard, not just
+            // begun); a press shows its target and holds the track, which
+            // thickens and grows its thumb (a ring under Reduce Motion).
+            WarmTrack(fraction: navigation.scrubFill(of: shown, in: span,
+                                                     isFinished: press == nil && playback.isAtEnd),
+                      isHeld: press != nil,
+                      reduceMotion: reduceMotion)
+                .frame(maxHeight: .infinity, alignment: .center)
             .overlay(alignment: .topLeading) {
                 if let target = previewTarget(model: model, width: width) {
                     preview(target, in: press?.span ?? model.span, model: model, width: width)
