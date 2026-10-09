@@ -282,6 +282,29 @@ final class BookshelfUITest: XCTestCase {
         XCTAssertFalse(app.buttons["bookshelf.jump.longReads"].exists, "no shelf map over search results")
     }
 
+    /// R4-17: at the default size the shelf map is one row under the
+    /// search field, each button its title over its count, not three
+    /// stacked full-width rows pushing the first shelf down the screen.
+    func testTheShelfMapIsOneRowAtTheDefaultSize() {
+        let app = XCUIApplication.aloud(["-uitest-reset-library"])
+        app.launch()
+        openBookshelfFromEmptyLibrary(app)
+
+        let ids = ["bookshelf.jump.underAnHour", "bookshelf.jump.anEvening", "bookshelf.jump.longReads"]
+        var frames: [CGRect] = []
+        for id in ids {
+            let jump = app.buttons[id].firstMatch
+            XCTAssertTrue(jump.waitForExistence(timeout: 5), "the shelf map shows \(id)")
+            XCTAssertGreaterThanOrEqual(jump.frame.height, 44, "\(id) is \(jump.frame.height) pt tall")
+            frames.append(jump.frame)
+        }
+        let tops = frames.map(\.minY)
+        XCTAssertLessThanOrEqual((tops.max() ?? 0) - (tops.min() ?? 0), 1, "one row: tops at \(tops)")
+        for (left, right) in zip(frames, frames.dropFirst()) {
+            XCTAssertLessThanOrEqual(left.maxX, right.minX + 1, "side by side, in order: \(frames)")
+        }
+    }
+
     func testRenamedClassicOpensExistingDocument() {
         let app = XCUIApplication.aloud(["-uitest-seed-first-classic", "-uitest-reset-library"])
         app.launch()

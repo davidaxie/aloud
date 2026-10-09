@@ -29,6 +29,10 @@ struct MacClassicsView: View {
     @State private var playingClassicID: Int?
     @State private var isSearchFocused = false
     @FocusState private var focusedRow: Int?
+    /// R4-18, as on the iPhone: the shelf heading VoiceOver moves to after
+    /// a shelf-map jump, set by `jump(to:_:)` once the far heading is laid
+    /// out; nil between jumps.
+    @AccessibilityFocusState private var focusedShelf: BookshelfSection?
     /// Whose ↓ handoff is offered: this screen's, until it goes.
     @State private var handoffOwner = UUID()
     /// What the lazy list has laid out, and the shelf-map jump under way
@@ -176,6 +180,8 @@ struct MacClassicsView: View {
             // Pinned: rows scroll under it.
             .background(Theme.bg)
             .accessibilityAddTraits(.isHeader)
+            // R4-18: a shelf-map jump hands VoiceOver to this heading.
+            .accessibilityFocused($focusedShelf, equals: section)
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
     }
 
@@ -196,27 +202,26 @@ struct MacClassicsView: View {
     // MARK: Shelf map
 
     /// R3-05, as on the iPhone: one button per shelf at the app-wide
-    /// speed, its title and a quiet count, jumping to its heading. No
-    /// selected state: the pinned heading says where the list is. No
-    /// identifier on the row, which would land on the buttons' own.
+    /// speed, its title over a quiet count (R4-17, the iPhone's cell),
+    /// jumping to its heading. No selected state: the pinned heading says
+    /// where the list is. No identifier on the row, which would land on the
+    /// buttons' own.
     private func shelfMap(_ scroller: ScrollViewProxy) -> some View {
         HStack(spacing: Theme.Space.xs) {
             ForEach(ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)) { jump in
                 Button {
                     self.jump(to: jump.section, scroller)
                 } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                    VStack(alignment: .leading, spacing: 0) {
                         Text(jump.title)
                             .font(Theme.font(.callout).weight(.medium))
                             .foregroundStyle(Theme.accentStrong)
                         Text(jump.countText)
-                            .font(Theme.font(.callout))
+                            .font(Theme.font(.caption))
                             .foregroundStyle(Theme.textMuted)
-                            .fixedSize()
                     }
                     // No line limit, as on the iPhone: a title wraps in a
-                    // narrow column rather than being cut; the count never
-                    // breaks.
+                    // narrow column rather than being cut.
                     .multilineTextAlignment(.leading)
                     .padding(.horizontal, Theme.Space.sm)
                     .padding(.vertical, Theme.Space.xxs)
@@ -239,7 +244,12 @@ struct MacClassicsView: View {
     /// unanimated, and the next runs a turn of the run loop later, once the
     /// rows that step brought in have appeared; never on a timer. Once the
     /// mark is laid out, it lands.
+    /// R4-18: VoiceOver then moves to the shelf's heading once it has
+    /// landed, cleared first so a repeat jump moves it again. Keyboard
+    /// focus is left where it is: a programmatic row focus would ring a
+    /// book under a mouse click, and VoiceOver's cursor follows it.
     private func jump(to section: BookshelfSection, _ scroller: ScrollViewProxy) {
+        focusedShelf = nil
         walkStep(walk.begin(toward: section), scroller)
     }
 
@@ -264,7 +274,10 @@ struct MacClassicsView: View {
         let id = ShelfJump.anchorID(section)
         let settle = {
             scroller.scrollTo(id, anchor: .top)
-            DispatchQueue.main.async { scroller.scrollTo(id, anchor: .top) }
+            DispatchQueue.main.async {
+                scroller.scrollTo(id, anchor: .top)
+                focusedShelf = section
+            }
         }
         if reduceMotion {
             settle()

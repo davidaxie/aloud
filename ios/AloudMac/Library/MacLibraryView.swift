@@ -404,8 +404,9 @@ struct MacLibraryView: View {
 // MARK: - Empty
 
 /// The Library with no books: the featured classic, two text links and the
-/// privacy line, in a centered 480 pt column. The card's play circle is the
-/// screen's one accent fill. Deleting every book comes back here.
+/// privacy line, in a 480 pt column at the optical centre (R4-22, as on the
+/// iPhone). The card's play circle is the screen's one accent fill.
+/// Deleting every book comes back here.
 private struct MacEmptyLibrary: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var importer: DocumentImporter
@@ -431,7 +432,7 @@ private struct MacEmptyLibrary: View {
                 .frame(maxWidth: 480)
                 .padding(.horizontal, MacGridMetrics.gutter(forWindowWidth: proxy.size.width))
                 .padding(.vertical, Theme.Space.xl)
-                .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                .opticalCenter(minHeight: proxy.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
         }

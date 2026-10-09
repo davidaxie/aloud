@@ -31,6 +31,11 @@ struct BookshelfView: View {
     /// (`ShelfWalk`). A reference, never observed: rows appearing as the
     /// list scrolls redraw nothing.
     @State private var walk = ShelfWalk()
+    /// R4-18: the shelf heading VoiceOver moves to after a shelf-map jump,
+    /// so its next swipe reads on inside that shelf rather than landing on
+    /// the first heading and scrolling the list back to the top. Set by
+    /// `jump(to:_:)` once the far heading is laid out; nil between jumps.
+    @AccessibilityFocusState private var focusedShelf: BookshelfSection?
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -196,6 +201,8 @@ struct BookshelfView: View {
             // Pinned: rows scroll under it.
             .background(Theme.bg)
             .accessibilityAddTraits(.isHeader)
+            // R4-18: a shelf-map jump hands VoiceOver to this heading.
+            .accessibilityFocused($focusedShelf, equals: section)
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
     }
 
@@ -217,10 +224,13 @@ struct BookshelfView: View {
 
     // MARK: Shelf map
 
-    /// R3-05: one button per shelf, its title and a quiet count, so the
-    /// longer shelves far down the list are one tap away and their being
-    /// there is said at the top. Side by side while they fit, full-width
-    /// rows at the large sizes (`ShelfMapLayout`). No selected state: the
+    /// R3-05: one button per shelf, its title over a quiet count (R4-17),
+    /// so the longer shelves far down the list are one tap away and their
+    /// being there is said at the top. Stacked in the cell, the three fit
+    /// side by side on a phone through about xLarge, one 44 pt row under
+    /// the search field; past that they fall back to full-width rows by
+    /// themselves (`ShelfMapLayout`, which checks the natural widths, so
+    /// no text size gate and no equal columns). No selected state: the
     /// pinned heading already says where the list is. No identifier on the
     /// row: a stack isn't an accessibility element, so one set here would
     /// land on the buttons and could replace their `bookshelf.jump.<shelf>`
@@ -238,21 +248,26 @@ struct BookshelfView: View {
         Button {
             self.jump(to: jump.section, proxy)
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+            // R4-17: the title over its count, a compact cell. On one line
+            // the three cells summed past a phone's width at the default
+            // size, so the map took three stacked rows and pushed the first
+            // shelf down the screen.
+            VStack(alignment: .leading, spacing: 0) {
                 Text(jump.title)
                     .font(Theme.font(.callout).weight(.medium))
                     .foregroundStyle(Theme.accentStrong)
                 Text(jump.countText)
-                    .font(Theme.font(.callout))
+                    .font(Theme.font(.caption))
                     .foregroundStyle(Theme.textMuted)
-                    .fixedSize()
             }
             // No line limit: the side-by-side map is only chosen while its
             // labels fit whole, and on the full-width rows a title wraps at
             // the largest sizes rather than being cut. A one-line limit on
             // text drawn at its own width is what the clipping audit
-            // reported here; the count never breaks.
+            // reported here.
             .multilineTextAlignment(.leading)
+            // The first title stays on the 20 pt gutter in both forms (the
+            // map's own inset is the gutter less this).
             .padding(.horizontal, Theme.Space.sm)
             .padding(.vertical, Theme.Space.xxs)
             // Its own width side by side, the full row when stacked: the
@@ -278,7 +293,11 @@ struct BookshelfView: View {
     /// and the next step runs a turn of the run loop later, once those rows
     /// are laid out and have appeared; never on a timer. Once the mark is
     /// laid out, it lands.
+    /// R4-18: VoiceOver then moves to the shelf's heading once it has
+    /// landed (`land(on:_:)`); it is cleared first, so a second jump to the
+    /// same shelf moves it again. No announcement: the heading reads itself.
     private func jump(to section: BookshelfSection, _ proxy: ScrollViewProxy) {
+        focusedShelf = nil
         walkStep(walk.begin(toward: section), proxy)
     }
 
@@ -305,7 +324,10 @@ struct BookshelfView: View {
         let id = ShelfJump.anchorID(section)
         let settle = {
             proxy.scrollTo(id, anchor: .top)
-            DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+            DispatchQueue.main.async {
+                proxy.scrollTo(id, anchor: .top)
+                focusedShelf = section
+            }
         }
         if reduceMotion {
             settle()
@@ -667,10 +689,11 @@ private struct ShelfRowButtonStyle: ButtonStyle {
 }
 
 /// The shelf map's buttons side by side while all of them fit whole on one
-/// line, else one per row across the full width. One set of buttons either
-/// way: a ViewThatFits kept its unchosen stack in the accessibility tree,
-/// where the audit read its labels as clipped and a tap could land on the
-/// copy that isn't drawn.
+/// line at their natural widths (R4-17: the stacked cells do on a phone at
+/// the standard sizes), else one per row across the full width. One set of
+/// buttons either way: a ViewThatFits kept its unchosen stack in the
+/// accessibility tree, where the audit read its labels as clipped and a tap
+/// could land on the copy that isn't drawn.
 private struct ShelfMapLayout: Layout {
     var spacing: CGFloat
 

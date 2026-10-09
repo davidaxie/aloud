@@ -61,6 +61,23 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertEqual(privacy.count, 1, "The privacy line shows exactly once")
     }
 
+    /// R4-22: the empty Library's block sits at the optical centre, a
+    /// little above the middle, not centred in the scroll height under the
+    /// bar's tall chrome, where the card's top fell at about 40% of the
+    /// screen and the block's middle at 55%.
+    func testTheEmptyLibrarySitsAtTheOpticalCentre() {
+        let app = XCUIApplication.aloud([reset])
+        app.launch()
+
+        let featured = app.buttons["library.featured"].firstMatch
+        XCTAssertTrue(featured.waitForExistence(timeout: 15), "the featured classic shows")
+        let window = app.windows.firstMatch.frame
+        XCTAssertGreaterThan(window.height, 0)
+        let top = featured.frame.minY / window.height
+        XCTAssertGreaterThanOrEqual(top, 0.30, "the card's top at \(featured.frame.minY) of \(window.height)")
+        XCTAssertLessThanOrEqual(top, 0.40, "the card's top at \(featured.frame.minY) of \(window.height)")
+    }
+
     /// R10 with P017: Classics, From Files… and then Paste Text, which
     /// follows the clipboard (off while it holds no text), so only its
     /// presence is checked here.

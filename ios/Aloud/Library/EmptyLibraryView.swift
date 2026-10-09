@@ -111,9 +111,9 @@ struct FeaturedClassicCard: View {
 }
 
 /// The Library with no books: the featured classic under its eyebrow, the
-/// shelf's text links and the privacy line, centered while it fits and
-/// scrolling once it doesn't (AX5). No heading; the play circle is the
-/// screen's only accent-filled element.
+/// shelf's text links and the privacy line, at the optical centre while it
+/// fits (`OpticalCenterColumn`, R4-22) and scrolling once it doesn't (AX5).
+/// No heading; the play circle is the screen's only accent-filled element.
 struct EmptyLibraryView: View {
     let onAddFile: () -> Void
     /// Adds the clipboard's text as a book; its paste control shows only
@@ -147,7 +147,9 @@ struct EmptyLibraryView: View {
                 .frame(maxWidth: 480)
                 .padding(.horizontal, Theme.Space.screenGutter)
                 .padding(.vertical, Theme.Space.xl)
-                .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                // R4-22: a little above the true centre, which read low
+                // under the bar's tall chrome.
+                .opticalCenter(minHeight: proxy.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
             .shelfScrollEdge(rule: true)
@@ -175,6 +177,51 @@ struct EmptyLibraryView: View {
         .accessibilityInputLabels(FeaturedClassic.inputLabels(title: book.title))
         .accessibilityHint("Opens and starts reading aloud")
         .accessibilityIdentifier("library.featured")
+    }
+}
+
+/// R4-22: one block in a column at least `minHeight` tall, set at the
+/// optical centre rather than the true one: `bias` of the slack above it
+/// and the rest below. Centred in the scroll height, the empty Library's
+/// block sat low on the iPhone, its centre at 55% of the screen, since the
+/// bar's chrome above it is much taller than the home indicator's inset
+/// below. Both apps' empty Libraries (`opticalCenter(minHeight:)`).
+///
+/// Stateless, measured in one pass, so nothing moves after the first frame
+/// or on a text size change. A block taller than `minHeight` (AX5) starts
+/// at the top and scrolls, as it did centred.
+struct OpticalCenterColumn: Layout {
+    let minHeight: CGFloat
+    var bias: CGFloat = 0.42
+
+    /// The block's offset from the column's top: `bias` of the room left
+    /// over in `available`, never above the top.
+    static func offset(blockHeight: CGFloat, in available: CGFloat, bias: CGFloat = 0.42) -> CGFloat {
+        max(0, (available - blockHeight) * bias)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let block = subviews.first else { return CGSize(width: proposal.width ?? 0, height: minHeight) }
+        let size = block.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: size.width, height: max(size.height, minHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let block = subviews.first else { return }
+        let size = block.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        let top = bounds.minY + Self.offset(blockHeight: size.height, in: bounds.height, bias: bias)
+        block.place(at: CGPoint(x: bounds.midX, y: top), anchor: .top,
+                    proposal: ProposedViewSize(width: bounds.width, height: size.height))
+    }
+}
+
+extension View {
+    /// This view at the optical centre of a column at least `minHeight`
+    /// tall, across the full width (`OpticalCenterColumn`): the empty
+    /// Library's block on both apps, in place of a centring min-height frame.
+    func opticalCenter(minHeight: CGFloat) -> some View {
+        OpticalCenterColumn(minHeight: minHeight) { self }
+            .frame(maxWidth: .infinity)
     }
 }
 
