@@ -80,7 +80,7 @@ final class ShortcutIntentsTests: XCTestCase {
     func testShortcutCopy() {
         XCTAssertEqual(ShortcutCopy.nothingToContinue, "Nothing to continue yet. Open Aloud and choose a book.")
         XCTAssertEqual(ShortcutCopy.finished("Emma"), "You finished Emma. Open Aloud to listen again.")
-        XCTAssertEqual(ShortcutCopy.couldNotPlay("Emma"), "Couldn't play Emma. Open Aloud to try again.")
+        XCTAssertEqual(ShortcutCopy.couldNotPlay("Emma"), "Couldn\u{2019}t play Emma. Open Aloud to try again.")
         XCTAssertEqual(ShortcutCopy.sleepTimerSet(.off, endsAtChapter: true), "Sleep timer off")
         XCTAssertEqual(ShortcutCopy.sleepTimerSet(.minutes(30), endsAtChapter: true), "Sleep timer set for 30 minutes")
         XCTAssertEqual(ShortcutCopy.sleepTimerSet(.minutes(60), endsAtChapter: false), "Sleep timer set for 1 hour")

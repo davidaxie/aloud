@@ -116,7 +116,7 @@ final class HonestStopsUITest: XCTestCase {
         let app = launch(fault: "skip")
         let play = playButton(app)
         XCTAssertTrue(waitForValue("playing", of: play, timeout: 60), "The book should start playing")
-        let skipped = "Skipped a sentence the voice couldn't read"
+        let skipped = "Skipped a sentence the voice couldn\u{2019}t read"
         XCTAssertTrue(wait(for: NSPredicate(format: "label == %@", skipped), chapterLine(app), timeout: 60),
                       "The chapter line shows the notice, got '\(chapterLine(app).label)'")
         XCTAssertEqual(stringValue(of: play), "playing", "The audio continues under the notice")

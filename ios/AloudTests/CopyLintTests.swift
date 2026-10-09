@@ -249,6 +249,74 @@ final class CopyLintTests: XCTestCase {
         XCTAssertFalse(Self.matches(#"(?i)\bdocuments?\b"#, "documentation"), "only the word")
     }
 
+    // MARK: - The page's marks
+
+    /// A typewriter apostrophe between two letters, or a "(c)" for ©.
+    private static let typewriterMarks = [#"[A-Za-z]'[A-Za-z]"#, #"\(c\)"#]
+
+    /// Calls whose text only developers read: logs, asserts and test skips.
+    private static let diagnosticCall =
+        #"(?<![A-Za-z0-9_])(log|logger|os_log|NSLog|print|debugPrint|assert|assertionFailure|precondition|preconditionFailure|fatalError|XCTSkip|XCTFail)\s*[.(]"#
+
+    /// R2-33: what people read sets the page's marks, ’ and © (as the page
+    /// sets ’ and “ ”), never a typewriter apostrophe between letters or a
+    /// "(c)", on both apps. Text handed to a log, an assert or an XCTSkip
+    /// is for developers and keeps its plain marks; the licence texts are
+    /// resources, not Swift, so the lexer never reads them. Each offender
+    /// is listed as path:line.
+    func testCopySetsTheTypographersMarks() throws {
+        for typed in ["Couldn't play Emma", "Aloud's own mixes", "Copyright (c) Microsoft"] {
+            XCTAssertTrue(Self.hasTypewriterMark(typed), "the lint misses \(typed)")
+        }
+        for set in ["Couldn\u{2019}t play Emma", "Copyright \u{00A9} Microsoft", "Text in ( ), [ ] and { }",
+                    "\u{201C}Emma\u{201D}", "'Emma'", "(contents)"] {
+            XCTAssertFalse(Self.hasTypewriterMark(set), "the lint flags \(set)")
+        }
+        let probe = "func f() {\n    log.error(\"it doesn't decode\")\n    precondition(ok,\n                 \"a controller's mixer\")\n    let s = \"Can't\"\n}\n"
+        let probeCode = SwiftLiterals.code(in: probe).components(separatedBy: "\n")
+        let probed = SwiftLiterals.literals(in: probe, path: "probe").map { Self.isDiagnostic($0, codeLines: probeCode) }
+        XCTAssertEqual(probed, [true, true, false], "logs and asserts are skipped, copy is read")
+
+        let tree = try Tree()
+        let macSources = SourceTree.exists(SourceTree.macRoot) ? try SourceTree.sources(in: SourceTree.macRoot) : [:]
+        let mac = Dictionary(uniqueKeysWithValues: macSources.map { (SourceTree.macPrefix + $0.key, $0.value) })
+        let sources = tree.sources.merging(mac) { first, _ in first }
+        let codeLines = sources.mapValues { SwiftLiterals.code(in: $0).components(separatedBy: "\n") }
+        let macCopy = SwiftLiterals.literals(in: mac, excluding: Self.excludedPrefixes.map { SourceTree.macPrefix + $0 })
+            .filter { SwiftLiterals.isCopy($0.text) }
+        let hits = (tree.copy + macCopy).filter { literal in
+            Self.hasTypewriterMark(literal.readable) && !Self.isDiagnostic(literal, codeLines: codeLines[literal.path] ?? [])
+        }
+        assertNone(hits, "Copy sets \u{2019} and \u{00A9}, not ' and (c)")
+    }
+
+    /// R2-33, R8: a toggle's subtitle is an aside, set as the Read asides
+    /// line is: no full stop.
+    func testToggleSubtitlesEndWithoutAFullStop() throws {
+        let tree = try Tree()
+        let macSources = SourceTree.exists(SourceTree.macRoot) ? try SourceTree.sources(in: SourceTree.macRoot) : [:]
+        let mac = Dictionary(uniqueKeysWithValues: macSources.map { (SourceTree.macPrefix + $0.key, $0.value) })
+        let declaration = try NSRegularExpression(pattern: #"static\s+let\s+(\w*Subtitle)\s*(:\s*String\s*)?=\s*"$"#)
+        var found: [String: String] = [:]
+        for (path, text) in tree.sources.merging(mac, uniquingKeysWith: { first, _ in first }) {
+            let lines = text.components(separatedBy: "\n")
+            for literal in SwiftLiterals.literals(in: text, path: path) where lines.indices.contains(literal.line - 1) {
+                let line = lines[literal.line - 1]
+                guard let opening = line.range(of: "\"") else { continue }
+                let head = String(line[..<opening.upperBound])
+                let range = NSRange(head.startIndex..., in: head)
+                guard let match = declaration.firstMatch(in: head, range: range),
+                      let name = Range(match.range(at: 1), in: head) else { continue }
+                found["\(path) \(head[name])"] = literal.readable
+            }
+        }
+        XCTAssertTrue(found.keys.contains { $0.hasSuffix(" wordHighlightSubtitle") }, "the scan reads \(found.keys.sorted())")
+        XCTAssertTrue(found.keys.contains { $0.hasSuffix(" readAsidesSubtitle") }, "the scan reads \(found.keys.sorted())")
+        for (name, subtitle) in found.sorted(by: { $0.key < $1.key }) {
+            XCTAssertFalse(subtitle.hasSuffix("."), "\(name) ends with a full stop: \(subtitle)")
+        }
+    }
+
     // MARK: - Helpers
 
     /// The app's sources and their literals, read once per test.
@@ -275,6 +343,31 @@ final class CopyLintTests: XCTestCase {
 
     private static func namesTheDevice(_ text: String) -> Bool {
         deviceWords.contains { matches($0, text) }
+    }
+
+    private static func hasTypewriterMark(_ text: String) -> Bool {
+        typewriterMarks.contains { matches($0, text) }
+    }
+
+    /// Whether `literal` is handed to a log, an assert or a test skip: its
+    /// own line names the call, or it continues a call opened on a line
+    /// above (up to eight back) and that statement names it. `codeLines`
+    /// is the file as `SwiftLiterals.code(in:)` gives it, split on
+    /// newlines, so parentheses in comments and literals never count.
+    private static func isDiagnostic(_ literal: SwiftLiteral, codeLines: [String]) -> Bool {
+        let index = literal.line - 1
+        guard codeLines.indices.contains(index) else { return false }
+        var start = index
+        var depth = 0
+        for above in stride(from: index - 1, through: max(0, index - 8), by: -1) {
+            let line = codeLines[above]
+            depth += line.filter { $0 == "(" }.count - line.filter { $0 == ")" }.count
+            if depth > 0 {
+                start = above
+                break
+            }
+        }
+        return matches(diagnosticCall, codeLines[start...index].joined(separator: "\n"))
     }
 
     private static func matches(_ pattern: String, _ text: String) -> Bool {

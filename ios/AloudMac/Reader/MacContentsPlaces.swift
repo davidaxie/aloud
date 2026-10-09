@@ -108,8 +108,9 @@ extension MacContents {
     }
 }
 
-/// A place: when and where, over two lines of the sentence and the ones
-/// after it in its paragraph (`PlaceRow.snippet`). On the Mac the
+/// A place: when and where, over two lines from the stop: its sentence and
+/// the ones after it, read on past its paragraph within its chapter
+/// (`PlaceRow.snippet`). On the Mac the
 /// place at the playhead is semibold, as the current chapter is (accent is
 /// never text); the panel adds its bar.
 struct MacContentsPlaceLabel: View {

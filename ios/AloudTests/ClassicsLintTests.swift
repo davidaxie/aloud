@@ -140,6 +140,34 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertTrue(mac.contains("nonisolated static func rowHint(finished: Bool, playing: Bool = false) -> String"))
     }
 
+    /// R2-32: the Classics placeholder is drawn in textFaint, warm and AA on
+    /// the field, never the system's neutral grey (3.47:1 in the warm
+    /// palette). Apple's contrast audit doesn't flag it, so the guard is
+    /// here: the prompt asks for textFaint, and the UIKit field underneath
+    /// is set to it too, in case the navigation bar's search drops the
+    /// prompt's style. The field stays the system's search field (the
+    /// Search key's submit, R1-32), as ContentsSheetLintTests'
+    /// testTheSearchPlaceholderMeetsAA pins the Contents field.
+    func testTheSearchPlaceholderMeetsAA() throws {
+        let s = try SourceTree.sources(only: [Self.path])
+        let view = try XCTUnwrap(s[Self.path])
+        XCTAssertTrue(view.contains("prompt: Text(Self.searchPrompt).foregroundStyle(Theme.textFaint))"),
+                      "the prompt asks for textFaint")
+        XCTAssertTrue(view.contains("SearchPlaceholderTint(prompt: Self.searchPrompt)"),
+                      "the UIKit field's placeholder is set as well")
+        let tint = try region(of: view, from: "private struct SearchPlaceholderTint: UIViewControllerRepresentable {",
+                              length: 2_600)
+        XCTAssertTrue(tint.contains("UIColor(Theme.textFaint).resolvedColor(with: field.traitCollection)"),
+                      String(tint))
+        XCTAssertTrue(tint.contains("field.attributedPlaceholder = placeholder"), String(tint))
+        XCTAssertTrue(tint.contains("searchBar.searchTextField"), "the system field, not a custom one")
+        XCTAssertTrue(tint.contains("override func viewDidAppear"), "re-applied when it appears")
+        XCTAssertTrue(tint.contains("registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self])"),
+                      "re-applied when the appearance or contrast changes")
+        XCTAssertFalse(view.contains("TextField("), "never a custom field: it must stay a search field")
+        XCTAssertTrue(view.contains(".searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),"))
+    }
+
     /// P053: no hint in either app names a gesture. VoiceOver already says
     /// how to activate an element, and the words are wrong for Voice
     /// Control and Switch Control. B7-2: a hint is read where it is set and

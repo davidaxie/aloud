@@ -57,7 +57,7 @@ final class PlaybackCopyTests: XCTestCase {
         XCTAssertEqual(PlaybackNotice.fellBackToSystem.text, "Natural voice unavailable · using System")
         XCTAssertEqual(PlaybackNotice.nowReadingIn(voiceName: "Michael").text, "Now reading in Michael")
         XCTAssertEqual(PlaybackNotice.backedUp(sentences: 2).text, "Backed up 2 sentences")
-        XCTAssertEqual(PlaybackNotice.skippedSentence.text, "Skipped a sentence the voice couldn't read")
+        XCTAssertEqual(PlaybackNotice.skippedSentence.text, "Skipped a sentence the voice couldn\u{2019}t read")
         #if os(iOS)
         XCTAssertEqual(PlaybackNotice.coolingDown.text, "Using the System voice while iPhone cools")
         #else

@@ -29,16 +29,16 @@ enum ImportFailure: Equatable, CaseIterable {
         switch self {
         case .pdfNoText: return "This PDF has no readable text."
         case .pdfLocked: return "This PDF is locked with a password."
-        case .pdfDamaged: return "This PDF can't be opened."
+        case .pdfDamaged: return "This PDF can’t be opened."
         case .pdfNoPages: return "This PDF has no pages."
         case .textNoText: return "This file has no readable text."
-        case .textUnreadable: return "This text file can't be read."
+        case .textUnreadable: return "This text file can’t be read."
         case .outOfSpace: return "\(DeviceNoun.Subject) is out of space."
-        case .couldNotOpen: return "This file couldn't be opened."
+        case .couldNotOpen: return "This file couldn’t be opened."
         case .classicMissing: return "This classic is missing from Aloud."
-        case .notDownloaded: return "This file isn't downloaded yet."
-        case .libraryUnreadable: return "This book couldn't be added."
-        case .unsupportedType: return "Aloud can't add this kind of file."
+        case .notDownloaded: return "This file isn’t downloaded yet."
+        case .libraryUnreadable: return "This book couldn’t be added."
+        case .unsupportedType: return "Aloud can’t add this kind of file."
         }
     }
 
@@ -52,13 +52,13 @@ enum ImportFailure: Equatable, CaseIterable {
         switch self {
         case .pdfNoText, .textNoText: return "\(name) has no readable text."
         case .pdfLocked: return "\(name) is locked with a password."
-        case .pdfDamaged: return "\(name) can't be opened."
+        case .pdfDamaged: return "\(name) can’t be opened."
         case .pdfNoPages: return "\(name) has no pages."
-        case .textUnreadable: return "\(name) can't be read."
-        case .couldNotOpen: return "\(name) couldn't be opened."
-        case .notDownloaded: return "\(name) isn't downloaded yet."
-        case .libraryUnreadable: return "\(name) couldn't be added."
-        case .unsupportedType: return "Aloud can't add \(name)."
+        case .textUnreadable: return "\(name) can’t be read."
+        case .couldNotOpen: return "\(name) couldn’t be opened."
+        case .notDownloaded: return "\(name) isn’t downloaded yet."
+        case .libraryUnreadable: return "\(name) couldn’t be added."
+        case .unsupportedType: return "Aloud can’t add \(name)."
         case .outOfSpace, .classicMissing: return title
         }
     }
@@ -76,7 +76,7 @@ enum ImportFailure: Equatable, CaseIterable {
         case .classicMissing: return "Try another one from Classics."
         case .notDownloaded: return "Connect, then add it again."
         case .libraryUnreadable:
-            return "Aloud couldn't read your library, so it leaves it as it is. Update Aloud, then try again."
+            return "Aloud couldn’t read your library, so it leaves it as it is. Update Aloud, then try again."
         case .unsupportedType: return "Aloud adds PDFs and plain-text files."
         }
     }

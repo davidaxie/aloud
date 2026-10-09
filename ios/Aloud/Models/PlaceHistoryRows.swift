@@ -14,9 +14,10 @@ struct PlaceRow: Equatable, Identifiable {
     /// The whole sentence, typeset as the reader shows it: what VoiceOver
     /// reads and the Mac's cursor says.
     let text: String
-    /// What the row draws: the sentence and the ones after it in its
-    /// paragraph, enough of the book to know the place by
-    /// (`PlaceHistoryRows.snippet`). The row's line limit cuts it.
+    /// What the row draws: the sentence, then the ones after it, read on
+    /// past its paragraph within its chapter, enough of the book to know
+    /// the place by (`PlaceHistoryRows.snippet`). It always opens on the
+    /// stop; the row's line limit cuts it.
     let snippet: String
     /// At the playhead: the current-chapter bar and `.isSelected`.
     let isCurrent: Bool
@@ -76,11 +77,14 @@ enum PlaceHistoryRows {
     /// the accessibility sizes' widths is never seen.
     static let snippetLength = 160
 
-    /// The stop's sentence, then the sentences after it in its paragraph
-    /// while the text is under `snippetLength` characters: a short line of
-    /// dialogue gains the narration that follows it. Nothing before the
-    /// stop is added, and it never crosses into the next paragraph or
-    /// chapter. Typeset as one run, so quote direction keeps its context.
+    /// The stop's sentence, then the sentences after it while the text is
+    /// under `snippetLength` characters: first the rest of its paragraph,
+    /// then on across paragraph breaks (joined with one space), so a short
+    /// line of dialogue that ends its paragraph still gains the narration
+    /// that follows it (R2-35). Nothing before the stop is added: the
+    /// half-height row shows one line, and it opens on the stop. It stops
+    /// at the chapter's edge and at the end of the book. Typeset as one
+    /// run, so quote direction keeps its context.
     /// A stop that opens inside a quotation (a closing quote with no
     /// opening one before it) starts with "…", as a cut search result
     /// does; a quote mark is never added.
@@ -92,7 +96,6 @@ enum PlaceHistoryRows {
         var raw = stop.text
         var next = index + 1
         while raw.count < snippetLength, sentences.indices.contains(next),
-              sentences[next].para == stop.para,
               navigation.chapterIndex(containing: next) == chapter {
             raw += " " + sentences[next].text
             next += 1

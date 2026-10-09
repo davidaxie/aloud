@@ -35,6 +35,9 @@ struct BookshelfView: View {
         "No classics match \u{201C}\(trimmedQuery)\u{201D}"
     }
 
+    /// The search field's placeholder, for the prompt and the UIKit field.
+    static let searchPrompt = "Title or author"
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -53,8 +56,17 @@ struct BookshelfView: View {
         .background(Theme.bg.ignoresSafeArea())
         .scrollDismissesKeyboard(.immediately)
         .modifier(ShelfScrollEdge(showsScrollRule: true))
+        // R2-32: the placeholder in textFaint, warm and AA on the field,
+        // never the system's neutral grey (3.47:1). The prompt's own style
+        // is asked for, and the UIKit field underneath is set as well,
+        // since the navigation bar's search may drop SwiftUI's style.
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: Text("Title or author"))
+                    prompt: Text(Self.searchPrompt).foregroundStyle(Theme.textFaint))
+        .background {
+            SearchPlaceholderTint(prompt: Self.searchPrompt)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
         .modifier(SearchKeyboardDismissal(requests: keyboardDismissals))
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
@@ -277,6 +289,73 @@ private struct SearchKeyboardDismissal: ViewModifier {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                                     to: nil, from: nil, for: nil)
                 }
+        }
+    }
+}
+
+/// R2-32: sets the navigation bar search field's placeholder in
+/// `Theme.textFaint`, resolved in the field's own traits, where the system
+/// draws a neutral grey under the AA line on the warm field. Zero size and
+/// hidden from assistive tech: it finds the search controller on the
+/// hosting navigation item and sets the UIKit field's attributed
+/// placeholder, again when it appears, on each SwiftUI update and when the
+/// appearance or contrast changes. The field stays the system's own search
+/// field, so the Search key, its submit and its haptic are untouched.
+private struct SearchPlaceholderTint: UIViewControllerRepresentable {
+    let prompt: String
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(prompt: prompt)
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.prompt = prompt
+        controller.apply()
+    }
+
+    final class Controller: UIViewController {
+        var prompt: String
+
+        init(prompt: String) {
+            self.prompt = prompt
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.isUserInteractionEnabled = false
+            registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self]) {
+                (controller: Controller, _: UITraitCollection) in
+                controller.apply()
+            }
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            apply()
+        }
+
+        func apply() {
+            guard let field = searchController?.searchBar.searchTextField else { return }
+            let ink = UIColor(Theme.textFaint).resolvedColor(with: field.traitCollection)
+            let placeholder = NSAttributedString(string: prompt, attributes: [.foregroundColor: ink])
+            if field.attributedPlaceholder != placeholder {
+                field.attributedPlaceholder = placeholder
+            }
+        }
+
+        /// The search controller of the navigation item this screen hosts:
+        /// on this controller's ancestors, else the stack's top item.
+        private var searchController: UISearchController? {
+            var next: UIViewController? = self
+            while let controller = next {
+                if let search = controller.navigationItem.searchController { return search }
+                next = controller.parent
+            }
+            return navigationController?.topViewController?.navigationItem.searchController
         }
     }
 }

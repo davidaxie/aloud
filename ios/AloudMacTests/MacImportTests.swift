@@ -511,7 +511,7 @@ final class MacImportTests: XCTestCase {
                        .notDownloaded)
         XCTAssertEqual(MacFileIntake.failure(for: CocoaError(.fileWriteOutOfSpace), isPDF: true), .outOfSpace)
         XCTAssertEqual(MacFileIntake.failure(for: CocoaError(.fileReadNoSuchFile), isPDF: false), .couldNotOpen)
-        XCTAssertEqual(ImportFailure.notDownloaded.title, "This file isn't downloaded yet.")
+        XCTAssertEqual(ImportFailure.notDownloaded.title, "This file isn\u{2019}t downloaded yet.")
     }
 
     /// A failure before the importer reads as the importer would: a PDF by
@@ -708,7 +708,7 @@ final class MacImportTests: XCTestCase {
         intake.admit(files)
         let shown = await waitUntil { intake.failure != nil && library.documents.count == 1 }
         XCTAssertTrue(shown, "the one that copied is added, and a failure shows")
-        XCTAssertEqual(intake.failureTitle, "\u{201C}cloud-1.txt\u{201D} isn't downloaded yet.")
+        XCTAssertEqual(intake.failureTitle, "\u{201C}cloud-1.txt\u{201D} isn\u{2019}t downloaded yet.")
 
         // A file dropped on its own while the alert is up, which fails too.
         var copying: [String?] = []
@@ -720,9 +720,9 @@ final class MacImportTests: XCTestCase {
         XCTAssertEqual(intake.failure, .notDownloaded, "the first alert stays")
 
         intake.dismissFailure()
-        XCTAssertEqual(intake.failureTitle, "\u{201C}moved.txt\u{201D} couldn't be opened.")
+        XCTAssertEqual(intake.failureTitle, "\u{201C}moved.txt\u{201D} couldn\u{2019}t be opened.")
         intake.dismissFailure()
-        XCTAssertEqual(intake.failureTitle, "\u{201C}cloud-2.txt\u{201D} isn't downloaded yet.")
+        XCTAssertEqual(intake.failureTitle, "\u{201C}cloud-2.txt\u{201D} isn\u{2019}t downloaded yet.")
         intake.dismissFailure()
         XCTAssertEqual(intake.failure, .notDownloaded, "the later drop's failure, kept")
         XCTAssertEqual(intake.failureTitle, ImportFailure.notDownloaded.title, "a file on its own isn't named")

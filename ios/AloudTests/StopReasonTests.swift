@@ -365,7 +365,7 @@ final class StopReasonTests: XCTestCase {
         XCTAssertTrue(noticed)
         XCTAssertEqual(rig.controller.status, .playing)
         XCTAssertEqual(rig.controller.skippedSentences, [3])
-        XCTAssertEqual(rig.announcements, ["Skipped a sentence the voice couldn't read"])
+        XCTAssertEqual(rig.announcements, [PlaybackNotice.skippedSentence.text])
         XCTAssertNil(rig.controller.stopped, "a notice is not a stop")
     }
 
@@ -474,7 +474,7 @@ final class StopReasonTests: XCTestCase {
         let both = await rig.waitUntil(5) { rig.controller.skippedSentences == [3, 5] }
         XCTAssertTrue(both)
         XCTAssertEqual(rig.controller.notice, .skippedSentence)
-        XCTAssertEqual(rig.announcements, ["Skipped a sentence the voice couldn't read"],
+        XCTAssertEqual(rig.announcements, [PlaybackNotice.skippedSentence.text],
                        "the notice already showing only restarts its clock")
     }
 

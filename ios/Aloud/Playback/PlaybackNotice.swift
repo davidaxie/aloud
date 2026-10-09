@@ -47,7 +47,7 @@ enum PlaybackNotice: Equatable, Sendable {
         case .nowReadingIn(let name): return "Now reading in \(name)"
         case .backedUp(let sentences):
             return sentences == 1 ? "Backed up 1 sentence" : "Backed up \(sentences) sentences"
-        case .skippedSentence: return "Skipped a sentence the voice couldn't read"
+        case .skippedSentence: return "Skipped a sentence the voice couldn’t read"
         case .coolingDown: return "Using the System voice while \(DeviceNoun.subject) cools"
         }
     }

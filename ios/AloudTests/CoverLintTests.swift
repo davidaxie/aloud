@@ -72,6 +72,52 @@ final class CoverLintTests: XCTestCase {
                        "no shared side padding narrows the author's line again")
     }
 
+    /// R2-30: below xxLarge the cover is a text book's only title, so the
+    /// title takes up to four lines; the author's first line is kept (the
+    /// title's priority leaves the author its least height, one line), and
+    /// the face no longer leans on a caption below repeating the author.
+    func testTheCoverIsTheShelfsTitleBelowXXLarge() throws {
+        let path = "Library/BookCover.swift", cardPath = "Library/DocumentCardView.swift"
+        let s = try SourceTree.sources(only: [path, cardPath])
+        let text = try XCTUnwrap(s[path])
+        let card = try XCTUnwrap(s[cardPath])
+        let face = body(ofStruct: "TypographicFace", in: text)
+        let title = try XCTUnwrap(face.range(of: "Text(title)"))
+        let author = try XCTUnwrap(face.range(of: "Text(author)"))
+        let titleModifiers = String(face[title.upperBound..<author.lowerBound])
+        XCTAssertTrue(titleModifiers.contains(".lineLimit(4)"), titleModifiers)
+        XCTAssertTrue(titleModifiers.contains(".layoutPriority(1)"), titleModifiers)
+        XCTAssertFalse(text.contains("caption below repeats"), "the face no longer relies on the card's caption")
+        XCTAssertTrue(card.contains("if Self.showsCaption(kind: document.kind, at: dynamicTypeSize) {"),
+                      "the card keys its caption on the record's kind, never the art drawn")
+        XCTAssertTrue(card.contains("kind == .pdf || wrapsInFull(at: size)"), "a PDF always, text from xxLarge")
+    }
+
+    /// R2-31: the small face is a clothbound book in shapes only, drawn
+    /// only below 80pt: a spine, an inset panel and a stamped ornament, all
+    /// from CoverGeometry's numbers. No greeked text bars or placeholder
+    /// capsules: nothing on it may read as text or depend on the title
+    /// (testNoTextBelowEightyPoints renders that).
+    func testTheSmallFaceIsDrawnInShapesOnly() throws {
+        let path = "Library/BookCover.swift"
+        let s = try SourceTree.sources(only: [path])
+        let text = try XCTUnwrap(s[path])
+        let plain = body(ofStruct: "PlainFace", in: text)
+        let small = try XCTUnwrap(plain.range(of: "} else {"), "the small face is its own branch")
+        let branch = try XCTUnwrap(plain.range(of: "if CoverGeometry.showsText(width: size.width) {"))
+        XCTAssertLessThan(branch.lowerBound, small.lowerBound, "the grid-size face comes first")
+        for needle in ["CoverGeometry.spineWidth(forWidth: size.width)", "CoverGeometry.ornamentTop",
+                       "CoverGeometry.panelInset", "CoverGeometry.spineOpacity", ".rotationEffect(.degrees(45))"] {
+            XCTAssertTrue(plain.contains(needle), "the small face draws \(needle)")
+        }
+        for banned in [".redacted", "Capsule(", "Text(", "title"] {
+            XCTAssertFalse(plain.contains(banned), "the small face draws no '\(banned)'")
+        }
+        let grid = String(plain[branch.upperBound..<small.lowerBound])
+        XCTAssertTrue(grid.contains("CoverGeometry.plainRuleTop"), "a grid-size loading face keeps its rule: \(grid)")
+        XCTAssertFalse(grid.contains("spine"), "a grid-size loading face keeps the plain ground: \(grid)")
+    }
+
     /// Covers draw through `Image(platformImage:)` since the seam (S1);
     /// `Image(uiImage` stays banned too, so neither spelling slips in.
     func testBookshelfRowsCarryNoCover() throws {

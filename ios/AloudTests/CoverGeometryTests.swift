@@ -24,16 +24,52 @@ final class CoverGeometryTests: XCTestCase {
         XCTAssertTrue(CoverGeometry.showsText(width: 160))
     }
 
-    /// R1-04: below 80pt the rule scales with the cover (40% of its width,
-    /// 1.5pt, as thick as a grid cover's), so the hero reads as a small book.
+    /// R1-04, R2-31: below 80pt each of the ornament's two rules scales with
+    /// the cover (18% of its width, 1.5pt, as thick as a grid cover's rule);
+    /// from 80pt the grid cover's one 26pt rule.
     func testRuleAndCornerFollowTheTextRule() {
         let small = CoverGeometry.ruleSize(forWidth: 64)
-        XCTAssertEqual(small.width, 25.6, accuracy: 0.01)
+        XCTAssertEqual(small.width, 11.52, accuracy: 0.01)
         XCTAssertEqual(small.height, 1.5)
-        XCTAssertEqual(CoverGeometry.ruleSize(forWidth: 44).width, 17.6, accuracy: 0.01)
+        XCTAssertEqual(CoverGeometry.ruleSize(forWidth: 44).width, 7.92, accuracy: 0.01)
         XCTAssertEqual(CoverGeometry.ruleSize(forWidth: 160), CGSize(width: 26, height: 1.5))
         XCTAssertEqual(CoverGeometry.cornerRadius(forWidth: 64), Theme.Radius.sm)
         XCTAssertEqual(CoverGeometry.cornerRadius(forWidth: 160), Theme.Radius.md)
+    }
+
+    /// R2-31: the 64pt face is a small clothbound book: a 5pt spine down
+    /// its leading edge, and a stamped ornament (two rules either side of a
+    /// 4pt diamond) centred a little above the middle, at 42% of the
+    /// height. All of it stays clear of the point where
+    /// BookCoverRenderingTests' testTheSmallFaceStandsOffTheCard samples
+    /// the ground (the centre, four fifths down), and of the cover's edges.
+    func testTheSmallFaceIsAClothboundBook() {
+        let hero = CoverGeometry.heroSize
+        let spine = CoverGeometry.spineWidth(forWidth: hero.width)
+        XCTAssertEqual(CoverGeometry.spineFraction, 0.08)
+        XCTAssertEqual(spine, 5.12, accuracy: 0.01, "about 5pt at 64")
+        XCTAssertEqual(CoverGeometry.ornamentTop, 0.42)
+        XCTAssertEqual(CoverGeometry.ornamentRuleFraction, 0.18)
+        XCTAssertEqual(CoverGeometry.ornamentDiamondSide, 4)
+        XCTAssertGreaterThan(CoverGeometry.spineOpacity, 0.05)
+        XCTAssertLessThan(CoverGeometry.spineOpacity, 0.3, "a pale spine, not a stripe")
+
+        let sample = CGPoint(x: hero.width / 2, y: hero.height * 4 / 5)
+        XCTAssertGreaterThan(sample.x, spine + 4, "the sample point is clear of the spine")
+        let centre = hero.height * CoverGeometry.ornamentTop
+        let halfHeight = CoverGeometry.ornamentDiamondSide * 2.0.squareRoot() / 2
+        XCTAssertLessThan(centre + halfHeight + 4, sample.y, "the sample point is clear of the ornament")
+        XCTAssertGreaterThan(hero.height - CoverGeometry.panelInset, sample.y + 4,
+                             "the sample point is inside the panel, off its hairline")
+        XCTAssertGreaterThan(CoverGeometry.panelInset, spine, "the panel sits inside the spine's edge")
+
+        // The ornament fits across every small cover, clear of the spine.
+        for width: CGFloat in [44, 64, 79] {
+            let ornament = CoverGeometry.ornamentWidth(forWidth: width)
+            XCTAssertLessThan(ornament, width - 2 * CoverGeometry.spineWidth(forWidth: width) - 4,
+                              "\(width)pt: the ornament is \(ornament)pt")
+            XCTAssertFalse(CoverGeometry.showsText(width: width))
+        }
     }
 
     /// R1-08: a long press lifts the cover alone: the cell's width at 2:3

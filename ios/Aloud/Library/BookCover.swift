@@ -15,13 +15,29 @@ enum CoverGeometry {
     /// with Dynamic Type: the title next to it is the text that grows.
     static let heroSize = CGSize(width: 64, height: 96)
     static let progressBarHeight: CGFloat = 3
-    /// Where the plain face's rule sits, as a fraction of the height: where
-    /// a grid cover's rule sits under a two-line title.
+    /// Where a grid-size plain face's rule sits (a PDF's page loading), as
+    /// a fraction of the height: where a grid cover's rule sits under a
+    /// two-line title.
     static let plainRuleTop: CGFloat = 1.0 / 3.0
-    /// The plain face's rule, as a fraction of the cover's width: the grid
-    /// cover's rule scaled down with it, so a 64pt cover reads as a small
-    /// book rather than an empty tile.
-    static let plainRuleWidthFraction: CGFloat = 0.4
+    /// Below 80pt the face is a small clothbound book, drawn in shapes only
+    /// so it reads the same for every title (R2-31). Its spine: a leading
+    /// strip this fraction of the width (5pt at 64), in a pale accent with
+    /// a hairline on its trailing edge.
+    static let spineFraction: CGFloat = 0.08
+    static let spineOpacity: Double = 0.15
+    /// The stamped ornament's centre, as a fraction of the height: two
+    /// accent rules either side of a small diamond.
+    static let ornamentTop: CGFloat = 0.42
+    /// Each of the ornament's two rules, as a fraction of the cover's width.
+    static let ornamentRuleFraction: CGFloat = 0.18
+    /// The ornament's diamond: a square this many points a side, turned 45°,
+    /// and the gap between it and each rule.
+    static let ornamentDiamondSide: CGFloat = 4
+    static let ornamentGap: CGFloat = 3
+    /// The small face's inset panel: a hairline this far in from the edges,
+    /// in the accent at this opacity, as a stamped border on cloth.
+    static let panelInset: CGFloat = Theme.Space.xs + 2
+    static let panelOpacity: Double = 0.3
     /// The lock-screen square, in points, and the scale it renders at.
     static let artworkSide: CGFloat = 300
     static let artworkScale: CGFloat = 3
@@ -40,9 +56,19 @@ enum CoverGeometry {
     /// The width the author's lines wrap at on a cover this wide.
     static func authorLineWidth(forWidth width: CGFloat) -> CGFloat { width - 2 * authorInset }
 
+    /// A grid cover's rule, or each of the small face's two ornament rules.
     static func ruleSize(forWidth width: CGFloat) -> CGSize {
         showsText(width: width) ? CGSize(width: 26, height: 1.5)
-            : CGSize(width: width * plainRuleWidthFraction, height: 1.5)
+            : CGSize(width: width * ornamentRuleFraction, height: 1.5)
+    }
+
+    /// The small face's spine width on a cover this wide.
+    static func spineWidth(forWidth width: CGFloat) -> CGFloat { width * spineFraction }
+
+    /// The ornament's full width: two rules, two gaps and the diamond's
+    /// diagonal.
+    static func ornamentWidth(forWidth width: CGFloat) -> CGFloat {
+        2 * ruleSize(forWidth: width).width + 2 * ornamentGap + ornamentDiamondSide * 2.0.squareRoot()
     }
 
     static func cornerRadius(forWidth width: CGFloat) -> CGFloat {
@@ -77,9 +103,10 @@ struct CoverLiftShape: Shape {
 /// accent rule and a small-caps author, or a PDF's first page in the same
 /// frame. It fits the largest 2:3 rect inside whatever it is offered, so a
 /// caller sizes it with a width or a frame and never sets an aspect itself.
-/// Below 80pt wide a typographic or loading cover draws only the ground and
-/// the rule, never shrunken type; a PDF's page draws at every width, so the
-/// Continue card's 64pt cover shows it too.
+/// Below 80pt wide a typographic or loading cover is a small clothbound
+/// book drawn in shapes alone (a spine, a stamped ornament, an inset
+/// panel), never shrunken type, and the same for every title; a PDF's page
+/// draws at every width, so the Continue card's 64pt cover shows it too.
 ///
 /// A cover is a picture: its type is pinned to the default size so it
 /// composes the same at every Dynamic Type setting, Smart Invert leaves it
@@ -176,31 +203,80 @@ private struct CoverRule: View {
     }
 }
 
-/// The ground and a centred rule a third of the way down: a typographic
-/// cover below 80pt, and a PDF's while its page loads. Below 80pt one more
-/// accentSoft wash over the ground stands the small tile off the card's
-/// surface, so it reads as a book in miniature rather than an image that
-/// failed to load; a grid-size cover still loading keeps the plain ground
-/// its face will have.
+/// A typographic cover below 80pt, and a PDF's while its page loads.
+///
+/// Below 80pt (the Continue card, the featured classic, the accessibility
+/// sizes' one-column shelf) it is a small clothbound book in shapes only,
+/// so it reads as a book in miniature rather than an image that failed to
+/// load (R2-31): one more accentSoft wash stands it off the card's surface,
+/// a pale accent spine runs down its leading edge, a hairline panel is
+/// stamped inside its edges and an ornament (two rules either side of a
+/// diamond) sits a little above the middle. Nothing on it depends on the
+/// title, so every small cover draws alike (R22), and nothing mimics text.
+///
+/// A grid-size cover still loading keeps the plain ground its face will
+/// have and the rule a third of the way down.
 private struct PlainFace: View {
     let size: CGSize
 
     var body: some View {
-        ZStack {
+        if CoverGeometry.showsText(width: size.width) {
             CoverGround()
-            if !CoverGeometry.showsText(width: size.width) {
+                .overlay(alignment: .top) {
+                    CoverRule(size: CoverGeometry.ruleSize(forWidth: size.width))
+                        .padding(.top, size.height * CoverGeometry.plainRuleTop)
+                }
+        } else {
+            ZStack(alignment: .leading) {
+                CoverGround()
                 Theme.accentSoft
+                Rectangle()
+                    .strokeBorder(Theme.accent.opacity(CoverGeometry.panelOpacity),
+                                  lineWidth: Theme.Stroke.hairlineWidth)
+                    .padding(CoverGeometry.panelInset)
+                spine
+            }
+            .overlay(alignment: .top) {
+                ornament
+                    .frame(width: size.width)
+                    .offset(y: size.height * CoverGeometry.ornamentTop - CoverGeometry.ornamentDiamondSide)
             }
         }
-        .overlay(alignment: .top) {
+    }
+
+    /// The pale accent strip down the leading edge, a hairline at its
+    /// trailing edge.
+    private var spine: some View {
+        Theme.accent.opacity(CoverGeometry.spineOpacity)
+            .frame(width: CoverGeometry.spineWidth(forWidth: size.width))
+            .overlay(alignment: .trailing) {
+                Theme.Stroke.hairlineColor
+                    .frame(width: Theme.Stroke.hairlineWidth)
+            }
+    }
+
+    /// Two accent rules either side of a diamond, centred across the cover
+    /// and centred on its own middle line.
+    private var ornament: some View {
+        let side = CoverGeometry.ornamentDiamondSide
+        return HStack(spacing: CoverGeometry.ornamentGap) {
             CoverRule(size: CoverGeometry.ruleSize(forWidth: size.width))
-                .padding(.top, size.height * CoverGeometry.plainRuleTop)
+            Rectangle()
+                .fill(Theme.accent)
+                .frame(width: side, height: side)
+                .rotationEffect(.degrees(45))
+                // The turned square's diagonal is its footprint.
+                .frame(width: side * 2.0.squareRoot(), height: side * 2)
+            CoverRule(size: CoverGeometry.ruleSize(forWidth: size.width))
         }
     }
 }
 
 /// Type only, no imagery: the headline serif title in the upper part over a
 /// thin accent rule, and the author as a small-caps eyebrow at the foot.
+/// Below xxLarge this face is the shelf's only title and author (the card
+/// under it shows just the listening line, R2-30), so the title takes up
+/// to four lines and the author always keeps at least its first.
 private struct TypographicFace: View {
     let title: String
     let author: String?
@@ -213,13 +289,17 @@ private struct TypographicFace: View {
                 Text(title)
                     .font(Theme.font(.headline))
                     .foregroundStyle(Theme.text)
-                    .lineLimit(3)
+                    .lineLimit(4)
                     .multilineTextAlignment(.center)
                     .minimumScaleFactor(0.8)
                     .padding(.horizontal, Theme.Space.md)
                     .padding(.top, Theme.Space.xl)
-                    // On a short cover the author's lines give way first:
-                    // the caption below repeats the author.
+                    // On a short cover the author's second and third lines
+                    // give way first. The stack still reserves the author's
+                    // least height, one line, before the title is offered
+                    // the rest, so the title scales, then truncates, rather
+                    // than cut the author: the cover is the only place a
+                    // text book's card names its author below xxLarge.
                     .layoutPriority(1)
                 CoverRule(size: CoverGeometry.ruleSize(forWidth: width))
                     .padding(.top, Theme.Space.sm)

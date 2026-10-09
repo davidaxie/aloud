@@ -177,7 +177,7 @@ enum ShortcutCopy {
     }
 
     static func couldNotPlay(_ title: String) -> String {
-        "Couldn't play \(title). Open Aloud to try again."
+        "Couldn’t play \(title). Open Aloud to try again."
     }
 
     static func sleepTimerSet(_ option: SleepTimer.Option, endsAtChapter: Bool) -> String {

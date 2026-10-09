@@ -39,5 +39,5 @@ struct PreferenceToggleRow: View {
 enum PreferenceCopy {
     static let wordHighlightTitle = "Word highlight"
     /// R13's word marker is an underline, not a tint, so the copy says so.
-    static let wordHighlightSubtitle = "Underline each word as it's spoken."
+    static let wordHighlightSubtitle = "Underline each word as it’s spoken"
 }

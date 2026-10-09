@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// One shelf card: the one 2:3 cover (R22), the serif title, the author and
-/// the listening line ("4 hr 52 min", "1 hr 12 min left" or "Finished"; no
-/// line when the length is unknown).
+/// One shelf card: the one 2:3 cover (R22) over its caption. A typographic
+/// cover already sets the title and the author, so below xxLarge a text
+/// book's caption is the listening line alone (its length, the time left,
+/// or finished; no line when the length is unknown), and each book is
+/// named once (R2-30). A PDF's cover is its page, so its card always sets
+/// the serif title, the author and the listening line, as every card does
+/// from xxLarge, where they wrap in full (`showsCaption`). Both apps.
 struct DocumentCardView: View {
     let document: LibraryDocument
     let rate: Double
@@ -40,14 +44,27 @@ struct DocumentCardView: View {
         size >= .xxLarge
     }
 
+    /// Whether the card sets the title and author under its cover (R2-30):
+    /// always for a PDF, whose cover is a page that may set neither; and
+    /// from xxLarge, where they wrap in full (the accessibility sizes among
+    /// them, whose 64pt hero cover is textless). Below that a text book's
+    /// cover already names it, and the card adds only the listening line.
+    /// Keyed on the record's kind, never on the art drawn, so a PDF's card
+    /// never reflows when its page lands or fails to.
+    static func showsCaption(kind: DocKind, at size: DynamicTypeSize) -> Bool {
+        kind == .pdf || wrapsInFull(at: size)
+    }
+
     /// What Voice Control answers to ("Tap The Great Gatsby"): the title
     /// alone, since the label's time left changes as you listen (J017).
     static func inputLabels(for document: LibraryDocument) -> [String] {
         [document.title]
     }
 
-    /// "Title, Author, 1 hour 12 minutes left" (R12f, R25): the visible lines
-    /// in order, with commas so VoiceOver pauses and durations spelled out.
+    /// The title, the author and the listening line, in that order (R12f,
+    /// R25), with commas so VoiceOver pauses and durations spelled out:
+    /// the book as its cover and caption show it together, so the label
+    /// is the same whether the caption repeats the title or not (R2-30).
     /// A missing author or an unknown length adds nothing, so the label
     /// never ends in a dangling comma.
     static func accessibilityLabel(for document: LibraryDocument, rate: Double) -> String {
@@ -77,13 +94,36 @@ struct DocumentCardView: View {
 
     // MARK: Details
 
-    /// From xxLarge up the title and author wrap in full: two lines and one
-    /// cut "The Strange Case of Dr. Jekyll and Mr. Hyde" and "Arthur Conan
-    /// Doyle" short, in the two columns those sizes keep as in the one the
-    /// accessibility sizes get (LibraryView.columns). fixedSize, as on the
-    /// hero: inside a button label in a scroll view a Text can be offered
-    /// less height than its lines need.
+    /// The full caption where `showsCaption` says so, else the listening
+    /// line alone: the typographic cover above already sets the title and
+    /// the author (R2-30). A book of unknown length then shows no caption.
+    @ViewBuilder
     private var details: some View {
+        if Self.showsCaption(kind: document.kind, at: dynamicTypeSize) {
+            caption
+        } else if !subtitle.isEmpty {
+            listeningLine
+        }
+    }
+
+    /// The listening line in the caption face: textFaint on the solid
+    /// ground (4.6:1 or better on bg in both modes), wrapping at large text
+    /// sizes instead of truncating the time left.
+    private var listeningLine: some View {
+        Text(subtitle)
+            .font(Theme.font(.caption))
+            .foregroundStyle(Theme.textFaint)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+    }
+
+    /// From xxLarge up the title and author wrap in full: two lines and one
+    /// cut a long classic's title and a long author's name short, in the
+    /// two columns those sizes keep as in the one the accessibility sizes
+    /// get (LibraryView.columns). fixedSize, as on the hero: inside a
+    /// button label in a scroll view a Text can be offered less height
+    /// than its lines need.
+    private var caption: some View {
         let wrapsInFull = Self.wrapsInFull(at: dynamicTypeSize)
         return VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Text(document.title)

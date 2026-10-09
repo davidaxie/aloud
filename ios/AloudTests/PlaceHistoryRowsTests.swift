@@ -173,10 +173,11 @@ final class PlaceHistoryRowsTests: XCTestCase {
 
     // MARK: - Snippet (R1-24)
 
-    /// Two chapters; CHAPTER I's prose is three paragraphs: a short line of
-    /// dialogue and the narration after it, a one-sentence paragraph, then
-    /// a paragraph that opens inside a quotation. Straight quotes, as the
-    /// sentences store them.
+    /// Two chapters, a page each (a text book's chapters are its pages);
+    /// CHAPTER I's prose is three paragraphs: a short line of dialogue and
+    /// the narration after it, a one-sentence paragraph, then a paragraph
+    /// that opens inside a quotation. Straight quotes, as the sentences
+    /// store them.
     private static func snippetContent() -> DocContent {
         let lines: [(text: String, para: Int)] = [
             ("CHAPTER I", 0),
@@ -190,13 +191,13 @@ final class PlaceHistoryRowsTests: XCTestCase {
             ("The morning came.", 5),
         ]
         let sentences = lines.enumerated().map { index, line in
-            Sentence(id: index, text: line.text, para: line.para, page: 0)
+            Sentence(id: index, text: line.text, para: line.para, page: line.para >= 4 ? 1 : 0)
         }
         let paragraphs = (0...5).map { para in
             let ids = sentences.filter { $0.para == para }.map(\.id)
-            return Paragraph(id: para, sentenceIDs: ids[0]..<(ids[ids.count - 1] + 1), page: 0)
+            return Paragraph(id: para, sentenceIDs: ids[0]..<(ids[ids.count - 1] + 1), page: para >= 4 ? 1 : 0)
         }
-        return DocContent(title: "Snippets", pageCount: 1, sentences: sentences,
+        return DocContent(title: "Snippets", pageCount: 2, sentences: sentences,
                           paragraphs: paragraphs, contentHash: "places-snippet")
     }
 
@@ -206,18 +207,70 @@ final class PlaceHistoryRowsTests: XCTestCase {
         XCTAssertEqual(row.text, "\u{201C}Come in.\u{201D}", "the sentence itself, typeset, unchanged")
         XCTAssertEqual(row.snippet,
                        "\u{201C}Come in.\u{201D} She stood at the door a long while, listening to the rain "
-                       + "on the roof of the shed. Nobody answered her.",
-                       "the sentences after it in its paragraph, to about 160 characters")
+                       + "on the roof of the shed. Nobody answered her. He waited. I shall go,\u{201D} he said. "
+                       + "And he went.",
+                       "the rest of its paragraph, then on past it, to about 160 characters")
         XCTAssertTrue(row.accessibilityLabel.hasSuffix("\u{201C}Come in.\u{201D}"),
                       "VoiceOver keeps reading the sentence alone: \(row.accessibilityLabel)")
     }
 
-    func testTheSnippetNeverCrossesTheParagraphOrTheChapter() throws {
+    /// R2-35: a stop on a paragraph's last sentence reads on into the next
+    /// paragraphs, joined by one space, still opening on the stop; the
+    /// row's text (VoiceOver, the Mac's cursor) stays the sentence alone.
+    func testAParagraphFinalStopGainsTheNextParagraphsSentences() throws {
         let content = Self.snippetContent()
-        let built = rows([entry(3, now), entry(4, now), entry(6, now)], content: content, kind: .text, playhead: 0)
-        XCTAssertEqual(built.map(\.snippet), ["Nobody answered her.", "He waited.", "And he went."],
-                       "a paragraph's last sentence gains nothing from the next paragraph or chapter")
-        XCTAssertEqual(built.map(\.text), built.map(\.snippet))
+        let built = rows([entry(3, now), entry(4, now)], content: content, kind: .text, playhead: 0)
+        XCTAssertEqual(built.map(\.snippet),
+                       ["Nobody answered her. He waited. I shall go,\u{201D} he said. And he went.",
+                        "He waited. I shall go,\u{201D} he said. And he went."],
+                       "a paragraph's last sentence gains the paragraphs after it")
+        XCTAssertEqual(built.map(\.text), ["Nobody answered her.", "He waited."])
+    }
+
+    /// R2-35: the run stops at the chapter's edge: "And he went.", before
+    /// CHAPTER II, gains nothing.
+    func testTheSnippetNeverCrossesTheChapter() throws {
+        let content = Self.snippetContent()
+        let navigation = ReaderNavigation(content: content, kind: .text)
+        XCTAssertNotEqual(navigation.chapterIndex(containing: 6), navigation.chapterIndex(containing: 7),
+                          "fixture: CHAPTER II starts a new chapter")
+        let row = try XCTUnwrap(rows([entry(6, now)], content: content, kind: .text, playhead: 0).first)
+        XCTAssertEqual(row.snippet, "And he went.", "nothing from the next chapter")
+        XCTAssertEqual(row.text, row.snippet)
+        XCTAssertEqual(PlaceHistoryRows.snippet(at: 8, in: content, navigation: navigation), "The morning came.",
+                       "the end of the book stops the run")
+    }
+
+    /// R2-35, as in Gatsby (23-contents-dark): the last line of a dialogue
+    /// paragraph, opening inside its quotation, read on so the one-line row
+    /// is not a bare name. It opens on the stop's typeset sentence, runs to
+    /// a line's worth and stays inside the chapter.
+    func testALastLineOfDialogueReadsOnPastItsParagraph() throws {
+        let lines: [(text: String, para: Int)] = [
+            ("CHAPTER I", 0),
+            ("\"You ought to see the baby.", 1),
+            ("Nick?\"", 1),
+            ("I didn't answer.", 2),
+            ("Instead I looked across the bay at the single green light, minute and far away, at the end of a dock.", 3),
+            ("CHAPTER II", 4),
+            ("About half way between the two villages the motor road hastily joins the railroad.", 5),
+        ]
+        let sentences = lines.enumerated().map { index, line in
+            Sentence(id: index, text: line.text, para: line.para, page: line.para >= 4 ? 1 : 0)
+        }
+        let paragraphs = (0...5).map { para in
+            let ids = sentences.filter { $0.para == para }.map(\.id)
+            return Paragraph(id: para, sentenceIDs: ids[0]..<(ids[ids.count - 1] + 1), page: para >= 4 ? 1 : 0)
+        }
+        let content = DocContent(title: "Gatsby-shaped", pageCount: 2, sentences: sentences,
+                                 paragraphs: paragraphs, contentHash: "places-gatsby")
+        let row = try XCTUnwrap(rows([entry(2, now)], content: content, kind: .text, playhead: 0).first)
+        XCTAssertEqual(row.text, "Nick?\u{201D}")
+        XCTAssertTrue(row.snippet.hasPrefix("\u{2026}Nick?\u{201D} I didn"), row.snippet)
+        XCTAssertGreaterThanOrEqual(row.snippet.count, 60, row.snippet)
+        XCTAssertTrue(row.snippet.hasSuffix("at the end of a dock."), row.snippet)
+        XCTAssertFalse(row.snippet.contains("CHAPTER II") || row.snippet.contains("motor road"),
+                       "stays inside the chapter: \(row.snippet)")
     }
 
     func testAStopInsideAQuotationStartsWithAnEllipsis() throws {
