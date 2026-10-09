@@ -100,6 +100,49 @@ final class MacGridMetricsTests: XCTestCase {
         XCTAssertNotNil(renderer.nsImage)
     }
 
+    /// R2-30 on the Mac's own type: the cover is the only place a grid card
+    /// names its author, so on the narrowest grid cover a long title's four
+    /// lines still leave the author its line. The named cover differs from
+    /// the same cover with no author in its lower third, where the author
+    /// sits; the title and its rule end above it. DocumentCardLayoutTests
+    /// checks the iPhone's covers with the iPhone's type; this file is the
+    /// one the Mac host runs.
+    func testTheNarrowestGridCoverKeepsItsAuthorUnderALongTitle() throws {
+        let title = "The Strange Case of Dr. Jekyll and Mr. Hyde"
+        let author = "Emperor of Rome Marcus Aurelius"
+        let width = MacGridMetrics.coverWidths.lowerBound
+        let size = CGSize(width: width, height: CoverGeometry.height(forWidth: width))
+        let named = try XCTUnwrap(Self.rows(of: BookCover(title: title, author: author), size: size))
+        let bare = try XCTUnwrap(Self.rows(of: BookCover(title: title), size: size))
+        XCTAssertEqual(named.count, bare.count, "both covers draw at \(size)")
+        XCTAssertGreaterThan(named.count, 0)
+        let lowerThird = (named.count * 2 / 3)..<min(named.count, bare.count)
+        let inked = lowerThird.filter { y in
+            zip(named[y], bare[y]).contains { abs(Int($0) - Int($1)) > 24 }
+        }
+        XCTAssertFalse(inked.isEmpty, "\(width) pt: the author was cut")
+    }
+
+    /// `view` framed at `size` and rendered at 2x, as rows of RGBA8 sRGB
+    /// bytes from the top; nil when nothing draws.
+    private static func rows(of view: some View, size: CGSize) -> [[UInt8]]? {
+        let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height))
+        renderer.scale = 2
+        guard let image = renderer.cgImage, image.width > 0, image.height > 0,
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let (width, height) = (image.width, image.height)
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        return (0..<height).map { y in Array(bytes[(y * width * 4)..<((y + 1) * width * 4)]) }
+    }
+
     /// One line of the cover's author type, as wide as it draws.
     private static func eyebrowWidth(_ text: String) -> CGFloat {
         let line = Text(text).font(Theme.font(.eyebrow)).eyebrowTracking().fixedSize().dynamicTypeSize(.large)

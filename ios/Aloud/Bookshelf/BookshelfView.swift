@@ -38,6 +38,16 @@ struct BookshelfView: View {
     /// The search field's placeholder, for the prompt and the UIKit field.
     static let searchPrompt = "Title or author"
 
+    /// R2-32: the placeholder's ink, AA on the fill the system field draws
+    /// in both modes: textFaint in light (5.3:1 on the light fill), and
+    /// textMuted in dark, where textFaint is 4.0:1 on the dark fill
+    /// (tertiarySystemFill over bg) and textMuted 5.3:1. Both tokens carry
+    /// their Increase Contrast values, resolved in the field's own traits.
+    static let searchPromptInk = UIColor { traits in
+        let token = traits.userInterfaceStyle == .dark ? Theme.textMuted : Theme.textFaint
+        return UIColor(token).resolvedColor(with: traits)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -56,12 +66,13 @@ struct BookshelfView: View {
         .background(Theme.bg.ignoresSafeArea())
         .scrollDismissesKeyboard(.immediately)
         .modifier(ShelfScrollEdge(showsScrollRule: true))
-        // R2-32: the placeholder in textFaint, warm and AA on the field,
-        // never the system's neutral grey (3.47:1). The prompt's own style
-        // is asked for, and the UIKit field underneath is set as well,
-        // since the navigation bar's search may drop SwiftUI's style.
+        // R2-32: the placeholder in searchPromptInk, warm and AA on the
+        // field in both modes, never the system's neutral grey (3.47:1).
+        // The prompt's own style is asked for, and the UIKit field
+        // underneath is set as well, since the navigation bar's search may
+        // drop SwiftUI's style.
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: Text(Self.searchPrompt).foregroundStyle(Theme.textFaint))
+                    prompt: Text(Self.searchPrompt).foregroundStyle(Color(uiColor: Self.searchPromptInk)))
         .background {
             SearchPlaceholderTint(prompt: Self.searchPrompt)
                 .frame(width: 0, height: 0)
@@ -294,7 +305,8 @@ private struct SearchKeyboardDismissal: ViewModifier {
 }
 
 /// R2-32: sets the navigation bar search field's placeholder in
-/// `Theme.textFaint`, resolved in the field's own traits, where the system
+/// `BookshelfView.searchPromptInk` (textFaint in light, textMuted in dark),
+/// resolved in the field's own traits, where the system
 /// draws a neutral grey under the AA line on the warm field. Zero size and
 /// hidden from assistive tech: it finds the search controller on the
 /// hosting navigation item and sets the UIKit field's attributed
@@ -340,7 +352,7 @@ private struct SearchPlaceholderTint: UIViewControllerRepresentable {
 
         func apply() {
             guard let field = searchController?.searchBar.searchTextField else { return }
-            let ink = UIColor(Theme.textFaint).resolvedColor(with: field.traitCollection)
+            let ink = BookshelfView.searchPromptInk.resolvedColor(with: field.traitCollection)
             let placeholder = NSAttributedString(string: prompt, attributes: [.foregroundColor: ink])
             if field.attributedPlaceholder != placeholder {
                 field.attributedPlaceholder = placeholder

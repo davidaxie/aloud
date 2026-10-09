@@ -227,12 +227,14 @@ final class DocumentCardLayoutTests: XCTestCase {
     }
 
     /// R2-30: the cover is now the shelf's only title and author below
-    /// xxLarge, so on the shortest grid covers (the Mac's 136pt, an iPhone
-    /// SE's 163pt at xLarge) a long title's four lines still leave the
-    /// author its line: the named cover differs from the bare one in its
-    /// lower third, where the author sits.
+    /// xxLarge, so on the iPhone's shortest grid cover (an iPhone SE's
+    /// 163pt at xLarge) a long title's four lines still leave the author
+    /// its line: the named cover differs from the bare one in its lower
+    /// third, where the author sits. iPhone type only, since the Mac host
+    /// leaves this file out; the Mac's 136pt cover is checked with the
+    /// Mac's type in MacGridMetricsTests.
     func testTheShortestCoverKeepsItsAuthorUnderALongTitle() throws {
-        for width: CGFloat in [136, 163] {
+        for width: CGFloat in [163] {
             let size = CGSize(width: width, height: CoverGeometry.height(forWidth: width))
             let named = try XCTUnwrap(RenderedPixels(BookCover(title: Self.title, author: Self.author), size: size))
             let bare = try XCTUnwrap(RenderedPixels(BookCover(title: Self.title), size: size))
@@ -248,7 +250,12 @@ final class DocumentCardLayoutTests: XCTestCase {
     /// speed slider) resolves to the scrub's warm track in light and dark,
     /// and to the scrub's Increase Contrast edge under Increase Contrast,
     /// never the system's cold grey. Here because it is UIKit, which the
-    /// Mac host leaves out with this file; the app sets it at launch.
+    /// Mac host leaves out with this file; the app sets it at launch. At
+    /// normal contrast the accent fill reads against the pale track (3:1
+    /// and up); under Increase Contrast the split is the recorded trade-off
+    /// in SliderAppearance's notes (about 1.3:1 light, 1.6:1 dark), the
+    /// track's own edge taking the 3:1 instead, and is measured here so a
+    /// change to either token shows up as a changed ratio.
     func testTheSliderTrackIsTheScrubsWarmTrack() throws {
         func rgba(_ color: UIColor) -> [CGFloat] {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -267,12 +274,31 @@ final class DocumentCardLayoutTests: XCTestCase {
                 }
                 XCTAssertEqual(got[3], 1, accuracy: 0.002, "an opaque track in every mode")
                 XCTAssertGreaterThan(got[0], got[2] + 0.02, "a warm track, red over blue: \(got)")
+
+                let split = Self.contrast(rgba(UIColor(Theme.accent).resolvedColor(with: traits)), got)
+                if contrast == .high {
+                    XCTAssertEqual(split, style == .dark ? 1.62 : 1.28, accuracy: 0.05,
+                                   "\(style.rawValue): the recorded Increase Contrast split")
+                } else {
+                    XCTAssertGreaterThanOrEqual(split, 3, "\(style.rawValue): the fill reads against the track")
+                }
             }
         }
         let s = try SourceTree.sources(only: ["App/AloudApp.swift"])
         let app = try XCTUnwrap(s["App/AloudApp.swift"])
         XCTAssertTrue(app.contains("init() {\n        SliderAppearance.apply()\n    }"), "set once at launch")
         XCTAssertTrue(app.contains("UISlider.appearance().maximumTrackTintColor = unfilledTrack"))
+    }
+
+    /// WCAG contrast between two opaque gamma-encoded sRGB colours given
+    /// as [r, g, b, a].
+    private static func contrast(_ a: [CGFloat], _ b: [CGFloat]) -> CGFloat {
+        func luminance(_ c: [CGFloat]) -> CGFloat {
+            func linear(_ v: CGFloat) -> CGFloat { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
+        }
+        let (x, y) = (luminance(a), luminance(b))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
     }
 
     // MARK: - Pressed plate (P019)

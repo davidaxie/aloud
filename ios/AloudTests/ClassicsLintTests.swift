@@ -1,3 +1,5 @@
+import SwiftUI
+import UIKit
 import XCTest
 @testable import Aloud
 
@@ -140,10 +142,11 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertTrue(mac.contains("nonisolated static func rowHint(finished: Bool, playing: Bool = false) -> String"))
     }
 
-    /// R2-32: the Classics placeholder is drawn in textFaint, warm and AA on
-    /// the field, never the system's neutral grey (3.47:1 in the warm
+    /// R2-32: the Classics placeholder is drawn in BookshelfView's
+    /// searchPromptInk (textFaint in light, textMuted in dark), warm and AA
+    /// on the field, never the system's neutral grey (3.47:1 in the warm
     /// palette). Apple's contrast audit doesn't flag it, so the guard is
-    /// here: the prompt asks for textFaint, and the UIKit field underneath
+    /// here: the prompt asks for that ink, and the UIKit field underneath
     /// is set to it too, in case the navigation bar's search drops the
     /// prompt's style. The field stays the system's search field (the
     /// Search key's submit, R1-32), as ContentsSheetLintTests'
@@ -151,14 +154,18 @@ final class ClassicsLintTests: XCTestCase {
     func testTheSearchPlaceholderMeetsAA() throws {
         let s = try SourceTree.sources(only: [Self.path])
         let view = try XCTUnwrap(s[Self.path])
-        XCTAssertTrue(view.contains("prompt: Text(Self.searchPrompt).foregroundStyle(Theme.textFaint))"),
-                      "the prompt asks for textFaint")
+        XCTAssertTrue(view.contains("prompt: Text(Self.searchPrompt).foregroundStyle(Color(uiColor: Self.searchPromptInk)))"),
+                      "the prompt asks for the placeholder's ink")
         XCTAssertTrue(view.contains("SearchPlaceholderTint(prompt: Self.searchPrompt)"),
                       "the UIKit field's placeholder is set as well")
+        let ink = try region(of: view, from: "static let searchPromptInk = UIColor { traits in", length: 220)
+        XCTAssertTrue(ink.contains("traits.userInterfaceStyle == .dark ? Theme.textMuted : Theme.textFaint"),
+                      "textMuted in dark, where textFaint is under AA on the field: \(String(ink))")
         let tint = try region(of: view, from: "private struct SearchPlaceholderTint: UIViewControllerRepresentable {",
                               length: 2_600)
-        XCTAssertTrue(tint.contains("UIColor(Theme.textFaint).resolvedColor(with: field.traitCollection)"),
+        XCTAssertTrue(tint.contains("BookshelfView.searchPromptInk.resolvedColor(with: field.traitCollection)"),
                       String(tint))
+        XCTAssertFalse(tint.contains("UIColor(Theme.textFaint)"), "one ink for both modes is under AA in dark")
         XCTAssertTrue(tint.contains("field.attributedPlaceholder = placeholder"), String(tint))
         XCTAssertTrue(tint.contains("searchBar.searchTextField"), "the system field, not a custom one")
         XCTAssertTrue(tint.contains("override func viewDidAppear"), "re-applied when it appears")
@@ -166,6 +173,47 @@ final class ClassicsLintTests: XCTestCase {
                       "re-applied when the appearance or contrast changes")
         XCTAssertFalse(view.contains("TextField("), "never a custom field: it must stay a search field")
         XCTAssertTrue(view.contains(".searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),"))
+    }
+
+    /// R2-32's gate, measured: the placeholder's ink reaches 4.5:1 on the
+    /// fill the system search field draws (tertiarySystemFill over the
+    /// screen's bg) in light, dark and both under Increase Contrast. One
+    /// textFaint for both modes was 4.0:1 in dark.
+    func testTheSearchPlaceholderInkClearsAAOnTheFieldInEveryMode() {
+        struct RGB { var r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat }
+        func rgb(_ color: UIColor, _ traits: UITraitCollection) -> RGB {
+            var c = RGB(r: 0, g: 0, b: 0, a: 0)
+            color.resolvedColor(with: traits).getRed(&c.r, green: &c.g, blue: &c.b, alpha: &c.a)
+            return c
+        }
+        func over(_ top: RGB, _ ground: RGB) -> RGB {
+            func mix(_ t: CGFloat, _ g: CGFloat) -> CGFloat { t * top.a + g * (1 - top.a) }
+            return RGB(r: mix(top.r, ground.r), g: mix(top.g, ground.g), b: mix(top.b, ground.b), a: 1)
+        }
+        func luminance(_ c: RGB) -> CGFloat {
+            func linear(_ v: CGFloat) -> CGFloat { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
+        }
+        for dark in [false, true] {
+            for high in [false, true] {
+                let traits = UITraitCollection { traits in
+                    traits.userInterfaceStyle = dark ? .dark : .light
+                    traits.accessibilityContrast = high ? .high : .normal
+                }
+                let mode = (dark ? "dark" : "light") + (high ? " + Increase Contrast" : "")
+                let (token, name) = dark ? (Theme.textMuted, "textMuted") : (Theme.textFaint, "textFaint")
+                let ink = rgb(BookshelfView.searchPromptInk, traits)
+                let want = rgb(UIColor(token), traits)
+                XCTAssertEqual(ink.r, want.r, accuracy: 0.002, "\(mode): \(name)")
+                XCTAssertEqual(ink.g, want.g, accuracy: 0.002, mode)
+                XCTAssertEqual(ink.b, want.b, accuracy: 0.002, mode)
+                let field = over(rgb(.tertiarySystemFill, traits), rgb(UIColor(Theme.bg), traits))
+                let text = over(ink, field)
+                let (lighter, darker) = (max(luminance(text), luminance(field)), min(luminance(text), luminance(field)))
+                let ratio = (lighter + 0.05) / (darker + 0.05)
+                XCTAssertGreaterThanOrEqual(ratio, 4.5, "\(mode): " + String(format: "%.2f:1", ratio))
+            }
+        }
     }
 
     /// P053: no hint in either app names a gesture. VoiceOver already says
