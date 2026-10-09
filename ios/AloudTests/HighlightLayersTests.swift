@@ -146,6 +146,52 @@ final class HighlightLayersTests: XCTestCase {
         XCTAssertEqual(mark.boundingBoxOfPath.maxX, 24 - HighlightLayers.markGap, accuracy: 0.001)
     }
 
+    /// R2-14 review: a wrapped heading's pills overlap, so its fill is one
+    /// shape; its edge is that shape's outline, with no ring drawn across
+    /// the fill at the seam between its lines.
+    func testAWrappedHeadingsEdgeIsOneOutline() throws {
+        let heading = [
+            Segment(frame: CGRect(x: 100, y: 100, width: 200, height: 29), baseline: 22),
+            Segment(frame: CGRect(x: 100, y: 129, width: 200, height: 29), baseline: 22),
+        ]
+        let pills = HighlightLayers.headingPills(heading, em: 24)
+        XCTAssertEqual(pills.count, 2, "one pill per line")
+        let edge = try XCTUnwrap(HighlightLayers.headingEdgePath(heading, em: 24))
+        let seam = CGPoint(x: pills[0].midX, y: 129)
+        XCTAssertFalse(edge.contains(seam), "no edge between the lines")
+        XCTAssertTrue(edge.contains(CGPoint(x: pills[0].midX, y: pills[0].minY + HighlightLayers.headingEdgeWidth / 2)),
+                      "the top edge")
+        XCTAssertTrue(edge.contains(CGPoint(x: pills[1].midX, y: pills[1].maxY - HighlightLayers.headingEdgeWidth / 2)),
+                      "the bottom edge")
+    }
+
+    /// R2-14 review: a ring and a bar can't be interpolated, so a change
+    /// between a heading and a body sentence crossfades the mark (opacity
+    /// only) instead of animating its path; bar to bar still moves in place.
+    func testTheMarkCrossfadesBetweenARingAndABar() throws {
+        let host = CALayer()
+        let layers = HighlightLayers(host: host)
+        let heading = [Segment(frame: CGRect(x: 180, y: 100, width: 20, height: 29), baseline: 22)]
+        layers.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
+        layers.showSentence(heading, fill: ink, mark: ink, gutterX: 24, style: .heading, em: 24,
+                            animated: true, reduceMotion: false)
+        let shown = shapes(in: host)
+        XCTAssertEqual(shown.count, 5, "the fill and the mark each fade through a new shape")
+        XCTAssertEqual(shown[2].path, HighlightLayers.markPath(line, gutterX: 24), "the bar is left as it was")
+        XCTAssertEqual(shown[2].opacity, 0)
+        XCTAssertEqual(shown[3].path, HighlightLayers.headingEdgePath(heading, em: 24))
+        XCTAssertEqual(shown[3].opacity, 1)
+        XCTAssertTrue(shown.allSatisfy { $0.animation(forKey: "path") == nil }, "no path morphs")
+        XCTAssertEqual(layers.markOpacity, 1)
+
+        let bars = CALayer()
+        let body = HighlightLayers(host: bars)
+        body.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
+        body.showSentence(next, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
+        XCTAssertEqual(shapes(in: bars).count, 4, "bar to bar: one mark, moved in place")
+        XCTAssertEqual(shapes(in: bars)[2].path, HighlightLayers.markPath(next, gutterX: 24))
+    }
+
     // MARK: - Under the colophon (R1-19)
 
     func testTheSentenceFadesUnderTheColophonAndComesBackAtOnce() {

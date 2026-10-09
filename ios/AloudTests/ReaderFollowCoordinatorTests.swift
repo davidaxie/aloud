@@ -1079,8 +1079,15 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertEqual(taps.sentences, [target.sentence], "the press lands on the sentence a tap there plays")
         taps.sentences.removeAll()
 
+        // Look Up names the word under the finger (R2-12): the press sits in
+        // the first-line indent, which maps to the line's first word.
+        let wordRange = try XCTUnwrap(target.word, "the press finds a word")
+        let term = (textView.textStorage.string as NSString).substring(with: wordRange)
+        XCTAssertEqual(term, "Line")
         let menu = coordinator.menu(for: target)
-        XCTAssertEqual(menu.children.map(\.title), ["Play from Here", "Copy", "Look Up", "Share\u{2026}"])
+        XCTAssertEqual(menu.children.map(\.title),
+                       ["Play from Here", "Copy", ReaderMenuCopy.lookUpTitle(for: term), "Share\u{2026}"])
+        XCTAssertEqual(menu.children.map(\.title)[2], "Look Up \u{201C}Line\u{201D}", "Look Up quotes its word")
         XCTAssertEqual(taps.sentences, [], "building the menu plays nothing")
         XCTAssertEqual(coordinator.activeSentence, 0, "the playhead stays")
         XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
@@ -1685,6 +1692,25 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertEqual(coordinator.colophonBand, 180)
     }
 
+    /// R2-09 review: a colophon the resting range keeps below the band (its
+    /// target one the offset already holds) never turns the check into a
+    /// run of no-op moves up to the pass limit; it moves only to a target
+    /// that differs. DEBUG builds log every input the landing is aimed with.
+    func testTheColophonCheckNeverMovesToWhereItIs() throws {
+        let s = try SourceTree.sources(only: ["Reader/ReaderTextView.swift"])
+        let view = try XCTUnwrap(s["Reader/ReaderTextView.swift"])
+        let check = try XCTUnwrap(view.range(of: "private func checkPlacement() -> ReaderFollowEngine.PlacementCheck {"))
+        let body = String(view[check.upperBound...].prefix(2_000))
+        XCTAssertFalse(body.contains("return .moveTo(confirmed)"), body)
+        XCTAssertTrue(body.contains("guard let settled, abs(settled - textView.contentOffset.y) > 1 else { return .holds }"),
+                      body)
+        let landing = try XCTUnwrap(view.range(of: "private func landingTarget(caller: String = #function) -> CGFloat? {"))
+        let target = String(view[landing.upperBound...].prefix(2_400))
+        XCTAssertTrue(target.contains("Self.colophonLog.debug("), target)
+        XCTAssertTrue(target.contains("self.parent.obscuredBottom"), target)
+        XCTAssertTrue(target.contains("self.restingOffsets()"), target)
+    }
+
     /// A chip counts toward the band from the pass it resolves in, at its
     /// 44pt minimum and the slot's padding, before it is ever measured;
     /// measured, the running maximum holds.
@@ -1726,10 +1752,28 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertTrue(screen.contains("if !loadFailed {"), "Aa hides on a page with no text")
         // Magic tap sits on the page, never on the stack that also holds
         // the failure state.
-        let page = try XCTUnwrap(screen.range(of: "page(content: content, navigation: navigation)\n"))
-        let afterPage = String(screen[page.upperBound...].prefix(800))
-        XCTAssertTrue(afterPage.contains(".accessibilityAction(.magicTap)"), afterPage)
-        XCTAssertFalse(screen.contains("// R12b: a two-finger double-tap anywhere on the screen"),
+        let magicTap = ".accessibilityAction(.magicTap)"
+        let bodyStart = try XCTUnwrap(screen.range(of: "    var body: some View {\n"))
+        let bodyEnd = try XCTUnwrap(screen.range(of: "\n    }\n", range: bodyStart.upperBound..<screen.endIndex))
+        let body = String(screen[bodyStart.upperBound..<bodyEnd.lowerBound])
+        XCTAssertEqual(body.components(separatedBy: magicTap).count - 1, 2,
+                       "two magic taps in the body, the page's and the bar's: \(body)")
+        let page = try XCTUnwrap(body.range(of: "page(content: content, navigation: navigation)\n"))
+        let failed = try XCTUnwrap(body.range(of: "} else if loadFailed {", range: page.upperBound..<body.endIndex))
+        let pageBranch = String(body[page.upperBound..<failed.lowerBound])
+        XCTAssertTrue(pageBranch.contains(magicTap), "the page plays and pauses: \(pageBranch)")
+        let bar = try XCTUnwrap(body.range(of: "PlayerBarView(document: liveDocument"))
+        let barEnd = try XCTUnwrap(body.range(of: ".accessibilityHidden(showAppearanceSheet)",
+                                              range: bar.upperBound..<body.endIndex))
+        let barModifiers = String(body[bar.upperBound..<barEnd.lowerBound])
+        XCTAssertTrue(barModifiers.contains(magicTap), "the bar plays and pauses: \(barModifiers)")
+        // The stack's own modifiers (it also holds the failure state) carry none.
+        let stack = try XCTUnwrap(body.range(of: ".coordinateSpace(.named(Self.space))"))
+        let stackEnd = try XCTUnwrap(body.range(of: ".navigationBarTitleDisplayMode(.inline)",
+                                                range: stack.upperBound..<body.endIndex))
+        let stackModifiers = String(body[stack.lowerBound..<stackEnd.upperBound])
+        XCTAssertFalse(stackModifiers.contains(magicTap), stackModifiers)
+        XCTAssertFalse(String(body[barEnd.upperBound...]).contains(magicTap),
                        "no screen-wide magic tap over the failure state")
     }
 
@@ -1743,6 +1787,30 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertFalse(mac.contains("Couldn't open this book"), "no literal of its own")
         XCTAssertTrue(mac.contains(".accessibilityElement(children: .ignore)"))
         XCTAssertTrue(mac.contains(".accessibilityAddTraits(.isHeader)"))
+    }
+
+    /// R2-11 on the Mac: a book that fails to open can be deleted from its
+    /// failure state, confirmed with the shelf's wording, through the
+    /// shared entry point (which also takes the reader's route off the
+    /// stack), then back to the shelf.
+    func testTheMacFailureStateOffersDelete() throws {
+        guard SourceTree.exists(SourceTree.macRoot) else { throw XCTSkip("No Mac sources in this checkout") }
+        let s = try SourceTree.sources(in: SourceTree.macRoot, only: ["Reader/MacReaderScreen.swift"])
+        let mac = try XCTUnwrap(s["Reader/MacReaderScreen.swift"])
+        let failure = try XCTUnwrap(mac.range(of: "private var failureState: some View {"))
+        let state = String(mac[failure.lowerBound...].prefix(3_000))
+        XCTAssertTrue(state.contains("Button(role: .destructive) { confirmingDelete = true }"), state)
+        XCTAssertTrue(state.contains("Text(ReaderFailureCopy.deleteBook)"), state)
+        XCTAssertTrue(state.contains(".accessibilityIdentifier(\"reader.deleteBook\")"), state)
+        XCTAssertTrue(state.contains("ReaderFailureCopy.deleteTitle("), state)
+        XCTAssertTrue(state.contains("Button(DocumentAction.delete.title, role: .destructive) { deleteFailedBook() }"),
+                      state)
+        XCTAssertTrue(state.contains("DocumentAction.deleteMessage(for:)"), state)
+        XCTAssertTrue(state.contains("Text(failure.nextStep)"), "a delete that fails says why")
+        let delete = try XCTUnwrap(mac.range(of: "private func deleteFailedBook() {"))
+        let body = String(mac[delete.upperBound...].prefix(400))
+        XCTAssertTrue(body.contains("model.deleteDocument(document)"), body)
+        XCTAssertTrue(body.contains("router.popToRoot()"), body)
     }
 
     // MARK: R2-12: Look Up names its word

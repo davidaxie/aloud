@@ -1,4 +1,5 @@
 import Combine
+import os
 import SwiftUI
 import UIKit
 
@@ -1120,7 +1121,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// tracks it (`followedRect`), so a resume or a reflow mid-sentence
         /// never parks that word under the player bar; nil while its layout
         /// can't resolve. Refreshes the cached sentence and word rects.
-        private func landingTarget() -> CGFloat? {
+        private func landingTarget(caller: String = #function) -> CGFloat? {
             guard let range = followRange, let rect = boundingRect(for: range) else { return nil }
             follow.cachedActiveRect = rect
             guard let viewport = viewport() else { return nil }
@@ -1131,9 +1132,22 @@ struct ReaderTextView: UIViewRepresentable {
                 // that moves later places it again (R2-09).
                 colophonBand = parent.obscuredBottom
                 let last = sentenceRanges.last.flatMap { boundingRect(for: $0) }
-                return FollowBand.colophonLandingOffsetY(colophon: rect, lastSentence: last, viewport: viewport,
-                                                         contentOffsetY: textView?.contentOffset.y ?? 0,
-                                                         range: restingOffsets())
+                let target = FollowBand.colophonLandingOffsetY(colophon: rect, lastSentence: last, viewport: viewport,
+                                                               contentOffsetY: textView?.contentOffset.y ?? 0,
+                                                               range: restingOffsets())
+                #if DEBUG
+                // R2-09: every input the colophon's landing is aimed with,
+                // to find the one that is stale when it lands under the chip.
+                Self.colophonLog.debug("""
+                    landing \(caller, privacy: .public): colophon \(String(describing: rect), privacy: .public) \
+                    viewport \(String(describing: viewport), privacy: .public) \
+                    band \(Double(self.parent.obscuredBottom), privacy: .public) \
+                    resting \(String(describing: self.restingOffsets()), privacy: .public) \
+                    target \(String(describing: target), privacy: .public) \
+                    offset \(Double(self.textView?.contentOffset.y ?? 0), privacy: .public)
+                    """)
+                #endif
+                return target
             }
             return landingOffset(for: followedRect(sentence: rect, in: viewport))
         }
@@ -1347,9 +1361,25 @@ struct ReaderTextView: UIViewRepresentable {
 
         /// Ends a placement or rotor-stop check and shows the chip it held.
         private func endPlacementCheck() {
+            #if DEBUG
+            if shownColophon != nil, let textView {
+                let rect = follow.cachedActiveRect.map { String(describing: $0) } ?? "unmeasured"
+                Self.colophonLog.debug("""
+                    check ended: offset \(Double(textView.contentOffset.y), privacy: .public) \
+                    colophon \(rect, privacy: .public) \
+                    viewport \(String(describing: self.viewport()), privacy: .public) \
+                    band \(Double(self.parent.obscuredBottom), privacy: .public) \
+                    clears \(self.colophonClearsTheBand(), privacy: .public)
+                    """)
+            }
+            #endif
             follow.endPlacementCheck()
             updateFollowChip()
         }
+
+        #if DEBUG
+        private static let colophonLog = Logger(subsystem: "com.davidxie.Aloud", category: "colophon")
+        #endif
 
         /// One layout pass's check of a placement (`pendingPlacement`) or a
         /// rotor stop (`pendingReveal`) put in place without motion. A pass
@@ -1400,7 +1430,10 @@ struct ReaderTextView: UIViewRepresentable {
                 guard abs(target - textView.contentOffset.y) > 1 || !colophonClearsTheBand() else { return .holds }
                 ensureLayoutThroughActiveSentence()
                 guard let confirmed = landingTarget() else { return .unresolved }
-                if !colophonClearsTheBand() { return .moveTo(confirmed) }
+                // A colophon still below the band once re-measured moves only
+                // to a target that differs: one the offset already holds (the
+                // resting range's end) holds, so the check ends on steady
+                // heights instead of spending its passes on no-op moves.
                 settled = confirmed
             }
             guard let settled, abs(settled - textView.contentOffset.y) > 1 else { return .holds }

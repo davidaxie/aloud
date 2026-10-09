@@ -54,8 +54,12 @@ final class HighlightLayers {
 
     private let host: CALayer
     private var sentenceShape = CAShapeLayer()
-    private let markShape = CAShapeLayer()
+    private var markShape = CAShapeLayer()
     private let wordShape = CAShapeLayer()
+    /// The style the shown mark was drawn for. A heading's ring and a body
+    /// sentence's bar have unlike paths, which Core Animation can't
+    /// interpolate: between them the mark crossfades instead of sliding.
+    private var markStyle: SentenceStyle?
     /// At the end of the book the sentence and its mark fade out under the
     /// colophon (`setSentenceHidden`); a sentence drawn meanwhile stays out.
     private(set) var isSentenceHidden = false
@@ -86,6 +90,8 @@ final class HighlightLayers {
             : Self.markPath(segments, gutterX: gutterX)
         let fade = animated && !reduceMotion
         let shown: Float = isSentenceHidden ? 0 : 1
+        let restyled = markShape.path != nil && markStyle != nil && markStyle != style
+        markStyle = markPath == nil ? nil : style
 
         if fade, sentenceShape.path != nil {
             let old = sentenceShape
@@ -95,15 +101,35 @@ final class HighlightLayers {
             new.opacity = 0
             host.insertSublayer(new, above: old)
             sentenceShape = new
+            // A ring to a bar (or back) fades through a new mark, opacity
+            // only, as the fill does; a bar to a bar still slides.
+            var oldMark: CAShapeLayer?
+            if restyled {
+                let newMark = CAShapeLayer()
+                newMark.fillColor = mark
+                newMark.path = markPath
+                newMark.opacity = 0
+                host.insertSublayer(newMark, above: markShape)
+                oldMark = markShape
+                markShape = newMark
+            }
 
             CATransaction.begin()
             CATransaction.setAnimationDuration(Self.crossfade)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
-            CATransaction.setCompletionBlock { old.removeFromSuperlayer() }
+            CATransaction.setCompletionBlock {
+                old.removeFromSuperlayer()
+                oldMark?.removeFromSuperlayer()
+            }
             new.opacity = shown
             old.opacity = 0
-            markShape.path = markPath
-            markShape.fillColor = mark
+            if let oldMark {
+                markShape.opacity = shown
+                oldMark.opacity = 0
+            } else {
+                markShape.path = markPath
+                markShape.fillColor = mark
+            }
             CATransaction.commit()
         } else {
             CATransaction.begin()
@@ -122,6 +148,7 @@ final class HighlightLayers {
         CATransaction.setDisableActions(true)
         sentenceShape.path = nil
         markShape.path = nil
+        markStyle = nil
         wordShape.path = nil
         shownWordPieces = 0
         CATransaction.commit()
@@ -362,24 +389,25 @@ final class HighlightLayers {
                       transform: nil)
     }
 
-    /// A heading's mark: each pill's outline as a `headingEdgeWidth` ring,
-    /// stroked on the pill inset by half that width so the ring lies inside
-    /// the fill's outline. A fill path, so the mark layer's crossfade, fade
-    /// under the colophon and colours work as they do for the gutter bar.
+    /// A heading's mark: the outline of its pills as a `headingEdgeWidth`
+    /// ring, stroked on the pills inset by half that width so the ring lies
+    /// inside the fill's outline. The inset pills are unioned first, as the
+    /// fill's are, so a wrapped heading's lines (whose pills still overlap)
+    /// share one outline and no ring crosses the fill between them. A fill
+    /// path, so the mark layer's fade under the colophon and colours work as
+    /// they do for the gutter bar.
     static func headingEdgePath(_ segments: [Segment], em: CGFloat) -> CGPath? {
-        let pills = headingPills(segments, em: em)
-        guard !pills.isEmpty else { return nil }
         let inset = headingEdgeWidth / 2
-        let path = CGMutablePath()
-        for pill in pills {
+        var outline: CGPath?
+        for pill in headingPills(segments, em: em) {
             let edge = pill.insetBy(dx: inset, dy: inset)
             guard edge.width > 0, edge.height > 0 else { continue }
             let radius = edge.height / 2
-            let outline = CGPath(roundedRect: edge, cornerWidth: radius, cornerHeight: radius, transform: nil)
-            path.addPath(outline.copy(strokingWithWidth: headingEdgeWidth, lineCap: .round,
-                                      lineJoin: .round, miterLimit: 1))
+            let piece = CGPath(roundedRect: edge, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            outline = outline.map { $0.union(piece) } ?? piece
         }
-        return path.isEmpty ? nil : path
+        guard let outline, !outline.isEmpty else { return nil }
+        return outline.copy(strokingWithWidth: headingEdgeWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
     }
 
     /// An underline under each piece of the word (a hyphenated word can

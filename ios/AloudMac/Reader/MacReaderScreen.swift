@@ -52,6 +52,10 @@ struct MacReaderScreen: View {
     @State private var textUnderTopBar = false
     /// Bumped as Contents closes: the keyboard goes back to the text.
     @State private var pageFocusRequests = 0
+    /// The failure state's Delete Book… confirmation, and a delete the
+    /// library couldn't record (R2-11, as on the iPhone).
+    @State private var confirmingDelete = false
+    @State private var deleteFailure: DeleteFailure?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -198,8 +202,44 @@ struct MacReaderScreen: View {
             Text(ReaderFailureCopy.detail)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
+            // A book that fails to open fails on every open: the way to let
+            // it go, confirmed as the shelf's Delete is (R2-11).
+            if document != nil {
+                Button(role: .destructive) { confirmingDelete = true } label: {
+                    Text(ReaderFailureCopy.deleteBook)
+                }
+                .padding(.top, Theme.Space.sm)
+                .accessibilityIdentifier("reader.deleteBook")
+            }
         }
+        .multilineTextAlignment(.center)
         .padding(Theme.Space.xxl)
+        .confirmationDialog(ReaderFailureCopy.deleteTitle(document?.title ?? ""),
+                            isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button(DocumentAction.delete.title, role: .destructive) { deleteFailedBook() }
+            Button(ReaderFailureCopy.cancel, role: .cancel) {}
+        } message: {
+            Text(document.map(DocumentAction.deleteMessage(for:)) ?? "")
+        }
+        .alert(deleteFailure?.title ?? "", isPresented: Binding(get: { deleteFailure != nil },
+                                                                 set: { if !$0 { deleteFailure = nil } }),
+               presenting: deleteFailure) { _ in
+            Button(ReaderFailureCopy.ok, role: .cancel) {}
+        } message: { failure in
+            Text(failure.nextStep)
+        }
+    }
+
+    /// The failure state's Delete: the shelf's own entry point, which also
+    /// takes this reader's route off the stack. A delete the library can't
+    /// record keeps the book and says why.
+    private func deleteFailedBook() {
+        guard let document else { return }
+        if let failure = model.deleteDocument(document) {
+            deleteFailure = failure
+            return
+        }
+        router.popToRoot()
     }
 
     // MARK: - Toolbar
