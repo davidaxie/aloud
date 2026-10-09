@@ -70,6 +70,8 @@ struct MacRootView: View {
             case .failure(let error): importer.handlePick(.failure(error))
             }
         }
+        // R3-06: the open panel says which files it takes.
+        .fileDialogMessage(Text(LibraryAddMenuItem.fileFormatsHint))
         // Finder's Open With and a drop on the Dock icon, when they arrive
         // as a URL: the bare Library first, as on the iPhone, so the
         // overlay, any failure and the opened reader have the window (a

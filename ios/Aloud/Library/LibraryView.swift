@@ -93,7 +93,7 @@ struct LibraryView: View {
         Group {
             if store.documents.isEmpty {
                 EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker },
-                                 onPaste: pasteHandler)
+                                 onPaste: pasteHandler, onPasteEmpty: refreshClipboard)
             } else {
                 grid
             }
@@ -139,7 +139,7 @@ struct LibraryView: View {
         // Several files at once are a batch: all added, none opened, one
         // count said (M8). One file opens playing, as ever (R4).
         .fileImporter(isPresented: presented(.filePicker),
-                      allowedContentTypes: [.pdf, .plainText],
+                      allowedContentTypes: LibraryAddMenuItem.fileContentTypes,
                       allowsMultipleSelection: true) { result in
             // The picker is gone once it reports. Clear its flag now rather
             // than whenever SwiftUI does: a failure alert waits on it.
@@ -290,7 +290,18 @@ struct LibraryView: View {
                 Button {
                     choose(item)
                 } label: {
-                    Label(item.title, systemImage: item.systemImage)
+                    // R3-06: From Files… says which files it takes, as the
+                    // menu's second line, so a greyed-out EPUB isn't a puzzle.
+                    if item == .files {
+                        Label {
+                            Text(item.title)
+                            Text(LibraryAddMenuItem.fileFormats)
+                        } icon: {
+                            Image(systemName: item.systemImage)
+                        }
+                    } else {
+                        Label(item.title, systemImage: item.systemImage)
+                    }
                 }
             }
             // The clipboard's text as a book, last. Off while there is no
@@ -389,7 +400,7 @@ struct LibraryView: View {
                 // next book is in reach without the + menu; Paste joins them
                 // while the clipboard holds text.
                 ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: pasteHandler,
-                           idPrefix: "library.shelf")
+                           onPasteEmpty: refreshClipboard, idPrefix: "library.shelf")
             }
             .padding(.horizontal, PhoneShelfMetrics.gutter)
             .padding(.top, PhoneShelfMetrics.topPadding)

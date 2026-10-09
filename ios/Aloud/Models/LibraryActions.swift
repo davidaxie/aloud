@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Add menu
 
@@ -10,6 +11,44 @@ enum LibraryAddMenuItem: CaseIterable {
 
     var title: String { self == .classics ? "Classics" : "From Files\u{2026}" }
     var systemImage: String { self == .classics ? "books.vertical" : "folder" }
+
+    /// What the iPhone's Files picker accepts (the Mac's is
+    /// `MacFileIntake.contentTypes`). The copy below names each one, and
+    /// LibraryFileFormatsTests holds the two together.
+    static let fileContentTypes: [UTType] = [.pdf, .plainText]
+
+    /// R3-06: the From Files… item's second line on the iPhone's + menu.
+    static let fileFormats = "PDF or plain text"
+    /// VoiceOver's hint on Add a file, and the Mac's open panel message.
+    static let fileFormatsHint = "Choose a PDF or plain-text file"
+    /// The empty Library's line under its links (`FileFormatsCaption`).
+    static let fileFormatsCaption = "Reads PDFs and plain-text files."
+}
+
+// MARK: - Classics shelf map
+
+/// R3-05: one of the buttons in the Classics screen's first row, on both
+/// apps, jumping to its shelf's heading. Made from
+/// `BookshelfIndex.shelves(rate:)`, never a fixed list: a speed that
+/// regroups the books, or empties a shelf, changes the row with it.
+struct ShelfJump: Equatable, Identifiable {
+    let section: BookshelfSection
+    let count: Int
+
+    var id: String { section.rawValue }
+    var title: String { section.title }
+    /// The quiet count beside the title.
+    var countText: String { "\(count)" }
+    var identifier: String { "bookshelf.jump.\(section.rawValue)" }
+    /// "Long reads, 334 books".
+    var accessibilityLabel: String { "\(section.title), \(count == 1 ? "1 book" : "\(count) books")" }
+
+    static let hint = "Jumps to this shelf"
+
+    /// One per shelf at `rate`, in the shelves' order.
+    static func jumps(in index: BookshelfIndex, rate: Double) -> [ShelfJump] {
+        index.shelves(rate: rate).map { ShelfJump(section: $0.section, count: $0.books.count) }
+    }
 }
 
 /// The iPhone's third way in: the text on the clipboard, added as a book of

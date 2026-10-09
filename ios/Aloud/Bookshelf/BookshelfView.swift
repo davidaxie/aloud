@@ -9,6 +9,7 @@ struct BookshelfView: View {
     @EnvironmentObject private var importer: DocumentImporter
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
     /// nil shows the shelves. Searched once per query change, never per body run.
@@ -52,7 +53,7 @@ struct BookshelfView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Color.clear.frame(height: 0).id("top")
-                    content
+                    content(proxy)
                 }
             }
             .accessibilityIdentifier("bookshelf.list")
@@ -123,7 +124,7 @@ struct BookshelfView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(_ proxy: ScrollViewProxy) -> some View {
         if let results {
             if results.isEmpty {
                 Text(noResultsMessage)
@@ -138,6 +139,8 @@ struct BookshelfView: View {
                 ForEach(results) { row($0) }
             }
         } else {
+            // R3-05: the shelf map, unpinned, above the first heading.
+            shelfMap(proxy)
             ForEach(model.bookshelfIndex.shelves(rate: model.globalRate)) { shelf in
                 Section {
                     ForEach(shelf.books) { row($0) }
@@ -165,6 +168,73 @@ struct BookshelfView: View {
             .background(Theme.bg)
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
+            // The shelf map's target (`jump(to:_:)`).
+            .id(section.rawValue)
+    }
+
+    // MARK: Shelf map
+
+    /// R3-05: one button per shelf, its title and a quiet count, so the
+    /// longer shelves far down the list are one tap away and their being
+    /// there is said at the top. Side by side while they fit, full-width
+    /// rows at the large sizes. No selected state: the pinned heading
+    /// already says where the list is.
+    private func shelfMap(_ proxy: ScrollViewProxy) -> some View {
+        let jumps = ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.Space.xs) {
+                ForEach(jumps) { jumpButton($0, proxy, fullWidth: false) }
+            }
+            VStack(spacing: 0) {
+                ForEach(jumps) { jumpButton($0, proxy, fullWidth: true) }
+            }
+        }
+        .padding(.horizontal, Theme.Space.screenGutter - Theme.Space.sm)
+        .padding(.top, Theme.Space.sm)
+        .accessibilityIdentifier("bookshelf.shelfMap")
+    }
+
+    private func jumpButton(_ jump: ShelfJump, _ proxy: ScrollViewProxy, fullWidth: Bool) -> some View {
+        Button {
+            self.jump(to: jump.section, proxy)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                Text(jump.title)
+                    .font(Theme.font(.callout).weight(.medium))
+                    .foregroundStyle(Theme.accentStrong)
+                Text(jump.countText)
+                    .font(Theme.font(.callout))
+                    .foregroundStyle(Theme.textMuted)
+            }
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Space.sm)
+            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(ShelfRowButtonStyle())
+        .accessibilityLabel(jump.accessibilityLabel)
+        .accessibilityHint(ShelfJump.hint)
+        .accessibilityIdentifier(jump.identifier)
+    }
+
+    /// To the shelf's heading, animated unless Reduce Motion is on. A far
+    /// heading the lazy stack hasn't laid out yet can land short of the
+    /// top, its rows above still estimated, so a second scroll follows
+    /// once they are measured: when the animation completes, or on the
+    /// next turn of the run loop without one; never on a timer. Silent, as
+    /// a Contents pick is (TransportHaptics: picks never answer with one).
+    private func jump(to section: BookshelfSection, _ proxy: ScrollViewProxy) {
+        let id = section.rawValue
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .top)
+            DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+        } else {
+            withAnimation(.smooth, completionCriteria: .logicallyComplete) {
+                proxy.scrollTo(id, anchor: .top)
+            } completion: {
+                proxy.scrollTo(id, anchor: .top)
+            }
+        }
     }
 
     private func row(_ book: BookshelfBook) -> some View {

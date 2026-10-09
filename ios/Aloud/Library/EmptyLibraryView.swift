@@ -119,6 +119,8 @@ struct EmptyLibraryView: View {
     /// Adds the clipboard's text as a book; its paste control shows only
     /// when set (the iPhone, while there is text to paste).
     var onPaste: (([String]) -> Void)? = nil
+    /// A paste that found no text: the clipboard is looked at again.
+    var onPasteEmpty: (() -> Void)? = nil
 
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var importer: DocumentImporter
@@ -130,7 +132,13 @@ struct EmptyLibraryView: View {
                     if let book = FeaturedClassic.resolve(in: model.bookshelf) {
                         featuredButton(for: book)
                     }
-                    ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, idPrefix: "library")
+                    // R3-06: the formats Add a file takes, a sentence of
+                    // its own under the row, since the row holds three links.
+                    VStack(spacing: Theme.Space.xs) {
+                        ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, onPasteEmpty: onPasteEmpty,
+                                   idPrefix: "library")
+                        FileFormatsCaption()
+                    }
                     Text(PrivacyCopy.line)
                         .font(Theme.font(.aside))
                         .foregroundStyle(Theme.textMuted)
@@ -180,6 +188,8 @@ struct ShelfLinks: View {
     let onAddFile: () -> Void
     /// Takes the pasted strings; the paste control shows only when set.
     let onPaste: (([String]) -> Void)?
+    /// A paste that found no text (`PlatformPasteControl.onEmpty`).
+    var onPasteEmpty: (() -> Void)? = nil
     /// Each link's identifier is the prefix and its name.
     let idPrefix: String
 
@@ -199,14 +209,16 @@ struct ShelfLinks: View {
         if !model.bookshelf.isEmpty {
             link("More classics", identifier: "\(idPrefix).moreClassics") { router.showBookshelf() }
         }
-        link("Add a file", identifier: "\(idPrefix).addFile", action: onAddFile)
+        link("Add a file", identifier: "\(idPrefix).addFile", hint: LibraryAddMenuItem.fileFormatsHint,
+             action: onAddFile)
         if let onPaste {
             pasteControl(onPaste)
         }
     }
 
     /// Accent text is accentStrong; the label is padded out to a 44pt target.
-    private func link(_ title: String, identifier: String,
+    /// A hint, when given, is VoiceOver's (Add a file names its formats).
+    private func link(_ title: String, identifier: String, hint: String? = nil,
                       action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -218,6 +230,7 @@ struct ShelfLinks: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityHint(hint.map { Text($0) } ?? Text(""))
         .accessibilityIdentifier(identifier)
     }
 
@@ -228,6 +241,20 @@ struct ShelfLinks: View {
     /// fill. The control takes the 44pt frame its representable asks for.
     /// Only the iPhone hands this an onPaste.
     private func pasteControl(_ onPaste: @escaping ([String]) -> Void) -> some View {
-        PlatformPasteControl(onPaste: onPaste, identifier: "\(idPrefix).pasteText")
+        PlatformPasteControl(onPaste: onPaste, identifier: "\(idPrefix).pasteText", onEmpty: onPasteEmpty)
+    }
+}
+
+/// R3-06: the empty Library's line naming what Add a file accepts, under
+/// the link row and over the privacy line, on both apps. Its own sentence,
+/// quiet, centred; never at a shelf's foot.
+struct FileFormatsCaption: View {
+    var body: some View {
+        Text(LibraryAddMenuItem.fileFormatsCaption)
+            .font(Theme.font(.footnote))
+            .foregroundStyle(Theme.textMuted)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("library.fileFormats")
     }
 }

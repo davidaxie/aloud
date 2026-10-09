@@ -207,6 +207,13 @@ final class LibraryLintTests: XCTestCase {
             XCTAssertFalse(text.contains("bookshelfIndex.shelves)"), "\(path) shelves at 1×")
             XCTAssertFalse(text.contains("bookshelfIndex.shelves."), "\(path) shelves at 1×")
             XCTAssertTrue(text.contains("book.listeningMinutes(rate: rate)"), "\(path)'s rows use the shelves' measure")
+            // R3-05: the shelf map takes its shelves from the same call,
+            // never a fixed list, and each heading is its jump's target.
+            XCTAssertTrue(text.contains("ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)"), path)
+            XCTAssertTrue(text.contains(".id(section.rawValue)"), path)
+            XCTAssertTrue(text.contains("scrollTo(id, anchor: .top)"), path)
+            XCTAssertTrue(text.contains("if reduceMotion {"), "\(path) jumps without animation under Reduce Motion")
+            XCTAssertFalse(text.contains("Task.sleep"), "\(path) settles a far heading without a timer")
         }
     }
 
@@ -339,7 +346,7 @@ final class LibraryLintTests: XCTestCase {
         let sources = try SourceTree.sources(only: [Self.libraryFile, empty, pasteControl])
         let library = try XCTUnwrap(sources[Self.libraryFile])
         let menu = try XCTUnwrap(library.range(of: "private var addMenu: some View {"))
-        let items = library[menu.upperBound...].prefix(900)
+        let items = library[menu.upperBound...].prefix(1400)
         let shared = try XCTUnwrap(items.range(of: "ForEach(LibraryAddMenuItem.allCases, id: \\.self) { item in"))
         let paste = try XCTUnwrap(items.range(of: "Label(PasteTextAction.menuTitle, systemImage: PasteTextAction.systemImage)"))
         XCTAssertLessThan(shared.lowerBound, paste.lowerBound, "after the shared two")
@@ -360,8 +367,10 @@ final class LibraryLintTests: XCTestCase {
         // only while the clipboard holds text.
         let emptyView = try XCTUnwrap(sources[empty])
         XCTAssertTrue(emptyView.contains("var onPaste: (([String]) -> Void)? = nil"))
-        XCTAssertTrue(emptyView.contains("ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, idPrefix: \"library\")"))
-        XCTAssertTrue(emptyView.contains("PlatformPasteControl(onPaste: onPaste, identifier: \"\\(idPrefix).pasteText\")"))
+        XCTAssertTrue(emptyView.contains("ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, onPasteEmpty: onPasteEmpty,\n"
+                                         + "                                   idPrefix: \"library\")"))
+        XCTAssertTrue(emptyView.contains(
+            "PlatformPasteControl(onPaste: onPaste, identifier: \"\\(idPrefix).pasteText\", onEmpty: onPasteEmpty)"))
         XCTAssertFalse(SwiftLiterals.code(in: emptyView).contains("PasteButton("),
                        "SwiftUI's PasteButton keeps a ~34pt height and greys its own fill")
         // UIKit's control, dressed as a link: label only, a capsule in the
@@ -373,7 +382,14 @@ final class LibraryLintTests: XCTestCase {
             XCTAssertTrue(control.contains(pin), "\(pin) in \(pasteControl)")
         }
         XCTAssertTrue(library.contains("EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker },\n"
-                                       + "                                 onPaste: pasteHandler)"))
+                                       + "                                 onPaste: pasteHandler, onPasteEmpty: refreshClipboard)"))
+        // R3-03: a paste that read nothing looks at the clipboard again, so
+        // the control goes; never the declined alert, which this
+        // prompt-free control has no prompt for.
+        XCTAssertTrue(control.contains("let handler = onPaste"), "taken before the reads, not through a weak self")
+        XCTAssertFalse(control.contains("[weak self]"), pasteControl)
+        XCTAssertTrue(control.contains("empty?()"), pasteControl)
+        XCTAssertFalse(control.contains("pasteDeclined"), pasteControl)
         XCTAssertTrue(library.contains("clipboardHasText ? { importer.importText($0.joined(separator: \"\\n\\n\")) } : nil"),
                       "the paste link's handler follows the clipboard")
         XCTAssertFalse(emptyView.contains("import UIKit"))
@@ -417,7 +433,8 @@ final class LibraryLintTests: XCTestCase {
         let grid = try XCTUnwrap(scrollBody.range(of: "documentGrid"), scrollBody)
         let links = try XCTUnwrap(scrollBody.range(of: "ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: pasteHandler,"), scrollBody)
         XCTAssertLessThan(grid.lowerBound, links.lowerBound, "under the grid")
-        XCTAssertTrue(scrollBody[links.upperBound...].prefix(60).contains("idPrefix: \"library.shelf\")"), scrollBody)
+        XCTAssertTrue(scrollBody[links.upperBound...].prefix(100)
+                        .contains("onPasteEmpty: refreshClipboard, idPrefix: \"library.shelf\")"), scrollBody)
         XCTAssertFalse(scrollBody.contains("PrivacyCopy"), scrollBody)
         XCTAssertTrue(scrollBody.contains("if !shelf.grid.isEmpty { documentGrid }"), scrollBody)
         XCTAssertFalse(scrollBody.contains("\n                documentGrid\n"), "no bare grid in the stack")

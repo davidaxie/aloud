@@ -262,7 +262,7 @@ class LintTests(unittest.TestCase):
         self.assertEqual(cn.title_violations("Frankenstein; or, The Modern Prometheus"), [])
 
     def test_a_title_over_sixty_characters_is_flagged(self):
-        sixty = "Gulliver's Travels into Several Remote Regions of the World!"
+        sixty = "Gulliver\u2019s Travels into Several Remote Regions of the World!"
         self.assertEqual(len(sixty), 60)
         self.assertEqual(cn.title_violations(sixty), [])
         long = "Memoirs of the Author of a Vindication of the Rights of Woman"
@@ -294,6 +294,65 @@ class LintTests(unittest.TestCase):
         self.assertIn("#3 title: is empty", problems)
         self.assertIn("#4 title: is empty", problems)
         self.assertTrue(any(p.startswith("#4 author:") for p in problems))
+
+
+class TypographicMarksTests(unittest.TestCase):
+    """R3-04: titles and authors carry the marks the reader's colophon sets
+    (ReaderTypography), never a typewriter's straight ones."""
+
+    def test_an_apostrophe_inside_a_word_curls(self):
+        self.assertEqual(cn.normalize_title("Alice's Adventures in Wonderland"),
+                         "Alice\u2019s Adventures in Wonderland")
+        self.assertEqual(cn.normalize_title("The hunter's lodge case"), "The Hunter\u2019s Lodge Case")
+
+    def test_a_plurals_apostrophe_curls(self):
+        self.assertEqual(cn.normalize_title("Witches' Moon"), "Witches\u2019 Moon")
+        self.assertEqual(cn.typographic_marks("The Girls'"), "The Girls\u2019")
+
+    def test_single_quotes_round_a_word_open_and_close(self):
+        self.assertEqual(cn.normalize_title("'Firebrand' Trevison"), "\u2018Firebrand\u2019 Trevison")
+
+    def test_an_elision_or_a_decade_keeps_an_apostrophe(self):
+        self.assertEqual(cn.typographic_marks("'Tis Done"), "\u2019Tis Done")
+        self.assertEqual(cn.typographic_marks("Rock 'n' Roll"), "Rock \u2019n\u2019 Roll")
+        self.assertEqual(cn.typographic_marks("The '90s"), "The \u201990s")
+        self.assertEqual(cn.normalize_title("The Phantom 'Rickshaw and Other Ghost Stories"),
+                         "The Phantom \u2019Rickshaw and Other Ghost Stories", "never closed, so elided")
+
+    def test_double_quotes_pair(self):
+        self.assertEqual(cn.normalize_title('"And That\'s How It Was, Officer"'),
+                         "\u201cAnd That\u2019s How It Was, Officer\u201d")
+
+    def test_the_display_title_and_full_title_agree(self):
+        book = {"gutenberg_id": 1, "title": "Aesop's Fables; A New Translation", "author": "Aesop"}
+        out = cn.normalize_book(book)
+        self.assertEqual(out["title"], "Aesop\u2019s Fables")
+        self.assertEqual(out["full_title"], "Aesop\u2019s Fables; A New Translation")
+        self.assertEqual(out["header_title"], "Aesop's Fables; A New Translation",
+                         "the raw spelling stays for matching and search")
+
+    def test_an_override_value_is_set_too(self):
+        overrides = {"24739": {"title": "Bidwell's Travels"}, "7": {"author": "Flann O'Brien"}}
+        bidwell = cn.normalize_book({"gutenberg_id": 24739,
+                                     "title": "Bidwell's travels, from Wall Street to London Prison",
+                                     "author": "Austin Bidwell"}, overrides)
+        self.assertEqual(bidwell["title"], "Bidwell\u2019s Travels")
+        author = cn.normalize_book({"gutenberg_id": 7, "title": "At Swim", "author": "Flann O'Brien"}, overrides)
+        self.assertEqual(author["author"], "Flann O\u2019Brien")
+
+    def test_an_author_curls(self):
+        self.assertEqual(cn.normalize_author("Flann O'Brien"), "Flann O\u2019Brien")
+
+    def test_the_lint_flags_straight_marks(self):
+        self.assertTrue(cn.title_violations("Alice's Adventures in Wonderland"))
+        self.assertTrue(cn.title_violations('The "Gloria Scott"'))
+        self.assertEqual(cn.title_violations("Alice\u2019s Adventures in Wonderland"), [])
+        self.assertTrue(cn.author_violations("Flann O'Brien"))
+        self.assertEqual(cn.author_violations("Flann O\u2019Brien"), [])
+
+    def test_marks_are_idempotent(self):
+        once = cn.normalize_title("'Firebrand' Trevison")
+        self.assertEqual(cn.normalize_title(once), once)
 
 
 class OverridesTests(unittest.TestCase):

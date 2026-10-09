@@ -39,6 +39,25 @@ final class BookshelfCatalogTests: XCTestCase {
         }
     }
 
+    /// R3-04, tools/catalog_normalize.py author_violations: an author's
+    /// quote marks are set as the reader sets them ("O\u{2019}Brien"),
+    /// never straight. Titles are checked in `titleViolations`.
+    func testNoAuthorHasAStraightQuoteMark() {
+        let straight = books.flatMap { book in
+            Self.straightMarkViolations(book.author).map { "#\(book.gutenbergID) author \($0)" }
+        }
+        XCTAssertEqual(straight, [], straight.joined(separator: "\n"))
+    }
+
+    /// The mirror flags a straight mark the way the Python lint does, so the
+    /// two can't drift while the bundled catalog happens to be clean.
+    func testTheLintMirrorFlagsStraightMarks() {
+        XCTAssertFalse(Self.titleViolations("Alice's Adventures in Wonderland").isEmpty)
+        XCTAssertFalse(Self.titleViolations("The \"Gloria Scott\"").isEmpty)
+        XCTAssertEqual(Self.titleViolations("Alice\u{2019}s Adventures in Wonderland"), [])
+        XCTAssertEqual(Self.titleViolations("\u{201C}And That\u{2019}s How It Was, Officer\u{201D}"), [])
+    }
+
     /// R1-35, tools/catalog_normalize.py MAX_TITLE_LENGTH: the shelf shows a
     /// display title, never a subtitle-long one.
     func testNoTitleIsLongerThanTheShelfShows() {
@@ -60,7 +79,7 @@ final class BookshelfCatalogTests: XCTestCase {
     func testTheCuratedTitlesAndAuthorsShip() {
         let expected: [(id: Int, title: String?, author: String?)] = [
             (84, "Frankenstein", nil), (1063, "The Cask of Amontillado", nil),
-            (41537, "The Inferno", nil), (24739, "Bidwell's Travels", nil),
+            (41537, "The Inferno", nil), (24739, "Bidwell\u{2019}s Travels", nil),
             (15399, "The Interesting Narrative of the Life of Olaudah Equiano", nil),
             (44646, "The Memoirs of the Duchesse de Dino", nil),
             (500, nil, "Carlo Collodi"), (2680, nil, "Marcus Aurelius"), (44608, nil, "Babur"),
@@ -98,6 +117,47 @@ final class BookshelfCatalogTests: XCTestCase {
         }
         print("Bookshelf shelves: "
               + shelves.map { "\($0.section.title) \($0.books.count)" }.joined(separator: ", "))
+    }
+
+    // MARK: - The shelf map (R3-05)
+
+    /// The Classics screens' first row has one button per shelf the list
+    /// shows, with its count, at the app-wide speed: at 1× and at 2×, where
+    /// the books regroup.
+    func testTheShelfMapIsTheShelvesAtTheSpeed() {
+        let index = BookshelfIndex(books: books, prewarmingSearch: false)
+        for rate in [1.0, 2.0] {
+            let jumps = ShelfJump.jumps(in: index, rate: rate)
+            let shelves = index.shelves(rate: rate)
+            XCTAssertEqual(jumps.map(\.section), shelves.map(\.section), "\(rate)×")
+            XCTAssertEqual(jumps.map(\.count), shelves.map(\.books.count), "\(rate)×")
+        }
+    }
+
+    /// A speed that empties a shelf drops its button; nothing is a fixed
+    /// list of three.
+    func testTheShelfMapFollowsARegroupingSpeed() {
+        func book(_ id: Int, words: Int) -> BookshelfBook {
+            BookshelfBook(gutenbergID: id, title: "Book \(id)", author: "An Author", year: nil,
+                          file: "\(id).txt", words: words)
+        }
+        // About 30, 180 and 485 minutes at 1×; 15, 90 and 240 at 2×.
+        let index = BookshelfIndex(books: [book(1, words: 5_000), book(2, words: 30_000), book(3, words: 80_000)],
+                                   prewarmingSearch: false)
+        let atOne = ShelfJump.jumps(in: index, rate: 1)
+        XCTAssertEqual(atOne.map(\.section), [.underAnHour, .anEvening, .longReads])
+        XCTAssertEqual(atOne.map(\.count), [1, 1, 1])
+        let atTwo = ShelfJump.jumps(in: index, rate: 2)
+        XCTAssertEqual(atTwo.map(\.section), index.shelves(rate: 2).map(\.section))
+        XCTAssertFalse(atTwo.contains { $0.section == .longReads }, "the emptied shelf has no button")
+        XCTAssertEqual(atTwo.map(\.count).reduce(0, +), 3)
+
+        let long = ShelfJump(section: .longReads, count: 334)
+        XCTAssertEqual(long.accessibilityLabel, "Long reads, 334 books")
+        XCTAssertEqual(ShelfJump(section: .anEvening, count: 1).accessibilityLabel, "An evening, 1 book")
+        XCTAssertEqual(long.identifier, "bookshelf.jump.longReads")
+        XCTAssertEqual(long.countText, "334")
+        XCTAssertEqual(ShelfJump.hint, "Jumps to this shelf")
     }
 
     /// Every book the catalog lists ships beside it. A sync from an empty
@@ -151,6 +211,14 @@ final class BookshelfCatalogTests: XCTestCase {
                 violations.append("lowercase word '\(token)' starts a segment")
             }
         }
-        return violations
+        return violations + straightMarkViolations(title)
+    }
+
+    /// R3-04: a straight ' or " (U+0027, U+0022), which the reader's
+    /// colophon would set curly (tools/catalog_normalize.py
+    /// _straight_mark_violations).
+    private static func straightMarkViolations(_ text: String) -> [String] {
+        let found = ["'", "\""].filter { text.contains($0) }
+        return found.isEmpty ? [] : ["straight quote mark \(found.joined(separator: ", ")) in '\(text)'"]
     }
 }

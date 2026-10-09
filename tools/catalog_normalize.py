@@ -94,6 +94,69 @@ def _capitalized(word: str) -> str:
     return "-".join(part[:1].upper() + part[1:] for part in word.split("-"))
 
 
+# Words that begin with an apostrophe, not an opening quote ('Tis, 'em).
+# ios/Aloud/Reader/ReaderTypography.swift elisions; keep the two in step.
+ELISIONS = ("tis", "twas", "twere", "em", "cause", "til", "n")
+# What may come before an opening quote, besides the start and a space.
+QUOTE_OPENERS = frozenset("([{\"“‘—–-")
+
+
+def _opens_quote(previous: str | None, following: str | None) -> bool:
+    if following is None or following.isspace():
+        return False
+    return previous is None or previous.isspace() or previous in QUOTE_OPENERS
+
+
+def _starts_elision(text: str, start: int) -> bool:
+    tail = text[start: start + 7].lower()
+    for word in ELISIONS:
+        if tail.startswith(word):
+            boundary = tail[len(word): len(word) + 1]
+            if not boundary or not boundary.isalpha():
+                return True
+    return False
+
+
+def _closed_later(text: str, start: int) -> bool:
+    """Whether a single quote after `start` closes one: a title is one line,
+    so a quote that opens is closed in it, and an unclosed one before a word
+    is an elision the list doesn't know ('Rickshaw)."""
+    for index in range(start + 1, len(text)):
+        if text[index] != "'":
+            continue
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if not (text[index - 1].isalnum() and following.isalnum()):
+            return True
+    return False
+
+
+def typographic_marks(text: str) -> str:
+    """Straight quote marks set as the reader's colophon sets them: an
+    apostrophe inside a word or after a plural's s, an opening single quote
+    before a word that is not an elision and is closed later, a closing one
+    anywhere else, and double quotes opening or closing by what is on
+    either side."""
+    out: list[str] = []
+    for index, char in enumerate(text):
+        previous = text[index - 1] if index else None
+        following = text[index + 1] if index + 1 < len(text) else None
+        if char == "'":
+            if previous and following and previous.isalnum() and following.isalnum():
+                out.append("’")
+            elif previous in ("s", "S") and (following is None or following.isspace()):
+                out.append("’")
+            elif (_opens_quote(previous, following) and following.isalpha()
+                  and not _starts_elision(text, index + 1) and _closed_later(text, index + 1)):
+                out.append("‘")
+            else:
+                out.append("’")
+        elif char == '"':
+            out.append("“" if _opens_quote(previous, following) else "”")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
 def normalize_title(title: str) -> str:
     title = COMPLETE_RE.sub("", title)
     title = re.sub(r"\s+", " ", title).strip()
@@ -113,7 +176,8 @@ def normalize_title(title: str) -> str:
         else:
             pieces.append(_capitalized(word.text))
     pieces.append(title[cursor:])
-    return "".join(pieces)
+    # Last, so full_title and the display title cut from it agree.
+    return typographic_marks("".join(pieces))
 
 
 # The longest title the shelf shows; a longer one is a lint violation.
@@ -174,7 +238,7 @@ def normalize_author(author: str) -> str:
     author = re.sub(r"\s+", " ", author).strip(" ,;")
     if author[:1].islower():
         author = author[0].upper() + author[1:]
-    return author
+    return typographic_marks(author)
 
 
 DERIVED_KEYS = ("header_title", "header_author", "full_title", "rank")
@@ -190,8 +254,10 @@ def normalize_book(book: dict, overrides: dict | None = None) -> dict:
     raw_author = book.get("header_author", book["author"])
     override = (overrides or {}).get(str(book["gutenberg_id"]), {})
     full_title = normalize_title(raw_title)
-    title = override.get("title", display_title(full_title))
-    author = override.get("author", normalize_author(raw_author))
+    # An override wins verbatim but for its quote marks, which are set as
+    # every other title's are.
+    title = typographic_marks(override["title"]) if "title" in override else display_title(full_title)
+    author = typographic_marks(override["author"]) if "author" in override else normalize_author(raw_author)
 
     out = {k: v for k, v in book.items() if k not in DERIVED_KEYS}
     out["title"] = title
@@ -222,7 +288,13 @@ def title_violations(title: str) -> list[str]:
             problems.append(f"lowercase word '{word.text}' starts a segment in '{title}'")
     if len(title) > MAX_TITLE_LENGTH:
         problems.append(f"longer than {MAX_TITLE_LENGTH} characters ({len(title)}): '{title}'")
+    problems += _straight_mark_violations(title)
     return problems
+
+
+def _straight_mark_violations(text: str) -> list[str]:
+    found = [m for m in ("'", '"') if m in text]
+    return [f"straight quote mark {', '.join(repr(m) for m in found)} in '{text}'"] if found else []
 
 
 def author_violations(author: str) -> list[str]:
@@ -232,6 +304,7 @@ def author_violations(author: str) -> list[str]:
     found = [m for m in ("(", ")", "AKA", ", active", ", et al", "--", "Pseudonym") if m in author]
     if found:
         problems.append(f"contains {', '.join(repr(m) for m in found)}: '{author}'")
+    problems += _straight_mark_violations(author)
     return problems
 
 

@@ -417,7 +417,12 @@ private struct MacEmptyLibrary: View {
                     if let book = FeaturedClassic.resolve(in: model.bookshelf) {
                         featuredButton(for: book)
                     }
-                    MacShelfLinks(idPrefix: "library")
+                    // R3-06: the formats Add a file takes, a sentence of
+                    // its own under the links, as on the iPhone.
+                    VStack(spacing: Theme.Space.xs) {
+                        MacShelfLinks(idPrefix: "library")
+                        FileFormatsCaption()
+                    }
                     Text(PrivacyCopy.line)
                         .font(Theme.font(.aside))
                         .foregroundStyle(Theme.textMuted)
@@ -472,6 +477,7 @@ private struct MacShelfLinks: View {
             }
             Button("Add a file") { router.rootPresentation = .filePicker }
                 .buttonStyle(MacTextLinkStyle())
+                .accessibilityHint(LibraryAddMenuItem.fileFormatsHint)
                 .accessibilityIdentifier("\(idPrefix).addFile")
         }
     }

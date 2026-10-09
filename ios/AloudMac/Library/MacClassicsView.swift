@@ -13,6 +13,7 @@ struct MacClassicsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var importer: DocumentImporter
     @Environment(MacUIState.self) private var ui
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
     /// nil shows the sections. Searched once per query change, never per body run.
@@ -58,7 +59,7 @@ struct MacClassicsView: View {
                 MacEdgeScrollView {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         Color.clear.frame(height: 0).id("top")
-                        content
+                        content(scroller)
                     }
                     .frame(maxWidth: Self.columnMaxWidth)
                     .padding(.horizontal, MacGridMetrics.gutter(forWindowWidth: proxy.size.width))
@@ -108,7 +109,7 @@ struct MacClassicsView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(_ scroller: ScrollViewProxy) -> some View {
         if let results {
             if results.isEmpty {
                 Text(noResultsMessage)
@@ -122,6 +123,8 @@ struct MacClassicsView: View {
                 ForEach(results) { row($0) }
             }
         } else {
+            // R3-05: the shelf map, unpinned, above the first heading.
+            shelfMap(scroller)
             ForEach(shelves) { shelf in
                 Section {
                     ForEach(shelf.books) { row($0) }
@@ -146,6 +149,59 @@ struct MacClassicsView: View {
             .background(Theme.bg)
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
+            // The shelf map's target (`jump(to:_:)`).
+            .id(section.rawValue)
+    }
+
+    // MARK: Shelf map
+
+    /// R3-05, as on the iPhone: one button per shelf at the app-wide
+    /// speed, its title and a quiet count, jumping to its heading. No
+    /// selected state: the pinned heading says where the list is.
+    private func shelfMap(_ scroller: ScrollViewProxy) -> some View {
+        HStack(spacing: Theme.Space.xs) {
+            ForEach(ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)) { jump in
+                Button {
+                    self.jump(to: jump.section, scroller)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                        Text(jump.title)
+                            .font(Theme.font(.callout).weight(.medium))
+                            .foregroundStyle(Theme.accentStrong)
+                        Text(jump.countText)
+                            .font(Theme.font(.callout))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                    .lineLimit(1)
+                    .padding(.horizontal, Theme.Space.sm)
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.md))
+                .accessibilityLabel(jump.accessibilityLabel)
+                .accessibilityHint(ShelfJump.hint)
+                .accessibilityIdentifier(jump.identifier)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, Theme.Space.sm)
+        .accessibilityIdentifier("bookshelf.shelfMap")
+    }
+
+    /// To the shelf's heading, animated unless Reduce Motion is on, with a
+    /// second scroll once the lazy rows above a far heading are measured
+    /// (as on the iPhone; never on a timer).
+    private func jump(to section: BookshelfSection, _ scroller: ScrollViewProxy) {
+        let id = section.rawValue
+        if reduceMotion {
+            scroller.scrollTo(id, anchor: .top)
+            DispatchQueue.main.async { scroller.scrollTo(id, anchor: .top) }
+        } else {
+            withAnimation(.smooth, completionCriteria: .logicallyComplete) {
+                scroller.scrollTo(id, anchor: .top)
+            } completion: {
+                scroller.scrollTo(id, anchor: .top)
+            }
+        }
     }
 
     /// One VoiceOver element: a Button already merges its label's text.

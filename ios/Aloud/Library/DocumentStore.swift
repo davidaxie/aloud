@@ -21,7 +21,9 @@ final class DocumentStore: ObservableObject {
     // v2: classics carry gutenbergID; v1 libraries are backfilled once.
     // v3: classics added under a catalog title since shortened for the
     // shelf take the shorter one, once (`retitlingClassics`).
-    private static let indexVersion = 3
+    // v4: the same pass again, for the catalog's curly quote marks (R3-04),
+    // on a library made while the catalog set them straight.
+    private static let indexVersion = 4
     /// The version the loaded library.json carries, written back by every
     /// persist, so a v1 library is never stamped v2 before its backfill runs.
     private var schemaVersion = DocumentStore.indexVersion
@@ -294,13 +296,13 @@ final class DocumentStore: ObservableObject {
         return documents[index]
     }
 
-    // MARK: - Gutenberg backfill (library.json v1 → v2 → v3)
+    // MARK: - Gutenberg backfill (library.json v1 → v2 → v3 → v4)
 
     /// One-shot migrations, each once: links classics added before v2 to
     /// their catalog entry, then gives classics added under a title the
-    /// catalog has since shortened the shelf's title (v3), and stamps the
-    /// library v3. A no-op on v3, and with an empty catalog (the library
-    /// keeps its version and is retried next launch).
+    /// catalog has since shortened or recurled the shelf's title (v3, v4),
+    /// and stamps the library v4. A no-op on v4, and with an empty catalog
+    /// (the library keeps its version and is retried next launch).
     func backfillGutenbergIDsIfNeeded(catalog: [BookshelfBook]) {
         guard schemaVersion < Self.indexVersion, !catalog.isEmpty else { return }
         if schemaVersion < 2 {
@@ -357,11 +359,22 @@ final class DocumentStore: ObservableObject {
     /// full title or the Gutenberg header's, in any capitals. A curated
     /// title of an earlier build could differ from today's full title in
     /// its capitals alone (#25525's "The" against "the"), and was never the
-    /// listener's rename.
+    /// listener's rename. Nor is one that differs from a catalog spelling,
+    /// today's title included, in its quote marks alone: catalogs before
+    /// R3-04 set them straight (v4).
     nonisolated static func isEarlierCatalogTitle(_ title: String, of book: BookshelfBook) -> Bool {
-        [book.fullTitle, book.headerTitle].contains { spelling in
-            spelling.map { title.caseInsensitiveCompare($0) == .orderedSame } ?? false
+        let folded = quoteFolded(title)
+        return [book.title, book.fullTitle, book.headerTitle].contains { spelling in
+            spelling.map { quoteFolded($0) == folded } ?? false
         }
+    }
+
+    /// Search's fold (capitals, diacritics, curly single quotes made
+    /// straight), with curly double quotes made straight too.
+    nonisolated static func quoteFolded(_ text: String) -> String {
+        BookshelfIndex.fold(text)
+            .replacingOccurrences(of: "\u{201C}", with: "\"")
+            .replacingOccurrences(of: "\u{201D}", with: "\"")
     }
 
     // MARK: - sourceHash backfill

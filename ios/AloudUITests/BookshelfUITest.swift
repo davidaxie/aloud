@@ -240,6 +240,37 @@ final class BookshelfUITest: XCTestCase {
         XCTAssertEqual(empty.label, "No classics match \u{201C}zzzz\u{201D}")
     }
 
+    /// R3-05: the shelf map at the top of Classics takes one tap to Long
+    /// reads, a hundred rows down, and leaves while a search shows.
+    func testTheShelfMapJumpsToLongReads() {
+        let app = XCUIApplication.aloud(["-uitest-reset-library"])
+        app.launch()
+        openBookshelfFromEmptyLibrary(app)
+
+        let jump = app.buttons["bookshelf.jump.longReads"].firstMatch
+        XCTAssertTrue(jump.waitForExistence(timeout: 5), "the shelf map names Long reads")
+        XCTAssertTrue(jump.label.hasPrefix("Long reads, "), "got '\(jump.label)'")
+        XCTAssertTrue(jump.label.hasSuffix(" books"), "got '\(jump.label)'")
+        assertTouchTarget(jump, "bookshelf.jump.longReads")
+        jump.tap()
+
+        let heading = app.descendants(matching: .any)["bookshelf.section.longReads"].firstMatch
+        XCTAssertTrue(heading.waitForExistence(timeout: 5))
+        let list = app.scrollViews["bookshelf.list"].firstMatch
+        let landed = NSPredicate { _, _ in
+            heading.isHittable && heading.frame.minY - list.frame.minY < 120
+        }
+        let settled = expectation(for: landed, evaluatedWith: nil)
+        wait(for: [settled], timeout: 5)
+        let pride = app.buttons["bookshelf.row.1342"].firstMatch
+        XCTAssertTrue(pride.waitForExistence(timeout: 5), "Pride and Prejudice, near the top of Long reads")
+        XCTAssertTrue(pride.isHittable, "on screen under the heading")
+
+        search(app, for: "pride")
+        XCTAssertTrue(app.buttons["bookshelf.row.1342"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["bookshelf.jump.longReads"].exists, "no shelf map over search results")
+    }
+
     func testRenamedClassicOpensExistingDocument() {
         let app = XCUIApplication.aloud(["-uitest-seed-first-classic", "-uitest-reset-library"])
         app.launch()

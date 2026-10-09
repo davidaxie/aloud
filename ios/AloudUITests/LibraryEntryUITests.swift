@@ -371,7 +371,8 @@ final class LibraryEntryUITests: XCTestCase {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         XCTAssertFalse(springboard.buttons["Allow Paste"].firstMatch.waitForExistence(timeout: 2),
                        "no Allow Paste prompt")
-        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the pasted text opens")
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20),
+                      "the pasted text opens; \(pasteCalls(app)), label '\(paste.label)', frame \(paste.frame)")
         tapSystemBack(app)
         XCTAssertTrue(waitForLibraryCount(2, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
     }
@@ -418,9 +419,21 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertTrue(paste.isHittable)
         assertTouchTarget(paste, "library.pasteText")
         paste.tap()
-        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the pasted text opens")
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20),
+                      "the pasted text opens; \(pasteCalls(app)), label '\(paste.label)', frame \(paste.frame)")
         tapSystemBack(app)
         XCTAssertTrue(waitForLibraryCount(1, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
+    }
+
+    /// R3-03: the DEBUG probe's count of pastes the system control handed
+    /// the app (`debug.pasteCalls.<n>`), for a paste test's failure
+    /// message. `debug.pasteCalls.0` after a tap on a whole, legible label
+    /// says the synthesized tap never reached the secure control; a higher
+    /// count puts the fault in the hand-off to the importer.
+    private func pasteCalls(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "debug.pasteCalls.")).firstMatch
+        return probe.exists ? probe.identifier : "no debug.pasteCalls probe"
     }
 
     // MARK: - Delete to empty

@@ -181,7 +181,7 @@ final class GutenbergBackfillTests: XCTestCase {
         XCTAssertEqual(store.documents.first { $0.id == full.id }?.title, "Frankenstein")
         XCTAssertEqual(store.documents.first { $0.id == renamed.id }?.title, "My Wild Book")
         let written = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
-        XCTAssertEqual(written["version"] as? Int, 3)
+        XCTAssertEqual(written["version"] as? Int, 4)
 
         // A later launch: the pass is spent.
         var later = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
@@ -193,7 +193,53 @@ final class GutenbergBackfillTests: XCTestCase {
         let relaunched = DocumentStore(indexURL: indexURL, notifications: NotificationCenter())
         relaunched.backfillGutenbergIDsIfNeeded(catalog: [callOfTheWild, frankenstein])
         XCTAssertEqual(relaunched.documents.first { $0.id == full.id }?.title,
-                       "Frankenstein; or, The Modern Prometheus", "a v3 library is never retitled again")
+                       "Frankenstein; or, The Modern Prometheus", "a v4 library is never retitled again")
+    }
+
+    // MARK: - Curly quote marks (R3-04, v4)
+
+    /// Today's catalog sets #11's apostrophe curly; the header spelling is
+    /// left out, so only the quote fold can match the record's title.
+    private let alice = BookshelfBook(
+        gutenbergID: 11, title: "Alice\u{2019}s Adventures in Wonderland", author: "Lewis Carroll", year: nil,
+        file: "11-alices-adventures-in-wonderland.txt", words: 26_500)
+
+    /// R3-04: a title that differs from the catalog's in its quote marks
+    /// alone is the catalog's own earlier spelling, never a rename.
+    func testAQuoteOnlyDifferenceIsAnEarlierCatalogTitle() {
+        XCTAssertTrue(DocumentStore.isEarlierCatalogTitle("Alice's Adventures in Wonderland", of: alice))
+        let sholto = BookshelfBook(
+            gutenbergID: 32562, title: "\u{201C}And That\u{2019}s How It Was, Officer\u{201D}",
+            author: "Ralph Sholto", year: nil, file: "32562.txt", words: 5_000)
+        XCTAssertTrue(DocumentStore.isEarlierCatalogTitle("\"And That's How It Was, Officer\"", of: sholto))
+        XCTAssertFalse(DocumentStore.isEarlierCatalogTitle("Alice in Lewis Land", of: alice))
+    }
+
+    /// R3-04: a v3 library, made while the catalog set its marks straight,
+    /// runs the pass once more: #11 takes the curly title, a listener's
+    /// rename stays, and the library is stamped v4.
+    @MainActor
+    func testAV3LibraryTakesTheCurlyTitlesOnce() throws {
+        let indexURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aloud-v4-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: indexURL) }
+        let straight = record(title: "Alice's Adventures in Wonderland", author: "Lewis Carroll",
+                              wordCount: 26_500, gutenbergID: 11)
+        let renamed = record(title: "Alice, Read to Me", author: "Lewis Carroll",
+                             wordCount: 26_500, gutenbergID: 11)
+        let index: [String: Any] = [
+            "version": 3,
+            "documents": try [straight, renamed].map { try JSONSerialization.jsonObject(with: Self.encoder.encode($0)) },
+        ]
+        try JSONSerialization.data(withJSONObject: index).write(to: indexURL)
+
+        let store = DocumentStore(indexURL: indexURL, notifications: NotificationCenter())
+        store.backfillGutenbergIDsIfNeeded(catalog: [callOfTheWild, alice])
+        XCTAssertEqual(store.documents.first { $0.id == straight.id }?.title, "Alice\u{2019}s Adventures in Wonderland")
+        XCTAssertEqual(store.documents.first { $0.id == renamed.id }?.title, "Alice, Read to Me",
+                       "the listener's own rename is kept")
+        let written = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+        XCTAssertEqual(written["version"] as? Int, 4)
     }
 
     // MARK: - Lookup
