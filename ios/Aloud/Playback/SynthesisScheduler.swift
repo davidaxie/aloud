@@ -27,7 +27,10 @@ struct LandedPiece: Sendable {
 /// ahead of (and, in a full lane, displaces) the warm-ups no one waits on.
 /// A cold lead (R3-07) is one job made in pieces back to back, so nothing
 /// queued can slip between them; each piece reaches its listeners as it
-/// lands, and the joined clip is cached and given to the waiters.
+/// lands, and the joined clip is cached and given to the waiters. A
+/// look-ahead sentence or warm-up may be made in pieces too (C4), so the
+/// one job in flight, which nothing can stop mid-call, stops at its next
+/// piece once no one wants it: a tap then waits behind one piece of it.
 actor SynthesisScheduler {
 
     private struct Waiter {
@@ -66,16 +69,17 @@ actor SynthesisScheduler {
         var sinks: [Sink] = []
         /// The pieces made so far, seamed, for a listener that joins late.
         var landed: [SynthesizedAudio] = []
-        /// A cold lead queued behind a different job in flight: its wait
-        /// in line, signposted from its admit to its turn (`leadWait`).
-        var leadWait: LeadWait?
+        /// A cold lead (`leadWait`) or a whole `now` job (`nowWait`) queued
+        /// behind a different job in flight: its wait in line, signposted
+        /// from its admit to its turn.
+        var wait: QueueWait?
 
         /// Someone still wants it made.
         var isWanted: Bool { isWarmUp || !waiters.isEmpty || !sinks.isEmpty }
     }
 
-    /// When a cold lead began waiting behind another job, and its interval.
-    private struct LeadWait {
+    /// When a start began waiting behind another job, and its interval.
+    private struct QueueWait {
         let interval: BudgetSignposts.Interval
         let since: ContinuousClock.Instant
     }
@@ -91,6 +95,10 @@ actor SynthesisScheduler {
     private var isDraining = false
     // Bridges the tiny race where a waiter is cancelled before it is admitted.
     private var cancelledWaiters: Set<UUID> = []
+    /// The pieces each recently joined clip was made in (C4): the tokens
+    /// each speaks and its frames in the joined clip, so a clip asked for
+    /// in pieces is scheduled with each piece's own word timing. Capped.
+    private var joinedPieces: [String: [MadePiece]] = [:]
 
     private static let prefetchBound = 8
 
@@ -103,11 +111,15 @@ actor SynthesisScheduler {
     /// Synthesizes (or serves from cache) the clip for `key`, waiting its turn
     /// in the requested lane. Cancellation-aware: a cancelled caller is
     /// resumed with `CancellationError` and its slot released.
+    /// `plan` (C4): made in its pieces rather than whole when it is queued
+    /// new (a job already queued for `key` keeps how it was asked for, one
+    /// in flight how it is being made); the waiters get the joined clip.
     func synthesize(_ text: String,
                     voice: TtsVoice,
                     speed: Double = 1.0,
                     key: String,
-                    priority: SynthesisPriority = .now) async throws -> SynthesizedAudio {
+                    priority: SynthesisPriority = .now,
+                    plan: ColdLeadPlan? = nil) async throws -> SynthesizedAudio {
         if let hit = cache.clip(forKey: key) { return hit }
         try Task.checkCancellation()
 
@@ -115,15 +127,19 @@ actor SynthesisScheduler {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 admit(Waiter(id: waiterID, continuation: continuation),
-                      key: key, text: text, voice: voice, speed: speed, priority: priority)
+                      key: key, text: text, voice: voice, speed: speed, priority: priority, plan: plan)
             }
         } onCancel: {
             Task { await self.cancelWaiter(waiterID) }
         }
     }
 
-    /// Fire-and-forget warm-up of the cache via the prefetch lane.
-    func prefetch(_ text: String, voice: TtsVoice, speed: Double = 1.0, key: String) {
+    /// Fire-and-forget warm-up of the cache via the prefetch lane, made in
+    /// `plan`'s pieces when one is given (C4). `aheadOfWarmUps` (C5, a
+    /// Mac click's held sentence): ahead of the other warm-ups no one
+    /// waits on, though never of a request someone waits on.
+    func prefetch(_ text: String, voice: TtsVoice, speed: Double = 1.0, key: String,
+                  plan: ColdLeadPlan? = nil, aheadOfWarmUps: Bool = false) {
         guard cache.clip(forKey: key) == nil else { return }
         // A cold lead in flight that its listener left (a pause from
         // buffering) is wanted in the cache now: it makes the rest of its
@@ -134,20 +150,44 @@ actor SynthesisScheduler {
         }
         guard !isQueued(key) else { return }
         guard prefetchLane.count < Self.prefetchBound else { return }
-        prefetchLane.append(Job(key: key, text: text, voice: voice, speed: speed, isWarmUp: true))
+        let job = Job(key: key, text: text, voice: voice, speed: speed, isWarmUp: true, plan: plan)
+        if aheadOfWarmUps {
+            prefetchLane.insert(job, at: prefetchLane.firstIndex { $0.waiters.isEmpty } ?? prefetchLane.endIndex)
+        } else {
+            prefetchLane.append(job)
+        }
         drainIfNeeded()
     }
 
     /// Warms `warmUps` in order, first dropping the warm-ups no one waits on
     /// when `replacingWarmUps`: the cue moved, so the clips for where it was
     /// are no longer wanted ahead of anything else. One call, so a drop can
-    /// never land between the new cue's warm-ups.
+    /// never land between the new cue's warm-ups. `plans` (C4, by key):
+    /// those made in pieces.
     func prefetch(_ warmUps: [(text: String, key: String)], voice: TtsVoice, speed: Double = 1.0,
-                  replacingWarmUps: Bool) {
+                  replacingWarmUps: Bool, plans: [String: ColdLeadPlan] = [:]) {
         if replacingWarmUps { prefetchLane.removeAll { $0.waiters.isEmpty } }
         for warmUp in warmUps {
-            prefetch(warmUp.text, voice: voice, speed: speed, key: warmUp.key)
+            prefetch(warmUp.text, voice: voice, speed: speed, key: warmUp.key, plan: plans[warmUp.key])
         }
+    }
+
+    /// C5: a warm-up for `key` is no longer wanted (a held click became a
+    /// double-click, a selection or a key): a queued one no one waits on
+    /// leaves its lane, and one in flight that no one waits on or listens
+    /// to stops at its next piece. Anything someone waits on is untouched.
+    func dropWarmUp(key: String) {
+        prefetchLane.removeAll { $0.key == key && $0.waiters.isEmpty && $0.sinks.isEmpty }
+        if inFlight?.key == key, inFlight?.waiters.isEmpty == true, inFlight?.sinks.isEmpty == true {
+            inFlight?.isWarmUp = false
+        }
+    }
+
+    /// C4: the pieces the clip cached under `key` was joined from, the
+    /// tokens each speaks and its frames there, in order; nil for a clip
+    /// made whole (or long gone).
+    func madePieces(forKey key: String) -> [MadePiece]? {
+        joinedPieces[key]
     }
 
     /// Makes the clip for `key` in `plan`'s pieces, in the `now` lane, and
@@ -189,7 +229,8 @@ actor SynthesisScheduler {
                        text: String,
                        voice: TtsVoice,
                        speed: Double,
-                       priority: SynthesisPriority) {
+                       priority: SynthesisPriority,
+                       plan: ColdLeadPlan? = nil) {
         if cancelledWaiters.remove(waiter.id) != nil {
             waiter.deliver(.failure(CancellationError()))
             return
@@ -209,7 +250,13 @@ actor SynthesisScheduler {
             if let index = nowLane.firstIndex(where: { $0.key == key }) {
                 nowLane[index].waiters.append(waiter)
             } else {
-                nowLane.append(Job(key: key, text: text, voice: voice, speed: speed, waiters: [waiter]))
+                var job = Job(key: key, text: text, voice: voice, speed: speed, waiters: [waiter], plan: plan)
+                // Behind another job in flight, the start waits for the rest
+                // of it first: measured apart from its own making.
+                if inFlight != nil {
+                    job.wait = QueueWait(interval: signposts.begin(.nowWait), since: .now)
+                }
+                nowLane.append(job)
             }
         case .prefetch:
             if let index = prefetchLane.firstIndex(where: { $0.key == key }),
@@ -223,6 +270,7 @@ actor SynthesisScheduler {
                 var job = prefetchLane.firstIndex(where: { $0.key == key }).map { prefetchLane.remove(at: $0) }
                     ?? Job(key: key, text: text, voice: voice, speed: speed)
                 job.waiters = [waiter]
+                if job.plan == nil { job.plan = plan }
                 if prefetchLane.count >= Self.prefetchBound {
                     guard let spare = prefetchLane.firstIndex(where: { $0.waiters.isEmpty }) else {
                         waiter.deliver(.failure(SynthesisSchedulerError.backlogFull))
@@ -237,11 +285,20 @@ actor SynthesisScheduler {
         drainIfNeeded()
     }
 
-    /// The entire prefetch backlog yields to the now lane.
+    /// The entire prefetch backlog yields to the now lane, and a job in
+    /// flight in pieces that only warms the cache (no one waits on it or
+    /// listens to it: a lead a pause left, a background warm-up) is no
+    /// longer wanted, so it stops at its next piece (C4) and the start goes
+    /// next. One made whole cannot stop, and finishes.
     private func preemptPrefetchLane() {
+        if inFlight?.plan != nil, inFlight?.isWarmUp == true,
+           inFlight?.waiters.isEmpty == true, inFlight?.sinks.isEmpty == true {
+            inFlight?.isWarmUp = false
+        }
         let preempted = prefetchLane
         prefetchLane = []
         for job in preempted {
+            discard(job)
             for stale in job.waiters {
                 stale.deliver(.failure(CancellationError()))
             }
@@ -289,8 +346,8 @@ actor SynthesisScheduler {
         job.sinks.append(sink)
         // Behind another job in flight, the lead waits its whole length
         // first: measured apart from the lead's own making.
-        if job.leadWait == nil, inFlight != nil {
-            job.leadWait = LeadWait(interval: signposts.begin(.leadWait), since: .now)
+        if job.wait == nil, inFlight != nil {
+            job.wait = QueueWait(interval: signposts.begin(.leadWait), since: .now)
         }
         nowLane.insert(job, at: queuedNow ?? nowLane.endIndex)
         drainIfNeeded()
@@ -362,7 +419,7 @@ actor SynthesisScheduler {
 
     private func drainLoop() async {
         while var job = dequeue() {
-            endLeadWait(&job)
+            endWait(&job)
             inFlight = job
             let outcome: Result<SynthesizedAudio, Error>
             if let hit = cache.clip(forKey: job.key) {
@@ -373,6 +430,7 @@ actor SynthesisScheduler {
                 do {
                     let clip = try await engine.synthesize(job.text, voice: job.voice, speed: job.speed)
                     cache.store(clip, forKey: job.key)
+                    joinedPieces[job.key] = nil
                     outcome = .success(clip)
                 } catch {
                     outcome = .failure(error)
@@ -424,22 +482,33 @@ actor SynthesisScheduler {
         }
         guard let joined = ColdLeadPlan.joined(made) else { return .failure(TtsError.emptyAudio) }
         cache.store(joined, forKey: key)
+        if joinedPieces.count >= Self.joinedPiecesBound { joinedPieces.removeAll() }
+        joinedPieces[key] = zip(plan.pieces, made).map { MadePiece(tokens: $0.tokens, frames: $1.samples.count) }
         return .success(joined)
     }
 
-    /// A job dropped before its turn: a lead's wait never reached it.
+    private static let joinedPiecesBound = 32
+
+    /// A job dropped before its turn: a start's wait never reached it.
     private func discard(_ job: Job) {
-        if let wait = job.leadWait { signposts.end(wait.interval, gaveUp: true) }
+        if let wait = job.wait { signposts.end(wait.interval, gaveUp: true) }
     }
 
-    /// A lead's turn has come: its wait in line ends.
-    private func endLeadWait(_ job: inout Job) {
-        guard let wait = job.leadWait else { return }
-        job.leadWait = nil
+    /// A start's turn has come: its wait in line ends.
+    private func endWait(_ job: inout Job) {
+        guard let wait = job.wait else { return }
+        job.wait = nil
         signposts.end(wait.interval)
         let waited = ContinuousClock.now - wait.since
         let seconds = Double(waited.components.seconds) + Double(waited.components.attoseconds) / 1e18
-        Self.log.info("cold lead waited \(seconds, format: .fixed(precision: 3), privacy: .public) s behind a job in flight")
+        if wait.interval.budget == .leadWait {
+            Self.log.info("cold lead waited \(seconds, format: .fixed(precision: 3), privacy: .public) s behind a job in flight")
+        } else {
+            Self.log.info("now job waited \(seconds, format: .fixed(precision: 3), privacy: .public) s behind a job in flight")
+        }
+        #if DEBUG
+        TapAudioProbe.noteQueueWait(seconds: seconds)
+        #endif
     }
 
     private func dequeue() -> Job? {
@@ -451,5 +520,14 @@ actor SynthesisScheduler {
     #if DEBUG
     /// Test seam: the keys queued behind the one in flight, now lane first.
     var queuedKeys: [String] { (nowLane + prefetchLane).map(\.key) }
+    /// Test seam: the key in flight, if any.
+    var inFlightKey: String? { inFlight?.key }
     #endif
+}
+
+/// One piece a joined clip was made in (`SynthesisScheduler.madePieces`):
+/// the sentence tokens it speaks and its frames in the joined clip.
+struct MadePiece: Sendable, Equatable {
+    let tokens: Range<Int>
+    let frames: Int
 }

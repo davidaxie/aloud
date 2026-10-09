@@ -174,7 +174,12 @@ struct MacReaderScreen: View {
                 voiceOffscreen: $voiceOffscreen,
                 onPlaySentence: { ReaderColumnView.playFromSentence($0, on: playback) },
                 onTextUnderTopBar: { textUnderTopBar = $0 },
-                transportStamp: { ReaderColumnView.transportStamp(of: playback) })
+                transportStamp: { ReaderColumnView.transportStamp(of: playback) },
+                onWarmSentence: { playback.warmJumpTarget(sentence: $0) },
+                onDropWarmSentence: { playback.dropJumpWarmUp() },
+                onFollowingChanged: { playback.readerIsFollowing = $0 })
+            // No page, nothing to be away from (C4).
+            .onDisappear { playback.readerIsFollowing = true }
             #if DEBUG
             .overlay(alignment: .topLeading) { MacReaderFollowProbeOverlay() }
             #endif

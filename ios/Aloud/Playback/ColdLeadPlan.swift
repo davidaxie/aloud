@@ -25,6 +25,10 @@ struct ColdLeadPlan: Sendable, Equatable {
         let text: String
         /// Its spoken words.
         let words: Int
+        /// C3: it ends at a phrase boundary (before a phrase opener) rather
+        /// than a clause mark, so its engine text carries a trailing comma
+        /// for a continuing fall; its seam is trimmed like any other.
+        var endsAtPhrase = false
     }
 
     let pieces: [Piece]
@@ -49,6 +53,12 @@ struct ColdLeadPlan: Sendable, Equatable {
     /// rolling figure is an average, and one slow piece must not starve
     /// the node.
     static let headroom = 0.85
+    /// C3: where a lead may be cut when no clause mark gives one within the
+    /// budget: before one of these words, which open a phrase. A fixed
+    /// list, lowercased; a token matches on its letters alone.
+    static let phraseOpeners: Set<String> = ["and", "but", "or", "which", "that", "who", "when", "while", "as",
+                                             "because", "of", "in", "on", "at", "to", "for", "with", "from",
+                                             "by", "the", "a", "an"]
 
     // MARK: - Planning
 
@@ -74,7 +84,15 @@ struct ColdLeadPlan: Sendable, Equatable {
     /// `clauseEnds` (word counts after which a clause mark ends a word),
     /// never at a bare space: with no clause end where a lead could be, the
     /// sentence is made whole.
-    static func pieceWordCounts(words: Int, clauseEnds: [Int], wordsPerMinute: Double, rate: Double,
+    ///
+    /// C3, `phraseEnds` (word counts after which a phrase opener begins):
+    /// when no clause end gives a lead within the budget, the lead is the
+    /// longest phrase prefix made within it whose chain stays ahead, ahead
+    /// of an over-long first clause or the whole. Later pieces still run to
+    /// a clause end, and to a phrase end only where no clause end is in
+    /// reach. With none, the plan is as without them.
+    static func pieceWordCounts(words: Int, clauseEnds: [Int], phraseEnds: [Int] = [],
+                                wordsPerMinute: Double, rate: Double,
                                 nativeSpeed: Double, synthesisSpeed: Double?,
                                 firstAudioBudget: TimeInterval?) -> [Int] {
         let whole = words > 0 ? [words] : []
@@ -85,7 +103,9 @@ struct ColdLeadPlan: Sendable, Equatable {
         guard secondsToMake(words) > budget else { return whole }
         // Listening seconds made per second of synthesis.
         let listeningPerSecond = k * nativeSpeed / rate
-        let cuts = Array(Set(clauseEnds.filter { $0 >= minimumLeadWords && $0 <= words - minimumTailWords })).sorted()
+        let inReach = { (end: Int) in end >= minimumLeadWords && end <= words - minimumTailWords }
+        let cuts = Array(Set(clauseEnds.filter(inReach))).sorted()
+        let phraseCuts = Array(Set(phraseEnds.filter(inReach)).subtracting(cuts)).sorted()
 
         // The chain from `lead`, each piece as long as it can be; nil when
         // a gap opens with no clause end to close it.
@@ -95,7 +115,8 @@ struct ColdLeadPlan: Sendable, Equatable {
                 let reach = Double(lead) + listeningPerSecond * Double(covered)
                 if reach >= Double(words) {
                     ends.append(words)
-                } else if let next = cuts.last(where: { $0 > covered && Double($0) <= reach }) {
+                } else if let next = cuts.last(where: { $0 > covered && Double($0) <= reach })
+                            ?? phraseCuts.last(where: { $0 > covered && Double($0) <= reach }) {
                     ends.append(next)
                 } else {
                     return nil
@@ -107,20 +128,141 @@ struct ColdLeadPlan: Sendable, Equatable {
 
         let feasible = cuts.compactMap { lead in chain(from: lead).map { (lead: lead, counts: $0) } }
         let withinBudget = feasible.filter { secondsToMake($0.lead) <= budget }
-        return (withinBudget.last ?? feasible.first)?.counts ?? whole
+        if let best = withinBudget.last { return best.counts }
+        // No clause mark gives a lead within the budget: the longest phrase
+        // prefix that does, before an over-long first clause or the whole.
+        let phraseLeads = phraseCuts.filter { secondsToMake($0) <= budget }
+            .compactMap { lead in chain(from: lead).map { (lead: lead, counts: $0) } }
+        return (phraseLeads.last ?? feasible.first)?.counts ?? whole
     }
 
     /// The plan for a sentence's `tokens`, or nil to make it whole. The
     /// clause ends are its spoken tokens ending in a clause mark (a closing
-    /// quote after it still counts); each piece is handed the spoken text
-    /// of its own tokens.
+    /// quote after it still counts); the phrase ends fall before a spoken
+    /// phrase opener (`phraseOpeners`) not straight after a clause mark.
+    /// Each piece is handed the spoken text of its own tokens, and one cut
+    /// at a phrase end a trailing comma, so it falls as a clause does; its
+    /// tokens are its own, so word timing is unchanged.
     static func make(tokens: [WordToken], skipBrackets: Bool, wordsPerMinute: Double, rate: Double,
                      nativeSpeed: Double, synthesisSpeed: Double?,
                      firstAudioBudget: TimeInterval?) -> ColdLeadPlan? {
         guard synthesisSpeed != nil, firstAudioBudget != nil else { return nil }
         var words = 0
         var clauseEnds: [Int] = []
-        // The token index each clause end cuts before, by word count.
+        var phraseEnds: [Int] = []
+        // The token index each clause or phrase end cuts before, by word count.
+        var cutBefore: [Int: Int] = [:]
+        var phraseCutBefore: [Int: Int] = [:]
+        for (index, token) in tokens.enumerated()
+        where token.weight > 0 && SentenceSegmenter.isSpoken(token, skipBrackets: skipBrackets) {
+            if token.isWord, words > 0, clauseEnds.last != words, opensPhrase(token.text) {
+                phraseEnds.append(words)
+                phraseCutBefore[words] = index
+            }
+            if token.isWord { words += 1 }
+            if endsClause(token.text), words > 0 {
+                clauseEnds.append(words)
+                cutBefore[words] = index + 1
+            }
+        }
+        let counts = pieceWordCounts(words: words, clauseEnds: clauseEnds, phraseEnds: phraseEnds,
+                                     wordsPerMinute: wordsPerMinute, rate: rate, nativeSpeed: nativeSpeed,
+                                     synthesisSpeed: synthesisSpeed, firstAudioBudget: firstAudioBudget)
+        return pieces(counts: counts, tokens: tokens, skipBrackets: skipBrackets, rate: rate,
+                      cutBefore: cutBefore, phraseCutBefore: phraseCutBefore)
+    }
+
+    /// The pieces `counts` cut `tokens` into: nil for one piece, or for a
+    /// cut with no token to fall at.
+    private static func pieces(counts: [Int], tokens: [WordToken], skipBrackets: Bool, rate: Double,
+                               cutBefore: [Int: Int], phraseCutBefore: [Int: Int]) -> ColdLeadPlan? {
+        guard counts.count > 1 else { return nil }
+        var pieces: [Piece] = []
+        var start = 0
+        var spokenSoFar = 0
+        for (offset, count) in counts.enumerated() {
+            spokenSoFar += count
+            let isLast = offset == counts.count - 1
+            let atPhrase = !isLast && cutBefore[spokenSoFar] == nil
+            guard let end = isLast ? tokens.count : cutBefore[spokenSoFar] ?? phraseCutBefore[spokenSoFar],
+                  end > start else { return nil }
+            var text = SentenceSegmenter.spokenText(tokens: Array(tokens[start..<end]), skipBrackets: skipBrackets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            // The engine's text alone: a continuing fall at a phrase cut.
+            if atPhrase { text += "," }
+            pieces.append(Piece(tokens: start..<end, text: text, words: count, endsAtPhrase: atPhrase))
+            start = end
+        }
+        return ColdLeadPlan(pieces: pieces, rate: rate)
+    }
+
+    /// Whether `token` is a phrase opener (`phraseOpeners`), on its letters.
+    static func opensPhrase(_ token: String) -> Bool {
+        let letters = token.lowercased().unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        return phraseOpeners.contains(String(String.UnicodeScalarView(letters)))
+    }
+
+    // MARK: - Background pieces (C4)
+
+    /// Each piece's word count for a look-ahead sentence or a warm-up made
+    /// in pieces while the reader is away from the voice, so a tap waits
+    /// behind at most one piece of it rather than all of it. One entry (the
+    /// whole sentence) when it is made within `2 × pieceSeconds`, or has no
+    /// clause end to cut at. Otherwise each piece runs to the furthest
+    /// clause end made within `pieceSeconds` (with none, the nearest
+    /// beyond), never a phrase end, within `maximumPieces` (a sentence
+    /// whose clauses would need more takes longer pieces). Nothing of it
+    /// plays until all of it is made, so no chain is checked.
+    static func backgroundPieceWordCounts(words: Int, clauseEnds: [Int], wordsPerMinute: Double,
+                                          nativeSpeed: Double, synthesisSpeed: Double?,
+                                          pieceSeconds: TimeInterval?) -> [Int] {
+        let whole = words > 0 ? [words] : []
+        guard words > 0, let k = synthesisSpeed, let pieceSeconds, k.isFinite, k > 0, pieceSeconds > 0,
+              wordsPerMinute.isFinite, wordsPerMinute > 0, nativeSpeed.isFinite, nativeSpeed > 0 else { return whole }
+        let secondsToMake = { (count: Int) in Double(count) * 60 / (wordsPerMinute * nativeSpeed * k) }
+        guard secondsToMake(words) > 2 * pieceSeconds else { return whole }
+        let cuts = Array(Set(clauseEnds.filter { $0 >= minimumLeadWords && $0 <= words - minimumTailWords }))
+            .sorted()
+        guard !cuts.isEmpty else { return whole }
+        // Each piece to the furthest clause end within `target` of making.
+        func ends(within target: TimeInterval) -> [Int] {
+            var ends: [Int] = []
+            var covered = 0
+            while covered < words {
+                let open = cuts.filter { $0 > covered }
+                guard secondsToMake(words - covered) > target,
+                      let next = open.last(where: { secondsToMake($0 - covered) <= target }) ?? open.first else {
+                    ends.append(words)
+                    break
+                }
+                ends.append(next)
+                covered = next
+            }
+            return ends
+        }
+        // Clause ends closer together than the target would need more than
+        // `maximumPieces`: the pieces grow a quarter at a time until they fit.
+        var target = max(pieceSeconds, secondsToMake(words) / Double(maximumPieces))
+        for _ in 0..<16 {
+            let found = ends(within: target)
+            if found.count <= maximumPieces {
+                return found.count > 1 ? zip(found, [0] + found).map { $0 - $1 } : whole
+            }
+            target *= 1.25
+        }
+        return whole
+    }
+
+    /// C4: the background plan (`backgroundPieceWordCounts`) for a
+    /// sentence's `tokens`, cut only after clause marks, or nil to make it
+    /// whole.
+    static func background(tokens: [WordToken], skipBrackets: Bool, wordsPerMinute: Double, rate: Double,
+                           nativeSpeed: Double, synthesisSpeed: Double?,
+                           pieceSeconds: TimeInterval?) -> ColdLeadPlan? {
+        guard synthesisSpeed != nil, pieceSeconds != nil else { return nil }
+        var words = 0
+        var clauseEnds: [Int] = []
         var cutBefore: [Int: Int] = [:]
         for (index, token) in tokens.enumerated()
         where token.weight > 0 && SentenceSegmenter.isSpoken(token, skipBrackets: skipBrackets) {
@@ -130,24 +272,11 @@ struct ColdLeadPlan: Sendable, Equatable {
                 cutBefore[words] = index + 1
             }
         }
-        let counts = pieceWordCounts(words: words, clauseEnds: clauseEnds, wordsPerMinute: wordsPerMinute,
-                                     rate: rate, nativeSpeed: nativeSpeed, synthesisSpeed: synthesisSpeed,
-                                     firstAudioBudget: firstAudioBudget)
-        guard counts.count > 1 else { return nil }
-        var pieces: [Piece] = []
-        var start = 0
-        var spokenSoFar = 0
-        for (offset, count) in counts.enumerated() {
-            spokenSoFar += count
-            let isLast = offset == counts.count - 1
-            guard let end = isLast ? tokens.count : cutBefore[spokenSoFar], end > start else { return nil }
-            let text = SentenceSegmenter.spokenText(tokens: Array(tokens[start..<end]), skipBrackets: skipBrackets)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
-            pieces.append(Piece(tokens: start..<end, text: text, words: count))
-            start = end
-        }
-        return ColdLeadPlan(pieces: pieces, rate: rate)
+        let counts = backgroundPieceWordCounts(words: words, clauseEnds: clauseEnds, wordsPerMinute: wordsPerMinute,
+                                               nativeSpeed: nativeSpeed, synthesisSpeed: synthesisSpeed,
+                                               pieceSeconds: pieceSeconds)
+        return pieces(counts: counts, tokens: tokens, skipBrackets: skipBrackets, rate: rate,
+                      cutBefore: cutBefore, phraseCutBefore: [:])
     }
 
     /// Whether a cut may follow `token`: its last mark, past any closing

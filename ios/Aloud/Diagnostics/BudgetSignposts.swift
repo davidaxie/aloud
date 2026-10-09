@@ -44,6 +44,15 @@ struct BudgetSignposts: Sendable {
         /// the share of a cold first audio that is waiting in line, apart
         /// from the lead's own making.
         case leadWait
+        /// A tap's (or a pick's, or a skip's) seek that plays, to the first
+        /// buffer on the started player node, "warm" or "cold" by the
+        /// neural model; "gave up" at a pause, stop or another seek first.
+        /// Its budget is first audio's.
+        case tapAudio
+        /// A whole `now` job (a start made in one call) queued behind a
+        /// different job already in flight, from its admit to its turn:
+        /// `leadWait` for a start that is not cut into a lead.
+        case nowWait
 
         /// The interval's name as Instruments lists it (`rawValue`, as the
         /// static string the signposter takes).
@@ -57,6 +66,8 @@ struct BudgetSignposts: Sendable {
             case .catchingUp: return "catchingUp"
             case .readerOpen: return "readerOpen"
             case .leadWait: return "leadWait"
+            case .tapAudio: return "tapAudio"
+            case .nowWait: return "nowWait"
             }
         }
     }

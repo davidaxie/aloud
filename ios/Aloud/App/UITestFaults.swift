@@ -158,12 +158,14 @@ struct UITestProbeOverlay: View {
 
     @ObservedObject private var announcements = UITestAnnouncementLog.shared
     @ObservedObject private var haptics = TransportHaptics.shared
+    @ObservedObject private var tapAudio = TapAudioProbe.shared
 
     var body: some View {
         if UITestHooks.isUITestLaunch {
             ZStack {
                 probe("Announcements", value: announcements.entries.joined(separator: "\n"),
                       identifier: "debug.announcements")
+                probe("Tap audio", value: tapAudio.value, identifier: "debug.tapAudio")
                 if UITestHooks.hapticLog {
                     probe("Haptics", value: haptics.logText, identifier: "debug.haptics")
                 }

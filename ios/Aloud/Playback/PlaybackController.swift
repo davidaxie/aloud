@@ -236,6 +236,13 @@ final class PlaybackController: ObservableObject {
     /// Low Power Mode: the look-ahead stays time-based over the platform's
     /// shorter range (`lookAheadSentencesUnderLowPower`), unless hot too.
     var isLowPower: @MainActor () -> Bool = { false }
+    /// C4: whether the open reader's page follows the voice
+    /// (`ReaderFollowEngine.isFollowing`), as the iPhone and Mac columns
+    /// report it; true with no reader open. Scrolled away, a tap elsewhere
+    /// is likelier, so the look-ahead and warm-ups that would take long to
+    /// make are made in clause pieces (`backgroundPlan`), and a tap waits
+    /// behind one piece of them rather than a whole sentence.
+    var readerIsFollowing = true
 
     /// How long an "Undo jump" offer stays up. Tests shorten it.
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
@@ -445,6 +452,12 @@ final class PlaybackController: ObservableObject {
     private var idleEngineStopItem: DispatchWorkItem?
     /// M19's first-audio interval: open from Play while the status buffers.
     private var firstAudio: BudgetSignposts.Interval?
+    /// C1: a seek that plays (a sentence tap, a pick while playing, a
+    /// skip) to its first buffer on the started node; open while it buffers.
+    private var tapAudio: BudgetSignposts.Interval?
+    /// C5: the warm-up a Mac click's hold started (`warmJumpTarget`), until
+    /// the click plays (any seek) or gives way (`dropJumpWarmUp`).
+    private var heldWarmUpKey: String?
     /// Open while reading has run dry: a sentence ended before the next
     /// one's clip was on the node. Status shows `.buffering` meanwhile.
     private var catchingUp: BudgetSignposts.Interval?
@@ -945,6 +958,10 @@ final class PlaybackController: ObservableObject {
     private func settleFirstAudio() {
         guard status != .buffering else { return }
         budgetSignposts.end(&firstAudio, gaveUp: status != .playing)
+        budgetSignposts.end(&tapAudio, gaveUp: status != .playing)
+        #if DEBUG
+        TapAudioProbe.shared.settled(playing: status == .playing)
+        #endif
         // A dry spell ends however buffering does: its clip landed
         // (`.playing`), or a pause, seek or stop took it over.
         budgetSignposts.end(&catchingUp, gaveUp: status != .playing)
@@ -1111,13 +1128,23 @@ final class PlaybackController: ObservableObject {
             userPlayAction &+= 1   // e.g. restart after .ended, or over an audition
             if pendingFadeIn == nil { pendingFadeIn = AudioEdge.resumeRamp }
         }
+        heldWarmUpKey = nil   // a held click's warm-up is this start's, or no longer wanted ahead
         if andPlay || playing {
+            // C1: the seek to its first buffer on the started node; a seek
+            // before the last one sounded ends that one, given up.
+            let cold = voice.engine == .kokoro && kokoro?.isWarm == false
+            budgetSignposts.end(&tapAudio, gaveUp: true)
+            tapAudio = budgetSignposts.begin(.tapAudio, cold ? .cold : .warm)
+            #if DEBUG
+            TapAudioProbe.shared.tapBegan(cold: cold)
+            #endif
             let wasActive = isActive
             audition = nil
             startPlayback(at: target)
             // An audition was already active, so `status.didSet` saw no
             // entry: this is where its stop clears and the session goes live.
             if auditioning, wasActive { didEnterActivePlayback() }
+            settleFirstAudio()   // a start that left the status as it was
         } else {
             invalidateSchedule()
             status = .paused   // `audition` still set: a sample stamps no resume anchor
@@ -1804,16 +1831,18 @@ final class PlaybackController: ObservableObject {
         guard warmVoice.engine == .kokoro else { return }
         let pace = nativePace(for: warmVoice)
         var warmUps: [(text: String, key: String)] = []
+        var plans: [String: ColdLeadPlan] = [:]
         for index in (horizon + 1)...last where !skippedSentences.contains(index) {
             let spoken = synthesisText(at: index, voice: warmVoice)
             guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            warmUps.append((text: spoken, key: AudioClipCache.key(voice: warmVoice, skipBrackets: skipBrackets,
-                                                                  contentHash: content.contentHash,
-                                                                  nativeSpeed: pace, sentenceID: index)))
+            let key = AudioClipCache.key(voice: warmVoice, skipBrackets: skipBrackets,
+                                         contentHash: content.contentHash, nativeSpeed: pace, sentenceID: index)
+            warmUps.append((text: spoken, key: key))
+            plans[key] = backgroundPlan(forSentence: index, voice: warmVoice, pace: pace, spoken: spoken)
         }
         guard !warmUps.isEmpty else { return }
         await scheduler.prefetch(warmUps, voice: AVSpeechEngine.voice(warmVoice, reading: systemVoiceLanguage),
-                                 speed: pace, replacingWarmUps: false)
+                                 speed: pace, replacingWarmUps: false, plans: plans)
     }
 
     /// Keeps the player node loaded past the playhead (`lookAheadHorizon`).
@@ -1835,6 +1864,8 @@ final class PlaybackController: ObservableObject {
             let clipVoice = voiceForSentence(next)
             let spoken = synthesisText(at: next, voice: clipVoice)
             let clip: SynthesizedAudio
+            // C4: a clip made in pieces, scheduled piece by piece.
+            var madePieces: [MadePiece]?
             if skippedSentences.contains(next)
                 || spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Citation-only / aside-only sentences (spokenText == "" with
@@ -1847,6 +1878,9 @@ final class PlaybackController: ObservableObject {
                                              contentHash: content.contentHash, nativeSpeed: pace,
                                              sentenceID: next)
                 let priority: SynthesisPriority = next == currentSentence ? .now : .prefetch
+                #if DEBUG
+                if priority == .now, cache.clip(forKey: key) != nil { TapAudioProbe.shared.notePath("hit") }
+                #endif
                 // R3-07: a cold start on a long sentence speaks a lead
                 // clause first, the rest following it on the node.
                 if priority == .now,
@@ -1859,9 +1893,21 @@ final class PlaybackController: ObservableObject {
                     case .nothingLanded: break   // made whole below, with its retries
                     }
                 }
+                // C4: look-ahead past the playhead, with the reader away,
+                // is made in clause pieces a tap waits behind one of.
+                let background = priority == .prefetch
+                    ? backgroundPlan(forSentence: next, voice: clipVoice, pace: pace, spoken: spoken) : nil
                 do {
                     let made = try await synthesizeWithRetry(spoken, voice: clipVoice, speed: pace, key: key,
-                                                             priority: priority, token: token)
+                                                             priority: priority, token: token, plan: background)
+                    guard token == playToken else { return }
+                    #if DEBUG
+                    if priority == .now { TapAudioProbe.shared.notePath("whole") }
+                    #endif
+                    if background != nil, let pieces = await scheduler.madePieces(forKey: key),
+                       pieces.count > 1, pieces.reduce(0, { $0 + $1.frames }) == made.samples.count {
+                        madePieces = pieces
+                    }
                     guard token == playToken else { return }
                     clip = await Self.stretchedToSpeed(made, rate: rate)
                     guard token == playToken else { return }
@@ -1931,8 +1977,102 @@ final class PlaybackController: ObservableObject {
             // A cold start's claim, begun with the start, lands before the
             // first clip starts the hardware (R4-33).
             guard await awaitPendingClaim(token: token) else { return }
-            scheduleClip(clip, forSentence: next, voice: clipVoice, token: token)
+            guard let madePieces else {
+                scheduleClip(clip, forSentence: next, voice: clipVoice, token: token)
+                continue
+            }
+            // As a cold lead's chain (`scheduleColdLead`): one sentence on
+            // the node, each piece laying out its own tokens' word timing.
+            for (index, part) in Self.slices(of: clip, into: madePieces).enumerated() {
+                scheduleClip(part.clip, forSentence: next, voice: clipVoice, token: token,
+                             part: SentencePart(isFirst: index == 0, isLast: index == madePieces.count - 1,
+                                                tokens: part.tokens))
+            }
         }
+    }
+
+    /// C4: `clip` (a joined clip, stretched) cut back into the pieces it
+    /// was made in, each at its share of the frames: a stretch keeps their
+    /// proportions, and every cut falls in a seam's quiet. The last takes
+    /// what rounding leaves.
+    nonisolated static func slices(of clip: SynthesizedAudio,
+                                   into pieces: [MadePiece]) -> [(clip: SynthesizedAudio, tokens: Range<Int>)] {
+        let total = pieces.reduce(0) { $0 + $1.frames }
+        guard total > 0, !clip.samples.isEmpty else { return [] }
+        let scale = Double(clip.samples.count) / Double(total)
+        var out: [(clip: SynthesizedAudio, tokens: Range<Int>)] = []
+        var start = 0
+        var madeSoFar = 0
+        for (index, piece) in pieces.enumerated() {
+            madeSoFar += piece.frames
+            let end = index == pieces.count - 1
+                ? clip.samples.count : min(clip.samples.count, Int((Double(madeSoFar) * scale).rounded()))
+            out.append((clip: SynthesizedAudio(samples: Array(clip.samples[start..<max(start, end)]),
+                                               sampleRate: clip.sampleRate, nativeSpeed: clip.nativeSpeed),
+                        tokens: piece.tokens))
+            start = max(start, end)
+        }
+        return out
+    }
+
+    /// C4: how a look-ahead sentence or warm-up past the playhead is made
+    /// while the reader is away from the voice and the device under no
+    /// strain: in clause pieces of about `backgroundPieceSeconds` of
+    /// making (`ColdLeadPlan.background`), or nil to make it whole (the
+    /// page following the voice, strain, the System voice, a sentence
+    /// quick to make or said otherwise than written).
+    private func backgroundPlan(forSentence index: Int, voice clipVoice: TtsVoice, pace: Double,
+                                spoken: String) -> ColdLeadPlan? {
+        guard !readerIsFollowing, !isUnderStrain(), clipVoice.engine == .kokoro, let content,
+              content.sentences.indices.contains(index),
+              let measured = kokoro?.measuredSynthesisSpeed else { return nil }
+        let text = content.sentences[index].text
+        guard spoken == SentenceSegmenter.spokenText(text, skipBrackets: skipBrackets) else { return nil }
+        return ColdLeadPlan.background(tokens: SentenceSegmenter.tokenizeSentence(text), skipBrackets: skipBrackets,
+                                       wordsPerMinute: LibraryDocument.spokenWordsPerMinute, rate: rate,
+                                       nativeSpeed: pace, synthesisSpeed: measured * ColdLeadPlan.headroom,
+                                       pieceSeconds: PlatformPlaybackTuning.backgroundPieceSeconds)
+    }
+
+    /// C5 (the Mac's held click): starts making sentence `index` while a
+    /// click waits out the double-click interval, so the jump it ends in
+    /// finds it made or being made (`SynthesisScheduler.admitLead` follows
+    /// a job in flight and takes over a queued one): its cold lead plan,
+    /// else the whole sentence, as a warm-up ahead of the other warm-ups
+    /// no one waits on, never in the `now` lane, so a double-click never
+    /// cancels the look-ahead's requests. Nothing else changes: no Undo
+    /// offer, transport stamp, status or claim. The natural voice only,
+    /// once its model is loaded (the System voice is quick, and a click
+    /// that turns into a selection never loads a model).
+    func warmJumpTarget(sentence index: Int) {
+        guard let content, content.sentences.indices.contains(index), !skippedSentences.contains(index),
+              let kokoro, kokoro.isWarm else { return }
+        let clipVoice = voiceForSentence(index)
+        guard clipVoice.engine == .kokoro else { return }
+        let spoken = synthesisText(at: index, voice: clipVoice)
+        guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let pace = nativePace(for: clipVoice)
+        let key = AudioClipCache.key(voice: clipVoice, skipBrackets: skipBrackets, contentHash: content.contentHash,
+                                     nativeSpeed: pace, sentenceID: index)
+        guard cache.clip(forKey: key) == nil else { return }
+        let plan = coldLeadPlan(forSentence: index, voice: clipVoice, pace: pace, key: key, spoken: spoken)
+        let readingVoice = AVSpeechEngine.voice(clipVoice, reading: systemVoiceLanguage)
+        let previous = heldWarmUpKey
+        heldWarmUpKey = key
+        // One task: a drop of the last click's warm-up never lands after this one.
+        Task { [scheduler] in
+            if let previous, previous != key { await scheduler.dropWarmUp(key: previous) }
+            await scheduler.prefetch(spoken, voice: readingVoice, speed: pace, key: key, plan: plan,
+                                     aheadOfWarmUps: true)
+        }
+    }
+
+    /// C5: the held click gave way (a second click, a selection, a key):
+    /// its warm-up stops at its next piece unless someone waits on it.
+    func dropJumpWarmUp() {
+        guard let key = heldWarmUpKey else { return }
+        heldWarmUpKey = nil
+        Task { [scheduler] in await scheduler.dropWarmUp(key: key) }
     }
 
     /// What became of a cold lead (`scheduleColdLead`).
@@ -1994,6 +2134,9 @@ final class PlaybackController: ObservableObject {
                 let clip = await Self.stretchedToSpeed(landing.clip, rate: leadRate)
                 guard token == playToken else { return .abandoned }
                 if landed == 0 {
+                    #if DEBUG
+                    TapAudioProbe.shared.notePath(landing.piece.map { $0.endsAtPhrase ? "phrase" : "lead" } ?? "whole")
+                    #endif
                     // A cold start's claim lands before its first clip
                     // starts the hardware (R4-33).
                     guard await awaitPendingClaim(token: token) else { return .abandoned }
@@ -2072,7 +2215,8 @@ final class PlaybackController: ObservableObject {
                                      speed: Double,
                                      key: String,
                                      priority: SynthesisPriority,
-                                     token: UInt64) async throws -> SynthesizedAudio {
+                                     token: UInt64,
+                                     plan: ColdLeadPlan? = nil) async throws -> SynthesizedAudio {
         var lastError: Error = TtsError.emptyAudio
         // The System voice reads a book in another language in that language's voice.
         let voice = AVSpeechEngine.voice(voice, reading: systemVoiceLanguage)
@@ -2080,7 +2224,7 @@ final class PlaybackController: ObservableObject {
             guard token == playToken else { throw CancellationError() }
             do {
                 return try await scheduler.synthesize(text, voice: voice, speed: speed, key: key,
-                                                      priority: priority)
+                                                      priority: priority, plan: plan)
             } catch is CancellationError {
                 throw CancellationError()
             } catch SynthesisSchedulerError.backlogFull {
@@ -2785,18 +2929,22 @@ final class PlaybackController: ObservableObject {
         guard first <= upper else { return }
         let pace = nativePace(for: voice)
         var warmUps: [(text: String, key: String)] = []
+        var plans: [String: ColdLeadPlan] = [:]
         for index in first...upper where !skippedSentences.contains(index) {
             let spoken = synthesisText(at: index, voice: voice)
             guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            warmUps.append((text: spoken, key: AudioClipCache.key(voice: voice, skipBrackets: skip,
-                                                                  contentHash: content.contentHash,
-                                                                  nativeSpeed: pace, sentenceID: index)))
+            let key = AudioClipCache.key(voice: voice, skipBrackets: skip, contentHash: content.contentHash,
+                                         nativeSpeed: pace, sentenceID: index)
+            warmUps.append((text: spoken, key: key))
+            // C4: with the reader away, a long one in clause pieces.
+            plans[key] = backgroundPlan(forSentence: index, voice: voice, pace: pace, spoken: spoken)
         }
         guard !warmUps.isEmpty || replacingWarmUps else { return }
         let readingVoice = AVSpeechEngine.voice(voice, reading: systemVoiceLanguage)
         // One call: the drop never lands between the new cue's warm-ups.
-        Task { [scheduler, warmUps] in
-            await scheduler.prefetch(warmUps, voice: readingVoice, speed: pace, replacingWarmUps: replacingWarmUps)
+        Task { [scheduler, warmUps, plans] in
+            await scheduler.prefetch(warmUps, voice: readingVoice, speed: pace, replacingWarmUps: replacingWarmUps,
+                                     plans: plans)
         }
     }
 

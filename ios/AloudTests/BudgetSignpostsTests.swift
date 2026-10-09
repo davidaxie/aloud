@@ -98,7 +98,7 @@ final class BudgetSignpostsTests: XCTestCase {
     func testTheIntervalsAreTheFiveBudgetsAndTheDrySpells() {
         XCTAssertEqual(Budget.allCases.map(\.rawValue),
                        ["launch", "modelCheck", "modelVerify", "kokoroWarmup", "firstAudio", "catchingUp",
-                        "readerOpen", "leadWait"])
+                        "readerOpen", "leadWait", "tapAudio", "nowWait"])
         for budget in Budget.allCases {
             XCTAssertEqual(budget.name.description, budget.rawValue, "Instruments lists it by its budget")
         }
@@ -464,6 +464,60 @@ final class BudgetSignpostsTests: XCTestCase {
         XCTAssertEqual(recorder.trace(.firstAudio), ["begin warm", "gave up", "begin warm", "end"])
         XCTAssertEqual(recorder.unpaired, [])
         rig.controller.pause(rampsOut: false)
+    }
+
+    // MARK: - Tap to first audio (C1)
+
+    /// A seek that plays (a sentence tap) begins `tapAudio`, which ends at
+    /// the first buffer on the started node; Play's own interval is not
+    /// begun by it.
+    func testASeekThatPlaysEndsItsTapAudioAtTheFirstBuffer() async throws {
+        let recorder = Recorder()
+        let rig = makeRig(recorder)
+        rig.controller.seek(to: 3, andPlay: true)
+        XCTAssertEqual(recorder.trace(.tapAudio), ["begin warm"], "open while it buffers")
+        try await rig.waitUntilPlayingOrSkip()
+        XCTAssertEqual(recorder.trace(.tapAudio), ["begin warm", "end"])
+        XCTAssertEqual(recorder.trace(.firstAudio), [], "a seek is no Play")
+        XCTAssertEqual(recorder.unpaired, [])
+        rig.controller.pause(rampsOut: false)
+    }
+
+    /// Paused before it sounds, it gives up there.
+    func testATapAudioGivesUpWhenPausedBeforeItSounds() {
+        let recorder = Recorder()
+        let rig = makeRig(recorder)
+        rig.controller.seek(to: 3, andPlay: true)
+        XCTAssertEqual(rig.controller.status, .buffering)
+        rig.controller.pause()
+        XCTAssertEqual(recorder.trace(.tapAudio), ["begin warm", "gave up"])
+        XCTAssertEqual(recorder.unpaired, [])
+    }
+
+    /// A second tap before the first sounded ends the first, given up.
+    func testASecondSeekEndsTheFirstGivenUp() async throws {
+        let recorder = Recorder()
+        let rig = makeRig(recorder)
+        rig.controller.seek(to: 3, andPlay: true)
+        rig.controller.seek(to: 6, andPlay: true)
+        XCTAssertEqual(recorder.trace(.tapAudio), ["begin warm", "gave up", "begin warm"])
+        try await rig.waitUntilPlayingOrSkip()
+        XCTAssertEqual(recorder.trace(.tapAudio), ["begin warm", "gave up", "begin warm", "end"])
+        XCTAssertEqual(recorder.unpaired, [])
+        rig.controller.pause(rampsOut: false)
+    }
+
+    /// A move while paused plays nothing, so it begins nothing; a stop
+    /// before the sound ends one that did.
+    func testASeekWhilePausedBeginsNothingAndAStopEndsAnOpenOne() {
+        let recorder = Recorder()
+        let rig = makeRig(recorder)
+        rig.controller.seek(to: 3, andPlay: false)
+        XCTAssertEqual(recorder.trace(.tapAudio), [], "a move while paused")
+        rig.controller.seek(to: 5, andPlay: true)
+        rig.controller.unload()
+        XCTAssertEqual(recorder.trace(.tapAudio), ["begin warm", "gave up"])
+        XCTAssertEqual(recorder.unpaired, [])
     }
 
     func testPlayWithNoBookBeginsNothing() {

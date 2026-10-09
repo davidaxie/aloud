@@ -91,6 +91,9 @@ struct ReaderTextView: UIViewRepresentable {
     /// the sheet and plays nothing; VoiceOver's Play from here and the
     /// menu's still play (they call `onTapSentence` directly).
     var onDismissTap: (() -> Void)? = nil
+    /// C4: the page started or stopped following the voice
+    /// (`ReaderFollowEngine.isFollowing`), reported as it changes.
+    var onFollowingChanged: ((Bool) -> Void)? = nil
     /// R1-16: a fresh column's first string is on the page (the end of the
     /// reader's open, `BudgetSignposts.Budget.readerOpen`).
     var onColumnShown: () -> Void = {}
@@ -229,7 +232,11 @@ struct ReaderTextView: UIViewRepresentable {
         /// The follow state and its decisions, with the cached active-sentence
         /// rect and the placement checks; this coordinator measures and moves
         /// the UITextView for it.
-        private var follow = ReaderFollowEngine()
+        private var follow = ReaderFollowEngine() {
+            didSet {
+                if follow.isFollowing != oldValue.isFollowing { parent.onFollowingChanged?(follow.isFollowing) }
+            }
+        }
         /// Off from the moment the user scrolls; never back on by itself.
         var isFollowing: Bool {
             get { follow.isFollowing }
@@ -1816,6 +1823,9 @@ struct ReaderTextView: UIViewRepresentable {
         /// landed on moving text: then it only stopped the scroll.
         func handleTap(at point: CGPoint, isDecelerating: Bool) {
             if isDecelerating {
+                #if DEBUG
+                TapAudioProbe.shared.noteSwallowed()
+                #endif
                 deceleratingAfterDrag = false
                 userScrollEnded()
                 return

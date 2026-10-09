@@ -50,8 +50,17 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     /// `synthesize` calls handed to `queue` and not yet begun.
     private var waitingSyntheses = 0
     /// R3-07: the rolling seconds of audio per second of synthesis
-    /// (`measuredSynthesisSpeed`). Under `stateLock`.
+    /// (`measuredSynthesisSpeed`), seeded at launch from the last one's
+    /// (C2, `seededSynthesisSpeed`). Under `stateLock`.
     private var synthesisSpeedAverage: Double?
+    /// The rolling figure over this launch's calls alone, never the seed:
+    /// what is kept for the next launch, so a discount never compounds.
+    /// Under `stateLock`.
+    private var measuredSpeedAverage: Double?
+    /// C2: where the measured figure is kept between launches, per thread
+    /// count (`synthesisSpeedKey`); nil keeps nothing. Each app has its own
+    /// defaults, so the figure is per platform too.
+    private let speedDefaults: UserDefaults?
 
     private static let log = Logger(subsystem: "com.davidxie.Aloud", category: "kokoro")
 
@@ -59,12 +68,19 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
          numThreads: Int = PlatformTuning.kokoroThreads,
          stopsThreadSpinning: Bool = PlatformTuning.kokoroStopsThreadSpinning,
          runtimeConfigDirectory: URL? = KokoroSherpaEngine.cachesDirectory,
-         blendDirectory: URL? = nil) {
+         blendDirectory: URL? = nil,
+         speedDefaults: UserDefaults? = .standard,
+         lowPowerAtLaunch: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled) {
         self.modelDirectory = modelDirectory
         self.numThreads = max(1, numThreads)
         self.stopsThreadSpinning = stopsThreadSpinning
         self.runtimeConfigDirectory = runtimeConfigDirectory
         self.blendDirectory = blendDirectory
+        self.speedDefaults = speedDefaults
+        // The first start after launch plans a lead from the last launch's
+        // speed rather than making its sentence whole (C2).
+        let stored = speedDefaults?.object(forKey: Self.synthesisSpeedKey(numThreads: self.numThreads)) as? Double
+        synthesisSpeedAverage = Self.seededSynthesisSpeed(stored: stored, lowPower: lowPowerAtLaunch)
     }
 
     /// True once the wrapper exists (cheap, lock-guarded — safe from any thread).
@@ -246,15 +262,38 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
         return synthesisSpeedAverage
     }
 
+    /// C2: the defaults key the measured figure is kept under, per ONNX
+    /// thread count (a figure made on two threads says little of four).
+    static func synthesisSpeedKey(numThreads: Int) -> String {
+        "kokoro.synthesisSpeed.threads\(numThreads)"
+    }
+
+    /// C2: the figure a launch starts from, before any call of its own is
+    /// measured: the last launch's kept figure at the platform's share
+    /// (`PlatformPlaybackTuning.seededSynthesisSpeedShare`, lower under Low
+    /// Power Mode), or nil (every sentence whole until a call is measured)
+    /// with nothing usable kept. Real calls take it over at
+    /// `synthesisSpeedWeight` each.
+    static func seededSynthesisSpeed(stored: Double?, lowPower: Bool) -> Double? {
+        guard let stored, stored.isFinite, stored > 0 else { return nil }
+        return stored * (lowPower ? PlatformPlaybackTuning.seededSynthesisSpeedShareUnderLowPower
+                                  : PlatformPlaybackTuning.seededSynthesisSpeedShare)
+    }
+
     /// Folds one call into the rolling figure. Heat and Low Power Mode
-    /// slow the calls, so the figure follows them down.
+    /// slow the calls, so the figure follows them down. This launch's own
+    /// figure is kept for the next (C2).
     private func recordSynthesisSpeed(audio: TimeInterval, elapsed: TimeInterval) {
         guard audio >= Self.shortestMeasuredAudio, elapsed > 0.001 else { return }
         let speed = audio / elapsed
-        stateLock.lock(); defer { stateLock.unlock() }
+        stateLock.lock()
         synthesisSpeedAverage = synthesisSpeedAverage.map {
             $0 + (speed - $0) * Self.synthesisSpeedWeight
         } ?? speed
+        let measured = measuredSpeedAverage.map { $0 + (speed - $0) * Self.synthesisSpeedWeight } ?? speed
+        measuredSpeedAverage = measured
+        stateLock.unlock()
+        speedDefaults?.set(measured, forKey: Self.synthesisSpeedKey(numThreads: numThreads))
     }
 
     private var hasWaitingSynthesis: Bool {

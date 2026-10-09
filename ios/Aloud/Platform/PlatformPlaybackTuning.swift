@@ -33,6 +33,19 @@ enum PlatformPlaybackTuning {
     /// sentence would take longer than this to make whole starts on a
     /// lead clause instead (`ColdLeadPlan`); nil makes every sentence whole.
     static let coldLeadFirstAudioBudget: TimeInterval? = 1.0
+    /// The share of the last launch's measured synthesis speed the first
+    /// start of this one counts on, until a call is measured
+    /// (`KokoroSherpaEngine.seededSynthesisSpeed`): the phone may be warmer
+    /// or busier now than when it was kept.
+    static let seededSynthesisSpeedShare = 0.8
+    /// The share under Low Power Mode at launch, which slows the engine.
+    static let seededSynthesisSpeedShareUnderLowPower = 0.6
+    /// C4: while the reader is away from the voice, a look-ahead sentence
+    /// or warm-up that would take longer than twice this to make is made in
+    /// clause pieces of about this much making
+    /// (`ColdLeadPlan.backgroundPieceWordCounts`), so a tap waits behind
+    /// one piece of it at most; nil makes them whole.
+    static let backgroundPieceSeconds: TimeInterval? = 1.5
     #elseif os(macOS)
     /// About this much listening, at the current speed, queued past the
     /// playhead. Two sentences ran dry at 2.95x: two short lines of
@@ -52,5 +65,12 @@ enum PlatformPlaybackTuning {
     /// time, so fewer sentences pass the budget, and those split into
     /// longer leads.
     static let coldLeadFirstAudioBudget: TimeInterval? = 1.0
+    /// As the iPhone: the share of the last launch's speed a first start
+    /// counts on, and under Low Power Mode.
+    static let seededSynthesisSpeedShare = 0.8
+    static let seededSynthesisSpeedShareUnderLowPower = 0.6
+    /// As the iPhone. The Mac makes a sentence in about half the time, so
+    /// fewer sentences pass twice it.
+    static let backgroundPieceSeconds: TimeInterval? = 1.5
     #endif
 }

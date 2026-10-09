@@ -98,6 +98,16 @@ struct ReaderColumnView: NSViewRepresentable {
     /// move while paused) was the listener's later word, and drops it.
     /// nil checks nothing.
     var transportStamp: (() -> Int)? = nil
+    /// C5: a click on a sentence landed and its play is held for a
+    /// possible double-click: start making that sentence meanwhile
+    /// (`PlaybackController.warmJumpTarget`).
+    var onWarmSentence: ((Int) -> Void)? = nil
+    /// C5: the held click gave way without playing (a second click, a
+    /// selection, a key, Look Up): its warm-up is no longer wanted.
+    var onDropWarmSentence: (() -> Void)? = nil
+    /// C4: the page started or stopped following the voice
+    /// (`ReaderFollowEngine.isFollowing`), reported as it changes.
+    var onFollowingChanged: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> ReaderScrollView {
         context.coordinator.makeScrollView()
@@ -187,7 +197,11 @@ struct ReaderColumnView: NSViewRepresentable {
         private var lastViewportHeight: CGFloat = 0
 
         // Calm follow (R16)
-        private var follow = ReaderFollowEngine()
+        private var follow = ReaderFollowEngine() {
+            didSet {
+                if follow.isFollowing != oldValue.isFollowing { parent.onFollowingChanged?(follow.isFollowing) }
+            }
+        }
         /// Off from the moment the user scrolls; never back on by itself.
         var isFollowing: Bool {
             get { follow.isFollowing }
@@ -1723,11 +1737,17 @@ struct ReaderColumnView: NSViewRepresentable {
         /// plays. The clicked sentence is highlighted at once meanwhile.
         func handleClick(at point: CGPoint, isDecelerating: Bool) {
             if isDecelerating {
+                #if DEBUG
+                TapAudioProbe.shared.noteSwallowed()
+                #endif
                 userScrollEnded()
                 return
             }
             guard let id = sentence(at: point) else { return }
             cancelClickPlay()
+            #if DEBUG
+            TapAudioProbe.shared.noteClick()
+            #endif
             let hash = builtHash
             let stamp = parent.transportStamp?()
             let play = DispatchWorkItem { [weak self] in
@@ -1739,6 +1759,7 @@ struct ReaderColumnView: NSViewRepresentable {
                     // jump or an Undo since then stands: the held click
                     // never overrides it.
                     guard self.builtHash == hash, self.parent.transportStamp?() == stamp else {
+                        self.parent.onDropWarmSentence?()
                         self.dropClickCue()
                         return
                     }
@@ -1754,6 +1775,9 @@ struct ReaderColumnView: NSViewRepresentable {
                 return event
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + clickPlayDelay(), execute: play)
+            // The hold is idle time: the sentence starts being made in it,
+            // so the voice comes after the longer of the two, not both.
+            parent.onWarmSentence?(id)
         }
 
         /// A key or a click while a click's play is held: whatever it does
@@ -1764,6 +1788,8 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         private func cancelClickPlay(keepingCue: Bool = false) {
+            // A held click that gives way never plays: its warm-up goes.
+            if !keepingCue, pendingClickPlay != nil { parent.onDropWarmSentence?() }
             pendingClickPlay?.cancel()
             pendingClickPlay = nil
             if let clickPlayMonitor { NSEvent.removeMonitor(clickPlayMonitor) }

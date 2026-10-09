@@ -203,7 +203,10 @@ struct ReaderScreen: View {
                 onPinchTextSize: pinchTextSize,
                 // R1-14: with Aa up, a tap on the page closes the sheet.
                 onDismissTap: showAppearanceSheet ? { showAppearanceSheet = false } : nil,
+                onFollowingChanged: { playback.readerIsFollowing = $0 },
                 onColumnShown: { BudgetSignposts.live.end(&openSignpost) })
+            // No page, nothing to be away from (C4).
+            .onDisappear { playback.readerIsFollowing = true }
             // The text's bottom, read on the text itself before its ignore
             // below: the ignore places the text down to the window's bottom
             // edge, under the bar and the home-indicator strip, but its own

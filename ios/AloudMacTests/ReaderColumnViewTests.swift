@@ -206,6 +206,45 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertEqual(page.played.ids, [])
     }
 
+    /// C5: a held click starts making its sentence at once, so the voice
+    /// comes after the longer of the hold and the making: one warm-up,
+    /// then the play, which keeps it. A double-click's second click drops
+    /// it and plays nothing; so does a key during the hold.
+    func testAHeldClickWarmsItsSentenceAndDropsItWhenItGivesWay() throws {
+        let page = try makePage(sentences: 60, active: 0)
+        var warmed: [Int] = []
+        var dropped = 0
+        var view = page.view
+        view.onWarmSentence = { warmed.append($0) }
+        view.onDropWarmSentence = { dropped += 1 }
+        page.coordinator.update(to: view)
+        let id = try page.singleLineSentence(near: 9)
+        let point = try page.point(inSentence: id)
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertEqual(warmed, [id], "the hold starts making the clicked sentence")
+        settleClick(on: page)
+        XCTAssertEqual(page.played.ids, [id])
+        XCTAssertEqual(dropped, 0, "a click that plays keeps its warm-up")
+
+        page.coordinator.clickPlayDelay = { 60 }   // held for the rest of the test
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertEqual(warmed, [id, id])
+        page.textView.onClickLanded?()   // a double-click's second click
+        page.textView.onClickEnded?(point, 2, true)
+        XCTAssertEqual(dropped, 1, "the second click drops the warm-up")
+        XCTAssertEqual(warmed.count, 2, "and asks for no other")
+
+        page.textView.onClickLanded?()
+        page.textView.onClickEnded?(point, 1, false)
+        XCTAssertEqual(warmed.count, 3)
+        page.coordinator.otherInputArrived()
+        XCTAssertEqual(dropped, 2, "a key during the hold drops it")
+        XCTAssertEqual(page.played.ids, [id], "only the lone click played")
+    }
+
     /// A double-click selects a word and a triple-click a paragraph (for
     /// Copy or Look Up), and neither plays: AppKit ends the first click of
     /// each as a plain one, with nothing selected yet, and its play waits
