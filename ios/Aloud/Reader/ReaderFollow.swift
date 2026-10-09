@@ -8,13 +8,14 @@ enum ReaderFollowDirection: Equatable, Sendable {
 }
 
 /// Calm follow (R16) as numbers: the text scrolls only when the spoken
-/// sentence leaves the comfort band between 18% and 70% of the visible
-/// height, then glides once so the sentence top lands at 28%. Pure; every
-/// rect is in the text view's CONTENT coordinates.
+/// sentence leaves the comfort band between 18% and its bottom edge (70% of
+/// the visible height on the Mac, 80% on the phone's short column), then
+/// glides once so the sentence top lands at 28%. Pure; every rect is in the
+/// text view's CONTENT coordinates.
 enum FollowBand {
 
     static let top: CGFloat = 0.18
-    static let bottom: CGFloat = 0.70
+    static let bottom: CGFloat = PlatformTuning.followBandBottom
     static let landing: CGFloat = 0.28
     static let glideDuration: TimeInterval = 0.45
     static let glideCurve: (CGPoint, CGPoint) = (CGPoint(x: 0.4, y: 0), CGPoint(x: 0.2, y: 1))

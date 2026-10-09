@@ -1,7 +1,7 @@
 import XCTest
 @testable import Aloud
 
-/// R16 calm follow as numbers: the 18–70% band, the 28% landing, the arrow
+/// R16 calm follow as numbers: the 18–70% band (80% on the phone), the 28% landing, the arrow
 /// direction and the glide-or-jump rule, plus a scroll-count simulation.
 final class FollowBandTests: XCTestCase {
 
@@ -15,25 +15,30 @@ final class FollowBandTests: XCTestCase {
 
     // MARK: - Band
 
+    /// The band's bottom edge in this viewport: 1,350 on the Mac, 1,400 on
+    /// the phone (`PlatformTuning.followBandBottom`).
+    private var bottomEdge: CGFloat { viewport.minY + FollowBand.bottom * viewport.height }
+
     func testBandMembership() {
         XCTAssertTrue(FollowBand.contains(line(1_100), in: viewport))
         XCTAssertTrue(FollowBand.contains(line(1_090), in: viewport), "the top edge is in")
         XCTAssertTrue(FollowBand.contains(line(1_089.6), in: viewport), "within the 0.5pt tolerance")
         XCTAssertFalse(FollowBand.contains(line(1_080), in: viewport), "above the band")
-        XCTAssertTrue(FollowBand.contains(line(1_320), in: viewport), "bottom edge at 1,350")
-        XCTAssertTrue(FollowBand.contains(line(1_320.4), in: viewport), "within the 0.5pt tolerance")
-        XCTAssertFalse(FollowBand.contains(line(1_321), in: viewport), "below the band")
+        XCTAssertTrue(FollowBand.contains(line(bottomEdge - 30), in: viewport), "bottom edge at \(bottomEdge)")
+        XCTAssertTrue(FollowBand.contains(line(bottomEdge - 29.6), in: viewport), "within the 0.5pt tolerance")
+        XCTAssertFalse(FollowBand.contains(line(bottomEdge - 29), in: viewport), "below the band")
         XCTAssertFalse(FollowBand.contains(line(600), in: viewport))
         XCTAssertFalse(FollowBand.contains(line(1_700), in: viewport))
     }
 
-    /// A sentence taller than the band (260pt here) is in once its top is at
-    /// or above the landing line, so it doesn't scroll on every boundary.
+    /// A sentence taller than the band (260pt here on the Mac, 310pt on the
+    /// phone) is in once its top is at or above the landing line, so it
+    /// doesn't scroll on every boundary.
     func testTallSentencesAreInOnceTheirTopIsAtTheLandingLine() {
-        XCTAssertTrue(FollowBand.contains(line(1_100, height: 300), in: viewport))
-        XCTAssertTrue(FollowBand.contains(line(1_141, height: 300), in: viewport), "within 1pt")
-        XCTAssertFalse(FollowBand.contains(line(1_142, height: 300), in: viewport))
-        XCTAssertFalse(FollowBand.contains(line(1_080, height: 300), in: viewport), "still not above the band")
+        XCTAssertTrue(FollowBand.contains(line(1_100, height: 400), in: viewport))
+        XCTAssertTrue(FollowBand.contains(line(1_141, height: 400), in: viewport), "within 1pt")
+        XCTAssertFalse(FollowBand.contains(line(1_142, height: 400), in: viewport))
+        XCTAssertFalse(FollowBand.contains(line(1_080, height: 400), in: viewport), "still not above the band")
     }
 
     /// Past the word that would be read below the band with the sentence
@@ -44,9 +49,12 @@ final class FollowBandTests: XCTestCase {
         XCTAssertTrue(FollowBand.isTall(sentence, in: viewport))
         XCTAssertFalse(FollowBand.isTall(line(1_140, height: 260), in: viewport), "260pt fits the band")
 
-        let early = line(1_140 + 170)   // parked, it ends at 1,340: in the band
+        // Parked on the landing line (140pt down), a word `down` into the
+        // sentence ends at 140 + down + 30 in the viewport.
+        let edge = FollowBand.bottom * viewport.height
+        let early = line(1_140 + edge - 180)   // parked, it ends 10pt above the band's bottom
         XCTAssertEqual(FollowBand.followed(sentence: sentence, word: early, in: viewport), sentence)
-        let late = line(1_140 + 190)    // parked, it would end at 1,360: below the band
+        let late = line(1_140 + edge - 160)    // parked, it would end 10pt below it
         XCTAssertEqual(FollowBand.followed(sentence: sentence, word: late, in: viewport), late)
         XCTAssertFalse(FollowBand.contains(late, in: viewport), "so it glides up to the landing line")
 
@@ -131,7 +139,11 @@ final class FollowBandTests: XCTestCase {
 
     func testTimingTokens() {
         XCTAssertEqual(FollowBand.top, 0.18)
+        #if os(iOS)
+        XCTAssertEqual(FollowBand.bottom, 0.80, "the phone's short column")
+        #else
         XCTAssertEqual(FollowBand.bottom, 0.70)
+        #endif
         XCTAssertEqual(FollowBand.landing, 0.28)
         XCTAssertEqual(FollowBand.glideDuration, 0.45)
         XCTAssertEqual(FollowBand.glideCurve.0, CGPoint(x: 0.4, y: 0))

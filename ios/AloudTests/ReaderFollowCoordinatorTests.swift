@@ -449,7 +449,9 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         let (coordinator, textView) = try makeColumn(count: 600, taps: taps)
         dragIndicator(coordinator, textView, to: 12_000)
 
-        let tapped = try tap(at: 0.8, coordinator, textView, taps)
+        // Under the band's bottom on both platforms (70% on the Mac, 80%
+        // on the phone).
+        let tapped = try tap(at: 0.9, coordinator, textView, taps)
         XCTAssertFalse(isInBand(coordinator), "below the band, still on screen")
 
         coordinator.resumeFollowing()

@@ -190,25 +190,21 @@ struct BookshelfView: View {
     /// R3-05: one button per shelf, its title and a quiet count, so the
     /// longer shelves far down the list are one tap away and their being
     /// there is said at the top. Side by side while they fit, full-width
-    /// rows at the large sizes. No selected state: the pinned heading
-    /// already says where the list is. No identifier on the row: a stack
-    /// isn't an accessibility element, so one set here would land on the
-    /// buttons and could replace their `bookshelf.jump.<shelf>` ids.
+    /// rows at the large sizes (`ShelfMapLayout`). No selected state: the
+    /// pinned heading already says where the list is. No identifier on the
+    /// row: a stack isn't an accessibility element, so one set here would
+    /// land on the buttons and could replace their `bookshelf.jump.<shelf>`
+    /// ids.
     private func shelfMap(_ proxy: ScrollViewProxy) -> some View {
         let jumps = ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)
-        return ViewThatFits(in: .horizontal) {
-            HStack(spacing: Theme.Space.xs) {
-                ForEach(jumps) { jumpButton($0, proxy, fullWidth: false) }
-            }
-            VStack(spacing: 0) {
-                ForEach(jumps) { jumpButton($0, proxy, fullWidth: true) }
-            }
+        return ShelfMapLayout(spacing: Theme.Space.xs) {
+            ForEach(jumps) { jumpButton($0, proxy) }
         }
         .padding(.horizontal, Theme.Space.screenGutter - Theme.Space.sm)
         .padding(.top, Theme.Space.sm)
     }
 
-    private func jumpButton(_ jump: ShelfJump, _ proxy: ScrollViewProxy, fullWidth: Bool) -> some View {
+    private func jumpButton(_ jump: ShelfJump, _ proxy: ScrollViewProxy) -> some View {
         Button {
             self.jump(to: jump.section, proxy)
         } label: {
@@ -229,7 +225,9 @@ struct BookshelfView: View {
             .multilineTextAlignment(.leading)
             .padding(.horizontal, Theme.Space.sm)
             .padding(.vertical, Theme.Space.xxs)
-            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 44, alignment: .leading)
+            // Its own width side by side, the full row when stacked: the
+            // layout proposes one or the other.
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(ShelfRowButtonStyle())
@@ -608,5 +606,52 @@ private struct ShelfRowButtonStyle: ButtonStyle {
         configuration.label
             .background(configuration.isPressed ? Theme.surface2 : Theme.bg)
             .animation(.easeOut(duration: Theme.Motion.press), value: configuration.isPressed)
+    }
+}
+
+/// The shelf map's buttons side by side while all of them fit whole on one
+/// line, else one per row across the full width. One set of buttons either
+/// way: a ViewThatFits kept its unchosen stack in the accessibility tree,
+/// where the audit read its labels as clipped and a tap could land on the
+/// copy that isn't drawn.
+private struct ShelfMapLayout: Layout {
+    var spacing: CGFloat
+
+    private func ideals(_ subviews: Subviews) -> [CGSize] {
+        subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    private func rowWidth(_ sizes: [CGSize]) -> CGFloat {
+        sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(sizes.count - 1, 0))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = ideals(subviews)
+        let row = rowWidth(sizes)
+        if row <= (proposal.width ?? .infinity) {
+            return CGSize(width: row, height: sizes.map(\.height).max() ?? 0)
+        }
+        let width = proposal.width ?? (sizes.map(\.width).max() ?? 0)
+        let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
+        return CGSize(width: width, height: heights.reduce(0, +))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = ideals(subviews)
+        if rowWidth(sizes) <= bounds.width {
+            var x = bounds.minX
+            for (subview, size) in zip(subviews, sizes) {
+                subview.place(at: CGPoint(x: x, y: bounds.minY), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            return
+        }
+        var y = bounds.minY
+        for subview in subviews {
+            let height = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil)).height
+            subview.place(at: CGPoint(x: bounds.minX, y: y),
+                          proposal: ProposedViewSize(width: bounds.width, height: height))
+            y += height
+        }
     }
 }

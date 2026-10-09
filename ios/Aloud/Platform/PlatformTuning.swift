@@ -56,6 +56,12 @@ enum PlatformTuning {
     /// resumes mid-sentence; a longer one reads on from the sentence start,
     /// and lock-screen Play claims the session again on the way.
     static let idleEngineStopDelay: TimeInterval? = 60
+    /// R16's comfort band ends lower on the phone (`FollowBand.bottom`). Its
+    /// visible column, the text above the player bar, is short, so a 70%
+    /// edge left too little travel between glides and following scrolled
+    /// about once every six lines. At 80% the voice still stops well above
+    /// the bar.
+    static let followBandBottom: CGFloat = 0.80
     #elseif os(macOS)
     /// Two kept synthesis at 3.0x real time on an M4 Pro (10 P + 4 E
     /// cores), level with a listener at 2.95x, so reading fell behind.
@@ -87,6 +93,8 @@ enum PlatformTuning {
     /// holds off idle sleep while it is. 30 s after playback stops the
     /// engine stops too, so a paused Mac on battery can sleep.
     static let idleEngineStopDelay: TimeInterval? = 30
+    /// The Mac's page ends above its bar and runs tall: R16's 70%.
+    static let followBandBottom: CGFloat = 0.70
 
     /// All but two performance cores, clamped to 4...6.
     static func kokoroThreadCount(performanceCores: Int) -> Int {

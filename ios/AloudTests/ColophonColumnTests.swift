@@ -351,7 +351,7 @@ final class ColophonColumnTests: XCTestCase {
         settleLayout(textView)
         let sentence = try XCTUnwrap(coordinator.measureActiveSentenceRect())
         let viewport = try XCTUnwrap(coordinator.viewport())
-        let y = textView.contentOffset.y + sentence.maxY - (viewport.minY + 0.68 * viewport.height)
+        let y = textView.contentOffset.y + sentence.maxY - (viewport.minY + (FollowBand.bottom - 0.02) * viewport.height)
         textView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
         settleLayout(textView)
 
