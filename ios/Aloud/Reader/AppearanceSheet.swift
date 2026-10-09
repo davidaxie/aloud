@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// R21: the three appearance controls in one view, so each preference has
-/// one home: text size (a two-button stepper, a small and a large serif A,
-/// over the nine steps, its size in points beside its eyebrow), System /
-/// Light / Dark, and Word highlight. The reader's Aa sheet presents it and
+/// one home: text size (a stepper over the nine steps: a small serif A, the
+/// size in points and a large serif A in one capsule, as on the Mac),
+/// System / Light / Dark, and Word highlight. The reader's Aa sheet presents it and
 /// Settings pushes it (`AppearanceSettingsPage`). Everything persists at
 /// once; `ReaderTextView` rebuilds its attributed string when the size
 /// changes. At AX4/AX5 and on small phones the sections outgrow the space:
@@ -15,10 +15,14 @@ import SwiftUI
 /// readout one adjustable element (P039).
 struct AppearanceView: View {
 
+    /// Above the first eyebrow: the full step under the Settings page's
+    /// bar, less under the Aa sheet's own title.
+    private let topPadding: CGFloat
     /// The content's natural height, for the sheet's content-sized detent.
     private let onContentHeight: ((CGFloat) -> Void)?
 
-    init(onContentHeight: ((CGFloat) -> Void)? = nil) {
+    init(topPadding: CGFloat = Theme.Space.md, onContentHeight: ((CGFloat) -> Void)? = nil) {
+        self.topPadding = topPadding
         self.onContentHeight = onContentHeight
     }
 
@@ -54,7 +58,7 @@ struct AppearanceView: View {
         VStack(alignment: .leading, spacing: Theme.Space.xl) {
             VStack(alignment: .leading, spacing: Theme.Space.sm) {
                 // Sentence case in source, like every other label (R25).
-                textSizeHeader
+                sectionLabel(AppearanceCopy.textSize)
                 textSizeRow
             }
 
@@ -69,7 +73,7 @@ struct AppearanceView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, Theme.Space.md)
+        .padding(.top, topPadding)
         .padding(.horizontal, Theme.Space.sheetGutter)
         .padding(.bottom, Theme.Space.xl)
     }
@@ -92,73 +96,62 @@ struct AppearanceView: View {
         textSizeStep = target
     }
 
-    /// The size in points on the eyebrow's baseline, trailing. VoiceOver
-    /// hears it as the one adjustable size, so a swipe up or down steps it
-    /// without hunting for the buttons. The element wraps its whole 44 pt
-    /// frame, laid out at full height: no overhang shrinks the row, so its
-    /// hit region and accessibility frame are that 44 pt and reach no
-    /// further than the header, clear of the stepper's halves below.
-    private var textSizeReadout: some View {
-        Text(AppearanceCopy.points(currentPoints))
-            .font(Theme.font(.caption))
-            .foregroundStyle(Theme.textMuted)
-            .numericReadout(Double(currentPoints))
-            .lineLimit(1)
-            .fixedSize()
-            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(AppearanceCopy.textSize)
-            .accessibilityValue(AppearanceCopy.spokenPoints(currentPoints))
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: step(bigger: true)
-                case .decrement: step(bigger: false)
-                @unknown default: break
-                }
-            }
-            .accessibilityIdentifier("appearance.textSize.value")
-    }
-
-    /// The eyebrow on the gutter and the readout trailing, on one baseline;
-    /// stacked where the two can't share a line (AX5).
-    private var textSizeHeader: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
-                sectionLabel(AppearanceCopy.textSize)
-                textSizeReadout
-            }
-            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                sectionLabel(AppearanceCopy.textSize)
-                textSizeReadout
-            }
-        }
-    }
-
-    /// A two-button stepper, one step per tap, each end disabled at its
-    /// limit: a capsule on surface2 with a border and xxs padding, as the
-    /// Appearance row below it, split by a hairline into two equal halves.
-    /// Each half is a serif A, small and large, in the column's own weight
-    /// (its bold face under Bold Text, J027).
+    /// A stepper, one step per tap, each end disabled at its limit: a
+    /// capsule on surface2 with a border and xxs padding, as the Appearance
+    /// row below it. A small serif A, the size in points, a large serif A,
+    /// as the Mac's capsule reads, with a hairline each side of the size.
+    /// Each A is set in the column's own weight (its bold face under Bold
+    /// Text, J027) and takes at least 44 pt of the row.
+    ///
+    /// The size between the halves is the one adjustable element VoiceOver
+    /// hears, so a swipe up or down steps it without hunting for the
+    /// buttons. Its accessibility shape is its whole frame, at least 64 by
+    /// 44 pt, never the text's own bounds, so the audit's hit region reads
+    /// a full target.
     private var textSizeRow: some View {
         HStack(spacing: 0) {
             stepButton(bigger: false, glyphSize: min(smallerGlyph, Self.smallerGlyphMax),
                        systemImage: "textformat.size.smaller",
                        label: "Smaller text", identifier: "appearance.textSize.smaller")
+            Text(AppearanceCopy.points(currentPoints))
+                .font(Theme.font(.callout)).monospacedDigit()
+                .foregroundStyle(Theme.text)
+                .numericReadout(Double(currentPoints))
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .padding(.horizontal, Theme.Space.xs)
+                .frame(minWidth: 64, minHeight: 44)
+                .layoutPriority(1)
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .contentShape(.accessibility, Rectangle())
+                .accessibilityLabel(AppearanceCopy.textSize)
+                .accessibilityValue(AppearanceCopy.spokenPoints(currentPoints))
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: step(bigger: true)
+                    case .decrement: step(bigger: false)
+                    @unknown default: break
+                    }
+                }
+                .accessibilityIdentifier("appearance.textSize.value")
+                .overlay(alignment: .leading) { stepperHairline }
+                .overlay(alignment: .trailing) { stepperHairline }
             stepButton(bigger: true, glyphSize: min(largerGlyph, Self.largerGlyphMax),
                        systemImage: "textformat.size.larger",
                        label: "Larger text", identifier: "appearance.textSize.larger")
         }
-        // The halves are equal, so the split sits in the middle.
-        .overlay {
-            Rectangle()
-                .fill(Theme.Stroke.borderColor)
-                .frame(width: Theme.Stroke.borderWidth)
-                .padding(.vertical, Theme.Space.sm)
-                .accessibilityHidden(true)
-        }
         .padding(Theme.Space.xxs)
         .background(Theme.surface2, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+    }
+
+    /// The split between the size and a half, short of the capsule's edges.
+    private var stepperHairline: some View {
+        Rectangle()
+            .fill(Theme.Stroke.borderColor)
+            .frame(width: Theme.Stroke.borderWidth)
+            .padding(.vertical, Theme.Space.sm)
+            .accessibilityHidden(true)
     }
 
     private func stepButton(bigger: Bool, glyphSize: CGFloat, systemImage: String, label: String,
@@ -170,7 +163,7 @@ struct AppearanceView: View {
             Text(verbatim: "A")
                 .font(Theme.readerSerif(glyphSize, weight: legibilityWeight == .bold ? .bold : .regular))
                 .foregroundStyle(enabled ? Theme.text : Theme.textFaint)
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
                 .contentShape(Capsule())
         }
         .buttonStyle(StepperHalfButtonStyle())
@@ -311,37 +304,36 @@ private struct StepperHalfButtonStyle: ButtonStyle {
     }
 }
 
-/// The reader's `Aa` sheet: the pinned title over `AppearanceView`, sized to
-/// its content. At accessibility sizes the content can outgrow the fitted
-/// height the system allows, so `.large` is offered too and the sheet can
-/// grow; whatever still doesn't fit scrolls.
+/// The reader's `Aa` sheet: the pinned header over `AppearanceView`, sized
+/// to its content. At accessibility sizes the content can outgrow the
+/// fitted height the system allows, so `.large` is offered too and the
+/// sheet can grow; whatever still doesn't fit scrolls.
 ///
 /// The page stays live behind it, with no scrim, up through the fitted
 /// detent, so size and theme changes are judged on the real page as it
-/// reflows (P037). A tap outside no longer closes it, so its header carries
-/// Done; a drag down still does.
+/// reflows (P037). A tap outside no longer closes it; its header's close
+/// button does, as on the other reader sheets, and a drag down still does.
 struct AppearanceSheet: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.dismiss) private var dismiss
 
     /// Seeded near the default-size layout so the first frame barely moves.
-    @State private var headerHeight: CGFloat = 72
-    @State private var contentHeight: CGFloat = 340
+    @State private var headerHeight: CGFloat = 50
+    @State private var contentHeight: CGFloat = 304
 
     var body: some View {
         VStack(spacing: 0) {
             // Pinned above the scroll view: the title never scrolls away.
-            VStack(spacing: Theme.Space.xs) {
-                SheetGrabber()
-                header
-            }
-            .padding(.bottom, Theme.Space.xs)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                headerHeight = height
-            }
+            SheetHeader(title: AppearanceCopy.title, titleIdentifier: "appearance.title",
+                        closeIdentifier: "appearance.close")
+                .padding(.bottom, Theme.Space.xs)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    headerHeight = height
+                }
 
-            AppearanceView(onContentHeight: { contentHeight = $0 })
+            // Under its own title the first eyebrow needs less air than
+            // under the Settings page's bar.
+            AppearanceView(topPadding: Theme.Space.xs, onContentHeight: { contentHeight = $0 })
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .sheetChrome(detents, backgroundInteraction: fittedDetent)
@@ -353,67 +345,6 @@ struct AppearanceSheet: View {
 
     private var detents: Set<PresentationDetent> {
         dynamicTypeSize.isAccessibilitySize ? [fittedDetent, .large] : [fittedDetent]
-    }
-
-    /// The title stays centred: beside Done, a hidden twin of it on the
-    /// other side balances the row. At accessibility sizes Done takes its
-    /// own line above the title, so neither squeezes the other.
-    @ViewBuilder
-    private var header: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(spacing: 0) {
-                doneButton
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.horizontal, Theme.Space.md)
-                // VoiceOver still meets the sheet's heading before Done.
-                title
-                    .accessibilitySortPriority(1)
-            }
-            .accessibilityElement(children: .contain)
-        } else {
-            HStack(spacing: 0) {
-                doneLabel
-                    .hidden()
-                    .accessibilityHidden(true)
-                title
-                    .frame(maxWidth: .infinity)
-                doneButton
-            }
-            .padding(.horizontal, Theme.Space.md)
-        }
-    }
-
-    // Wraps, centered inside the gutters, rather than running to the
-    // sheet's edges at the largest sizes (J029), as the Voice & speed
-    // sheet's title does.
-    private var title: some View {
-        Text(AppearanceCopy.title)
-            .font(Theme.font(.headline))
-            .foregroundStyle(Theme.text)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, Theme.Space.sheetGutter)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityIdentifier("appearance.title")
-    }
-
-    private var doneButton: some View {
-        Button {
-            dismiss()
-        } label: {
-            doneLabel
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("appearance.done")
-    }
-
-    /// Accent text on the sheet's surface, a full 44pt target.
-    private var doneLabel: some View {
-        Text(AppearanceCopy.done)
-            .font(Theme.font(.callout).weight(.semibold))
-            .foregroundStyle(Theme.accentStrong)
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
     }
 }
 

@@ -7,8 +7,9 @@ import AppKit
 /// live here.
 ///
 /// The Credits follow the page: its opening line, then each component's
-/// name, license and note, then the Classics' Project Gutenberg note, in
-/// the Mac ramp's sizes with the page's weights. The colors are the
+/// name, license, note and source (a link, as the page's source row is),
+/// then the Classics' Project Gutenberg note, in the Mac ramp's sizes with
+/// the page's weights. The colors are the
 /// system's label colors: the panel draws its own ground, not paper, and a
 /// run with no color would stay black in Dark Mode.
 @MainActor
@@ -39,7 +40,8 @@ enum MacAboutCredits {
     static func credits() -> NSAttributedString {
         var paragraphs: [(text: String, part: Part)] = [(LicensesView.intro, .note)]
         for entry in LicensesView.entries {
-            paragraphs += [(entry.id, .name), (entry.license, .license), (entry.detail, .note)]
+            paragraphs += [(entry.id, .name), (entry.license, .license), (entry.detail, .note),
+                           (LicensesCopy.source(entry.source), .link(entry.source))]
         }
         paragraphs += [(LicensesView.classicsTitle, .name), (LicensesView.classicsNote, .note)]
 
@@ -52,29 +54,38 @@ enum MacAboutCredits {
     }
 
     /// A line's part on the Licenses page, and how the page sets it: a
-    /// semibold body name, a caption license, footnote notes.
-    private enum Part {
+    /// semibold body name, a caption license, footnote notes, and the
+    /// source as a footnote link.
+    private enum Part: Equatable {
         case name, license, note
+        case link(URL)
 
         var attributes: [NSAttributedString.Key: Any] {
             let style = NSMutableParagraphStyle()
             style.alignment = .center
             // A name opens a card.
             style.paragraphSpacingBefore = self == .name ? Theme.Space.sm : 0
-            return [.font: font, .foregroundColor: color, .paragraphStyle: style]
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color,
+                                                             .paragraphStyle: style]
+            if case .link(let url) = self { attributes[.link] = url }
+            return attributes
         }
 
         private var font: NSFont {
             switch self {
             case .name: return .systemFont(ofSize: PlatformTypeRamp.basePoints(.body), weight: .semibold)
             case .license: return .monospacedDigitSystemFont(ofSize: PlatformTypeRamp.basePoints(.caption), weight: .medium)
-            case .note: return .systemFont(ofSize: PlatformTypeRamp.basePoints(.footnote))
+            case .note, .link: return .systemFont(ofSize: PlatformTypeRamp.basePoints(.footnote))
             }
         }
 
-        /// The page's text and muted text.
+        /// The page's text and muted text, and the system's link color.
         private var color: NSColor {
-            self == .name ? .labelColor : .secondaryLabelColor
+            switch self {
+            case .name: return .labelColor
+            case .link: return .linkColor
+            case .license, .note: return .secondaryLabelColor
+            }
         }
     }
 }

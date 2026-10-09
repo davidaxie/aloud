@@ -36,6 +36,29 @@ final class MacAboutCreditsTests: XCTestCase {
         XCTAssertTrue(credits.contains("gutenberg.org"))
     }
 
+    /// R2-20: each component's source follows its note as a link, as the
+    /// Licenses page's source row is: footnote size, the system link color.
+    func testEachComponentsSourceIsALink() throws {
+        let credits = MacAboutCredits.credits()
+        let text = credits.string as NSString
+        for entry in LicensesView.entries {
+            let line = LicensesCopy.source(entry.source)
+            let range = text.range(of: line)
+            XCTAssertNotEqual(range.location, NSNotFound, "\(entry.id)'s source")
+            guard range.location != NSNotFound else { continue }
+            let link = credits.attribute(.link, at: range.location, effectiveRange: nil)
+            XCTAssertEqual((link as? URL) ?? (link as? String).flatMap(URL.init(string:)), entry.source, entry.id)
+            XCTAssertEqual(credits.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor,
+                           .linkColor, entry.id)
+            let font = try XCTUnwrap(credits.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+            XCTAssertEqual(font.pointSize, PlatformTypeRamp.basePoints(.footnote), entry.id)
+            let detail = text.range(of: entry.detail)
+            XCTAssertLessThan(detail.location, range.location, "\(entry.id): the note, then its source")
+        }
+        let classics = text.range(of: LicensesView.classicsNote)
+        XCTAssertNil(credits.attribute(.link, at: classics.location, effectiveRange: nil), "only the sources link")
+    }
+
     /// Not empty, no blank paragraph, and every run set: a run with no color
     /// stays black on the panel in Dark Mode.
     func testCreditsAreNotEmptyAndEveryRunIsSet() {

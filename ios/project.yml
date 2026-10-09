@@ -16,6 +16,7 @@ targets:
         excludes:
           - "Resources/Bookshelf/**"
           - "Resources/KokoroAssets/**"
+          - "Resources/Licenses/**"
       - path: Aloud/Resources/Bookshelf
         type: folder
         buildPhase: resources
@@ -29,6 +30,9 @@ targets:
       - path: Aloud/Resources/KokoroAssets/lexicon-gb-en.txt
         buildPhase: resources
       - path: Aloud/Resources/KokoroAssets/LICENSE-kokoro.txt
+        buildPhase: resources
+      - path: Aloud/Resources/Licenses                # each component's license text (LicensesView)
+        type: folder
         buildPhase: resources
     dependencies:
       - package: SherpaOnnx
@@ -116,6 +120,9 @@ targets:
       - path: Aloud/Resources/KokoroAssets/lexicon-gb-en.txt
         buildPhase: resources
       - path: Aloud/Resources/KokoroAssets/LICENSE-kokoro.txt
+        buildPhase: resources
+      - path: Aloud/Resources/Licenses                # the license texts, as on the iPhone
+        type: folder
         buildPhase: resources
     dependencies:
       - package: SherpaOnnx

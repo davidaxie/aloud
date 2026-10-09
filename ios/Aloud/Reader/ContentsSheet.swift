@@ -29,10 +29,11 @@ import SwiftUI
 /// A result names its place with its section. Rows press to surface2 (P026).
 ///
 /// The places list leads when the book has places (`PlaceHistoryStore`,
-/// from the environment): at half height above a chapter list only the
-/// newest, so the chapters start above the fold (P024), else the newest
-/// three, then the earlier-stops toggle; each its time and chapter over the
-/// sentence (`PlaceHistoryRows`). A row is the chapter row's jump; the one
+/// from the environment): above a chapter list only the newest, at either
+/// height, so the chapters start above the fold (P024) and raising the
+/// sheet shows more of them; in a book without one the newest three. Then
+/// the earlier-stops toggle, once the sheet is raised; each row its time
+/// and chapter over its snippet (`PlaceHistoryRows`). A row is the chapter row's jump; the one
 /// at the playhead carries the current bar, a semibold detail line and
 /// `.isSelected`. The sheet opens on the current chapter unless the newest
 /// stop is in another chapter, when it opens at the top so the stop shows
@@ -92,14 +93,10 @@ struct ContentsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SheetGrabber()
-
-            Text(ContentsSearch.title)
-                .font(Theme.font(.headline))
-                .foregroundStyle(Theme.text)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("contents.title")
-                .padding(.top, Theme.Space.md)
+            // The shared header: at full height, and in a search-only book
+            // with the keyboard up, its close button is the way out.
+            SheetHeader(title: ContentsSearch.title, titleIdentifier: "contents.title",
+                        closeIdentifier: "contents.close", grabberGap: Theme.Space.md)
                 .padding(.bottom, Theme.Space.sm)
 
             // Pinned: the field never scrolls away with the list.
@@ -481,13 +478,12 @@ struct ContentsSheet: View {
         }
     }
 
-    /// Places kept above the toggle: one at half height over a chapter
-    /// list, below the accessibility sizes (with the toggle held back until
-    /// the sheet grows); three otherwise. Read from the live detent, so
-    /// growing the sheet shows three without resetting the toggle.
+    /// Places kept above the toggle: one over a chapter list at either
+    /// height, so raising the sheet shows more chapters rather than pushing
+    /// them down under more stops; three in a book without one. The toggle
+    /// alone waits for the sheet to grow.
     private var placesCollapsedCount: Int {
-        PlaceHistory.collapsedCount(atHalfHeight: detent == .medium,
-                                    hasChapterList: navigation.hasChapterList,
+        PlaceHistory.collapsedCount(hasChapterList: navigation.hasChapterList,
                                     accessibilitySize: dynamicTypeSize.isAccessibilitySize)
     }
 
@@ -752,10 +748,10 @@ struct ContentsChapterLabel: View {
 
 // MARK: - Place label
 
-/// A place row's text: when and where, over the sentence. The sentence
-/// keeps the reader's color and weight on the current row too; the bar and
-/// a semibold detail line mark it. At half height (`compact`) the sentence
-/// takes one line, two at full height, four at the accessibility sizes.
+/// A place row's text: when and where, over its snippet (`PlaceRow.snippet`).
+/// The snippet keeps the reader's color and weight on the current row too;
+/// the bar and a semibold detail line mark it. At half height (`compact`)
+/// it takes one line, two at full height, four at the accessibility sizes.
 private struct ContentsPlaceLabel: View {
 
     let row: PlaceRow

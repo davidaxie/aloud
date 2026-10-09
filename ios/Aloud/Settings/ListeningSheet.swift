@@ -17,7 +17,9 @@ import SwiftUI
 ///
 /// Two detents, so `sheetChrome` keeps the system drag indicator (the
 /// control VoiceOver resizes the sheet with) and the SheetGrabber steps
-/// aside. The scrim stays: a tap above the sheet closes it.
+/// aside. The scrim stays: a tap above the sheet closes it, as does the
+/// header's close button (`SheetHeader`), which rides the title's row so the
+/// opening detent keeps its room for the speed controls.
 ///
 /// The reader learns how much of the screen the sheet covers
 /// (`coveredHeight`), so calm follow measures its band above the sheet
@@ -52,21 +54,11 @@ struct ListeningSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Pinned above the scroll view: the title never scrolls away.
-            VStack(spacing: Theme.Space.xs) {
-                SheetGrabber()
-                // Wraps, centered inside the gutters, rather than truncating
-                // at the largest sizes or while the detent is still moving.
-                Text(ListeningCopy.title)
-                    .font(Theme.font(.headline))
-                    .foregroundStyle(Theme.text)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, Theme.Space.sheetGutter)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityIdentifier("listening.title")
-            }
-            .padding(.bottom, Theme.Space.xs)
+            // Pinned above the scroll view: the title never scrolls away,
+            // and its close button closes the sheet at either height.
+            SheetHeader(title: ListeningCopy.title, titleIdentifier: "listening.title",
+                        closeIdentifier: "listening.close")
+                .padding(.bottom, Theme.Space.xs)
 
             ListeningView(pinsSpeed: true)
         }

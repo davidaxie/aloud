@@ -155,6 +155,19 @@ final class ScrubAndContentsUITest: XCTestCase {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.result."))
     }
 
+    /// `element`'s frame once two reads a quarter second apart agree: the
+    /// sheet has come to rest.
+    private func settledFrame(of element: XCUIElement) -> CGRect {
+        var frame = element.frame
+        for _ in 0..<12 {
+            idle(0.25)
+            let next = element.frame
+            if next == frame { break }
+            frame = next
+        }
+        return frame
+    }
+
     private func scrubReleases(_ app: XCUIApplication) -> Int {
         hapticLog(app).filter { $0 == "scrubRelease" }.count
     }
@@ -282,9 +295,52 @@ final class ScrubAndContentsUITest: XCTestCase {
         let visible = rows.allElementsBoundByIndex.prefix(8).contains { $0.isHittable }
         XCTAssertTrue(visible, "\(screen): a chapter row shows at half height without a scroll")
         keepScreenshot(app, "contents-half-height-\(screen)")
+        let firstRow = rows.firstMatch
+        let halfHeightTop = settledFrame(of: firstRow).minY
 
         growContents(app)
         XCTAssertTrue(more.waitForExistence(timeout: 5), "Grown, the earlier stops wait behind the toggle")
+        // R2-19: grown, the sheet shows more chapters, not more stops: the
+        // first chapter rises with the sheet rather than dropping under
+        // two more stops.
+        XCTAssertLessThan(settledFrame(of: firstRow).minY, halfHeightTop,
+                          "\(screen): the first chapter moves up as the sheet grows")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "places.row")).count, 1,
+                       "\(screen): one stop at full height too")
+        keepScreenshot(app, "contents-full-height-\(screen)")
+    }
+
+    /// R2-17: Contents' header carries a close button, a full target at
+    /// full height, where the sheet has no scrim left to tap.
+    func testTheCloseButtonClosesContentsAtFullHeight() {
+        let app = openReader(classic: 2600)
+        let title = openContents(app)
+        let close = app.buttons["contents.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "Contents' header carries its close button")
+        XCTAssertEqual(close.label, "Close")
+        growContents(app)
+        let frame = settledFrame(of: close)
+        XCTAssertLessThan(frame.minY, app.windows.firstMatch.frame.height * 0.2, "Grown to full height")
+        XCTAssertGreaterThanOrEqual(frame.height, 44 - 0.01, "A full target")
+        XCTAssertGreaterThanOrEqual(frame.width, 44 - 0.01, "A full target")
+        XCTAssertTrue(close.isHittable, "The close button shows at full height")
+        close.tap()
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "The close button closes Contents")
+    }
+
+    /// R2-17: a search-only book opens Contents at full height with the
+    /// keyboard up; its close button is in view and closes the sheet.
+    func testASearchOnlyBookClosesContentsWithTheKeyboardUp() {
+        let app = openReader(classic: 1063)   // The Cask of Amontillado
+        let title = openContents(app)
+        let field = app.textFields["search.field"].firstMatch
+        XCTAssertTrue(hasKeyboardFocus(field, timeout: 5), "Search only: the field takes focus")
+        XCTAssertGreaterThan(app.keyboards.count, 0, "with the keyboard up")
+        let close = app.buttons["contents.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        XCTAssertTrue(close.isHittable, "The close button shows above the keyboard")
+        close.tap()
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "The close button closes Contents")
     }
 
     /// R1-21: after a book has been listened to, the newest stop and the
@@ -393,6 +449,8 @@ final class ScrubAndContentsUITest: XCTestCase {
         openContents(app)
         let field = app.textFields["search.field"].firstMatch
         XCTAssertTrue(hasKeyboardFocus(field, timeout: 5), "Search only: the field takes focus")
+        XCTAssertTrue(app.buttons["contents.close"].firstMatch.isHittable,
+                      "R2-17: a way out while the keyboard is up")
         field.typeText("zzzz")
         XCTAssertTrue(app.staticTexts["search.empty"].firstMatch.waitForExistence(timeout: 10))
         app.buttons["search.cancel"].firstMatch.tap()

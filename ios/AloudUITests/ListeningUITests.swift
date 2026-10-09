@@ -270,6 +270,32 @@ final class ListeningUITests: XCTestCase {
         dismissListeningSheet(app)
     }
 
+    /// R2-17: the sheet's header carries a close button, a full target at
+    /// either height, which closes it from the full list as from the
+    /// opening detent.
+    func testTheCloseButtonClosesTheSheetAtEitherHeight() {
+        let app = launchReader()
+        openListeningSheet(app)
+        let title = app.staticTexts["listening.title"].firstMatch
+        let close = app.buttons["listening.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "The sheet's header carries its close button")
+        let opened = settledFrame(of: close)
+        XCTAssertGreaterThanOrEqual(opened.height, 44 - 0.01, "A full target at the opening detent")
+        XCTAssertGreaterThanOrEqual(opened.width, 44 - 0.01, "A full target at the opening detent")
+        XCTAssertEqual(close.label, "Close")
+        XCTAssertTrue(close.isHittable)
+        // The button rides the title's row: the speed controls stay in view.
+        XCTAssertTrue(presets(app).firstMatch.isHittable, "The presets show at the opening detent")
+
+        let start = title.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)))
+        let screen = app.windows.firstMatch.frame
+        XCTAssertLessThan(settledFrame(of: title).minY, screen.height * 0.2, "Grown to the large detent")
+        XCTAssertTrue(close.isHittable, "The close button shows at full height")
+        close.tap()
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "The close button closes the sheet")
+    }
+
     /// P034: the spoken sentence stays in the strip of page above the
     /// sheet. Scrolled by hand low in the band, where the sheet will cover
     /// it (still in view, so following resumes), the cued sentence glides
@@ -409,8 +435,11 @@ final class ListeningUITests: XCTestCase {
             previous = (size, title.height)
             // Only the sheet: the reader above and behind it has its own
             // audit, and the root's 1×1 DEBUG probes aren't UI. The sheet
-            // starts at its grabber, just over the title.
-            let sheetTop = title.minY - 24
+            // starts at its grabber, just over the title, or over the close
+            // button's own row at the accessibility sizes.
+            let close = app.buttons["listening.close"].firstMatch
+            XCTAssertTrue(close.exists, "The close button at \(size.name)")
+            let sheetTop = min(title.minY, close.frame.minY) - 24
             func isReader(_ element: XCUIElement) -> Bool {
                 element.frame.minY < sheetTop
                     || ["reader.", "player.", "debug."].contains { element.identifier.hasPrefix($0) }

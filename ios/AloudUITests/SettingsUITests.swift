@@ -193,10 +193,10 @@ final class SettingsUITests: XCTestCase {
         let title = app.staticTexts["appearance.title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 10), "The Aa sheet should open")
         XCTAssertEqual(title.label, "Text & appearance")
-        // Done is the sheet's chrome (it leaves the page live, P037), not one
-        // of the view's controls: the pushed page has none.
-        XCTAssertTrue(app.buttons["appearance.done"].firstMatch.exists, "The Aa sheet carries Done")
-        let sheetControls = controlIdentifiers(withPrefix: "appearance.", in: app).filter { $0 != "appearance.done" }
+        // The close button is the sheet's chrome (R2-17), not one of the
+        // view's controls: the pushed page has none.
+        XCTAssertTrue(app.buttons["appearance.close"].firstMatch.exists, "The Aa sheet carries its close button")
+        let sheetControls = controlIdentifiers(withPrefix: "appearance.", in: app).filter { $0 != "appearance.close" }
         let groups = Set(sheetControls.map(group))
         XCTAssertLessThanOrEqual(groups.count, 4, "The Aa view has 4 or fewer controls")
         XCTAssertEqual(groups, ["appearance.scheme", "appearance.textSize", "appearance.wordHighlight"])
@@ -216,8 +216,8 @@ final class SettingsUITests: XCTestCase {
 
     /// P037: the Aa sheet leaves the page live behind it. A tap on the
     /// reader's bar above it (never the text, which would play) no longer
-    /// closes it, A+ changes the size with the sheet still open, and Done
-    /// closes it. The sheet passes the audit.
+    /// closes it, A+ changes the size with the sheet still open, and its
+    /// header's close button (R2-17) closes it. The sheet passes the audit.
     func testTheAaSheetLeavesThePageLiveAndDoneClosesIt() throws {
         let app = launch(["-uitest-reset-library", "-uitest-seed-first-classic", "-uitest-temp-model-dir",
                           "-aloud.prefs.v1.textSize", "2"])
@@ -227,13 +227,18 @@ final class SettingsUITests: XCTestCase {
         aa.tap()
         let title = app.staticTexts["appearance.title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 10), "The Aa sheet should open")
-        let done = app.buttons["appearance.done"].firstMatch
-        XCTAssertTrue(done.waitForExistence(timeout: 5))
-        // Measured once the sheet has risen: mid-presentation iOS scales it,
-        // and Done reads 43.2 pt. A hundredth of a point for the frame's
-        // conversion to the screen.
-        XCTAssertGreaterThanOrEqual(settledFrame(of: done).height, 44 - 0.01, "Done is a full touch target")
-        XCTAssertEqual(done.label, "Done")
+        let close = app.buttons["appearance.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        // iOS 26 draws a sheet resting at a partial (fitted) detent inset
+        // from the screen's edges and scaled by about 0.98, at rest as well
+        // as mid-presentation: a 44 pt frame inside it measured 43.2 pt on
+        // screen. The button's frame keeps headroom (Theme.SheetTarget), so
+        // it is a full 44 pt on screen. Measured once the sheet has risen; a
+        // hundredth of a point for the frame's conversion to the screen.
+        let closeFrame = settledFrame(of: close)
+        XCTAssertGreaterThanOrEqual(closeFrame.height, 44 - 0.01, "The close button is a full touch target")
+        XCTAssertGreaterThanOrEqual(closeFrame.width, 44 - 0.01, "The close button is a full touch target")
+        XCTAssertEqual(close.label, "Close")
 
         // Without a scrim, a tap above the sheet reaches the page, not a dismiss.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.07)).tap()
@@ -243,6 +248,14 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(size.waitForExistence(timeout: 5))
         XCTAssertEqual(size.label, "Text size")
         XCTAssertEqual(stringValue(of: size), "19 point")
+        // R2-16: the readout's element is its whole frame, never the text's
+        // own bounds (31 by 14 pt), so its hit region is a full target.
+        XCTAssertGreaterThanOrEqual(settledFrame(of: size).height, 44 - 0.01, "The size readout is 44 pt tall")
+        XCTAssertGreaterThanOrEqual(settledFrame(of: size).width, 44 - 0.01, "The size readout is 44 pt wide")
+        let smaller = app.buttons["appearance.textSize.smaller"].firstMatch
+        let larger = app.buttons["appearance.textSize.larger"].firstMatch
+        XCTAssertLessThan(smaller.frame.midX, size.frame.midX, "Smaller text, then the size")
+        XCTAssertLessThan(size.frame.midX, larger.frame.midX, "the size, then Larger text")
         app.buttons["appearance.textSize.larger"].firstMatch.tap()
         XCTAssertTrue(waitForValue("21 point", of: size, timeout: 5), "A+ steps 19 to 21 pt, live")
         XCTAssertTrue(title.exists, "The sheet stays open while the page reflows")
@@ -266,8 +279,8 @@ final class SettingsUITests: XCTestCase {
         let voiceChip = app.buttons["player.listening"].firstMatch
         XCTAssertFalse(voiceChip.exists, "The covered player bar is hidden from VoiceOver")
 
-        done.tap()
-        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "Done closes the Aa sheet")
+        close.tap()
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "The close button closes the Aa sheet")
         XCTAssertTrue(voiceChip.waitForExistence(timeout: 5), "The bar is back once the sheet goes")
         voiceChip.tap()
         let listening = app.staticTexts["listening.title"].firstMatch

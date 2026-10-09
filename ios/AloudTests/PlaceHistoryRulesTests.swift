@@ -106,18 +106,17 @@ final class PlaceHistoryRulesTests: XCTestCase {
         XCTAssertFalse(PlaceHistory.offersEarlier(total: 8, hasChapterList: false))
     }
 
-    /// P024: the iPhone's half-height Contents keeps one stop above the
-    /// chapter list, so the earlier-stops toggle counts from one; full height
-    /// and the accessibility sizes keep three, as the Mac does.
+    /// P024, R2-19: the iPhone's Contents keeps one stop above a chapter
+    /// list at either height and at the accessibility sizes, so raising
+    /// the sheet shows more chapters, never more stops pushing them down;
+    /// the earlier-stops toggle counts from one. A book without a chapter
+    /// list keeps three: there the stops are the way around.
     func testHalfHeightKeepsOneStopAboveTheChapters() {
-        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: true, hasChapterList: true,
-                                                   accessibilitySize: false), 1)
-        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: false, hasChapterList: true,
-                                                   accessibilitySize: false), 3, "full height")
-        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: true, hasChapterList: true,
-                                                   accessibilitySize: true), 3, "accessibility sizes")
-        XCTAssertEqual(PlaceHistory.collapsedCount(atHalfHeight: true, hasChapterList: false,
-                                                   accessibilitySize: false), 3, "places only")
+        XCTAssertEqual(PlaceHistory.collapsedCount(hasChapterList: true, accessibilitySize: false), 1)
+        XCTAssertEqual(PlaceHistory.collapsedCount(hasChapterList: true, accessibilitySize: true), 1,
+                       "accessibility sizes: one four-line stop already fills half a screen")
+        XCTAssertEqual(PlaceHistory.collapsedCount(hasChapterList: false, accessibilitySize: false), 3, "places only")
+        XCTAssertEqual(PlaceHistory.collapsedCount(hasChapterList: false, accessibilitySize: true), 3, "places only")
 
         XCTAssertEqual(PlaceHistory.visibleCount(total: 8, hasChapterList: true, expanded: false,
                                                  collapsedCount: 1), 1)
@@ -145,14 +144,17 @@ final class PlaceHistoryRulesTests: XCTestCase {
                        "half height: one stop, then the chapters")
         XCTAssertTrue(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: false,
                                                  atHalfHeight: false, accessibilitySize: false),
-                      "grown: three stops and the toggle")
+                      "grown: still one stop, and the toggle")
+        XCTAssertTrue(PlaceHistory.offersEarlier(total: 2, hasChapterList: true, expanded: false,
+                                                 atHalfHeight: false, accessibilitySize: false),
+                      "grown: the toggle counts from the one stop")
         XCTAssertTrue(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: true,
                                                  atHalfHeight: true, accessibilitySize: false),
                       "pressed, then shrunk: Show fewer stays")
         XCTAssertTrue(PlaceHistory.offersEarlier(total: 4, hasChapterList: true, expanded: false,
                                                  atHalfHeight: true, accessibilitySize: true),
-                      "the accessibility sizes keep three and their toggle")
-        XCTAssertFalse(PlaceHistory.offersEarlier(total: 3, hasChapterList: true, expanded: false,
+                      "the accessibility sizes keep their toggle at either height")
+        XCTAssertFalse(PlaceHistory.offersEarlier(total: 1, hasChapterList: true, expanded: false,
                                                   atHalfHeight: false, accessibilitySize: false),
                        "nothing held back at full height")
         XCTAssertFalse(PlaceHistory.offersEarlier(total: 8, hasChapterList: false, expanded: false,

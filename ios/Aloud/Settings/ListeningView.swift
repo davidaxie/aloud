@@ -70,6 +70,10 @@ struct ListeningView: View {
     /// The speed controls pinned above the scrolling voice list (below the
     /// accessibility sizes).
     private let pinsSpeed: Bool
+    /// Every speed preset edged, not only the selected one: on the Settings
+    /// page's bgTint an unselected chip's surface2 fill is too close to the
+    /// ground to read as a chip, in either appearance.
+    private let edgesUnselectedChips: Bool
     /// The scrolling list's natural height, for a content-sized container
     /// (the Mac's popover and Settings tab; the iPhone's sheet opens at a
     /// fixed fraction and passes none). Pinned, the speed block isn't in it.
@@ -79,10 +83,12 @@ struct ListeningView: View {
     private let onPinnedHeight: ((CGFloat) -> Void)?
 
     init(showsInstalledModel: Bool = false, selectedChipUnderlay: Color? = nil, pinsSpeed: Bool = false,
+         edgesUnselectedChips: Bool = false,
          onContentHeight: ((CGFloat) -> Void)? = nil, onPinnedHeight: ((CGFloat) -> Void)? = nil) {
         self.showsInstalledModel = showsInstalledModel
         self.selectedChipUnderlay = selectedChipUnderlay
         self.pinsSpeed = pinsSpeed
+        self.edgesUnselectedChips = edgesUnselectedChips
         self.onContentHeight = onContentHeight
         self.onPinnedHeight = onPinnedHeight
     }
@@ -126,7 +132,8 @@ struct ListeningView: View {
         if Self.pinsSpeed(pinsSpeed, dynamicTypeSize: dynamicTypeSize) {
             VStack(spacing: 0) {
                 VStack(spacing: 0) {
-                    ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay)
+                    ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay,
+                                           edgesUnselectedChips: edgesUnselectedChips)
                     ListeningHairline()
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
@@ -145,7 +152,8 @@ struct ListeningView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if withSpeed {
-                        ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay)
+                        ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay,
+                                           edgesUnselectedChips: edgesUnselectedChips)
                         ListeningHairline()
                     }
                     ListeningVoiceList(showsInstalledModel: showsInstalledModel,
@@ -236,6 +244,8 @@ struct ListeningView: View {
 struct ListeningSpeedControls: View {
 
     let selectedChipUnderlay: Color?
+    /// The unselected presets edged too (`ListeningView(edgesUnselectedChips:)`).
+    var edgesUnselectedChips = false
 
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -321,10 +331,12 @@ struct ListeningSpeedControls: View {
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 .background(selected ? selectedChipUnderlay ?? Color.clear : Color.clear,
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-                // The selected edge, so the selection is never a tint alone.
+                // The selected edge, so the selection is never a tint alone;
+                // where asked, a border on the others, so each reads as a chip.
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
-                    .strokeBorder(selected ? Theme.Stroke.selectedColor : Color.clear,
-                                  lineWidth: Theme.Stroke.selectedWidth))
+                    .strokeBorder(selected ? Theme.Stroke.selectedColor
+                                           : (edgesUnselectedChips ? Theme.Stroke.borderColor : Color.clear),
+                                  lineWidth: selected ? Theme.Stroke.selectedWidth : Theme.Stroke.borderWidth))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -559,7 +571,7 @@ struct ListeningSettingsPage: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true)
+        ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true, edgesUnselectedChips: true)
             .background(Theme.bgTint.ignoresSafeArea())
             // An opaque bar on the page's own ground, never a hard scroll
             // edge on a pushed screen (see `ShelfScrollEdge`).

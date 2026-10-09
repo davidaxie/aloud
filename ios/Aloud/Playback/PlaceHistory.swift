@@ -100,8 +100,9 @@ enum PlaceHistory {
     static let limit = 8
     /// Rows shown before "Show N earlier stops" in a book with a chapter list.
     static let collapsedCount = 3
-    /// The iPhone's half-height Contents: the newest stop alone, so the
-    /// chapter list starts above the fold (`collapsedCount(atHalfHeight:)`).
+    /// The iPhone's Contents over a chapter list, at either height: the
+    /// newest stop alone, so the chapter list starts above the fold
+    /// (`collapsedCount(hasChapterList:accessibilitySize:)`).
     static let halfHeightCollapsedCount = 1
     static let excerptLength = 80
 
@@ -143,27 +144,28 @@ enum PlaceHistory {
     }
 
     /// The rows the iPhone's Contents keeps above its earlier-stops toggle:
-    /// one at half height above a chapter list, so its first chapters show
-    /// without a scroll; three at full height, and at the accessibility
-    /// sizes, where even one stop fills half a screen. The Mac's panel is
+    /// one above a chapter list, at either height and at the accessibility
+    /// sizes (where one stop already fills half a screen), so its first
+    /// chapters show without a scroll and raising the sheet shows more
+    /// chapters, never more stops above them; three in a book without a
+    /// chapter list, where the stops are the way around. The Mac's panel is
     /// full height and keeps `collapsedCount`.
-    static func collapsedCount(atHalfHeight: Bool, hasChapterList: Bool, accessibilitySize: Bool) -> Int {
-        keepsOneStop(atHalfHeight: atHalfHeight, hasChapterList: hasChapterList, accessibilitySize: accessibilitySize)
-            ? halfHeightCollapsedCount : collapsedCount
+    static func collapsedCount(hasChapterList: Bool, accessibilitySize: Bool) -> Int {
+        hasChapterList ? halfHeightCollapsedCount : collapsedCount
     }
 
     /// Whether the iPhone's Contents shows the earlier-stops toggle under
-    /// those rows. Where half height keeps one stop, the toggle waits for
+    /// those rows, counting from the one stop. At half height it waits for
     /// the sheet to grow, so the first chapter clears the fold on the
-    /// smallest screen; growing it shows three stops and the toggle. Once
-    /// pressed it stays at any height, so an expanded list can always fold.
+    /// smallest screen; at the accessibility sizes, where one stop already
+    /// fills that fold, it shows at either height. Once pressed it stays at
+    /// any height, so an expanded list can always fold.
     static func offersEarlier(total: Int, hasChapterList: Bool, expanded: Bool,
                               atHalfHeight: Bool, accessibilitySize: Bool) -> Bool {
-        let keepsOne = keepsOneStop(atHalfHeight: atHalfHeight, hasChapterList: hasChapterList,
-                                    accessibilitySize: accessibilitySize)
-        let collapsed = keepsOne ? halfHeightCollapsedCount : collapsedCount
+        let collapsed = collapsedCount(hasChapterList: hasChapterList, accessibilitySize: accessibilitySize)
+        let waitsForTheSheet = atHalfHeight && !accessibilitySize
         return offersEarlier(total: total, hasChapterList: hasChapterList, collapsedCount: collapsed)
-            && (expanded || !keepsOne)
+            && (expanded || !waitsForTheSheet)
     }
 
     /// Whether Contents opens scrolled to the current chapter: with no
@@ -175,10 +177,6 @@ enum PlaceHistory {
     static func opensOnCurrentChapter(newestStop: Int?, playhead: Int, navigation: ReaderNavigation) -> Bool {
         guard let newestStop else { return true }
         return navigation.chapterIndex(containing: newestStop) == navigation.chapterIndex(containing: playhead)
-    }
-
-    private static func keepsOneStop(atHalfHeight: Bool, hasChapterList: Bool, accessibilitySize: Bool) -> Bool {
-        atHalfHeight && hasChapterList && !accessibilitySize
     }
 
     /// The first `excerptLength` characters of a sentence.

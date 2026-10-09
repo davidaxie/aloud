@@ -56,7 +56,9 @@ struct SettingsView: View {
                 footer
             }
             .listRowBackground(Theme.surface)
-            .listRowSeparatorTint(Theme.Stroke.hairlineColor)
+            // The system draws these a full point wide: at the border's
+            // weight they're as quiet as the Licenses cards' edges.
+            .listRowSeparatorTint(Theme.Stroke.borderColor)
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)

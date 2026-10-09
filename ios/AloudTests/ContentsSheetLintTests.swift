@@ -65,7 +65,10 @@ final class ContentsSheetLintTests: XCTestCase {
     func testHalfHeightKeepsOneStopAndTighterRows() throws {
         let s = try SourceTree.sources(only: [Self.sheetPath])
         let sheet = try XCTUnwrap(s[Self.sheetPath])
-        XCTAssertTrue(sheet.contains("PlaceHistory.collapsedCount(atHalfHeight: detent == .medium,"))
+        // R2-19: one stop over a chapter list at either height; the detent
+        // reaches the toggle alone.
+        XCTAssertTrue(sheet.contains("PlaceHistory.collapsedCount(hasChapterList: navigation.hasChapterList,"))
+        XCTAssertFalse(sheet.contains("collapsedCount(atHalfHeight:"), "raising the sheet adds no stops")
         // The rows shown and the toggle read the same height and size.
         let section = try region(of: sheet, from: "private func placesSection(", to: "/// Places kept above the toggle")
         XCTAssertTrue(section.contains("expanded: showsEarlierPlaces, collapsedCount: collapsed)"), section)
@@ -245,8 +248,8 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertFalse(list.contains("if placeRows.isEmpty { scrollToCurrent(proxy) }"), "places alone kept it at the top")
     }
 
-    /// R1-24: a place row draws its snippet (the sentence and what follows
-    /// it in its paragraph); VoiceOver keeps the row's sentence label.
+    /// R1-24: a place row draws its snippet (`PlaceRow.snippet`); VoiceOver
+    /// keeps the row's sentence label.
     func testAPlaceRowDrawsItsSnippet() throws {
         let s = try SourceTree.sources(only: [Self.sheetPath])
         let sheet = try XCTUnwrap(s[Self.sheetPath])
@@ -255,5 +258,20 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertFalse(label.contains("Text(row.text)"), label)
         XCTAssertTrue(label.contains(".lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))"), "P024's line limits stay")
         XCTAssertTrue(sheet.contains(".accessibilityLabel(row.accessibilityLabel)"))
+    }
+
+    /// R2-17: Contents closes from its header at any height, and in a
+    /// search-only book with the keyboard up; its keyboard and detent
+    /// rules and its scrim stay.
+    func testContentsClosesFromItsHeader() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let body = try region(of: sheet, from: "var body: some View {", to: ".onAppear { opened() }")
+        XCTAssertTrue(body.contains("SheetHeader(title: ContentsSearch.title, titleIdentifier: \"contents.title\", "
+                                    + "closeIdentifier: \"contents.close\", grabberGap: Theme.Space.md)"), body)
+        XCTAssertTrue(body.contains(".sheetChrome(hasList ? [.medium, .large] : [.large], selection: $detent)"), body)
+        XCTAssertTrue(body.contains("if focused { detent = .large }"), body)
+        XCTAssertTrue(body.contains("if newDetent != .large { fieldFocused = false }"), body)
+        XCTAssertFalse(body.contains("backgroundInteraction"), "the scrim stays")
     }
 }

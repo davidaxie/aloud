@@ -23,6 +23,114 @@ struct SheetGrabber: View {
     }
 }
 
+extension Theme {
+    enum SheetTarget {
+        /// iOS 26 draws a partly raised sheet scaled by about 0.98-0.99 at rest,
+        /// so a target inside one needs headroom to stay 44 pt on screen.
+        static let minimum: CGFloat = 46
+    }
+}
+
+/// The reader sheets' header copy.
+enum SheetCopy {
+    static let close = "Close"
+    /// What Voice Control also answers to, the Aa sheet's old label among them.
+    static let closeInputLabels = ["Close", "Done"]
+}
+
+/// One header for the reader's three sheets (Contents, Voice & speed and
+/// Aa): the grabber, the centred title and a close button, so every sheet
+/// closes the same way at any height, the keyboard up included.
+///
+/// The button rides an overlay on the title's row, its circle's trailing
+/// edge on the sheet gutter, so the header is no taller than its title:
+/// Voice & speed's opening detent and Aa's fitted one keep their room. The
+/// title pads past the button on both sides, so it stays centred and a
+/// wrapped line never runs under it. At the accessibility sizes the button
+/// takes its own row above the title, and VoiceOver still meets the
+/// heading first.
+///
+/// The circle is solid surface2 with a border, never glass: the sheets
+/// stand on a solid surface.
+struct SheetHeader: View {
+    let title: String
+    let titleIdentifier: String
+    let closeIdentifier: String
+    /// From the grabber to the title.
+    var grabberGap: CGFloat = Theme.Space.xs
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The drawn circle; its hit frame is `Theme.SheetTarget.minimum`.
+    static let circle: CGFloat = 30
+    /// The hit frame's trailing inset that puts the circle's edge on the gutter.
+    static let closeTrailing = Theme.Space.sheetGutter - (Theme.SheetTarget.minimum - circle) / 2
+
+    var body: some View {
+        VStack(spacing: grabberGap) {
+            SheetGrabber()
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 0) {
+                    closeButton
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.trailing, Self.closeTrailing)
+                    titleText
+                        .padding(.horizontal, Theme.Space.sheetGutter)
+                        // VoiceOver meets the sheet's heading before the button.
+                        .accessibilitySortPriority(1)
+                }
+                .accessibilityElement(children: .contain)
+            } else {
+                titleText
+                    .padding(.horizontal, Theme.Space.sheetGutter + Theme.SheetTarget.minimum)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .trailing) {
+                        closeButton
+                            .padding(.trailing, Self.closeTrailing)
+                    }
+            }
+        }
+    }
+
+    // Wraps, centred inside the gutters, rather than truncating at the
+    // largest sizes or while the detent is still moving (J029).
+    private var titleText: some View {
+        Text(title)
+            .font(Theme.font(.headline))
+            .foregroundStyle(Theme.text)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier(titleIdentifier)
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(Theme.font(.footnote).weight(.semibold))
+                .foregroundStyle(Theme.textMuted)
+                .frame(width: Self.circle, height: Self.circle)
+                .background(Theme.surface2, in: Circle())
+                .overlay(Circle().strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+                .frame(width: Theme.SheetTarget.minimum, height: Theme.SheetTarget.minimum)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        // The glyph stops growing inside its circle; a long press past
+        // that shows it large.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .largeContentViewerIfAvailable {
+            Label(SheetCopy.close, systemImage: "xmark")
+        }
+        .accessibilityLabel(SheetCopy.close)
+        .accessibilityInputLabels(SheetCopy.closeInputLabels.map { Text($0) })
+        .accessibilityIdentifier(closeIdentifier)
+    }
+}
+
 extension View {
     /// Standard sheet presentation on a solid `surface` ground (never the
     /// system's glass/material sheet). A sheet with more than one detent
@@ -34,8 +142,9 @@ extension View {
     /// `backgroundInteraction` leaves the presenting screen live, with no
     /// scrim, up through that detent (the Aa sheet, so size and theme
     /// changes are judged on the real page). Such a sheet no longer closes
-    /// on a tap outside it, so it carries its own Done. Nil keeps the
-    /// system's default: a scrim that dismisses on a tap.
+    /// on a tap outside it; its `SheetHeader` close button does, as on every
+    /// reader sheet. Nil keeps the system's default: a scrim that dismisses
+    /// on a tap.
     func sheetChrome(_ detents: Set<PresentationDetent>,
                      backgroundInteraction: PresentationDetent? = nil) -> some View {
         let resizable = detents.count > 1

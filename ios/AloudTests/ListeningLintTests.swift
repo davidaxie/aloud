@@ -127,10 +127,34 @@ final class ListeningLintTests: XCTestCase {
         }
         let page = try XCTUnwrap(view.range(of: "struct ListeningSettingsPage"))
         XCTAssertTrue(view[page.upperBound...].contains(
-            "ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true)"))
+            "ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true, edgesUnselectedChips: true)"))
         let speed = try XCTUnwrap(view.range(of: "struct ListeningSpeedControls: View"))
         let speedBody = view[speed.upperBound...].prefix(3000)
         XCTAssertTrue(speedBody.contains(".padding(.bottom, Theme.Space.sm)"), "a small gap under the speed")
         XCTAssertTrue(speedBody.contains(".font(Theme.font(.numeral))"), "R8's numeral stays")
+    }
+
+    /// R2-18: on the Settings page's bgTint an unselected preset's surface2
+    /// fill alone doesn't read as a chip, so that page edges every preset
+    /// at the border's weight; the selected one keeps its 1.5 pt edge. The
+    /// reader's sheet and the Mac keep the default: no edge on the others.
+    func testTheSettingsPageEdgesEverySpeedPreset() throws {
+        let paths = ["Settings/ListeningView.swift", "Settings/ListeningSheet.swift"]
+        let s = try SourceTree.sources(only: paths)
+        let view = try XCTUnwrap(s[paths[0]])
+        let sheet = try XCTUnwrap(s[paths[1]])
+        XCTAssertTrue(view.contains("edgesUnselectedChips: Bool = false,"), "off by default")
+        let preset = try XCTUnwrap(view.range(of: "private func presetButton("))
+        let body = view[preset.upperBound...].prefix(2400).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertTrue(body.contains(".strokeBorder(selected ? Theme.Stroke.selectedColor "
+                                    + ": (edgesUnselectedChips ? Theme.Stroke.borderColor : Color.clear), "
+                                    + "lineWidth: selected ? Theme.Stroke.selectedWidth : Theme.Stroke.borderWidth)"), body)
+        XCTAssertTrue(body.contains(".background(selected ? Theme.accentSoft : Theme.surface2,"), "the fills stay")
+        XCTAssertEqual(view.components(separatedBy: "edgesUnselectedChips: edgesUnselectedChips)").count - 1, 2,
+                       "both speed blocks, pinned and in the list, hear it")
+        XCTAssertTrue(sheet.contains("ListeningView(pinsSpeed: true)"), "the reader's sheet keeps the default")
+        let mac = try SourceTree.appSources(platforms: [.macOS])
+        XCTAssertEqual(SourceTree.files(containing: "edgesUnselectedChips", in: mac), [],
+                       "the Mac's call sites keep the default")
     }
 }
