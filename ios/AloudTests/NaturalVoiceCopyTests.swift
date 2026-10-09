@@ -201,7 +201,8 @@ final class NaturalVoiceCopyTests: XCTestCase {
                                  Candidate(name: "Am\u{00E9}lie", language: "fr-CA", quality: 3)])
         XCTAssertEqual(enhanced?.name, "Samantha (Enhanced)")
         XCTAssertEqual(enhanced?.quality, .enhanced)
-        let label = ListeningView.accessibilityLabel(name: "System voice", subtitle: enhanced?.name ?? "", origin: "")
+        let label = ListeningView.accessibilityLabel(name: "System voice", subtitle: enhanced?.name ?? "",
+                                                     origin: "", spokenOrigin: "")
         XCTAssertEqual(label, "System voice, Samantha (Enhanced)", "the spoken label names the voice")
 
         let premium = resolved([Candidate(name: "Samantha", language: "en-US", quality: 2),
