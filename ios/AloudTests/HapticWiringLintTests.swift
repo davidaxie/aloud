@@ -194,7 +194,9 @@ final class HapticWiringLintTests: XCTestCase {
         for path in ["NowPlaying/NowPlayingManager.swift", "Intents/ShortcutActions.swift",
                      "Reader/SleepTimer.swift", "Playback/PlaybackController.swift", "Import/DocumentImporter.swift"] {
             guard let text = sources[path] else { continue }
-            XCTAssertFalse(text.contains("TransportHaptics.emit("), "\(path) is unattended")
+            // A literal event; the controller's injected hook,
+            // `TransportHaptics.emit($0)`, carries only .finished (below).
+            XCTAssertFalse(text.contains("TransportHaptics.emit(."), "\(path) is unattended")
         }
         let controller = try XCTUnwrap(sources["Playback/PlaybackController.swift"])
         XCTAssertEqual(controller.components(separatedBy: "emitHaptic(.").count - 1, 1, "only .finished")
