@@ -54,11 +54,36 @@ struct ColdLeadPlan: Sendable, Equatable {
     /// the node.
     static let headroom = 0.85
     /// C3: where a lead may be cut when no clause mark gives one within the
-    /// budget: before one of these words, which open a phrase. A fixed
-    /// list, lowercased; a token matches on its letters alone.
-    static let phraseOpeners: Set<String> = ["and", "but", "or", "which", "that", "who", "when", "while", "as",
-                                             "because", "of", "in", "on", "at", "to", "for", "with", "from",
-                                             "by", "the", "a", "an"]
+    /// budget: before one of these words, which open a phrase. Fixed lists,
+    /// lowercased; a token matches on its letters alone. The coordinators,
+    /// relatives and subordinators (`strongPhraseOpeners`) open a clause of
+    /// their own and are preferred; the prepositions open a phrase that
+    /// often completes the word before it ("waited for"), so they are
+    /// taken only when no strong opener gives a lead within the budget.
+    /// Never a determiner ("the", "a", "an"), "to" or "of", which bind to
+    /// the words around them, nor "that" or "as", which as often do
+    /// ("that door", "as tall as") as open a clause.
+    static let strongPhraseOpeners: Set<String> = ["and", "but", "or", "nor", "which", "who", "whom", "whose",
+                                                   "when", "while", "because", "although", "though", "where",
+                                                   "if", "unless", "until", "whereas"]
+    static let prepositionOpeners: Set<String> = ["in", "on", "at", "for", "with", "from", "by"]
+    static let phraseOpeners = strongPhraseOpeners.union(prepositionOpeners)
+    /// C3: no phrase cut falls straight after one of these, which need the
+    /// words after them (a preposition, a determiner or possessive, "to",
+    /// "not", an auxiliary, an opener itself): a cut there would end the
+    /// lead on a stranded word with a comma's fall ("along, | the narrow
+    /// wall"). Nor after a possessive or a contraction (`mayCutAfter`).
+    static let neverCutAfter: Set<String> = phraseOpeners.union([
+        "the", "a", "an", "this", "that", "these", "those", "some", "any", "no", "every", "each", "all",
+        "both", "either", "neither", "another", "such", "what", "whatever",
+        "my", "your", "his", "her", "its", "our", "their",
+        "to", "not", "as", "so", "than", "of", "into", "onto", "upon", "about", "along", "across", "through",
+        "over", "under", "after", "before", "between", "against", "toward", "towards", "without", "within",
+        "around", "among", "behind", "beyond", "during", "near", "off", "out", "up", "down", "past", "since",
+        "like", "per", "via", "despite", "inside", "outside", "beneath", "beside", "below", "above",
+        "is", "are", "was", "were", "be", "been", "being", "am", "has", "have", "had", "do", "does", "did",
+        "will", "would", "shall", "should", "can", "could", "may", "might", "must",
+    ])
 
     // MARK: - Planning
 
@@ -85,13 +110,20 @@ struct ColdLeadPlan: Sendable, Equatable {
     /// never at a bare space: with no clause end where a lead could be, the
     /// sentence is made whole.
     ///
-    /// C3, `phraseEnds` (word counts after which a phrase opener begins):
-    /// when no clause end gives a lead within the budget, the lead is the
-    /// longest phrase prefix made within it whose chain stays ahead, ahead
-    /// of an over-long first clause or the whole. Later pieces still run to
-    /// a clause end, and to a phrase end only where no clause end is in
-    /// reach. With none, the plan is as without them.
+    /// C3, `phraseEnds` (word counts after which a phrase opener begins)
+    /// and the `strongPhraseEnds` among them (before a coordinator,
+    /// relative or subordinator): when no clause end gives a lead within
+    /// the budget, the lead is the longest strong phrase prefix made within
+    /// it whose chain stays ahead, else the longest of any phrase. With
+    /// none within the budget, the shortest lead at a clause end or a
+    /// strong phrase end whose chain stays ahead, else at any phrase end,
+    /// else the whole. Later
+    /// pieces still run to a clause end, to a strong phrase end only where
+    /// no clause end is in reach, and to any phrase end only where neither
+    /// is (or the chain needs it). With no phrase ends, the plan is as
+    /// without them.
     static func pieceWordCounts(words: Int, clauseEnds: [Int], phraseEnds: [Int] = [],
+                                strongPhraseEnds: [Int] = [],
                                 wordsPerMinute: Double, rate: Double,
                                 nativeSpeed: Double, synthesisSpeed: Double?,
                                 firstAudioBudget: TimeInterval?) -> [Int] {
@@ -105,18 +137,22 @@ struct ColdLeadPlan: Sendable, Equatable {
         let listeningPerSecond = k * nativeSpeed / rate
         let inReach = { (end: Int) in end >= minimumLeadWords && end <= words - minimumTailWords }
         let cuts = Array(Set(clauseEnds.filter(inReach))).sorted()
-        let phraseCuts = Array(Set(phraseEnds.filter(inReach)).subtracting(cuts)).sorted()
+        let strongCuts = Array(Set(strongPhraseEnds.filter(inReach)).subtracting(cuts)).sorted()
+        let phraseCuts = Array(Set(phraseEnds.filter(inReach)).union(strongCuts).subtracting(cuts)).sorted()
 
-        // The chain from `lead`, each piece as long as it can be; nil when
-        // a gap opens with no clause end to close it.
-        func chain(from lead: Int) -> [Int]? {
+        // The chain from `lead`, each piece as long as it can be, to a
+        // clause end, else a strong phrase end when `preferringStrong`,
+        // else any phrase end; nil when a gap opens with no end to close it.
+        func chain(from lead: Int, preferringStrong: Bool) -> [Int]? {
             var ends = [lead]
             while let covered = ends.last, covered < words {
                 let reach = Double(lead) + listeningPerSecond * Double(covered)
+                let open = { (end: Int) in end > covered && Double(end) <= reach }
                 if reach >= Double(words) {
                     ends.append(words)
-                } else if let next = cuts.last(where: { $0 > covered && Double($0) <= reach })
-                            ?? phraseCuts.last(where: { $0 > covered && Double($0) <= reach }) {
+                } else if let next = cuts.last(where: open)
+                            ?? (preferringStrong ? strongCuts.last(where: open) : nil)
+                            ?? phraseCuts.last(where: open) {
                     ends.append(next)
                 } else {
                     return nil
@@ -125,24 +161,36 @@ struct ColdLeadPlan: Sendable, Equatable {
             }
             return zip(ends, [0] + ends).map { $0 - $1 }
         }
+        // A shorter strong piece may leave the chain short of the voice
+        // where a longer one would not: then the furthest end of any kind.
+        func leads(_ ends: [Int]) -> [(lead: Int, counts: [Int])] {
+            ends.compactMap { lead in
+                (chain(from: lead, preferringStrong: true) ?? chain(from: lead, preferringStrong: false))
+                    .map { (lead: lead, counts: $0) }
+            }
+        }
+        let quick = { (found: [(lead: Int, counts: [Int])]) in found.filter { secondsToMake($0.lead) <= budget } }
 
-        let feasible = cuts.compactMap { lead in chain(from: lead).map { (lead: lead, counts: $0) } }
-        let withinBudget = feasible.filter { secondsToMake($0.lead) <= budget }
-        if let best = withinBudget.last { return best.counts }
-        // No clause mark gives a lead within the budget: the longest phrase
-        // prefix that does, before an over-long first clause or the whole.
-        let phraseLeads = phraseCuts.filter { secondsToMake($0) <= budget }
-            .compactMap { lead in chain(from: lead).map { (lead: lead, counts: $0) } }
-        return (phraseLeads.last ?? feasible.first)?.counts ?? whole
+        let feasible = leads(cuts)
+        if let best = quick(feasible).last { return best.counts }
+        // No clause mark gives a lead within the budget: the longest strong
+        // phrase prefix that does, else the longest of any phrase.
+        let strongLeads = leads(strongCuts)
+        if let best = quick(strongLeads).last ?? quick(leads(phraseCuts)).last { return best.counts }
+        // None does: the shortest lead at a clause mark or a strong phrase,
+        // else at any phrase, over the budget but sooner than the whole.
+        return ((feasible + strongLeads).min { $0.lead < $1.lead } ?? leads(phraseCuts).first)?.counts ?? whole
     }
 
     /// The plan for a sentence's `tokens`, or nil to make it whole. The
     /// clause ends are its spoken tokens ending in a clause mark (a closing
     /// quote after it still counts); the phrase ends fall before a spoken
-    /// phrase opener (`phraseOpeners`) not straight after a clause mark.
-    /// Each piece is handed the spoken text of its own tokens, and one cut
-    /// at a phrase end a trailing comma, so it falls as a clause does; its
-    /// tokens are its own, so word timing is unchanged.
+    /// phrase opener (`phraseOpeners`), not straight after a clause mark
+    /// nor after a word a cut may not follow (`mayCutAfter`), and are
+    /// strong before a `strongPhraseOpeners` word. Each piece is handed the
+    /// spoken text of its own tokens, and one cut at a phrase end a
+    /// trailing comma, so it falls as a clause does; its tokens are its
+    /// own, so word timing is unchanged.
     static func make(tokens: [WordToken], skipBrackets: Bool, wordsPerMinute: Double, rate: Double,
                      nativeSpeed: Double, synthesisSpeed: Double?,
                      firstAudioBudget: TimeInterval?) -> ColdLeadPlan? {
@@ -150,22 +198,30 @@ struct ColdLeadPlan: Sendable, Equatable {
         var words = 0
         var clauseEnds: [Int] = []
         var phraseEnds: [Int] = []
+        var strongPhraseEnds: [Int] = []
         // The token index each clause or phrase end cuts before, by word count.
         var cutBefore: [Int: Int] = [:]
         var phraseCutBefore: [Int: Int] = [:]
+        var previousWord: String?
         for (index, token) in tokens.enumerated()
         where token.weight > 0 && SentenceSegmenter.isSpoken(token, skipBrackets: skipBrackets) {
-            if token.isWord, words > 0, clauseEnds.last != words, opensPhrase(token.text) {
+            if token.isWord, words > 0, clauseEnds.last != words, let before = previousWord,
+               mayCutAfter(before), opensPhrase(token.text) {
                 phraseEnds.append(words)
+                if opensPhrase(token.text, in: strongPhraseOpeners) { strongPhraseEnds.append(words) }
                 phraseCutBefore[words] = index
             }
-            if token.isWord { words += 1 }
+            if token.isWord {
+                words += 1
+                previousWord = token.text
+            }
             if endsClause(token.text), words > 0 {
                 clauseEnds.append(words)
                 cutBefore[words] = index + 1
             }
         }
         let counts = pieceWordCounts(words: words, clauseEnds: clauseEnds, phraseEnds: phraseEnds,
+                                     strongPhraseEnds: strongPhraseEnds,
                                      wordsPerMinute: wordsPerMinute, rate: rate, nativeSpeed: nativeSpeed,
                                      synthesisSpeed: synthesisSpeed, firstAudioBudget: firstAudioBudget)
         return pieces(counts: counts, tokens: tokens, skipBrackets: skipBrackets, rate: rate,
@@ -197,10 +253,30 @@ struct ColdLeadPlan: Sendable, Equatable {
         return ColdLeadPlan(pieces: pieces, rate: rate)
     }
 
-    /// Whether `token` is a phrase opener (`phraseOpeners`), on its letters.
-    static func opensPhrase(_ token: String) -> Bool {
+    /// Whether `token` is a phrase opener (`phraseOpeners`, or the words
+    /// given), on its letters.
+    static func opensPhrase(_ token: String, in openers: Set<String> = ColdLeadPlan.phraseOpeners) -> Bool {
+        openers.contains(letters(of: token))
+    }
+
+    /// Whether a phrase cut may fall straight after the word `token`: not
+    /// after a `neverCutAfter` word, a possessive ("captain's") or a
+    /// contraction ("didn't", "he'd").
+    static func mayCutAfter(_ token: String) -> Bool {
+        guard !neverCutAfter.contains(letters(of: token)) else { return false }
+        let closers: Set<Character> = ["\"", "\u{201D}", "'", "\u{2019}", ")", "]"]
+        var word = Substring(token.lowercased().replacingOccurrences(of: "\u{2019}", with: "'"))
+        // A closing quote after a word ending in "s" reads as the boys' quote too:
+        // never cutting there is the safe side.
+        if word.hasSuffix("s'") { return false }
+        while let last = word.last, closers.contains(last) { word = word.dropLast() }
+        return !["'s", "'d", "'ll", "'re", "'ve", "'m", "n't"].contains { word.hasSuffix($0) }
+    }
+
+    /// `token`'s letters alone, lowercased.
+    private static func letters(of token: String) -> String {
         let letters = token.lowercased().unicodeScalars.filter { CharacterSet.letters.contains($0) }
-        return phraseOpeners.contains(String(String.UnicodeScalarView(letters)))
+        return String(String.UnicodeScalarView(letters))
     }
 
     // MARK: - Background pieces (C4)

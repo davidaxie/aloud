@@ -238,10 +238,13 @@ final class PlaybackController: ObservableObject {
     var isLowPower: @MainActor () -> Bool = { false }
     /// C4: whether the open reader's page follows the voice
     /// (`ReaderFollowEngine.isFollowing`), as the iPhone and Mac columns
-    /// report it; true with no reader open. Scrolled away, a tap elsewhere
-    /// is likelier, so the look-ahead and warm-ups that would take long to
-    /// make are made in clause pieces (`backgroundPlan`), and a tap waits
-    /// behind one piece of them rather than a whole sentence.
+    /// report it; true with no reader open. Scrolled away in the active
+    /// app, a tap elsewhere is likelier, so the look-ahead and warm-ups
+    /// that would take long to make are made in clause pieces
+    /// (`backgroundPlan`), and a tap waits behind one piece of them rather
+    /// than a whole sentence. Not on the followed page: a job planned while
+    /// it followed is whole, so a tap right after the first scroll away can
+    /// still wait behind one whole sentence (the tap probe's `wait=`).
     var readerIsFollowing = true
 
     /// How long an "Undo jump" offer stays up. Tests shorten it.
@@ -2016,14 +2019,19 @@ final class PlaybackController: ObservableObject {
     }
 
     /// C4: how a look-ahead sentence or warm-up past the playhead is made
-    /// while the reader is away from the voice and the device under no
-    /// strain: in clause pieces of about `backgroundPieceSeconds` of
-    /// making (`ColdLeadPlan.background`), or nil to make it whole (the
-    /// page following the voice, strain, the System voice, a sentence
-    /// quick to make or said otherwise than written).
+    /// while the reader is away from the voice in the active app and the
+    /// device under no strain: in clause pieces of about
+    /// `backgroundPieceSeconds` of making (`ColdLeadPlan.background`), or
+    /// nil to make it whole (the page following the voice, the app
+    /// inactive, strain, the System voice, a sentence quick to make or said
+    /// otherwise than written). Inactive (the iPhone locked or in the
+    /// background, another app frontmost on the Mac) no tap can come, so
+    /// pieces would cost seams and engine calls for nothing; a page left
+    /// scrolled away before it must not keep them for the rest of the
+    /// session.
     private func backgroundPlan(forSentence index: Int, voice clipVoice: TtsVoice, pace: Double,
                                 spoken: String) -> ColdLeadPlan? {
-        guard !readerIsFollowing, !isUnderStrain(), clipVoice.engine == .kokoro, let content,
+        guard !readerIsFollowing, isAppActive(), !isUnderStrain(), clipVoice.engine == .kokoro, let content,
               content.sentences.indices.contains(index),
               let measured = kokoro?.measuredSynthesisSpeed else { return nil }
         let text = content.sentences[index].text

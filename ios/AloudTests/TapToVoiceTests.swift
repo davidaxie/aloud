@@ -15,10 +15,16 @@ final class TapToVoiceTests: XCTestCase {
         Double(words) * 60 / (Self.wpm * 1.5 * k)
     }
 
-    private func plan(_ sentence: String, k: Double = 3, budget: TimeInterval? = 1.0) -> ColdLeadPlan? {
+    private func plan(_ sentence: String, k: Double = 3, budget: TimeInterval? = 1.0,
+                      rate: Double = 1.5, nativeSpeed: Double = 1.5) -> ColdLeadPlan? {
         ColdLeadPlan.make(tokens: SentenceSegmenter.tokenizeSentence(sentence), skipBrackets: true,
-                          wordsPerMinute: Self.wpm, rate: 1.5, nativeSpeed: 1.5, synthesisSpeed: k,
+                          wordsPerMinute: Self.wpm, rate: rate, nativeSpeed: nativeSpeed, synthesisSpeed: k,
                           firstAudioBudget: budget)
+    }
+
+    /// The text before a phrase piece's engine comma.
+    private func spokenEnd(of piece: ColdLeadPlan.Piece) -> String {
+        String(piece.text.dropLast(piece.endsAtPhrase ? 1 : 0))
     }
 
     /// An engine speed at which `words` takes 1.5 s to make whole: split
@@ -112,13 +118,96 @@ final class TapToVoiceTests: XCTestCase {
         }
     }
 
+    /// Coordinators, relatives, subordinators and a few prepositions open a
+    /// phrase; never a determiner, "to", "of", nor the ambiguous "that"
+    /// and "as".
     func testPhraseOpeners() {
-        for token in ["and", "The", "\u{201C}which", "of", "an"] {
+        for token in ["and", "\u{201C}which", "Because", "when", "with", "for"] {
             XCTAssertTrue(ColdLeadPlan.opensPhrase(token), token)
         }
-        for token in ["word", "into", "sand", "Anne", "theory"] {
+        for token in ["word", "into", "sand", "Anne", "theory", "The", "a", "an", "to", "of", "that", "as"] {
             XCTAssertFalse(ColdLeadPlan.opensPhrase(token), token)
         }
+        for token in ["and", "who", "until"] {
+            XCTAssertTrue(ColdLeadPlan.opensPhrase(token, in: ColdLeadPlan.strongPhraseOpeners), token)
+        }
+        for token in ["for", "in", "with"] {
+            XCTAssertFalse(ColdLeadPlan.opensPhrase(token, in: ColdLeadPlan.strongPhraseOpeners), token)
+        }
+    }
+
+    /// No phrase cut straight after a preposition, determiner, possessive,
+    /// "to", an auxiliary or a contraction; after a content word, yes.
+    func testNoPhraseCutAfterAWordThatNeedsWhatFollows() {
+        for token in ["along", "for", "the", "an", "his", "to", "of", "was", "and", "that", "captain's",
+                      "captain\u{2019}s", "didn't", "he'd", "boys'", "The"] {
+            XCTAssertFalse(ColdLeadPlan.mayCutAfter(token), token)
+        }
+        for token in ["wall", "pocket", "slowly", "door", "watched", "ships\u{201D}"] {
+            XCTAssertTrue(ColdLeadPlan.mayCutAfter(token), token)
+        }
+    }
+
+    /// The review's cuts: "walked slowly along | the narrow" and "pocket
+    /// for | the key" are never chosen at any engine speed or listener
+    /// speed, and no phrase piece ends on a word a cut may not follow.
+    func testNoLeadEndsOnAStrandedPrepositionOrDeterminer() {
+        let pocket = "He reached into his pocket for the key to the old door and turned it slowly in the rusted lock."
+        let speeds: [(rate: Double, native: Double)] = [(1, 1), (1.5, 1.25), (1.5, 1.5), (2.95, 2)]
+        for sentence in [Self.commaFree, pocket] {
+            for k in stride(from: 0.3, through: 12, by: 0.05) {
+                for speed in speeds {
+                    guard let made = plan(sentence, k: k, rate: speed.rate, nativeSpeed: speed.native) else { continue }
+                    let label = "k \(k), \(speed): \(made.pieces.map(\.text))"
+                    for piece in made.pieces.dropLast() where piece.endsAtPhrase {
+                        let last = spokenEnd(of: piece).split(separator: " ").last.map(String.init) ?? ""
+                        XCTAssertTrue(ColdLeadPlan.mayCutAfter(last), label)
+                    }
+                    for piece in made.pieces {
+                        XCTAssertFalse(piece.text.hasPrefix("the "), label)
+                        XCTAssertFalse(spokenEnd(of: piece).hasSuffix(" along"), label)
+                        XCTAssertFalse(spokenEnd(of: piece).hasSuffix(" for"), label)
+                    }
+                }
+            }
+        }
+    }
+
+    /// At the iPhone 16 Pro's figure (about 3x real time, at the plan's
+    /// headroom 2.55) and 1x, the comma-free fixture leads up to "and":
+    /// past the budget (no opener earlier fits it), still much sooner than
+    /// the whole sentence.
+    func testAtTheIPhonesSpeedTheFixtureCutsBeforeAnd() throws {
+        let made = try XCTUnwrap(plan(Self.commaFree, k: 3 * ColdLeadPlan.headroom, rate: 1, nativeSpeed: 1))
+        XCTAssertEqual(made.pieces.first?.text, "The old captain walked slowly along the narrow harbour wall,")
+        XCTAssertEqual(made.pieces.first?.endsAtPhrase, true)
+        XCTAssertTrue(made.pieces[1].text.hasPrefix("and watched"), made.pieces[1].text)
+        XCTAssertEqual(made.pieces.reduce(0) { $0 + $1.words }, 21)
+    }
+
+    /// A coordinator wins over a preposition when both give a lead within
+    /// the budget, though the preposition's lead is longer.
+    func testAStrongOpenerWinsOverAPrepositionWithinTheBudget() throws {
+        let pocket = "He reached into his pocket for the key to the old door and turned it slowly in the rusted lock."
+        // At k 6 and 1x, sixteen words are made within the budget: up to
+        // "slowly | in" as well as "door | and".
+        XCTAssertLessThanOrEqual(Double(16) * 60 / (Self.wpm * 6), 1.0)
+        let made = try XCTUnwrap(plan(pocket, k: 6, rate: 1, nativeSpeed: 1))
+        XCTAssertEqual(made.pieces.first?.text, "He reached into his pocket for the key to the old door,")
+        XCTAssertTrue(made.pieces[1].text.hasPrefix("and turned"), made.pieces[1].text)
+        // Only a preposition within the budget: it is taken.
+        let slower = try XCTUnwrap(plan(pocket, k: 2.55, rate: 1, nativeSpeed: 1))
+        XCTAssertEqual(slower.pieces.first?.text, "He reached into his pocket,")
+        XCTAssertTrue(slower.pieces[1].text.hasPrefix("for the key"), slower.pieces[1].text)
+        // The pure plan: the strong end, not the longer weak one.
+        XCTAssertEqual(ColdLeadPlan.pieceWordCounts(words: 40, clauseEnds: [], phraseEnds: [6, 9],
+                                                    strongPhraseEnds: [6], wordsPerMinute: Self.wpm, rate: 1,
+                                                    nativeSpeed: 1, synthesisSpeed: 6, firstAudioBudget: 1.0).first,
+                       6)
+        XCTAssertEqual(ColdLeadPlan.pieceWordCounts(words: 40, clauseEnds: [], phraseEnds: [6, 9],
+                                                    wordsPerMinute: Self.wpm, rate: 1,
+                                                    nativeSpeed: 1, synthesisSpeed: 6, firstAudioBudget: 1.0).first,
+                       9)
     }
 
     // MARK: - C4: background pieces
@@ -371,12 +460,13 @@ final class TapToVoiceTests: XCTestCase {
 
     /// Reading from sentence 28 in the natural voice, the look-ahead
     /// reaches sentence 30, the long one: what the engine was asked for it.
-    private func lookAheadRequests(following: Bool, strained: Bool) async throws -> [String] {
+    private func lookAheadRequests(following: Bool, strained: Bool, active: Bool = true) async throws -> [String] {
         let engine = ColdLeadPlaybackTests.PacedNeuralEngine(k: 3, secondsPerWord: 0.01)
         let rig = PlaybackTestRig(sentences: 40, kokoro: engine, extraRoutes: [PlaybackTestRig.michael.id: engine])
         rig.controller.voice = PlaybackTestRig.michael   // no book yet: nothing restarts
         rig.controller.readerIsFollowing = following
         rig.controller.isUnderStrain = { strained }
+        rig.appActive = active
         let sentences = (0..<40).map { index in
             Sentence(id: index, text: index == 30 ? Self.longText : "Line\(index) word word.", para: 0, page: 0)
         }
@@ -402,5 +492,15 @@ final class TapToVoiceTests: XCTestCase {
         XCTAssertEqual(following.count, 1, "following the voice: whole, got \(following)")
         let strained = try await lookAheadRequests(following: false, strained: true)
         XCTAssertEqual(strained.count, 1, "under strain: whole, got \(strained)")
+    }
+
+    /// C4: the page left scrolled away while the app is inactive (the
+    /// iPhone locked or in the background, another app frontmost on the
+    /// Mac): no tap can come, so the long look-ahead sentence is made
+    /// whole.
+    func testTheLookAheadIsMadeWholeWhileTheAppIsInactive() async throws {
+        let inactive = try await lookAheadRequests(following: false, strained: false, active: false)
+        XCTAssertEqual(inactive.count, 1, "inactive, reader away: whole, got \(inactive)")
+        XCTAssertTrue(inactive.first?.hasSuffix("word59.") == true, "the whole sentence, got \(inactive)")
     }
 }
