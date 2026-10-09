@@ -288,17 +288,20 @@ final class LibraryLintTests: XCTestCase {
     }
 
     /// P014: the gear and + are one ink and one weight, so the trailing
-    /// group reads as one control.
+    /// group reads as one control. Each is read at its own glyph, inside
+    /// its own body: the + menu's items draw icons of their own ahead of
+    /// its label (R3-06), and those take the menu's ink.
     func testTheGearAndPlusShareOneInk() throws {
         let s = try SourceTree.sources(only: [Self.libraryFile])
         let text = try XCTUnwrap(s[Self.libraryFile])
-        for name in ["private var settingsButton: some View {", "private var addMenu: some View {"] {
-            let start = try XCTUnwrap(text.range(of: name), name)
-            let control = text[start.upperBound...].prefix(1400)
-            let image = try XCTUnwrap(control.range(of: "Image(systemName:"), name)
+        let glyphs = [("private var settingsButton: some View {", "gearshape"),
+                      ("private var addMenu: some View {", "plus")]
+        for (name, glyph) in glyphs {
+            let control = try XCTUnwrap(MacKeyCommandLintTests.body(of: name, in: text), name)
+            let image = try XCTUnwrap(control.range(of: "Image(systemName: \"\(glyph)\")"), "\(name) draws \(glyph)")
             let face = control[image.lowerBound...].prefix(220)
-            XCTAssertTrue(face.contains(".font(Theme.font(.body).weight(.semibold))"), "\(name) \(face)")
-            XCTAssertTrue(face.contains(".foregroundStyle(Theme.text)"), "\(name) \(face)")
+            XCTAssertTrue(face.contains(".font(Theme.font(.body).weight(.semibold))"), "\(name) \(String(face))")
+            XCTAssertTrue(face.contains(".foregroundStyle(Theme.text)"), "\(name) \(String(face))")
         }
     }
 

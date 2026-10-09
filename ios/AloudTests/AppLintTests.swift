@@ -103,11 +103,12 @@ final class AppLintTests: XCTestCase {
         }
     }
 
-    /// Fault injection, the announcement log, the muted render pump and the
-    /// fixture PDF writer never reach a Release build.
+    /// Fault injection, the announcement log, the muted render pump, the
+    /// fixture PDF writer and the paste control's count (R3-03) never reach
+    /// a Release build.
     func testTestPlumbingIsDebugOnly() throws {
         let plumbing = ["App/UITestAnnouncementLog.swift", "App/UITestFaults.swift", "Platform/FixturePDF.swift",
-                        "Playback/MutedRenderPump.swift"]
+                        "Platform/PasteControlProbe.swift", "Playback/MutedRenderPump.swift"]
         let sources = try SourceTree.sources(only: plumbing)
         XCTAssertEqual(sources.keys.sorted(), plumbing)
         for (path, text) in sources {

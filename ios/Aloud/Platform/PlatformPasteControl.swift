@@ -186,40 +186,6 @@ final class PasteControlHost: UIView {
         invalidateIntrinsicContentSize()
     }
 }
-
-#if DEBUG
-/// R3-03: how many times the system has handed the control a paste
-/// (`Coordinator.paste(itemProviders:)`) since launch, for the UI tests'
-/// failure messages: 0 after a tap means the tap never reached the secure
-/// control; more means the hand-off to the importer is where to look.
-@MainActor
-final class PasteControlProbe: ObservableObject {
-    static let shared = PasteControlProbe()
-
-    @Published private(set) var pasteCalls = 0
-
-    func recordPaste() { pasteCalls += 1 }
-}
-
-/// `PasteControlProbe`'s count as a 1×1 element, `debug.pasteCalls.<n>`,
-/// beside the other DEBUG probes (RootView): in a UI-test launch only,
-/// and never in the way of a touch.
-struct PasteCallsProbe: View {
-    @ObservedObject private var probe = PasteControlProbe.shared
-
-    var body: some View {
-        if UITestHooks.isUITestLaunch {
-            Color.clear
-                .frame(width: 1, height: 1)
-                .accessibilityElement()
-                .accessibilityLabel("Paste calls")
-                .accessibilityValue("\(probe.pasteCalls)")
-                .accessibilityIdentifier("debug.pasteCalls.\(probe.pasteCalls)")
-                .allowsHitTesting(false)
-        }
-    }
-}
-#endif
 #else
 /// The Mac pastes with ⌘V: its rows never hand over an `onPaste`, so
 /// there is no control to draw.

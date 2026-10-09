@@ -114,6 +114,13 @@ struct LibraryView: View {
         .accessibilityHidden(overlayRevealed)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg.ignoresSafeArea())
+        #if DEBUG
+        // R3-03: the paste control's count, for the paste UI tests' failure
+        // messages. Here, on the one screen that draws the control, and
+        // after the shelf's own hiding, which would take it away while the
+        // import overlay is up.
+        .overlay(alignment: .bottomTrailing) { PasteCallsProbe() }
+        #endif
         .navigationBarTitleDisplayMode(.inline)
         // The bar's system content follows the app's scheme, not the
         // phone's: under an in-app Dark override on a Light phone it

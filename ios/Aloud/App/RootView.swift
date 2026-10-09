@@ -60,14 +60,10 @@ struct RootView: View {
             if phase == .active { model.sceneBecameActive() }
         }
         #if DEBUG
-        // UI-test launches only: what VoiceOver heard, which haptics played
-        // and how many pastes the system control handed over (R3-03).
-        .overlay(alignment: .bottomTrailing) {
-            ZStack {
-                UITestProbeOverlay()
-                PasteCallsProbe()
-            }
-        }
+        // UI-test launches only: what VoiceOver heard and which haptics
+        // played. The paste control's count sits on the Library, where the
+        // control is (R3-03), so the reader's values stay free of it.
+        .overlay(alignment: .bottomTrailing) { UITestProbeOverlay() }
         #endif
     }
 
