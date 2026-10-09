@@ -171,20 +171,24 @@ final class ColdLeadPlanTests: XCTestCase {
 
 /// R3-07 in the controller: a seek onto a long, uncached sentence starts on
 /// its lead clause, the rest following gaplessly as one sentence. Silent:
-/// the rig's muted controller over an engine that makes silence at a set
-/// speed.
+/// the rig's muted controller over an engine that makes a quiet-edged tone
+/// at a set speed.
 @MainActor
 final class ColdLeadPlaybackTests: XCTestCase {
 
-    /// A warm stand-in for Kokoro that makes `secondsPerWord` of silence a
-    /// word, taking a `k`th of that to make it, and reports `k` as its
-    /// measured speed.
+    /// A warm stand-in for Kokoro that makes `secondsPerWord` of a low tone
+    /// a word, between `edgeQuiet` of silence at each end as Kokoro leaves
+    /// (so a seam has quiet to trim and a short one pads), taking a `k`th
+    /// of the tone's length to make it, and reports `k` as its measured
+    /// speed.
     final class PacedNeuralEngine: WarmableTtsEngine, @unchecked Sendable {
         let voices: [TtsVoice] = [KokoroVoiceCatalog.defaultVoice]
         let k: Double
         let secondsPerWord: TimeInterval
+        static let edgeQuiet: TimeInterval = 0.2
+        private static let sampleRate = 24_000.0
         private let lock = NSLock()
-        private var log: [(text: String, audio: TimeInterval)] = []
+        private var log: [(text: String, audio: TimeInterval, clip: SynthesizedAudio)] = []
 
         init(k: Double, secondsPerWord: TimeInterval = 0.2) {
             self.k = k
@@ -203,13 +207,29 @@ final class ColdLeadPlaybackTests: XCTestCase {
         func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
             let words = text.split(whereSeparator: \.isWhitespace).count
             let audio = Double(words) * secondsPerWord / max(speed, 0.1)
-            lock.withLock { log.append((text, audio)) }
+            let clip = Self.voiced(audio, nativeSpeed: speed)
+            lock.withLock { log.append((text, audio, clip)) }
             try await Task.sleep(nanoseconds: UInt64(audio / k * 1_000_000_000))
-            return .silence(duration: audio, sampleRate: 24_000, nativeSpeed: speed)
+            return clip
         }
 
-        var requests: [(text: String, audio: TimeInterval)] { lock.withLock { log } }
+        /// `audio` s of a 110 Hz tone between `edgeQuiet` of zeros.
+        static func voiced(_ audio: TimeInterval, nativeSpeed: Double) -> SynthesizedAudio {
+            let quiet = [Float](repeating: 0, count: Int(edgeQuiet * sampleRate))
+            let tone = (0..<max(1, Int(audio * sampleRate))).map {
+                Float(sin(2 * Double.pi * 110 * Double($0) / sampleRate)) * 0.3
+            }
+            return SynthesizedAudio(samples: quiet + tone + quiet, sampleRate: sampleRate, nativeSpeed: nativeSpeed)
+        }
+
+        /// Every request, with the clip it answered, in the order made.
+        var requests: [(text: String, audio: TimeInterval, clip: SynthesizedAudio)] { lock.withLock { log } }
     }
+
+    /// Slack on first audio past the lead's making: a short warm-up the
+    /// seek may land behind (a three-word line, 0.2 s at k 3) and the
+    /// rig's polling. Under the next piece's making, so waiting on it fails.
+    private static let firstAudioSlack: TimeInterval = 0.4
 
     private static let longSentence = 30
     /// 60 words, a comma after every sixth.
@@ -272,28 +292,48 @@ final class ColdLeadPlaybackTests: XCTestCase {
                        requestMark: requestMark)
     }
 
-    private func pieceRequests(_ started: Started) -> [(text: String, audio: TimeInterval)] {
+    private func pieceRequests(_ started: Started)
+        -> [(text: String, audio: TimeInterval, clip: SynthesizedAudio)] {
         started.engine.requests[started.requestMark...].filter { !$0.text.hasPrefix("Line") }
     }
 
     func testAColdSeekStartsOnTheLeadAndPlaysTheSentenceAsOne() async throws {
         let started = try await seekOntoTheLongSentence()
         let rig = started.rig
-        let wholeSynthesis = 60 * started.engine.secondsPerWord / started.engine.k
-
-        // First audio: the lead's synthesis, never the whole sentence's.
-        XCTAssertEqual(pieceRequests(started).first?.text, started.plan.pieces.first?.text, "the lead is made first")
-        XCTAssertLessThan(started.firstAudio, wholeSynthesis / 2, "first audio waits on the lead alone")
 
         // Every piece lands, then the joined clip is cached once.
         let cached = await rig.waitUntil(8) { rig.cache.clip(forKey: started.key) != nil }
         XCTAssertTrue(cached, "the joined clip is cached under the sentence's key")
         let pieces = pieceRequests(started)
+        XCTAssertEqual(pieces.first?.text, started.plan.pieces.first?.text, "the lead is made first")
         XCTAssertEqual(pieces.map(\.text), started.plan.pieces.map(\.text), "each piece made once, in order")
         XCTAssertFalse(pieces.contains { $0.text == Self.longText }, "never made whole")
-        let pieceSeconds = pieces.reduce(0) { $0 + $1.audio }
+        guard pieces.count > 1 else { return XCTFail("the sentence was made in pieces") }
+
+        // First audio: the lead's making and a little, never the lead's
+        // and the next piece's.
+        let k = started.engine.k
+        let leadMaking = pieces[0].audio / k
+        let throughNext = (pieces[0].audio + pieces[1].audio) / k
+        XCTAssertLessThan(leadMaking + Self.firstAudioSlack, throughNext,
+                          "the bound tells the lead alone from the lead and the next piece")
+        XCTAssertLessThan(started.firstAudio, leadMaking + Self.firstAudioSlack, "first audio waits on the lead alone")
+
+        // The engine's quiet edges were evened at each seam, and the cached
+        // clip is the seamed pieces joined, not the engine's raw audio.
+        var tail: TimeInterval = 0
+        var seamed: [SynthesizedAudio] = []
+        for (index, piece) in pieces.enumerated() {
+            let even = ColdLeadPlan.seamed(piece.clip, trimsLeading: index > 0,
+                                           trimsTrailing: index < pieces.count - 1,
+                                           rate: started.plan.rate, precedingTail: tail)
+            tail = even.tail
+            seamed.append(even.clip)
+        }
+        let seamedSamples = seamed.reduce(0) { $0 + $1.samples.count }
+        XCTAssertNotEqual(seamedSamples, pieces.reduce(0) { $0 + $1.clip.samples.count }, "the seams were evened")
         let joined = try XCTUnwrap(rig.cache.clip(forKey: started.key))
-        XCTAssertEqual(joined.duration, pieceSeconds, accuracy: 0.001)
+        XCTAssertEqual(joined.samples.count, seamedSamples, "the seamed pieces, joined")
         let requests = started.engine.requests.count
         let again = try await rig.scheduler.synthesize(Self.longText, voice: PlaybackTestRig.michael,
                                                         speed: NativeSpeed.tier(for: rig.controller.rate,
@@ -307,7 +347,7 @@ final class ColdLeadPlaybackTests: XCTestCase {
         // each seam, and the sentence is still the one reading.
         XCTAssertEqual(rig.controller.currentSentence, Self.longSentence)
         let clip = try XCTUnwrap(rig.controller.wordTiming.clip(for: Self.longSentence))
-        XCTAssertEqual(clip.duration, pieceSeconds, accuracy: 0.01, "the node never starved")
+        XCTAssertEqual(clip.duration, joined.duration, accuracy: 0.01, "the node never starved")
         let windows = clip.windows
         let tokens = SentenceSegmenter.tokenizeSentence(Self.longText)
         let spoken = tokens.indices.filter { tokens[$0].weight > 0 }
@@ -375,7 +415,10 @@ final class ColdLeadSchedulerTests: XCTestCase {
         XCTAssertEqual(landed.map(\.isLast), [false, true])
         XCTAssertEqual(engine.requests.prefix(2).map(\.text), plan.pieces.map(\.text), "nothing between the pieces")
         let joined = try XCTUnwrap(cache.clip(forKey: "lead"))
-        XCTAssertEqual(joined.samples.count, landed.reduce(0) { $0 + $1.clip.samples.count })
+        let landedSamples = landed.reduce(0) { $0 + $1.clip.samples.count }
+        XCTAssertEqual(joined.samples.count, landedSamples, "the landed pieces, joined")
+        XCTAssertNotEqual(landedSamples, engine.requests.prefix(2).reduce(0) { $0 + $1.clip.samples.count },
+                          "each piece landed seamed, not as the engine made it")
 
         // Asked again, the cached clip comes whole, made by no one.
         let requests = engine.requests.count
@@ -384,5 +427,64 @@ final class ColdLeadSchedulerTests: XCTestCase {
         XCTAssertEqual(again.count, 1)
         XCTAssertNil(again.first?.piece)
         XCTAssertEqual(engine.requests.count, requests)
+    }
+
+    /// A cold lead queued behind a different job already in flight (a
+    /// warm-up the jump outran) signposts its wait in line from its admit
+    /// to its turn, so a cold first audio's waiting reads apart from the
+    /// lead's own making. A lead with nothing in flight waits on nothing,
+    /// and one whose listener leaves while it waits gives up.
+    @MainActor
+    func testALeadBehindAJobInFlightSignpostsItsWait() async throws {
+        let voice = KokoroVoiceCatalog.defaultVoice
+        let plan = ColdLeadPlan(pieces: [
+            ColdLeadPlan.Piece(tokens: 0..<7, text: "one two three four,", words: 4),
+            ColdLeadPlan.Piece(tokens: 7..<12, text: "five six seven.", words: 3),
+        ], rate: 1)
+        func eventually(_ condition: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !condition() {
+                if Date() >= deadline { return false }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            return true
+        }
+        /// A scheduler whose warm-up is parked in flight, signposting to a recorder.
+        func parked() async throws
+            -> (SynthesisScheduler, CatchingUpTests.HeldEngine, BudgetSignpostsTests.Recorder) {
+            let held = CatchingUpTests.HeldEngine(voices: [voice], holding: 0)
+            addTeardownBlock { held.release() }   // never leave a synthesis parked
+            let recorder = BudgetSignpostsTests.Recorder()
+            let scheduler = SynthesisScheduler(engine: held, cache: AudioClipCache(), signposts: recorder.signposts)
+            await scheduler.prefetch("A warm-up the jump outran.", voice: voice, key: "warm")
+            let started = await eventually { held.isHolding }
+            try XCTSkipUnless(started, "the warm-up never started")
+            return (scheduler, held, recorder)
+        }
+
+        // Behind the warm-up: begun at its admit, ended at its turn.
+        let (scheduler, held, recorder) = try await parked()
+        let stream = await scheduler.synthesizeLead(plan, voice: voice, key: "lead")
+        XCTAssertEqual(recorder.trace(.leadWait), ["begin"], "waiting in line")
+        held.release()
+        var landed = 0
+        for try await _ in stream { landed += 1 }
+        XCTAssertEqual(landed, plan.pieces.count)
+        XCTAssertEqual(recorder.trace(.leadWait), ["begin", "end"], "its turn came")
+
+        // Nothing in flight: nothing to wait on.
+        for try await _ in await scheduler.synthesizeLead(plan, voice: voice, key: "idle") {}
+        XCTAssertEqual(recorder.trace(.leadWait), ["begin", "end"], "a lead with nothing ahead never waits")
+        XCTAssertEqual(recorder.unpaired, [])
+
+        // Its listener leaves while it waits: the wait gave up.
+        let (other, _, otherRecorder) = try await parked()
+        let listener = Task { for try await _ in await other.synthesizeLead(plan, voice: voice, key: "gone") {} }
+        let waiting = await eventually { otherRecorder.trace(.leadWait) == ["begin"] }
+        XCTAssertTrue(waiting, "waiting in line")
+        listener.cancel()
+        let gaveUp = await eventually { otherRecorder.trace(.leadWait) == ["begin", "gave up"] }
+        XCTAssertTrue(gaveUp, "dropped before its turn, got \(otherRecorder.trace(.leadWait))")
+        XCTAssertEqual(otherRecorder.unpaired, [])
     }
 }

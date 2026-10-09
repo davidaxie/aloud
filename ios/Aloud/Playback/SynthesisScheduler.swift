@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum SynthesisPriority: String, Sendable {
     case now
@@ -65,13 +66,24 @@ actor SynthesisScheduler {
         var sinks: [Sink] = []
         /// The pieces made so far, seamed, for a listener that joins late.
         var landed: [SynthesizedAudio] = []
+        /// A cold lead queued behind a different job in flight: its wait
+        /// in line, signposted from its admit to its turn (`leadWait`).
+        var leadWait: LeadWait?
 
         /// Someone still wants it made.
         var isWanted: Bool { isWarmUp || !waiters.isEmpty || !sinks.isEmpty }
     }
 
+    /// When a cold lead began waiting behind another job, and its interval.
+    private struct LeadWait {
+        let interval: BudgetSignposts.Interval
+        let since: ContinuousClock.Instant
+    }
+
     private let engine: any TtsEngine
     private let cache: AudioClipCache
+    private let signposts: BudgetSignposts
+    private static let log = Logger(subsystem: "com.davidxie.Aloud", category: "synthesis")
 
     private var nowLane: [Job] = []
     private var prefetchLane: [Job] = []
@@ -82,9 +94,10 @@ actor SynthesisScheduler {
 
     private static let prefetchBound = 8
 
-    init(engine: any TtsEngine, cache: AudioClipCache) {
+    init(engine: any TtsEngine, cache: AudioClipCache, signposts: BudgetSignposts = .live) {
         self.engine = engine
         self.cache = cache
+        self.signposts = signposts
     }
 
     /// Synthesizes (or serves from cache) the clip for `key`, waiting its turn
@@ -161,6 +174,7 @@ actor SynthesisScheduler {
         nowLane = []
         prefetchLane = []
         for job in dropped {
+            discard(job)
             for waiter in job.waiters {
                 waiter.deliver(.failure(CancellationError()))
             }
@@ -273,6 +287,11 @@ actor SynthesisScheduler {
         preemptPrefetchLane()
         if job.plan == nil { job.plan = plan }
         job.sinks.append(sink)
+        // Behind another job in flight, the lead waits its whole length
+        // first: measured apart from the lead's own making.
+        if job.leadWait == nil, inFlight != nil {
+            job.leadWait = LeadWait(interval: signposts.begin(.leadWait), since: .now)
+        }
         nowLane.insert(job, at: queuedNow ?? nowLane.endIndex)
         drainIfNeeded()
     }
@@ -281,7 +300,7 @@ actor SynthesisScheduler {
         func drop(from lane: inout [Job]) {
             for index in lane.indices.reversed() where lane[index].sinks.contains(where: { $0.id == id }) {
                 lane[index].sinks.removeAll { $0.id == id }
-                if !lane[index].isWanted { lane.remove(at: index) }
+                if !lane[index].isWanted { discard(lane.remove(at: index)) }
             }
         }
         drop(from: &nowLane)
@@ -311,7 +330,7 @@ actor SynthesisScheduler {
         for jobIndex in lane.indices {
             if let waiterIndex = lane[jobIndex].waiters.firstIndex(where: { $0.id == id }) {
                 let waiter = lane[jobIndex].waiters.remove(at: waiterIndex)
-                if !lane[jobIndex].isWanted { lane.remove(at: jobIndex) }
+                if !lane[jobIndex].isWanted { discard(lane.remove(at: jobIndex)) }
                 return waiter.deliver
             }
         }
@@ -342,7 +361,8 @@ actor SynthesisScheduler {
     }
 
     private func drainLoop() async {
-        while let job = dequeue() {
+        while var job = dequeue() {
+            endLeadWait(&job)
             inFlight = job
             let outcome: Result<SynthesizedAudio, Error>
             if let hit = cache.clip(forKey: job.key) {
@@ -405,6 +425,21 @@ actor SynthesisScheduler {
         guard let joined = ColdLeadPlan.joined(made) else { return .failure(TtsError.emptyAudio) }
         cache.store(joined, forKey: key)
         return .success(joined)
+    }
+
+    /// A job dropped before its turn: a lead's wait never reached it.
+    private func discard(_ job: Job) {
+        if let wait = job.leadWait { signposts.end(wait.interval, gaveUp: true) }
+    }
+
+    /// A lead's turn has come: its wait in line ends.
+    private func endLeadWait(_ job: inout Job) {
+        guard let wait = job.leadWait else { return }
+        job.leadWait = nil
+        signposts.end(wait.interval)
+        let waited = ContinuousClock.now - wait.since
+        let seconds = Double(waited.components.seconds) + Double(waited.components.attoseconds) / 1e18
+        Self.log.info("cold lead waited \(seconds, format: .fixed(precision: 3), privacy: .public) s behind a job in flight")
     }
 
     private func dequeue() -> Job? {

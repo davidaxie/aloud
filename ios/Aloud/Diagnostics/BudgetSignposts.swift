@@ -38,6 +38,12 @@ struct BudgetSignposts: Sendable {
         /// The reader's open (R1-16): from its load starting to the
         /// column's first string on the page. Audio starts inside it.
         case readerOpen
+        /// A cold lead (R3-07) queued behind a different job already in
+        /// flight, a warm-up or a whole look-ahead sentence the jump
+        /// outran: from its admit to its turn. Its budget is none; it is
+        /// the share of a cold first audio that is waiting in line, apart
+        /// from the lead's own making.
+        case leadWait
 
         /// The interval's name as Instruments lists it (`rawValue`, as the
         /// static string the signposter takes).
@@ -50,6 +56,7 @@ struct BudgetSignposts: Sendable {
             case .firstAudio: return "firstAudio"
             case .catchingUp: return "catchingUp"
             case .readerOpen: return "readerOpen"
+            case .leadWait: return "leadWait"
             }
         }
     }

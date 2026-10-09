@@ -98,7 +98,7 @@ final class BudgetSignpostsTests: XCTestCase {
     func testTheIntervalsAreTheFiveBudgetsAndTheDrySpells() {
         XCTAssertEqual(Budget.allCases.map(\.rawValue),
                        ["launch", "modelCheck", "modelVerify", "kokoroWarmup", "firstAudio", "catchingUp",
-                        "readerOpen"])
+                        "readerOpen", "leadWait"])
         for budget in Budget.allCases {
             XCTAssertEqual(budget.name.description, budget.rawValue, "Instruments lists it by its budget")
         }
