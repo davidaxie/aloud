@@ -189,7 +189,8 @@ struct ReaderMessageLine: View {
 
     /// Every other stop says why; Play resumes. A sleep stop offers Back
     /// 5 min beside it, or under it at accessibility sizes, where the reason
-    /// needs the full width.
+    /// needs the full width. Under it, Back 5 min keeps no air of its own:
+    /// the reason's row already keeps the slot's (`rowInkHeadroom`).
     @ViewBuilder
     private func stoppedLine(_ reason: StopReason) -> some View {
         if reason == .sleepTimer {
@@ -197,6 +198,7 @@ struct ReaderMessageLine: View {
                 VStack(alignment: .leading, spacing: 0) {
                     stopReasonButton(reason)
                     backFiveMinutesButton
+                        .environment(\.rowInkHeadroom, false)
                 }
             } else {
                 HStack(spacing: Theme.Space.xs) {
@@ -312,8 +314,10 @@ extension ReaderMessageLine {
     /// The air a `.bottom` row keeps above its ink at the accessibility
     /// sizes (R2-26), where a stacked or wrapped line outgrows its 44pt row
     /// and would otherwise sit right under the bar's hairline, which has no
-    /// top inset on the iPhone. Below them, and on a centred row (the Mac),
-    /// it is zero, so nothing moves by a point.
+    /// top inset on the iPhone. Only the slot's top line keeps it, so the
+    /// slot grows by it once: a row stacked under another turns it off
+    /// (`rowInkHeadroom`). Below those sizes, and on a centred row (the
+    /// Mac), it is zero, so nothing moves by a point.
     nonisolated static let overflowHeadroom: CGFloat = Theme.Space.sm
 
     /// The lift for ink `inkHeight` tall in a `.bottom` row: `footInset`,
@@ -327,7 +331,8 @@ extension ReaderMessageLine {
 extension View {
     /// On a `.bottom` row, sets the ink `ReaderMessageLine.footLift` above
     /// the row's foot (an alignment guide, so no frame or hit area changes)
-    /// and, at the accessibility sizes, keeps `overflowHeadroom` above it.
+    /// and, at the accessibility sizes, keeps `overflowHeadroom` above it
+    /// unless it sits under the slot's top line (`rowInkHeadroom` off).
     /// Nothing on a centred row. The natural-voice offer's row takes it too,
     /// so its ink sits where the line it replaces put it.
     func rowInk(_ alignment: VerticalAlignment) -> some View {
@@ -340,16 +345,21 @@ struct RowInk: ViewModifier {
     let alignment: VerticalAlignment
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Off on a row stacked under the slot's top line.
+    @Environment(\.rowInkHeadroom) private var keepsHeadroom
 
-    /// `overflowHeadroom` on a `.bottom` row at an accessibility size,
-    /// otherwise zero.
-    nonisolated static func headroom(alignment: VerticalAlignment, dynamicTypeSize: DynamicTypeSize) -> CGFloat {
-        alignment == .bottom && dynamicTypeSize.isAccessibilitySize ? ReaderMessageLine.overflowHeadroom : 0
+    /// `overflowHeadroom` on a `.bottom` row at an accessibility size that
+    /// `keepsHeadroom` (the slot's top line), otherwise zero.
+    nonisolated static func headroom(alignment: VerticalAlignment, dynamicTypeSize: DynamicTypeSize,
+                                     keepsHeadroom: Bool = true) -> CGFloat {
+        keepsHeadroom && alignment == .bottom && dynamicTypeSize.isAccessibilitySize
+            ? ReaderMessageLine.overflowHeadroom : 0
     }
 
     func body(content: Content) -> some View {
         let alignment = alignment
-        let headroom = Self.headroom(alignment: alignment, dynamicTypeSize: dynamicTypeSize)
+        let headroom = Self.headroom(alignment: alignment, dynamicTypeSize: dynamicTypeSize,
+                                     keepsHeadroom: keepsHeadroom)
         // The headroom is padding, so a tall line's row grows by it; the
         // lift is still measured on the ink alone.
         return content
@@ -358,5 +368,22 @@ struct RowInk: ViewModifier {
                 guard alignment == .bottom else { return dimensions[.bottom] }
                 return dimensions[.bottom] + ReaderMessageLine.footLift(inkHeight: dimensions.height - headroom)
             }
+    }
+}
+
+private struct RowInkHeadroomKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether a `rowInk` row may keep `overflowHeadroom` above its ink: on
+    /// for the slot's top line, off for a row stacked under it (Back 5 min
+    /// under a sleep stop's reason, the offer's buttons under its wrapped
+    /// copy), whose air the line above already keeps. Each such row taking
+    /// its own opened a gap inside the slot and grew the bar by up to 12pt
+    /// more at the sizes where its height budget is tightest (R2-26).
+    var rowInkHeadroom: Bool {
+        get { self[RowInkHeadroomKey.self] }
+        set { self[RowInkHeadroomKey.self] = newValue }
     }
 }

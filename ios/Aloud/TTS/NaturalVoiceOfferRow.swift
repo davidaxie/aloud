@@ -46,7 +46,10 @@ struct NaturalVoiceOfferRow: View {
             }
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                 offerText(wraps: true)
+                // Under the copy, whose row already keeps the slot's air at
+                // the accessibility sizes; beside it, each row keeps its own.
                 buttons
+                    .environment(\.rowInkHeadroom, false)
             }
         }
         .naturalVoiceCellularPrompt(isPresented: $isConfirmingCellular, asker: promptAsker)

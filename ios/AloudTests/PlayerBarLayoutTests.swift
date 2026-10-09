@@ -434,6 +434,35 @@ final class PlayerBarLayoutTests: XCTestCase {
                        "the stacked ink plus its air")
     }
 
+    /// R2-26 review: at an accessibility size a sleep stop stacks Back 5 min
+    /// under its reason, and only the reason, the slot's top line, keeps the
+    /// air under the hairline, so the footed line is its centred height plus
+    /// 12pt, once. Back 5 min keeping its own too opened a gap inside the
+    /// line and grew the bar by up to 12pt more (24pt over at AX4). At the
+    /// bar's cap, AX2, the reason fits one row on a 375pt phone, so the
+    /// narrow line here wraps it, as AX4 does at 375pt; a reason that fits
+    /// its row already has the air.
+    func testASleepStopKeepsItsAirOnceAtAccessibilitySizes() {
+        func height(_ size: DynamicTypeSize, _ rowAlignment: VerticalAlignment, width: CGFloat) -> CGFloat {
+            let position = ReaderPositionLine(kind: .chapter(number: 1, count: 9), title: "Chapter I",
+                                              minutesLeft: 23)
+            let line = ReaderMessageLine(message: .stopped(.sleepTimer), position: position, onOpenContents: {},
+                                         onRetry: {}, onBackFiveMinutes: {}, rowAlignment: rowAlignment)
+                .environment(\.dynamicTypeSize, size)
+            return UIHostingController(rootView: line)
+                .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+                .height
+        }
+        let cases: [(DynamicTypeSize, CGFloat)] = [(.accessibility2, 300), (.accessibility4, 375)]
+        for (size, width) in cases {
+            let centred = height(size, .center, width: width)
+            XCTAssertGreaterThan(centred, 2 * ReaderMessageLine.rowHeight + 1,
+                                 "the reason wraps above Back 5 min at \(size), \(width)pt")
+            XCTAssertEqual(height(size, .bottom, width: width), centred + ReaderMessageLine.overflowHeadroom,
+                           accuracy: 0.5, "the reason's air once, none under it, at \(size), \(width)pt")
+        }
+    }
+
     /// Pure rules (P001-P003, P006).
     func testThePlayerBarLayoutRules() {
         let layout = PlayerBarLayout(barWidth: 362, dynamicTypeSize: .large, playDiameter: 54, skipTarget: 44,

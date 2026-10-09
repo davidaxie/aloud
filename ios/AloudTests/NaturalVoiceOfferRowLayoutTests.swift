@@ -102,17 +102,19 @@ final class NaturalVoiceOfferRowLayoutTests: XCTestCase {
 
     /// R2-26: at an accessibility size the wrapped offer on the bar's foot
     /// keeps the chapter line's air above its copy (12pt), so the crossfade
-    /// between them never moves the ink; the button row may take its own
-    /// air too where its ink outgrows the row, never more. Below those sizes
-    /// the footed offer is exactly as tall as the centred one.
+    /// between them never moves the ink. The air comes once: the button row
+    /// under the copy keeps none of its own, which opened a gap between the
+    /// copy and the buttons (~3pt at AX2) and took that much more from the
+    /// page. Below those sizes the footed offer is exactly as tall as the
+    /// centred one.
     func testAtAnAccessibilitySizeTheFootedOfferKeepsAirAboveIt() {
         let centred = rowHeight(width: 335, size: .accessibility2)
         let footed = rowHeight(width: 335, size: .accessibility2, rowAlignment: .bottom)
         XCTAssertGreaterThanOrEqual(centred, Self.stacked, "the copy wraps above the buttons")
-        XCTAssertGreaterThanOrEqual(footed - centred, ReaderMessageLine.overflowHeadroom - 0.5,
-                                    "air above the wrapped copy")
-        XCTAssertLessThanOrEqual(footed - centred, 2 * ReaderMessageLine.overflowHeadroom + 0.5,
-                                 "at most the copy's and the buttons' air")
+        XCTAssertGreaterThan(centred, Self.stacked + Theme.Space.xxs + 1,
+                             "the wrapped copy outgrows its own 44pt row")
+        XCTAssertEqual(footed - centred, ReaderMessageLine.overflowHeadroom, accuracy: 0.5,
+                       "air above the wrapped copy, once; none under it above the buttons")
         XCTAssertEqual(rowHeight(width: 335, size: .xxxLarge, rowAlignment: .bottom),
                        rowHeight(width: 335, size: .xxxLarge), accuracy: 0.5, "nothing moves below them")
     }

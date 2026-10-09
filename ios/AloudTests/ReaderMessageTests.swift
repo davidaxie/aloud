@@ -224,5 +224,13 @@ final class ReaderMessageTests: XCTestCase {
         }
         XCTAssertEqual(RowInk.headroom(alignment: .bottom, dynamicTypeSize: .xxxLarge), 0)
         XCTAssertEqual(RowInk.headroom(alignment: .bottom, dynamicTypeSize: .accessibility1), 12)
+        // Only the slot's top line keeps it: a row stacked under it (Back 5
+        // min under a sleep stop's reason, the offer's buttons under its
+        // copy) keeps none, so the slot grows by it once.
+        for size in DynamicTypeSize.allCases {
+            XCTAssertEqual(RowInk.headroom(alignment: .bottom, dynamicTypeSize: size, keepsHeadroom: false), 0,
+                           "a row under the slot's top line, \(size)")
+        }
+        XCTAssertTrue(EnvironmentValues().rowInkHeadroom, "every row keeps it unless told")
     }
 }

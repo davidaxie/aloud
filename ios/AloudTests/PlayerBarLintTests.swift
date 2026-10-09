@@ -323,6 +323,33 @@ final class PlayerBarLintTests: XCTestCase {
                        "the one-line row and its buttons align on it too")
     }
 
+    /// R2-26 review: only the slot's top line keeps the air under the
+    /// hairline. A row stacked under it turns `rowInkHeadroom` off (Back 5
+    /// min under a sleep stop's reason, the offer's buttons under its
+    /// wrapped copy); side by side, in the one-line forms, every row keeps
+    /// it, as they all start at the slot's top. PlayerBarLayoutTests and
+    /// NaturalVoiceOfferRowLayoutTests measure the hosted rows.
+    func testOnlyTheSlotsTopLineKeepsAirUnderTheHairline() throws {
+        let s = try SourceTree.sources(only: ["Reader/ReaderMessageLine.swift", "TTS/NaturalVoiceOfferRow.swift"])
+        let compact = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let line = compact(Self.code(try XCTUnwrap(s["Reader/ReaderMessageLine.swift"])))
+        let row = compact(Self.code(try XCTUnwrap(s["TTS/NaturalVoiceOfferRow.swift"])))
+        let off = ".environment(\\.rowInkHeadroom, false)"
+
+        XCTAssertTrue(line.contains("VStack(alignment: .leading, spacing: 0) { stopReasonButton(reason) backFiveMinutesButton \(off) }"),
+                      "Back 5 min under the reason keeps no air of its own")
+        XCTAssertTrue(line.contains("HStack(spacing: Theme.Space.xs) { stopReasonButton(reason) backFiveMinutesButton }"),
+                      "beside the reason it is a top line too")
+        XCTAssertEqual(line.components(separatedBy: off).count - 1, 1, "no other arm turns it off")
+        XCTAssertTrue(row.contains("offerText(wraps: true) buttons \(off) }"),
+                      "the buttons under the wrapped copy keep no air of their own")
+        XCTAssertTrue(row.contains("offerText(wraps: false) Spacer(minLength: Theme.Space.xs) buttons }"),
+                      "beside the copy they are a top line too")
+        XCTAssertEqual(row.components(separatedBy: off).count - 1, 1, "only the stacked form turns it off")
+        XCTAssertTrue(line.contains("keepsHeadroom && alignment == .bottom && dynamicTypeSize.isAccessibilitySize"),
+                      "the headroom reads the flag")
+    }
+
     /// P007: native checkmark items over the shared rule, on both apps.
     func testTheSleepMenuUsesTheSharedRuleAndNativeSelection() throws {
         let s = try SourceTree.sources(only: ["Reader/SleepChip.swift"])
