@@ -44,26 +44,25 @@ final class ReaderLintTests: XCTestCase {
                        "no bar height measured on its own")
     }
 
-    /// R3-01 repair: the bar's reach also counts the page's bottom inset,
-    /// read inside the bar's inset (the page) and under it (the text), so a
-    /// reopen that reads the two edges level still has the bar in the band
-    /// and the band measured; the colophon used to wait on it for good.
-    func testTheBandCountsThePagesBottomInsetToo() throws {
+    /// R3-01 repair: the text's bottom edge, and its twin in the window, are
+    /// read on the text view before its `.ignoresSafeArea(edges: .bottom)`.
+    /// The ignore places the text down to the window's bottom, but its own
+    /// frame stays the safe area's, which ends at the bar's top: read after
+    /// it, the band's edges came in level on every open, the bar never
+    /// counted, and a reopened finished book never placed its colophon.
+    func testTheTextsBottomIsReadOnTheTextInsideItsIgnore() throws {
         let path = "Reader/ReaderScreen.swift"
         let s = try SourceTree.sources(only: [path])
         let screen = try XCTUnwrap(s[path])
-        XCTAssertTrue(screen.contains("FollowBand.chromeReach(textMaxY: textBottom, chromeMinY: barTop, "
-                                          + "pageBottomInset: bottomInset)"), "both measures of the bar's reach")
-        XCTAssertTrue(screen.contains("obscuredBottom: FollowBand.obscuredBottom(chrome: chromeReach,"),
-                      "the band stands on the bar's reach")
-        XCTAssertTrue(screen.contains("bandMeasured: FollowBand.isMeasured(chrome: chromeReach)"),
-                      "measured on the same reach")
-        XCTAssertEqual(SourceTree.occurrences(of: "proxy.safeAreaInsets.bottom", in: [path: screen]), 2,
-                       "the inset read on the page and on the text")
-        // The page's reading sits inside the bar's inset, or it would leave the bar out.
-        let page = try XCTUnwrap(screen.range(of: "pageBottomInset = inset"), "the page's reading")
-        let inset = try XCTUnwrap(screen.range(of: ".safeAreaInset(edge: .bottom, spacing: 0) {"), "the bar's inset")
-        XCTAssertLessThan(page.lowerBound, inset.lowerBound, "read on the page the bar's inset wraps")
+        let text = try XCTUnwrap(screen.range(of: "ReaderTextView("), "the text view")
+        let rest = text.upperBound..<screen.endIndex
+        let ignore = try XCTUnwrap(screen.range(of: ".ignoresSafeArea(edges: .bottom)", range: rest), "the text's ignore")
+        for reading in ["textBottom = maxY", "textBottomInWindow = maxY"] {
+            let at = try XCTUnwrap(screen.range(of: reading, range: rest), reading)
+            XCTAssertLessThan(at.lowerBound, ignore.lowerBound, "\(reading) is read on the text, inside its ignore")
+        }
+        XCTAssertTrue(screen.contains("bandMeasured: FollowBand.isMeasured(textMaxY: textBottom, chromeMinY: barTop)"),
+                      "the colophon waits on the same edges")
     }
 
     /// P046: the reader's principal item names the author under the title,

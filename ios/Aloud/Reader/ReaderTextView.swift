@@ -56,12 +56,11 @@ struct ReaderTextView: UIViewRepresentable {
     /// under it, so the band is measured above it and recomputed when the
     /// chrome changes height.
     var obscuredBottom: CGFloat = 0
-    /// R3-01: whether `obscuredBottom` stands on a measured chrome reach
-    /// (`FollowBand.chromeReach`: the player bar's reach over the text, the
-    /// bar with a real height). Until it does, the band leaves the chrome
-    /// out, and a colophon aimed on it would land under the bar once the bar
-    /// is measured, so the colophon waits for it; sentence following never
-    /// does.
+    /// R3-01: whether `obscuredBottom` stands on measured edges (the text's
+    /// bottom and the player bar's top, the bar with a real height). Until
+    /// it does, the band leaves the chrome out, and a colophon aimed on it
+    /// would land under the bar once the bar is measured, so the colophon
+    /// waits for it; sentence following never does.
     var bandMeasured: Bool = true
     /// R24: at the end of the book, the colophon that replaces the "· · ·"
     /// end mark; nil everywhere else. Appearing fades in, and a fresh

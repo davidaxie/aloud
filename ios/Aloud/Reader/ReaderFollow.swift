@@ -118,38 +118,8 @@ enum FollowBand {
     /// that looked measured, and the colophon landed on it under the bar.
     static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,
                                chipReach: CGFloat, showsChip: Bool) -> CGFloat {
-        obscuredBottom(chrome: chromeReach(textMaxY: textMaxY, chromeMinY: chromeMinY),
-                       chipReach: chipReach, showsChip: showsChip)
-    }
-
-    /// The chrome's reach over the text as its two edges give it
-    /// (`obscuredBottom(textMaxY:chromeMinY:)`); nil until both are measured.
-    static func chromeReach(textMaxY: CGFloat?, chromeMinY: CGFloat?) -> CGFloat? {
-        guard textMaxY != nil, chromeMinY != nil else { return nil }
-        return obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY)
-    }
-
-    /// The chrome's reach over the text from two measures of the one strip,
-    /// the deeper of them: the bar's top down to the text's bottom (the
-    /// edges), and the page's bottom safe-area inset (`pageBottomInset`:
-    /// the bar's inset with the home-indicator strip under it, the strip
-    /// the text runs beneath). R3-01 repair: on a reopen the edges came in
-    /// level, the text's bottom read at the bar's own top, so the band left
-    /// the bar out for good and the colophon waited on it forever (or, before
-    /// R3-01, landed under the chip and the bar). The inset is what sets the
-    /// chip above the bar, so it counts the bar wherever the chip clears it.
-    /// Nil until either is measured.
-    static func chromeReach(textMaxY: CGFloat?, chromeMinY: CGFloat?, pageBottomInset: CGFloat?) -> CGFloat? {
-        let edges = chromeReach(textMaxY: textMaxY, chromeMinY: chromeMinY)
-        guard let pageBottomInset else { return edges }
-        return max(edges ?? 0, pageBottomInset, 0)
-    }
-
-    /// The band for a chrome reach (`chromeReach`), with the chip slot
-    /// floating over the text above it while a chip shows: its reach and a
-    /// small gap. 0, the chip with it, while the chrome is unmeasured.
-    static func obscuredBottom(chrome: CGFloat?, chipReach: CGFloat, showsChip: Bool) -> CGFloat {
-        guard let chrome else { return 0 }
+        guard textMaxY != nil, chromeMinY != nil else { return 0 }
+        let chrome = obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY)
         guard showsChip, chipReach > 0 else { return chrome }
         return chrome + chipReach + Theme.Space.sm
     }
@@ -172,15 +142,8 @@ enum FollowBand {
     /// and the bar's top, with the bar taller than a touch target (a bar
     /// measured mid-layout at no height is not yet the bar).
     static func isMeasured(textMaxY: CGFloat?, chromeMinY: CGFloat?) -> Bool {
-        isMeasured(chrome: chromeReach(textMaxY: textMaxY, chromeMinY: chromeMinY))
-    }
-
-    /// The same for a chrome reach (`chromeReach`): measured once the bar
-    /// it stands on reaches further than a touch target (the home-indicator
-    /// strip alone, before the bar has a height, is not yet the bar).
-    static func isMeasured(chrome: CGFloat?) -> Bool {
-        guard let chrome else { return false }
-        return chrome > chipMinimumHeight
+        guard let textMaxY, let chromeMinY else { return false }
+        return chromeMinY < textMaxY - chipMinimumHeight
     }
 
     /// `chipReach` with a chip showing and not yet measured: at least the
@@ -214,14 +177,7 @@ enum FollowBand {
     static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,
                                chipReach: CGFloat, showsChip: Bool,
                                windowTextMaxY: CGFloat?, sheetMinY: CGFloat?) -> CGFloat {
-        obscuredBottom(chrome: chromeReach(textMaxY: textMaxY, chromeMinY: chromeMinY),
-                       chipReach: chipReach, showsChip: showsChip, windowTextMaxY: windowTextMaxY, sheetMinY: sheetMinY)
-    }
-
-    /// The same for a chrome reach (`chromeReach`).
-    static func obscuredBottom(chrome: CGFloat?, chipReach: CGFloat, showsChip: Bool,
-                               windowTextMaxY: CGFloat?, sheetMinY: CGFloat?) -> CGFloat {
-        max(obscuredBottom(chrome: chrome, chipReach: chipReach, showsChip: showsChip),
+        max(obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY, chipReach: chipReach, showsChip: showsChip),
             obscuredBottom(textMaxY: windowTextMaxY, chromeMinY: sheetMinY))
     }
 }
@@ -243,8 +199,9 @@ final class ReaderFollowProbe: ObservableObject {
     /// published through reader.colophonAim for the UI test's messages.
     @Published var colophonAim: String?
     /// R3-01 repair: the band's raw inputs as the screen measured them (the
-    /// text's bottom, the bar's top, the page's bottom inset), appended to
-    /// reader.colophonAim. The screen owns it, so the column's reset keeps it.
+    /// text's bottom, the bar's top, the text's bottom in the window, the
+    /// chip's reach), appended to reader.colophonAim. The screen owns it, so
+    /// the column's reset keeps it.
     @Published var bandInputs: String?
 
     func noteScroll() { scrolls += 1 }
@@ -270,11 +227,9 @@ final class ReaderFollowProbe: ObservableObject {
     /// One line of the band's raw inputs, in whole points ("none" while
     /// unmeasured).
     static func describeBandInputs(textMaxY: CGFloat?, chromeMinY: CGFloat?, windowTextMaxY: CGFloat?,
-                                   pageBottomInset: CGFloat?, textBottomInset: CGFloat?,
                                    chipReach: CGFloat, showsChip: Bool) -> String {
         func n(_ value: CGFloat?) -> String { value.map { String(Int($0.rounded())) } ?? "none" }
         return "inputs: text bottom \(n(textMaxY)) bar top \(n(chromeMinY)) window text bottom \(n(windowTextMaxY)) "
-            + "page inset \(n(pageBottomInset)) text inset \(n(textBottomInset)) "
             + "chip \(showsChip ? n(chipReach) : "none")"
     }
 }

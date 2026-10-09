@@ -47,17 +47,13 @@ struct ReaderScreen: View {
     /// screen's own coordinate space. The text runs under the bar, and the
     /// bar paints its paper under the home indicator too, so calm follow
     /// measures its band above the bar's top edge, not above its height.
+    /// The text's edge is read on the text view inside its ignored bottom
+    /// safe area, where the text really ends (R3-01 repair): read outside
+    /// it, the frame is the safe area's, which ends at the bar's top, so on
+    /// every open the two edges came in level and the band never had the
+    /// bar in it.
     @State private var textBottom: CGFloat?
     @State private var barTop: CGFloat?
-    /// The page's bottom safe-area inset: the bar's inset and the
-    /// home-indicator strip under it, the strip the text runs beneath. A
-    /// second measure of the bar's reach (`FollowBand.chromeReach`): on a
-    /// reopen the two edges above came in level and the band left the bar
-    /// out (R3-01 repair). The same inset sets the chip above the bar.
-    /// Read on the page, inside the bar's inset, and on the text, which
-    /// runs beneath it (`textBottomInset`); the deeper counts.
-    @State private var pageBottomInset: CGFloat?
-    @State private var textBottomInset: CGFloat?
     /// The Voice & speed sheet's height while it rests open, and the text
     /// view's bottom edge in the window's space. The sheet stands on the
     /// window's bottom edge, where the text ends too, so it covers the page
@@ -74,15 +70,6 @@ struct ReaderScreen: View {
     /// How far the chip slot reaches above the bar: the tallest chip seen
     /// and its padding, a running maximum (`FollowBand.chipReach`, P049).
     @State private var chipReach: CGFloat = 0
-    /// The bar's reach over the text: the deeper of its edges' measure and
-    /// the page's bottom inset (`FollowBand.chromeReach`); nil until either.
-    private var chromeReach: CGFloat? {
-        FollowBand.chromeReach(textMaxY: textBottom, chromeMinY: barTop, pageBottomInset: bottomInset)
-    }
-    /// The page's bottom inset, the deeper of its two readings.
-    private var bottomInset: CGFloat? {
-        [pageBottomInset, textBottomInset].compactMap { $0 }.max()
-    }
     /// The open's signpost (R1-16), from the load starting to the column's
     /// first string; ended as given up if the reader goes first.
     @State private var openSignpost: BudgetSignposts.Interval?
@@ -112,13 +99,6 @@ struct ReaderScreen: View {
             proxy.frame(in: .local).width
         } action: { width in
             pageWidth = width
-        }
-        // Inside the bar's inset, so the page's bottom inset counts the bar
-        // and the home-indicator strip it paints over (R3-01 repair).
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.safeAreaInsets.bottom
-        } action: { inset in
-            pageBottomInset = inset
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let content, let navigation {
@@ -199,15 +179,15 @@ struct ReaderScreen: View {
                 // never under any of them.
                 // A chip counts from the pass it resolves in, at its
                 // minimum until it is measured (R2-09).
-                obscuredBottom: FollowBand.obscuredBottom(chrome: chromeReach,
+                obscuredBottom: FollowBand.obscuredBottom(textMaxY: textBottom, chromeMinY: barTop,
                                                           chipReach: FollowBand.chipReach(previous: chipReach,
                                                                                           showsChip: chip != nil),
                                                           showsChip: chip != nil,
                                                           windowTextMaxY: textBottomInWindow,
                                                           sheetMinY: listeningSheetTop),
-                // R3-01: the colophon lands only on a band whose chrome is
+                // R3-01: the colophon lands only on a band whose edges are
                 // measured, the bar with a real height.
-                bandMeasured: FollowBand.isMeasured(chrome: chromeReach),
+                bandMeasured: FollowBand.isMeasured(textMaxY: textBottom, chromeMinY: barTop),
                 colophon: colophon(for: content, navigation: navigation),
                 voiceOffscreen: $voiceOffscreen,
                 textUnderTopBar: $textUnderTopBar,
@@ -220,7 +200,12 @@ struct ReaderScreen: View {
                 // R1-14: with Aa up, a tap on the page closes the sheet.
                 onDismissTap: showAppearanceSheet ? { showAppearanceSheet = false } : nil,
                 onColumnShown: { BudgetSignposts.live.end(&openSignpost) })
-            .ignoresSafeArea(edges: .bottom)
+            // The text's bottom, read on the text itself before its ignore
+            // below: the ignore places the text down to the window's bottom
+            // edge, under the bar and the home-indicator strip, but its own
+            // frame stays the safe area's, which ends at the bar's top. Read
+            // after it, the text's bottom was the bar's top on every open,
+            // and the band left the bar out (R3-01 repair).
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.frame(in: .named(Self.space)).maxY
             } action: { maxY in
@@ -231,13 +216,7 @@ struct ReaderScreen: View {
             } action: { maxY in
                 textBottomInWindow = maxY
             }
-            // The strip under the bar as the text's own safe area gives it:
-            // the page's bottom inset read a second way (R3-01 repair).
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.safeAreaInsets.bottom
-            } action: { inset in
-                textBottomInset = inset
-            }
+            .ignoresSafeArea(edges: .bottom)
             .overlay(alignment: .top) { topEdgeRule }
             #if DEBUG
             .overlay(alignment: .topLeading) { ReaderFollowProbeOverlay() }
@@ -326,8 +305,7 @@ struct ReaderScreen: View {
     /// R3-01 repair: the band's raw inputs, for reader.colophonAim.
     private var bandInputs: String {
         ReaderFollowProbe.describeBandInputs(textMaxY: textBottom, chromeMinY: barTop,
-                                             windowTextMaxY: textBottomInWindow, pageBottomInset: pageBottomInset,
-                                             textBottomInset: textBottomInset,
+                                             windowTextMaxY: textBottomInWindow,
                                              chipReach: FollowBand.chipReach(previous: chipReach, showsChip: chip != nil),
                                              showsChip: chip != nil)
     }
