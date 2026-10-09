@@ -23,6 +23,10 @@ enum PlatformPlaybackTuning {
     /// past the next sentence boundary are dropped there
     /// (`PlaybackController.switchVoiceAtSentenceBoundary`).
     static let coolingSwitchLandsWithin: Int? = 3
+    /// R3-07: a cold start (a jump or seek that misses the cache) whose
+    /// sentence would take longer than this to make whole starts on a
+    /// lead clause instead (`ColdLeadPlan`); nil makes every sentence whole.
+    static let coldLeadFirstAudioBudget: TimeInterval? = 1.0
     #elseif os(macOS)
     /// About this much listening, at the current speed, queued past the
     /// playhead. Two sentences ran dry at 2.95x: two short lines of
@@ -37,5 +41,9 @@ enum PlatformPlaybackTuning {
     /// The cooling switch splices after the last queued sentence, however
     /// deep the queue.
     static let coolingSwitchLandsWithin: Int? = nil
+    /// R3-07: as the iPhone. The Mac makes a sentence in about half the
+    /// time, so fewer sentences pass the budget, and those split into
+    /// longer leads.
+    static let coldLeadFirstAudioBudget: TimeInterval? = 1.0
     #endif
 }

@@ -49,6 +49,9 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     private var damagedHandler: (@Sendable () -> Void)?
     /// `synthesize` calls handed to `queue` and not yet begun.
     private var waitingSyntheses = 0
+    /// R3-07: the rolling seconds of audio per second of synthesis
+    /// (`measuredSynthesisSpeed`). Under `stateLock`.
+    private var synthesisSpeedAverage: Double?
 
     private static let log = Logger(subsystem: "com.davidxie.Aloud", category: "kokoro")
 
@@ -157,8 +160,11 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
                     // like a CJK-only line); reading `.samples` would trap.
                     guard audio.audio != nil else { throw TtsError.emptyAudio }
                     let samples = audio.samples
-                    Self.log.info("kokoro synth \(String(format: "%.2f", Date().timeIntervalSince(start))) s → \(samples.count) samples (\(spoken.count) chars) at \(String(format: "%.2f", speed))x")
+                    let elapsed = Date().timeIntervalSince(start)
+                    Self.log.info("kokoro synth \(String(format: "%.2f", elapsed)) s → \(samples.count) samples (\(spoken.count) chars) at \(String(format: "%.2f", speed))x")
                     guard !samples.isEmpty else { throw TtsError.emptyAudio }
+                    self.recordSynthesisSpeed(audio: Double(samples.count) / Double(max(audio.sampleRate, 1)),
+                                              elapsed: elapsed)
                     // A blend without its table speaks as its fallback, at that pace.
                     let speaker = Self.speakingVoiceID(for: voice.id, blendsLoaded: self.blendsLoaded)
                     cont.resume(returning: SynthesizedAudio(samples: samples,
@@ -225,6 +231,30 @@ final class KokoroSherpaEngine: WarmableTtsEngine, @unchecked Sendable {
     /// itself, sooner than the line would.
     static func speaksWarmLine(onDemand: Bool, sentenceWaiting: Bool) -> Bool {
         !onDemand && !sentenceWaiting
+    }
+
+    // MARK: - Measured speed (R3-07)
+
+    /// Seconds of audio made per second of synthesis, over recent calls:
+    /// the share each new call gets in the rolling figure.
+    static let synthesisSpeedWeight = 0.3
+    /// Calls this short are mostly fixed cost, and say little about pace.
+    static let shortestMeasuredAudio: TimeInterval = 0.3
+
+    var measuredSynthesisSpeed: Double? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return synthesisSpeedAverage
+    }
+
+    /// Folds one call into the rolling figure. Heat and Low Power Mode
+    /// slow the calls, so the figure follows them down.
+    private func recordSynthesisSpeed(audio: TimeInterval, elapsed: TimeInterval) {
+        guard audio >= Self.shortestMeasuredAudio, elapsed > 0.001 else { return }
+        let speed = audio / elapsed
+        stateLock.lock(); defer { stateLock.unlock() }
+        synthesisSpeedAverage = synthesisSpeedAverage.map {
+            $0 + (speed - $0) * Self.synthesisSpeedWeight
+        } ?? speed
     }
 
     private var hasWaitingSynthesis: Bool {

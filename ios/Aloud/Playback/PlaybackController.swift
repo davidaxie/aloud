@@ -1648,7 +1648,9 @@ final class PlaybackController: ObservableObject {
     /// drops them, so the R5 splice and R11's cooling depth stay as they
     /// are. The natural voice only (the System voice is quick), never
     /// under strain, never with a handoff pending.
-    /// Known limit: a second press in a row (+30 s) still lands cold.
+    /// Known limit: a second press in a row (+30 s) still lands cold,
+    /// though a long sentence there starts on a lead clause (R3-07,
+    /// `scheduleColdLead`) rather than after all of it is made.
     private func warmSkipTargets(after horizon: Int, in content: DocContent) async {
         guard handoff == nil, !isUnderStrain(),
               content.sentences.indices.contains(currentSentence) else { return }
@@ -1710,6 +1712,18 @@ final class PlaybackController: ObservableObject {
                                              contentHash: content.contentHash, nativeSpeed: pace,
                                              sentenceID: next)
                 let priority: SynthesisPriority = next == currentSentence ? .now : .prefetch
+                // R3-07: a cold start on a long sentence speaks a lead
+                // clause first, the rest following it on the node.
+                if priority == .now,
+                   let plan = coldLeadPlan(forSentence: next, voice: clipVoice, pace: pace, key: key,
+                                           spoken: spoken) {
+                    switch await scheduleColdLead(plan, sentence: next, voice: clipVoice, pace: pace,
+                                                  key: key, token: token) {
+                    case .scheduled, .voiceChanged: continue
+                    case .abandoned: return
+                    case .nothingLanded: break   // made whole below, with its retries
+                    }
+                }
                 do {
                     let made = try await synthesizeWithRetry(spoken, voice: clipVoice, speed: pace, key: key,
                                                              priority: priority, token: token)
@@ -1781,6 +1795,89 @@ final class PlaybackController: ObservableObject {
             guard token == playToken else { return }
             scheduleClip(clip, forSentence: next, voice: clipVoice, token: token)
         }
+    }
+
+    /// What became of a cold lead (`scheduleColdLead`).
+    private enum ColdLeadOutcome {
+        /// The whole sentence is on the node, its last piece ending it.
+        case scheduled
+        /// The splice was fixed at it while the lead was being made.
+        case voiceChanged
+        /// Nothing landed (the engine failed): it is made whole instead.
+        case nothingLanded
+        /// A restart took the schedule over.
+        case abandoned
+    }
+
+    /// R3-07: how a `now` start that misses the cache speaks sentence
+    /// `index` in `clipVoice`: in pieces from a lead clause (`ColdLeadPlan`),
+    /// or nil to make it whole. Whole for a voice with no measured speed
+    /// (the System voice), a platform with no budget, a sentence quick
+    /// enough to make whole or with no clause mark to cut at, and one said
+    /// otherwise than written (a numeral heading, never long). The plan
+    /// counts on `ColdLeadPlan.headroom` of the engine's measured speed.
+    private func coldLeadPlan(forSentence index: Int, voice clipVoice: TtsVoice, pace: Double,
+                              key: String, spoken: String) -> ColdLeadPlan? {
+        guard clipVoice.engine == .kokoro, let content, content.sentences.indices.contains(index),
+              let measured = kokoro?.measuredSynthesisSpeed,
+              cache.clip(forKey: key) == nil else { return nil }
+        let text = content.sentences[index].text
+        guard spoken == SentenceSegmenter.spokenText(text, skipBrackets: skipBrackets) else { return nil }
+        return ColdLeadPlan.make(tokens: SentenceSegmenter.tokenizeSentence(text), skipBrackets: skipBrackets,
+                                 wordsPerMinute: LibraryDocument.spokenWordsPerMinute, rate: rate,
+                                 nativeSpeed: pace, synthesisSpeed: measured * ColdLeadPlan.headroom,
+                                 firstAudioBudget: PlatformPlaybackTuning.coldLeadFirstAudioBudget)
+    }
+
+    /// R3-07: sentence `index` spoken in `plan`'s pieces, each on the node
+    /// as it lands (`SynthesisScheduler.synthesizeLead`), gaplessly, as one
+    /// sentence (`SentencePart`): the lead starts the audio and reports the
+    /// sentence scheduled, so `lastScheduled` (and with it the R5 splice,
+    /// which lands after the last queued sentence) never falls between two
+    /// pieces; only the last piece's completion moves `currentSentence` on;
+    /// the word timing covers the whole sentence, each piece's words offset
+    /// by the pieces before it, so a pause, a resume and Back 15's
+    /// elapsed-in-sentence read one clip. No boundary marker between pieces,
+    /// so a cut-short splice can never land inside the sentence. Every piece
+    /// is stretched at the speed the lead was, so the clip plays at one
+    /// compression. The joined clip is cached once all have landed. Cut
+    /// short after the lead was queued (the engine failed), a beat of
+    /// silence ends the sentence and the book reads on.
+    private func scheduleColdLead(_ plan: ColdLeadPlan, sentence index: Int, voice clipVoice: TtsVoice,
+                                  pace: Double, key: String, token: UInt64) async -> ColdLeadOutcome {
+        let pieces = await scheduler.synthesizeLead(plan,
+                                                    voice: AVSpeechEngine.voice(clipVoice, reading: systemVoiceLanguage),
+                                                    speed: pace, key: key)
+        let leadRate = rate
+        var landed = 0
+        do {
+            for try await landing in pieces {
+                guard token == playToken else { return .abandoned }
+                let clip = await Self.stretchedToSpeed(landing.clip, rate: leadRate)
+                guard token == playToken else { return .abandoned }
+                if landed == 0 {
+                    // The splice was fixed while the lead was being made:
+                    // the old voice never reaches the node at or past it.
+                    guard clipVoice == voiceForSentence(index) else { return .voiceChanged }
+                    consecutiveFailures = 0
+                    failedRunSkips = []
+                }
+                scheduleClip(clip, forSentence: index, voice: clipVoice, token: token,
+                             part: SentencePart(isFirst: landed == 0, isLast: landing.isLast,
+                                                tokens: landing.piece?.tokens))
+                landed += 1
+                if landing.isLast { return .scheduled }
+            }
+        } catch {
+            // Below: nothing landed is made whole; a lead on the node ends on silence.
+        }
+        guard token == playToken, !Task.isCancelled else { return .abandoned }
+        guard landed > 0 else { return .nothingLanded }
+        scheduleClip(.silence(duration: Self.skippedClipDuration,
+                              nativeSpeed: lastScheduledCompression ?? playingCompression),
+                     forSentence: index, voice: clipVoice, token: token,
+                     part: SentencePart(isFirst: false, isLast: true, tokens: 0..<0))
+        return .scheduled
     }
 
     /// A failure run ends in the stop (or the System voice): its skips were
@@ -1902,40 +1999,56 @@ final class PlaybackController: ObservableObject {
         wordTiming.appendGap(1 / format.sampleRate)
     }
 
+    /// `part`: the whole sentence, or one piece of a cold lead's chain
+    /// (R3-07, `scheduleColdLead`). Only a sentence's first clip switches
+    /// the time-pitch unit (its marker) and reports it scheduled; only its
+    /// last clip's completion ends it.
     private func scheduleClip(_ clip: SynthesizedAudio, forSentence index: Int,
-                              voice: TtsVoice, token: UInt64) {
+                              voice: TtsVoice, token: UInt64, part: SentencePart = .whole) {
         if graphFormat == nil || (!hasActiveSchedule && graphFormat?.sampleRate != clip.sampleRate) {
             connectGraph(sampleRate: clip.sampleRate)
         }
         guard let format = graphFormat,
               let buffer = Self.pcmBuffer(from: clip, in: format) else {
             lastScheduled = index   // unplayable clip: bookkeeping moves on
+            // A chain's last piece still ends its sentence, on a beat of silence.
+            if !part.isFirst, part.isLast, part.tokens?.isEmpty == false, graphFormat != nil {
+                scheduleClip(.silence(duration: Self.skippedClipDuration,
+                                      nativeSpeed: lastScheduledCompression ?? playingCompression),
+                             forSentence: index, voice: voice, token: token,
+                             part: SentencePart(isFirst: false, isLast: true, tokens: 0..<0))
+            }
             return
         }
 
         let compression = clip.nativeSpeed > 0 ? clip.nativeSpeed : 1
-        if lastScheduledCompression != nil {
-            scheduleBoundaryMarker(compression: compression, in: format, sentence: index, token: token)
-        } else {
-            // A schedule's first clip: the node is stopped, so the unit
-            // switches at once.
-            playingCompression = compression
-            applyTimePitchRate(atBoundary: true)
+        if part.isFirst {
+            if lastScheduledCompression != nil {
+                scheduleBoundaryMarker(compression: compression, in: format, sentence: index, token: token)
+            } else {
+                // A schedule's first clip: the node is stopped, so the unit
+                // switches at once.
+                playingCompression = compression
+                applyTimePitchRate(atBoundary: true)
+            }
+            lastScheduledCompression = compression
         }
-        lastScheduledCompression = compression
 
         player.scheduleBuffer(buffer, at: nil, options: [],
                               completionCallbackType: completionCallbackType) { [weak self] _ in
+            // A chain's earlier pieces end nothing: its last ends the sentence.
+            guard part.isLast else { return }
             Task { @MainActor [weak self] in
                 self?.sentenceFinished(index, token: token)
             }
         }
-        onAudioScheduleEvent?(.scheduled(sentence: index, voiceID: voice.id))
+        if part.isFirst { onAudioScheduleEvent?(.scheduled(sentence: index, voiceID: voice.id)) }
         lastScheduled = index
         wordTimingRecordScheduled(sentence: index,
                                   frameLength: buffer.frameLength,
                                   sampleRate: format.sampleRate,
-                                  compression: compression)
+                                  compression: compression,
+                                  part: part)
         setPreparingVoice(false)   // first clip through means the engine is warm
 
         if !hasActiveSchedule {

@@ -37,12 +37,19 @@ protocol TtsEngine: AnyObject, Sendable {
     /// it really spoke at. An engine that can't returns natural-pace audio
     /// (the default below), which playback then speeds up itself.
     func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio
+    /// R3-07: seconds of audio the engine makes per second of synthesis, a
+    /// rolling figure from its recent calls; nil when it has none or its
+    /// pace doesn't matter (the System voice is quick). A cold start splits
+    /// a long sentence by it (`ColdLeadPlan`), and with nil never does.
+    var measuredSynthesisSpeed: Double? { get }
 }
 
 extension TtsEngine {
     func synthesize(_ text: String, voice: TtsVoice, speed: Double) async throws -> SynthesizedAudio {
         try await synthesize(text, voice: voice)
     }
+
+    var measuredSynthesisSpeed: Double? { nil }
 }
 
 /// An engine with an expensive model load (Kokoro): playback warms it before

@@ -58,6 +58,31 @@ final class WordKaraokeState {
         scheduledSeconds = start + duration
     }
 
+    /// R3-07: a cold lead's next piece, gaplessly after the last clip
+    /// recorded (or at `playhead`, past a dry stretch): `sentence`'s clip
+    /// grows by `duration`, and `windows` (laid out from the piece's own
+    /// start) join its own, offset by everything before. Across a dry
+    /// stretch the word before holds until the piece starts, so the word
+    /// index never jumps. A sentence with no clip yet is appended.
+    func extendScheduled(sentence: Int, duration: TimeInterval, windows: [WordWindow],
+                         playhead: TimeInterval? = nil) {
+        guard let clip = clips[sentence] else {
+            appendScheduled(sentence: sentence, duration: duration, windows: windows, playhead: playhead)
+            return
+        }
+        let start = max(scheduledSeconds, playhead ?? 0)
+        let offset = start - clip.start
+        var joined = clip.windows
+        let shifted = windows.map { WordWindow(start: $0.start + offset, end: $0.end + offset, token: $0.token) }
+        if let last = joined.last, let first = shifted.first, first.start > last.end {
+            joined[joined.count - 1] = WordWindow(start: last.start, end: first.start, token: last.token)
+        }
+        joined += shifted
+        clips[sentence] = Clip(start: clip.start, duration: offset + duration, windows: joined,
+                               compression: clip.compression)
+        scheduledSeconds = start + duration
+    }
+
     /// A buffer that belongs to no sentence (the compression switch's one
     /// frame): later clips start after it.
     func appendGap(_ seconds: TimeInterval) {
@@ -172,27 +197,45 @@ extension PlaybackController {
     /// records the clip's slot in the timeline (gapless, unless the queue ran
     /// dry first: then at `schedulingPlayhead`) and lays its word
     /// windows out over the clip's exact duration. Silence / skipped sentences
-    /// get an empty window list so no word ever lights up for them.
+    /// get an empty window list so no word ever lights up for them. A cold
+    /// lead's piece (R3-07, `part`) lays out only its own tokens' windows,
+    /// keeping their indices in the sentence, and a piece after the lead
+    /// extends the sentence's clip (`extendScheduled`), so the word index
+    /// and time run on across the seam as in one clip.
     func wordTimingRecordScheduled(sentence: Int,
                                    frameLength: AVAudioFrameCount,
                                    sampleRate: Double,
-                                   compression: Double = 1.0) {
+                                   compression: Double = 1.0,
+                                   part: SentencePart = .whole) {
         guard sampleRate > 0 else { return }
         let duration = Double(frameLength) / sampleRate
         var windows: [WordWindow] = []
         if !skippedSentences.contains(sentence),
            let content, content.sentences.indices.contains(sentence) {
-            windows = WordTimingEstimator.windows(
-                sentenceText: content.sentences[sentence].text,
-                duration: duration,
-                skipBrackets: skipBrackets)
+            if let range = part.tokens {
+                let tokens = SentenceSegmenter.tokenizeSentence(content.sentences[sentence].text)
+                let own = range.clamped(to: tokens.indices)
+                windows = WordTimingEstimator.windows(tokens: Array(tokens[own]), duration: duration,
+                                                      skipBrackets: skipBrackets)
+                    .map { WordWindow(start: $0.start, end: $0.end, token: $0.token + own.lowerBound) }
+            } else {
+                windows = WordTimingEstimator.windows(
+                    sentenceText: content.sentences[sentence].text,
+                    duration: duration,
+                    skipBrackets: skipBrackets)
+            }
         }
         // Playing, inside a pause's ramp (the node still runs) or paused (it
         // resumes where it stopped), a clip after a dry stretch starts at
         // the node's playhead, so Back's 3 s rule (R14), the sleep landing
         // (R19) and the word tint read what was really heard.
-        wordTiming.appendScheduled(sentence: sentence, duration: duration, windows: windows,
-                                   playhead: schedulingPlayhead, compression: compression)
+        if part.isFirst {
+            wordTiming.appendScheduled(sentence: sentence, duration: duration, windows: windows,
+                                       playhead: schedulingPlayhead, compression: compression)
+        } else {
+            wordTiming.extendScheduled(sentence: sentence, duration: duration, windows: windows,
+                                       playhead: schedulingPlayhead)
+        }
     }
 
     /// The media time being heard: the render clock less what the output has

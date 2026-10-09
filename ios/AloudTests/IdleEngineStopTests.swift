@@ -20,11 +20,19 @@ final class IdleStopClock {
     private var waits: [Wait] = []
 
     /// Becomes `controller`'s idle clock. Its delay stays its own.
+    ///
+    /// The scheduler holds the clock strongly (R3-08): a test that keeps
+    /// only the rig (`let (rig, _) = try await startReading()`) still arms
+    /// waits through it, as an interruption's pause does, and an unowned
+    /// capture read a freed clock there and crashed the host. No cycle: the
+    /// controller holds this closure, the closure the clock, the clock its
+    /// waits, and each wait's fire closure holds the controller weakly.
+    /// Never weak with an early return: an armed wait would vanish unseen.
     func drive(_ controller: PlaybackController) {
-        controller.scheduleIdleEngineStop = { [unowned self] delay, fire in
+        controller.scheduleIdleEngineStop = { delay, fire in
             let item = DispatchWorkItem {}
-            waits.append(Wait(deadline: now + delay, item: item, fire: fire))
-            requestedDelays.append(delay)
+            self.waits.append(Wait(deadline: self.now + delay, item: item, fire: fire))
+            self.requestedDelays.append(delay)
             return item
         }
     }
@@ -55,6 +63,19 @@ final class IdleEngineStopTests: XCTestCase {
         XCTAssertEqual(PlatformTuning.idleEngineStopDelay, 30)
         #endif
         XCTAssertEqual(PlaybackTestRig().controller.idleEngineStopDelay, PlatformTuning.idleEngineStopDelay)
+    }
+
+    /// R3-08: the controller keeps the clock that drives it, so a test that
+    /// holds only the rig still arms its waits on a live clock.
+    func testTheControllerKeepsItsIdleClock() {
+        let rig = PlaybackTestRig()
+        weak var released: IdleStopClock?
+        do {
+            let clock = IdleStopClock()
+            clock.drive(rig.controller)
+            released = clock
+        }
+        XCTAssertNotNil(released, "the idle scheduler holds its clock")
     }
 
     private static func isScheduled(_ event: PlaybackController.AudioScheduleEvent) -> Bool {
