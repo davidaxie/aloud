@@ -82,53 +82,27 @@ final class SpeedControlTests: XCTestCase {
         XCTAssertEqual(SpeedTrack.rate(startX: 5, x: 5, startRate: 1, width: 0), 1, "no track yet: no change")
     }
 
-    /// Only a drag whose first 8pt are more sideways than down is the
-    /// track's, decided once: the sheet keeps its drags, and a speed drag
-    /// that drifts downward later keeps the speed. The start rate is the
-    /// first frame's.
+    /// Only a drag more sideways than down is the track's: straight down
+    /// and the diagonal are the sheet's and the list's. The iPhone's pan
+    /// asks this once, where it would begin, so the choice is never
+    /// revisited mid-drag.
     func testOnlyASidewaysDragMovesTheSpeed() {
-        func engagement(_ dx: CGFloat, _ dy: CGFloat, after state: SpeedTrack.Engagement? = nil) -> SpeedTrack.Engagement {
-            SpeedTrack.engagement(after: state, translation: CGSize(width: dx, height: dy))
+        func sideways(_ dx: CGFloat, _ dy: CGFloat) -> Bool {
+            SpeedTrack.beginsSideways(CGSize(width: dx, height: dy))
         }
-        XCTAssertEqual(engagement(8, 0), .horizontal)
-        XCTAssertEqual(engagement(-9, 4), .horizontal)
-        XCTAssertEqual(engagement(2, 10), .vertical)
-        XCTAssertEqual(engagement(10, 10), .vertical, "a diagonal is the sheet's")
-        XCTAssertEqual(engagement(6, 6), .undecided)
-        XCTAssertEqual(engagement(12, 0, after: .undecided), .horizontal)
-        XCTAssertEqual(engagement(60, 0, after: .vertical), .vertical, "decided once")
-        XCTAssertEqual(engagement(0, 80, after: .horizontal), .horizontal, "decided once")
-
-        let first = SpeedTrack.Drag.next(after: nil, translation: CGSize(width: 9, height: 0), rate: 0.8)
-        XCTAssertEqual(first, SpeedTrack.Drag(engagement: .horizontal, startRate: 0.8))
-        let later = SpeedTrack.Drag.next(after: first, translation: CGSize(width: 90, height: 30), rate: 1.4)
-        XCTAssertEqual(later.startRate, 0.8, "the start is the first frame's speed")
-        XCTAssertEqual(later.engagement, .horizontal)
+        XCTAssertTrue(sideways(8, 0))
+        XCTAssertTrue(sideways(-9, 4), "either way along the track")
+        XCTAssertFalse(sideways(2, 10), "down is the sheet's")
+        XCTAssertFalse(sideways(3, -12), "up is the list's")
+        XCTAssertFalse(sideways(10, 10), "a diagonal is the sheet's")
+        XCTAssertFalse(sideways(0, 0), "no travel is no drag")
     }
 
     /// On the Mac a click sets the speed where it lands, as the stock macOS
-    /// slider did and as MacScrub's click seeks: no travel to wait for, and
-    /// the press is the track's from its first frame. The iPhone keeps the
-    /// scrub's 8pt wait and the sideways rule.
+    /// slider did and as MacScrub's click seeks: off the thumb, the rate
+    /// under the pointer; on the thumb, the speed it holds. (The Mac's half
+    /// reports the press from its first frame: the source test pins it.)
     func testOnTheMacAClickSetsTheSpeed() {
-        #if os(macOS)
-        XCTAssertTrue(PlatformTuning.speedTrackSetsOnClick, "the Mac's pointer clicks to set")
-        #else
-        XCTAssertFalse(PlatformTuning.speedTrackSetsOnClick, "the iPhone's finger waits for a sideways drag")
-        #endif
-        XCTAssertEqual(SpeedTrack.minimumDistance(setsOnClick: true), 0, "a click is a press with no travel")
-        XCTAssertEqual(SpeedTrack.minimumDistance(setsOnClick: false), ScrubGesture.minimumDistance)
-
-        let click = SpeedTrack.Drag.next(after: nil, translation: .zero, rate: 1, setsOnClick: true)
-        XCTAssertEqual(click, SpeedTrack.Drag(engagement: .horizontal, startRate: 1), "the track's at once")
-        XCTAssertEqual(SpeedTrack.Drag.next(after: nil, translation: .zero, rate: 1).engagement, .undecided,
-                       "a touch waits for its 8pt")
-        XCTAssertEqual(SpeedTrack.engagement(after: .undecided, translation: CGSize(width: 0, height: 30),
-                                             setsOnClick: true),
-                       .horizontal, "a pointer drag that wanders down still moves the speed")
-
-        // Where it lands: off the thumb, the rate under the pointer; on the
-        // thumb, the speed it holds.
         let width = Self.width
         let landed = SpeedTrack.rate(startX: 200, x: 200, startRate: 1, width: width)
         XCTAssertEqual(landed, SpeedTrack.rate(atX: 200, width: width), "the rate under the click")
@@ -137,6 +111,90 @@ final class SpeedControlTests: XCTestCase {
         XCTAssertEqual(SpeedTrack.rate(startX: thumb, x: thumb, startRate: 1, width: width), 1,
                        "a click on the thumb holds the speed")
     }
+
+    #if os(iOS)
+    // MARK: - The iPhone's element and pan (R3-09)
+
+    /// The iPhone's element is a real slider that draws nothing: adjustable,
+    /// the speed as its value, the control's label and identifier, and its
+    /// thumb where the warm track draws it, so UI automation's thumb
+    /// positions are the track's. The row's touches land on the surface's
+    /// pan, never on the slider.
+    func testTheIPhoneElementIsASliderOnTheTracksThumb() throws {
+        let surface = SpeedTrackSurfaceView(frame: CGRect(x: 0, y: 0, width: Self.width, height: 44))
+        surface.layoutIfNeeded()
+        SpeedTrackSurface.show(input(rate: 0.8), on: surface.slider)
+        let slider = surface.slider
+        // The surface's representable hands the slider its coordinator's
+        // step; here, a stand-in that records the direction.
+        var steps: [Bool] = []
+        slider.onStep = { up in steps.append(up); return up ? 0.85 : 0.75 }
+        XCTAssertEqual(slider.frame, surface.bounds, "the element is the whole 44pt row")
+        XCTAssertTrue(slider.accessibilityTraits.contains(.adjustable), "VoiceOver adjusts it")
+        XCTAssertFalse(slider.accessibilityTraits.contains(.notEnabled), "never read as dimmed")
+        XCTAssertEqual(slider.accessibilityLabel, ListeningCopy.speed)
+        XCTAssertEqual(slider.accessibilityIdentifier, "listening.speed.slider")
+        XCTAssertEqual(slider.accessibilityValue, "0.8×")
+        XCTAssertEqual(slider.minimumValue, Float(SpeedScale.range.lowerBound))
+        XCTAssertEqual(slider.maximumValue, Float(SpeedScale.range.upperBound))
+
+        let thumb = slider.thumbRect(forBounds: slider.bounds, trackRect: slider.trackRect(forBounds: slider.bounds),
+                                     value: slider.value)
+        XCTAssertEqual(thumb.midX, WarmTrack.thumbCentre(fraction: SpeedTrack.fraction(of: 0.8), width: Self.width),
+                       accuracy: 0.01, "the element's thumb is the drawn one")
+        XCTAssertEqual(thumb.width, ScrubThumb.diameter)
+        for rate in [0.5, 3.0] {
+            let end = slider.thumbRect(forBounds: slider.bounds, trackRect: slider.trackRect(forBounds: slider.bounds),
+                                       value: Float(rate))
+            XCTAssertEqual(end.midX, WarmTrack.thumbCentre(fraction: SpeedTrack.fraction(of: rate), width: Self.width),
+                           accuracy: 0.01, "\(rate)×: the thumb stays inside the track")
+        }
+
+        slider.accessibilityIncrement()
+        XCTAssertEqual(steps, [true])
+        XCTAssertEqual(slider.accessibilityValue, "0.85×", "VoiceOver reads the speed it landed on")
+        slider.accessibilityDecrement()
+        XCTAssertEqual(steps, [true, false])
+        XCTAssertEqual(slider.accessibilityValue, "0.75×")
+
+        XCTAssertFalse(slider.isUserInteractionEnabled, "the slider takes no touches")
+        XCTAssertTrue(surface.hitTest(CGPoint(x: thumb.midX, y: 22), with: nil) === surface,
+                      "a touch on the thumb lands on the surface's pan")
+    }
+
+    /// The scroll view's and the sheet's pans wait for the track's pan to
+    /// decline before they begin; nothing else waits on it.
+    func testThePansAroundTheTrackWaitForItsChoice() {
+        let coordinator = SpeedTrackSurface.Coordinator(input: input(rate: 1))
+        let sheet = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
+        let list = UIScrollView(frame: sheet.bounds)
+        let surface = SpeedTrackSurfaceView(frame: CGRect(x: 20, y: 100, width: Self.width, height: 44))
+        sheet.addSubview(list)
+        list.addSubview(surface)
+        let track = UIPanGestureRecognizer()
+        surface.addGestureRecognizer(track)
+        let sheetPan = UIPanGestureRecognizer()
+        sheet.addGestureRecognizer(sheetPan)
+        let tap = UITapGestureRecognizer()
+        sheet.addGestureRecognizer(tap)
+        let elsewhere = UIPanGestureRecognizer()
+        UIView().addGestureRecognizer(elsewhere)
+
+        XCTAssertTrue(coordinator.gestureRecognizer(track, shouldBeRequiredToFailBy: list.panGestureRecognizer),
+                      "the list's scroll waits")
+        XCTAssertTrue(coordinator.gestureRecognizer(track, shouldBeRequiredToFailBy: sheetPan), "the sheet waits")
+        XCTAssertFalse(coordinator.gestureRecognizer(track, shouldBeRequiredToFailBy: tap), "a tap doesn't")
+        XCTAssertFalse(coordinator.gestureRecognizer(track, shouldBeRequiredToFailBy: elsewhere),
+                       "nor a pan outside the track's views")
+        XCTAssertFalse(coordinator.gestureRecognizer(track, shouldBeRequiredToFailBy: track), "nor itself")
+    }
+
+    private func input(rate: Double) -> SpeedTrackInput {
+        SpeedTrackInput(rate: rate, range: SpeedScale.range, label: ListeningCopy.speed,
+                        identifier: "listening.speed.slider", spokenValue: ListeningFormat.rate,
+                        onDrag: { _, _, _ in }, onRelease: {}, onStep: { _ in rate }, onSet: { _ in })
+    }
+    #endif
 
     // MARK: - The warm track (R3-09)
 
@@ -248,44 +306,64 @@ final class SpeedControlTests: XCTestCase {
 
     // MARK: - Source
 
-    /// The speed control draws WarmTrack and keeps the stock slider only as
-    /// its accessibilityRepresentation, under the identifier the UI tests
-    /// find; the stock slider's appearance proxy is gone.
+    /// The speed control draws WarmTrack and hands its drag and its element
+    /// to the platform under the identifier the UI tests find. The iPhone's
+    /// half is UIKit's pan, which declines a drag that isn't sideways and
+    /// that the scroll view's and the sheet's pans wait on, over a real
+    /// slider as the element (a SwiftUI drag held their vertical drags, and
+    /// a representation-only slider gave UI automation no thumb to drag).
+    /// The Mac's half sets the speed on a click and keeps the stock slider
+    /// as its representation. The stock slider's appearance proxy is gone.
     func testTheSpeedControlDrawsTheWarmTrackAndKeepsTheSlider() throws {
-        let paths = ["Settings/ListeningView.swift", "Theme/WarmTrack.swift", "App/AloudApp.swift"]
+        let paths = ["Settings/ListeningView.swift", "Theme/WarmTrack.swift", "App/AloudApp.swift",
+                     "Platform/PlatformSpeedTrack.swift"]
         let s = try SourceTree.sources(only: paths)
         let view = try XCTUnwrap(s[paths[0]])
         XCTAssertNotNil(s[paths[1]], "the shared track has its own file")
         let app = try XCTUnwrap(s[paths[2]])
+        let platform = try XCTUnwrap(s[paths[3]])
         let start = try XCTUnwrap(view.range(of: "struct ListeningSpeedControls: View"))
         let end = try XCTUnwrap(view.range(of: "struct SpeedReadout: View"))
         let controls = String(view[start.upperBound..<end.lowerBound])
         XCTAssertTrue(controls.contains("WarmTrack(fraction: SpeedTrack.fraction(of: playback.rate),"),
                       "the speed draws the warm track")
-        XCTAssertEqual(controls.components(separatedBy: "Slider(").count - 1, 1, "one slider")
-        let representation = try XCTUnwrap(controls.range(of: ".accessibilityRepresentation {"))
-        let slider = try XCTUnwrap(controls.range(of: "Slider("))
-        XCTAssertLessThan(representation.lowerBound, slider.lowerBound, "the slider is the representation only")
-        let element = String(controls[representation.upperBound...].prefix(2000))
-        for needle in [".frame(maxWidth: .infinity, minHeight: 44, maxHeight: .infinity)",
-                       ".accessibilityLabel(\"Speed\")", ".accessibilityValue(ListeningFormat.rate(playback.rate))",
-                       ".accessibilityAdjustableAction { direction in",
-                       ".accessibilityIdentifier(\"listening.speed.slider\")"] {
-            XCTAssertTrue(element.contains(needle), "the representation keeps \(needle)")
+        XCTAssertTrue(controls.contains("isHeld: speedDragStart != nil,"), "held while a drag is the track's")
+        XCTAssertFalse(controls.contains("Slider("), "the controls draw no stock slider")
+        XCTAssertFalse(controls.contains("DragGesture("), "the platform takes the touches")
+        let element = try XCTUnwrap(controls.range(of: ".speedTrackInput(SpeedTrackInput("))
+        let wiring = String(controls[element.upperBound...].prefix(800))
+        for needle in ["label: ListeningCopy.speed,", "identifier: \"listening.speed.slider\",",
+                       "spokenValue: ListeningFormat.rate,", "onDrag: dragSpeed,", "onRelease: releaseSpeed,",
+                       "onStep: stepSpeed,", "onSet: setSpeed))"] {
+            XCTAssertTrue(wiring.contains(needle), "the track hands the platform \(needle)")
         }
-        XCTAssertFalse(controls.contains(".tint(Theme.accent)"), "no stock slider is drawn")
-        XCTAssertTrue(controls.contains("private static let setsOnClick = PlatformTuning.speedTrackSetsOnClick"),
-                      "the click rule is the platform's")
-        XCTAssertTrue(controls.contains("DragGesture(minimumDistance: SpeedTrack.minimumDistance(setsOnClick: Self.setsOnClick))"),
-                      "the scrub's 8pt drag on the iPhone, a click on the Mac")
-        XCTAssertTrue(controls.contains("rate: playback.rate, setsOnClick: Self.setsOnClick)"),
-                      "the Mac's press is the track's from its first frame")
-        XCTAssertTrue(controls.contains(".simultaneousGesture(speedGesture(width: width))"),
-                      "the sheet's and the scroll view's pans recognise alongside the speed drag")
-        XCTAssertFalse(controls.contains(".gesture(speedGesture("),
-                       "an exclusive drag would keep a vertical swipe from the list and the sheet")
-        XCTAssertTrue(controls.contains("if new == nil, old?.engagement == .horizontal { playback.selectRate(playback.rate) }"),
+        XCTAssertTrue(controls.contains("guard speedDragStart != nil else { return }\n"
+                                        + "        speedDragStart = nil\n"
+                                        + "        playback.selectRate(playback.rate)"),
                       "the release persists the pick, a cancel too")
+        XCTAssertFalse(controls.contains(".tint(Theme.accent)"), "no stock slider is drawn")
+
+        let iPhoneStart = try XCTUnwrap(platform.range(of: "#if os(iOS)\n/// The iPhone's half"))
+        let macStart = try XCTUnwrap(platform.range(of: "#elseif os(macOS)"))
+        let iPhone = String(platform[iPhoneStart.upperBound..<macStart.lowerBound])
+        let mac = String(platform[macStart.upperBound...])
+        for needle in ["UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))",
+                       "return SpeedTrack.beginsSideways(CGSize(width: travel.x, height: travel.y))",
+                       "shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {",
+                       "final class SpeedTrackSlider: UISlider {", "slider.isUserInteractionEnabled = false",
+                       "override func accessibilityIncrement()", "override func accessibilityDecrement()",
+                       "override var accessibilityValue: String? {",
+                       "WarmTrack.thumbCentre(fraction: fraction, width: bounds.width)",
+                       "slider.accessibilityIdentifier = input.identifier"] {
+            XCTAssertTrue(iPhone.contains(needle), "the iPhone's half keeps \(needle)")
+        }
+        XCTAssertFalse(iPhone.contains("DragGesture("), "no SwiftUI drag holds the sheet's or the list's drags")
+        XCTAssertFalse(iPhone.contains(".accessibilityRepresentation"), "the slider is laid out, not represented")
+        for needle in ["DragGesture(minimumDistance: 0)", ".accessibilityRepresentation {",
+                       "Slider(value: Binding(get: { input.rate }, set: { input.onSet($0) }), in: input.range)",
+                       ".accessibilityIdentifier(input.identifier)", "if wasPressed, !pressed { input.onRelease() }"] {
+            XCTAssertTrue(mac.contains(needle), "the Mac's half keeps \(needle)")
+        }
         XCTAssertFalse(app.contains("SliderAppearance"), "the appearance proxy never reached a SwiftUI slider")
     }
 
