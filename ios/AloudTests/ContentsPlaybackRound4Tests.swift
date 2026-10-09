@@ -241,8 +241,13 @@ final class ContentsPlaybackRound4Tests: XCTestCase {
     func testAHeldElsewhereClaimPausesAsInterrupted() async throws {
         let (rig, probe, _) = try makeRig()
         probe.error = AudioOutputHeldElsewhere()
+        // Only what Play leads to: a loaded book starts out paused.
+        let mark = rig.statuses.count
         rig.controller.play()
-        let settled = await rig.waitUntil { rig.statuses.contains(.paused) || rig.statuses.contains(.error) }
+        let settled = await rig.waitUntil {
+            let after = rig.statuses.dropFirst(mark)
+            return after.contains(.paused) || after.contains(.error)
+        }
         XCTAssertTrue(settled)
         XCTAssertEqual(rig.controller.status, .paused, "an interruption, not a failure")
         XCTAssertEqual(rig.controller.stopped, PlaybackStop(reason: .interrupted, documentID: rig.document.id))

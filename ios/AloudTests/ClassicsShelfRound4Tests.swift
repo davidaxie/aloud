@@ -92,19 +92,26 @@ final class ClassicsShelfRound4Tests: XCTestCase {
             XCTAssertEqual(file.components(separatedBy: ".accessibilityFocused(").count - 1, 1,
                            "\(name): only the heading takes the focus")
 
-            let jump = try Self.body(of: "private func jump(to section: BookshelfSection, _ \(scroller): ScrollViewProxy) {",
+            // The jump clears the focus, then walks (`ShelfWalk`); the landing
+            // sets it once, in its settle's last turn.
+            let jumpBody = try Self.body(of: "private func jump(to section: BookshelfSection, _ \(scroller): ScrollViewProxy) {",
+                                         in: file)
+            let clear = try XCTUnwrap(jumpBody.range(of: "focusedShelf = nil"), "\(name): \(jumpBody)")
+            let walks = try XCTUnwrap(jumpBody.range(of: "walk.begin(toward: section)"), "\(name): \(jumpBody)")
+            XCTAssertLessThan(clear.lowerBound, walks.lowerBound, "\(name): cleared before the walk")
+            let land = try Self.body(of: "private func land(on section: BookshelfSection, _ \(scroller): ScrollViewProxy) {",
                                      in: file)
-            let clear = try XCTUnwrap(jump.range(of: "focusedShelf = nil"), "\(name): \(jump)")
-            let settle = try XCTUnwrap(jump.range(of: "let settle = {"), "\(name): \(jump)")
-            XCTAssertLessThan(clear.lowerBound, settle.lowerBound, "\(name): cleared before the scrolls")
-            let async = try XCTUnwrap(jump.range(of: "DispatchQueue.main.async {", range: settle.upperBound..<jump.endIndex),
-                                      "\(name): \(jump)")
-            let turn = try Self.body(of: "DispatchQueue.main.async {", in: String(jump[async.lowerBound...]))
+            let settle = try XCTUnwrap(land.range(of: "let settle = {"), "\(name): \(land)")
+            let async = try XCTUnwrap(land.range(of: "DispatchQueue.main.async {", range: settle.upperBound..<land.endIndex),
+                                      "\(name): \(land)")
+            let turn = try Self.body(of: "DispatchQueue.main.async {", in: String(land[async.lowerBound...]))
             let second = try XCTUnwrap(turn.range(of: "\(scroller).scrollTo(id, anchor: .top)"), "\(name): \(turn)")
             let set = try XCTUnwrap(turn.range(of: "focusedShelf = section"), "\(name): \(turn)")
             XCTAssertLessThan(second.lowerBound, set.lowerBound, "\(name): after the second scroll")
-            XCTAssertEqual(jump.components(separatedBy: "focusedShelf = section").count - 1, 1,
-                           "\(name): set once, in the settle's last turn")
+            XCTAssertEqual(file.components(separatedBy: "focusedShelf = section").count - 1, 1,
+                           "\(name): set once, in the landing's last turn")
+            let walkStep = try Self.body(of: "private func walkStep(_ token: Int, _ \(scroller): ScrollViewProxy) {", in: file)
+            let jump = jumpBody + walkStep + land
             for timer in ["asyncAfter", "Timer", "Task.sleep"] {
                 XCTAssertFalse(jump.contains(timer), "\(name): never on a timer (\(timer))")
             }

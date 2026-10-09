@@ -24,6 +24,8 @@ final class ReaderChromeUITests: XCTestCase {
     /// button's 44 pt circle, with room for Aa's two letters. A label framed
     /// to 44 pt read 56 (the gear) and 68 (Aa).
     private static let platterMaximum: CGFloat = 52
+    /// The row the iOS 26 bar reports for an item's label inside its platter.
+    private static let platterRow: CGFloat = 36
 
     override func setUp() {
         continueAfterFailure = false
@@ -66,6 +68,23 @@ final class ReaderChromeUITests: XCTestCase {
 
     /// On iOS 26 the bar's glass platter is the item's frame: no wider than
     /// the back circle's, give or take Aa's letters.
+    /// A bar item's target. From iOS 26 the target is the glass platter the
+    /// bar draws, 44 pt as the back button's circle, but the UI test tree
+    /// reports only the label's 36 pt row inside it, whatever the label's
+    /// own frame (a 44 pt frame read 36 too, on a 56 to 68 pt pill), so the
+    /// platter can't be measured here: the label must fill that row, and
+    /// `assertSystemSizedPlatter` keeps it from growing into a pill. Before
+    /// iOS 26 the label's own frame is the target.
+    private func assertBarItemTarget(_ element: XCUIElement, _ name: String,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        guard #available(iOS 26, *) else {
+            assertTouchTarget(element, name, file: file, line: line)
+            return
+        }
+        XCTAssertGreaterThanOrEqual(element.frame.height, Self.platterRow - 0.01,
+                                    "\(name) is \(element.frame.height) pt tall in its platter", file: file, line: line)
+    }
+
     private func assertSystemSizedPlatter(_ element: XCUIElement, _ name: String,
                                           file: StaticString = #filePath, line: UInt = #line) {
         guard #available(iOS 26, *) else { return }
@@ -113,8 +132,8 @@ final class ReaderChromeUITests: XCTestCase {
         let add = app.buttons["library.add"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         XCTAssertTrue(add.waitForExistence(timeout: 5), "+ shows once the shelf holds a book")
-        assertTouchTarget(settings, "library.settings")
-        assertTouchTarget(add, "library.add")
+        assertBarItemTarget(settings, "library.settings")
+        assertBarItemTarget(add, "library.add")
         assertSystemSizedPlatter(settings, "library.settings")
         assertSystemSizedPlatter(add, "library.add")
     }
@@ -123,7 +142,7 @@ final class ReaderChromeUITests: XCTestCase {
         let app = openSeededReader()
         let aa = appearanceButton(app)
         XCTAssertTrue(aa.waitForExistence(timeout: 10))
-        assertTouchTarget(aa, "reader.appearance")
+        assertBarItemTarget(aa, "reader.appearance")
         assertSystemSizedPlatter(aa, "reader.appearance")
     }
 
