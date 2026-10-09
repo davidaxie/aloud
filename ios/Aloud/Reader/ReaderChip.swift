@@ -74,7 +74,8 @@ enum ReaderChip: Equatable {
         switch self {
         case .undoJump: return ["Undo jump", "Undo"]
         case .moreClassics: return ["More classics", "Classics"]
-        case .theEnd: return ["Back to The End", "The End"]
+        // The short form is the colophon's own heading, spelled once.
+        case .theEnd: return ["Back to The End", ColophonCopy.theEnd]
         case .followVoice: return ["Follow the voice", "Follow"]
         }
     }

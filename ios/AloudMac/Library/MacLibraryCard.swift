@@ -88,10 +88,14 @@ struct MacDocumentMenu: View {
 
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var router: LibraryRouter
+    /// Observed here rather than read through the model, so the silent open
+    /// comes and goes as the voice starts and stops: the library itself
+    /// observes only which book is open.
+    @EnvironmentObject private var playback: PlaybackController
 
     var body: some View {
         Button("Open", action: onOpen)
-        if model.playback.opensPlaying(document) {
+        if playback.opensPlaying(document) {
             Button(OpenMenuItem.silentTitle) {
                 // The library's own open, less the autoplay request.
                 model.continuePlayback.readerOpens(document.id)

@@ -849,7 +849,11 @@ final class LibraryLintTests: XCTestCase {
         let text = try XCTUnwrap(s[file])
         let menu = body(ofStruct: "MacDocumentMenu", in: text)
         let lead = try XCTUnwrap(menu.range(of: "Button(\"Open\", action: onOpen)"), menu)
-        let gate = try XCTUnwrap(menu.range(of: "if model.playback.opensPlaying(document) {"), menu)
+        // The gate reads the observed controller, so the voice starting or
+        // stopping redraws the menu: the library observes only the open book.
+        XCTAssertTrue(menu.contains("@EnvironmentObject private var playback: PlaybackController"), menu)
+        XCTAssertFalse(menu.contains("model.playback."), menu)
+        let gate = try XCTUnwrap(menu.range(of: "if playback.opensPlaying(document) {"), menu)
         let item = try XCTUnwrap(menu.range(of: "Button(OpenMenuItem.silentTitle) {"), menu)
         let stops = try XCTUnwrap(menu.range(of: "model.continuePlayback.readerOpens(document.id)"), menu)
         let opens = try XCTUnwrap(menu.range(of: "router.open(document, autoplay: false)"), menu)
