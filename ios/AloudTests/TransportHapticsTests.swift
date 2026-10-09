@@ -22,12 +22,28 @@ final class TransportHapticsTests: XCTestCase {
     func testFeedbackMapping() {
         XCTAssertEqual(TransportHaptic.play.feedback, .impact(flexibility: .soft, intensity: 0.6))
         XCTAssertEqual(TransportHaptic.pause.feedback, .impact(weight: .light))
-        for haptic in [TransportHaptic.detent, .preset, .scrubRelease] {
+        XCTAssertEqual(TransportHaptic.press.feedback, .impact(flexibility: .soft, intensity: 0.4),
+                       "a button press is a soft impact")
+        for haptic in [TransportHaptic.place, .detent, .preset, .scrubRelease] {
             XCTAssertEqual(haptic.feedback, .selection, "\(haptic)")
         }
         XCTAssertEqual(TransportHaptic.finished.feedback, .success, "R24: one success at a book's end")
         XCTAssertEqual(TransportHaptic.finished.rawValue, "finished")
-        XCTAssertEqual(TransportHaptic.allCases.count, 6, "the vocabulary is exactly six haptics")
+        XCTAssertEqual(TransportHaptic.allCases.count, 8, "the vocabulary is exactly eight haptics")
+        XCTAssertEqual(TransportHaptic.allCases,
+                       [.play, .pause, .press, .place, .detent, .preset, .scrubRelease, .finished])
+    }
+
+    /// Subtle: a press is softer than Play, so a tap that starts the voice
+    /// still reads as the bigger event, and the place tick is the lightest
+    /// feedback there is (selection), as the scrub's and the presets' are.
+    func testPressIsSofterThanPlayAndPlaceIsASelectionTick() {
+        XCTAssertLessThan(TransportHaptic.pressIntensity, 0.6, "softer than play's 0.6")
+        XCTAssertGreaterThan(TransportHaptic.pressIntensity, 0, "still felt")
+        XCTAssertNotEqual(TransportHaptic.press.feedback, TransportHaptic.play.feedback)
+        XCTAssertEqual(TransportHaptic.place.feedback, TransportHaptic.scrubRelease.feedback)
+        XCTAssertEqual(TransportHaptic.press.rawValue, "press", "debug.haptics reads the raw value")
+        XCTAssertEqual(TransportHaptic.place.rawValue, "place", "debug.haptics reads the raw value")
     }
 
     func testToggleEmitsPauseWhenActiveAndPlayOtherwise() {
@@ -65,7 +81,9 @@ final class TransportHapticsTests: XCTestCase {
         TransportHaptics.emit(.scrubRelease)
         TransportHaptics.emit(.detent)
         TransportHaptics.emit(.finished)
-        XCTAssertEqual(haptics.logText, "play,scrubRelease,detent,finished")
+        TransportHaptics.emit(.press)
+        TransportHaptics.emit(.place)
+        XCTAssertEqual(haptics.logText, "play,scrubRelease,detent,finished,press,place")
 
         haptics.resetLog()
         XCTAssertEqual(haptics.logText, "")

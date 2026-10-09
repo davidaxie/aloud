@@ -265,9 +265,14 @@ struct ShelfLinks: View {
 
     /// Accent text is accentStrong; the label is padded out to a 44pt target.
     /// A hint, when given, is VoiceOver's (Add a file names its formats).
+    /// Each link is a press (TransportHaptics); the paste control beside
+    /// them is the system's own, its tap left as the system makes it.
     private func link(_ title: String, identifier: String, hint: String? = nil,
                       action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            TransportHaptics.emit(.press)
+            action()
+        } label: {
             Text(title)
                 .font(Theme.font(.callout).weight(.medium))
                 .foregroundStyle(Theme.accentStrong)

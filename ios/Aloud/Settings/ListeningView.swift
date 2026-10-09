@@ -677,6 +677,10 @@ struct ListeningVoiceList: View {
                                      note: note)
         let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
         return Button {
+            // A press, never a play: the sample it starts is an audition
+            // over the listener's pause (TransportHaptics). On the Mac it
+            // only feeds the DEBUG log.
+            TransportHaptics.emit(.press)
             playback.selectVoice(voice)
         } label: {
             HStack(spacing: Theme.Space.sm) {

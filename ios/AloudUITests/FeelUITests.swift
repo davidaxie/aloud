@@ -2,10 +2,11 @@ import XCTest
 
 /// R20's haptics, read from the app's DEBUG log (`-uitest-haptic-log`
 /// exposes it as debug.haptics): a tap that starts playback ticks once, a
-/// pause once, the 1× detent and a speed preset once each, and an autoplay
-/// never. Every launch goes through XCUIApplication.aloud, so it is muted;
-/// the voice pref reset starts every run at 1×. Never run without the user's
-/// OK.
+/// pause once, a skip button presses once, a sentence tap places while the
+/// book reads on and plays from paused, the 1× detent and a speed preset
+/// once each, and an autoplay never. Every launch goes through
+/// XCUIApplication.aloud, so it is muted; the voice pref reset starts every
+/// run at 1×. Never run without the user's OK.
 final class FeelUITests: XCTestCase {
 
     override func setUp() {
@@ -62,7 +63,7 @@ final class FeelUITests: XCTestCase {
         let play = playButton(app)
         XCTAssertTrue(play.waitForExistence(timeout: 20), "One tap adds and opens the classic")
         XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 60))
-        XCTAssertEqual(hapticLog(app), ["play"])
+        XCTAssertEqual(hapticLog(app), ["press", "play"], "More classics presses; the row plays")
     }
 
     /// The haptics logged since `mark` entries.
@@ -117,6 +118,87 @@ final class FeelUITests: XCTestCase {
         play.tap()
         XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 30))
         XCTAssertEqual(hapticLog(app), ["pause", "play"])
+    }
+
+    // MARK: - Presses and places
+
+    /// Back 15 and Forward 15 each press once, softly, and keep playing:
+    /// a skip is a press, never a play or a place.
+    func testEachSkipButtonPressesOnce() {
+        let app = launchReader()
+        let play = playButton(app)
+        XCTAssertTrue(play.waitForExistence(timeout: 20))
+        XCTAssertTrue(waitForValue("playing", of: play, timeout: 60), "The opened book autoplays")
+        XCTAssertEqual(hapticLog(app), [], "An autoplay is not a tap")
+
+        let back = app.buttons["player.back15"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        var mark = hapticLog(app).count
+        back.tap()
+        XCTAssertTrue(eventually(timeout: 5) { haptics(since: mark, in: app) == ["press"] },
+                      "Back 15 presses once. log: \(hapticLog(app))")
+
+        let forward = app.buttons["player.forward15"].firstMatch
+        XCTAssertTrue(forward.isEnabled, "Forward 15 can move this early in the book")
+        mark = hapticLog(app).count
+        forward.tap()
+        XCTAssertTrue(eventually(timeout: 5) { haptics(since: mark, in: app) == ["press"] },
+                      "Forward 15 presses once. log: \(hapticLog(app))")
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 10), "Skips keep playing")
+        XCTAssertEqual(hapticLog(app), ["press", "press"], "Nothing but the two presses")
+    }
+
+    /// A sentence tap answers once: the place tick while the book reads on,
+    /// the play tick when it starts the book from paused.
+    func testASentenceTapPlacesWhilePlayingAndPlaysFromPaused() {
+        let app = launchReader()
+        let play = playButton(app)
+        XCTAssertTrue(play.waitForExistence(timeout: 20))
+        XCTAssertTrue(waitForValue("playing", of: play, timeout: 60), "The opened book autoplays")
+
+        var mark = hapticLog(app).count
+        tapTheSpokenSentence(app)
+        XCTAssertTrue(eventually(timeout: 5) { haptics(since: mark, in: app) == ["place"] },
+                      "A tap while the book reads on places. log: \(hapticLog(app))")
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 10), "The book reads on")
+
+        play.tap()
+        XCTAssertTrue(waitForValue("paused", of: play, timeout: 10))
+        mark = hapticLog(app).count
+        tapTheSpokenSentence(app)
+        XCTAssertTrue(waitForValue(in: ["playing", "buffering"], of: play, timeout: 30), "The tap plays from there")
+        XCTAssertTrue(eventually(timeout: 5) { haptics(since: mark, in: app) == ["play"] },
+                      "A tap on a paused book plays. log: \(hapticLog(app))")
+        XCTAssertFalse(hapticLog(app).contains("press"), "a sentence tap is never a press: \(hapticLog(app))")
+    }
+
+    /// Taps the start of the spoken sentence's middle line once the page is
+    /// at rest (two reads of its frame 0.3 s apart agree): a tap on moving
+    /// text only stops it.
+    private func tapTheSpokenSentence(_ app: XCUIApplication) {
+        let text = app.textViews["reader.text"].firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 10), "The reading column")
+        var settled: CGRect?
+        XCTAssertTrue(eventually(timeout: 10) {
+            let first = activeSentenceFrame(app)
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "let the page rest")], timeout: 0.3)
+            settled = activeSentenceFrame(app)
+            return first != nil && first == settled
+        }, "The spoken sentence's frame should settle")
+        guard let frame = settled else { return }
+        text.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.minX - text.frame.minX + 3, dy: frame.midY - text.frame.minY))
+            .tap()
+    }
+
+    /// Re-checks `condition` until it holds or `timeout` passes.
+    private func eventually(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else { return false }
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "poll")], timeout: 0.25)
+        }
+        return true
     }
 
     // MARK: - Speed

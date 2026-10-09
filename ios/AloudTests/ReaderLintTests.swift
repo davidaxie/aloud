@@ -486,7 +486,9 @@ final class ReaderLintTests: XCTestCase {
         let s = try SourceTree.sources(only: [path])
         let screen = try XCTUnwrap(s[path])
         let item = try appearanceItem(in: screen)
-        XCTAssertTrue(item.contains("Button { showAppearanceSheet.toggle() } label: {"), item)
+        // The press haptic first, then the toggle (TransportHaptics).
+        XCTAssertTrue(item.contains("Button {\n                    TransportHaptics.emit(.press)\n"
+                                    + "                    showAppearanceSheet.toggle()\n                } label: {"), item)
         XCTAssertFalse(item.contains("showAppearanceSheet = true"), item)
         XCTAssertTrue(item.contains(".accessibilityAddTraits(showAppearanceSheet ? .isSelected : [])"), item)
         let disappear = try XCTUnwrap(MacKeyCommandLintTests.body(of: ".onDisappear {", in: screen), "the reader's onDisappear")
@@ -503,7 +505,8 @@ final class ReaderLintTests: XCTestCase {
         let s = try SourceTree.sources(only: [path])
         let screen = try XCTUnwrap(s[path])
         let handle = try XCTUnwrap(MacKeyCommandLintTests.body(of: "private func handle(_ chip: ReaderChip) {", in: screen))
-        XCTAssertTrue(handle.contains("case .followVoice, .theEnd: followChipTaps &+= 1"), handle)
+        XCTAssertTrue(handle.contains("case .followVoice, .theEnd:\n            TransportHaptics.emit(.press)\n"
+                                      + "            followChipTaps &+= 1"), handle)
         let macPath = "Reader/MacChipSlot.swift"
         let mac = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
         let slot = try XCTUnwrap(mac[macPath])

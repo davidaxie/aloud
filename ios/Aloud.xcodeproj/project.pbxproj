@@ -212,6 +212,7 @@
 		4D32319ADD34790A4D56FE2A /* MacImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABFF05C58550AD7E60883D3C /* MacImportTests.swift */; };
 		4D6C05B32E535001DE0EBD28 /* ExtractionHyphenationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C5E31C2D4A4379A9C83ECCF /* ExtractionHyphenationTests.swift */; };
 		4DAECB463284F7D8D2322DEB /* ResumeAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7353D0DA77561C6DF5C60918 /* ResumeAnchor.swift */; };
+		4DD59EAC40F48E927780662C /* HapticWiringLintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC12FD1E6E20B5C8222C2CE /* HapticWiringLintTests.swift */; };
 		4E232335E1A03C0BAB1A0EA1 /* MacImportOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6DE1F97506E62D985D7DBBD /* MacImportOverlay.swift */; };
 		4E9D200D343A7E906D70735B /* PDFChapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D6E452400EDE410FD401D7 /* PDFChapters.swift */; };
 		4EE54AAB949066C80AE953E4 /* IOSSynthesisPerfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C5BBBA303ACDA0E9CF9E3A /* IOSSynthesisPerfTests.swift */; };
@@ -1063,6 +1064,7 @@
 		BB21394383C88D8D8A519421 /* UITestFaultsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestFaultsTests.swift; sourceTree = "<group>"; };
 		BB2C1A864185F268C9937E5C /* PlaybackController+PlaceHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlaybackController+PlaceHistory.swift"; sourceTree = "<group>"; };
 		BB341417BAA148C3C70CF5DE /* PlayerBarLintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerBarLintTests.swift; sourceTree = "<group>"; };
+		BBC12FD1E6E20B5C8222C2CE /* HapticWiringLintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticWiringLintTests.swift; sourceTree = "<group>"; };
 		BC0C5396B69D13A50720136E /* NaturalVoiceOffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaturalVoiceOffer.swift; sourceTree = "<group>"; };
 		BE9E228B4CC8151A4AAA5121 /* PlatformPasteControlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformPasteControlTests.swift; sourceTree = "<group>"; };
 		BFB2E52E455292853A105C0E /* CalmFollowMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalmFollowMigrationTests.swift; sourceTree = "<group>"; };
@@ -1596,6 +1598,7 @@
 				220E9513901CCECC608B88F4 /* FixturePDFTests.swift */,
 				B702F73341B9CCA11647DA25 /* FollowBandTests.swift */,
 				58B0189D7DFE478AB3CC2BAE /* GutenbergBackfillTests.swift */,
+				BBC12FD1E6E20B5C8222C2CE /* HapticWiringLintTests.swift */,
 				B4BAA65726E815CDD88D1D5C /* HighlightLayersTests.swift */,
 				55AC274B6066CA9CCAF9F878 /* IdleEngineStopTests.swift */,
 				C52389716CDCA945D0402F0D /* ImportFailureCopyTests.swift */,
@@ -2191,6 +2194,7 @@
 				0F76F7490382EA9E3090DBEE /* FixturePDFTests.swift in Sources */,
 				0D7111DE18BF3CEBFC33577B /* FollowBandTests.swift in Sources */,
 				E00940EEB1C49BFBCEFB0EF3 /* GutenbergBackfillTests.swift in Sources */,
+				4DD59EAC40F48E927780662C /* HapticWiringLintTests.swift in Sources */,
 				A474468A2249516C12D32D1E /* HighlightLayersTests.swift in Sources */,
 				10A63970767415FDE9DF32EF /* IOSSynthesisPerfTests.swift in Sources */,
 				3ACB40CAC7124C1E1B1C8C30 /* IdleEngineStopTests.swift in Sources */,

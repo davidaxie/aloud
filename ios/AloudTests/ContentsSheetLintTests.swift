@@ -97,10 +97,16 @@ final class ContentsSheetLintTests: XCTestCase {
         let sheet = try XCTUnwrap(s[Self.sheetPath])
         XCTAssertFalse(sheet.contains("playback.jump("), "every pick goes through ContentsSearch.jumpAndPlay")
         let pick = try region(of: sheet, from: "private func pick(", to: "// MARK: - Field")
-        for needle in ["ContentsSearch.jumpAndPlay(playback, to: sentence, origin: origin)",
-                       "TransportHaptics.emit(.play)", "dismiss()"] {
+        for needle in ["let started = ContentsSearch.jumpAndPlay(playback, to: sentence, origin: origin)",
+                       "TransportHaptics.emit(started ? .play : .place)", "dismiss()"] {
             XCTAssertTrue(pick.contains(needle), "a pick should contain '\(needle)': \(pick)")
         }
+        // One haptic per pick, after the jump that decides it: play when it
+        // started the book, the place tick while the book reads on.
+        XCTAssertEqual(pick.components(separatedBy: "TransportHaptics.emit").count - 1, 1, pick)
+        let jump = try XCTUnwrap(pick.range(of: "jumpAndPlay("), pick)
+        let haptic = try XCTUnwrap(pick.range(of: "TransportHaptics.emit"), pick)
+        XCTAssertLessThan(jump.lowerBound, haptic.lowerBound, "the jump decides the haptic")
         for origin in ["pick(chapter.startSentence, origin: .chapter)", "pick(row.sentence, origin: .chapter)",
                        "pick(match.sentenceID, origin: .searchResult)"] {
             XCTAssertTrue(sheet.contains(origin), "missing '\(origin)'")

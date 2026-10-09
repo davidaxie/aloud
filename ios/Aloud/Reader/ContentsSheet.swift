@@ -257,12 +257,12 @@ struct ContentsSheet: View {
         fieldFocused = false
     }
 
-    /// A pick: jump, play from there unless already playing (with the play
-    /// haptic only then), and close.
+    /// A pick: jump, play from there unless already playing, and close.
+    /// One haptic, after the jump that decides it: the play haptic when the
+    /// pick started playback, else the place tick (TransportHaptics).
     private func pick(_ sentence: Int, origin: JumpOrigin) {
-        if ContentsSearch.jumpAndPlay(playback, to: sentence, origin: origin) {
-            TransportHaptics.emit(.play)
-        }
+        let started = ContentsSearch.jumpAndPlay(playback, to: sentence, origin: origin)
+        TransportHaptics.emit(started ? .play : .place)
         dismiss()
     }
 

@@ -282,8 +282,8 @@ struct BookshelfView: View {
     }
 
     /// To the shelf's heading, by the mark above it (`shelfAnchor(_:)`).
-    /// Silent, as a Contents pick is (TransportHaptics: picks never answer
-    /// with one).
+    /// Silent (TransportHaptics' Never list): it moves the shelf in view,
+    /// never the reading place, and no voice starts.
     ///
     /// A scroll straight to a far mark the lazy stack hasn't laid out goes
     /// where the stack estimates it is: from the top of Classics, some 160

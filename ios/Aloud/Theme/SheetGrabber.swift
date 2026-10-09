@@ -113,8 +113,11 @@ struct SheetHeader: View {
             .accessibilityIdentifier(titleIdentifier)
     }
 
+    /// Every sheet's close: a press haptic, then the dismiss. A swipe down
+    /// stays the system's, silent.
     private var closeButton: some View {
         Button {
+            TransportHaptics.emit(.press)
             dismiss()
         } label: {
             Image(systemName: "xmark")

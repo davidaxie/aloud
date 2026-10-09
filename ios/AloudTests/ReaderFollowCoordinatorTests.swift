@@ -202,10 +202,11 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.voiceOffscreen, .down)
     }
 
-    /// The play haptic answers a tap that starts the book. A voice
-    /// audition is active, but it is a sample over the listener's pause
-    /// (R8): a tap over it starts the book, so it ticks. A tap while the
-    /// book reads on doesn't.
+    /// Every sentence tap answers with exactly one haptic. The play haptic
+    /// answers a tap that starts the book. A voice audition is active, but
+    /// it is a sample over the listener's pause (R8): a tap over it starts
+    /// the book, so it plays. A tap while the book reads on moves the place
+    /// alone: the place tick.
     func testATapOverAnAuditionStartsTheBookWithThePlayHaptic() {
         let haptics = TransportHaptics.shared
         defer { haptics.resetLog() }
@@ -219,8 +220,9 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
 
         haptics.resetLog()
         ReaderScreen.playFromSentence(20, on: paused.controller)
-        XCTAssertEqual(haptics.log, [], "the book was already reading")
+        XCTAssertEqual(haptics.log, [.place], "the book was already reading: the place moved, nothing started")
         XCTAssertEqual(paused.controller.currentSentence, 20)
+        XCTAssertTrue(paused.controller.isActive, "a tap while reading keeps reading")
 
         let auditioning = PlaybackTestRig(sentences: 40)
         auditioning.loadDefault(at: 10)
@@ -232,6 +234,23 @@ final class ReaderFollowCoordinatorTests: XCTestCase {
         XCTAssertEqual(haptics.log, [.play], "the tap started the book over the sample")
         XCTAssertEqual(auditioning.controller.userPlayAction, plays + 1)
         XCTAssertEqual(auditioning.controller.currentSentence, 12)
+    }
+
+    /// One haptic per tap, never two and never none: the tap that starts
+    /// the book plays, each tap after it while the book reads on places.
+    func testEverySentenceTapAnswersExactlyOnce() {
+        let haptics = TransportHaptics.shared
+        defer { haptics.resetLog() }
+
+        let rig = PlaybackTestRig(sentences: 40)
+        rig.loadDefault(at: 5)
+        haptics.resetLog()
+        for (tap, sentence) in [8, 15, 15, 30].enumerated() {
+            ReaderScreen.playFromSentence(sentence, on: rig.controller)
+            XCTAssertEqual(haptics.log.count, tap + 1, "tap \(tap + 1): \(haptics.logText)")
+        }
+        XCTAssertEqual(haptics.log, [.play, .place, .place, .place], haptics.logText)
+        XCTAssertEqual(rig.controller.currentSentence, 30)
     }
 
     // MARK: - Calm follow (R16)

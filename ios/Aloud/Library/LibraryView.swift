@@ -274,6 +274,7 @@ struct LibraryView: View {
 
     private var settingsButton: some View {
         Button {
+            TransportHaptics.emit(.press)
             router.showSettings()
         } label: {
             // The same ink and weight as +, so the pair reads as one control.
@@ -291,10 +292,13 @@ struct LibraryView: View {
 
     /// R10: adding a book is one native menu. Drawn in Theme.text, not
     /// filled: the shelf's one accent fill belongs to the Continue card.
+    /// The menu's opening is the system's; each item the hand picks is a
+    /// press (TransportHaptics), the add that follows silent.
     private var addMenu: some View {
         Menu {
             ForEach(LibraryAddMenuItem.allCases, id: \.self) { item in
                 Button {
+                    TransportHaptics.emit(.press)
                     choose(item)
                 } label: {
                     // R3-06: From Files… says which files it takes, as the
@@ -314,6 +318,7 @@ struct LibraryView: View {
             // The clipboard's text as a book, last. Off while there is no
             // text to paste; the system asks before the text is read.
             Button {
+                TransportHaptics.emit(.press)
                 pasteText()
             } label: {
                 Label(PasteTextAction.menuTitle, systemImage: PasteTextAction.systemImage)

@@ -257,7 +257,10 @@ struct ReaderScreen: View {
             ToolbarItem(placement: .topBarTrailing) {
                 // R4-08: the sheet leaves Aa live, so a second tap closes it,
                 // as the Mac's toolbar button does.
-                Button { showAppearanceSheet.toggle() } label: {
+                Button {
+                    TransportHaptics.emit(.press)
+                    showAppearanceSheet.toggle()
+                } label: {
                     Text("Aa")
                         .font(Theme.font(.headline))
                         .foregroundStyle(Theme.text)
@@ -397,10 +400,17 @@ struct ReaderScreen: View {
 
     private func handle(_ chip: ReaderChip) {
         switch chip {
-        case .undoJump: playback.undoJump()
-        case .moreClassics: router.showBookshelfFromReader()   // navigation, no haptic
+        case .undoJump:
+            // The place moves back: the place tick, not a press.
+            TransportHaptics.emit(.place)
+            playback.undoJump()
+        case .moreClassics:
+            TransportHaptics.emit(.press)
+            router.showBookshelfFromReader()
         // The way back to the colophon is Follow aimed at it (R4-06).
-        case .followVoice, .theEnd: followChipTaps &+= 1
+        case .followVoice, .theEnd:
+            TransportHaptics.emit(.press)
+            followChipTaps &+= 1
         }
     }
 
@@ -554,14 +564,16 @@ struct ReaderScreen: View {
         Self.playFromSentence(id, on: playback)
     }
 
-    /// R15: a tap plays from the tapped sentence in any state. The haptic
-    /// answers only a tap that starts playback, as the controller counts
-    /// it: a voice audition reads as active, but it is a sample over the
-    /// listener's pause (R8), so a tap over it starts the book.
+    /// R15: a tap plays from the tapped sentence in any state, and answers
+    /// with exactly one haptic, after the jump: `.play` when the tap
+    /// started playback, as the controller counts it (a voice audition
+    /// reads as active, but it is a sample over the listener's pause, R8,
+    /// so a tap over it starts the book), else `.place`, the reading place
+    /// moved while the book reads on.
     static func playFromSentence(_ id: Int, on playback: PlaybackController) {
         let plays = playback.userPlayAction
         playback.jump(to: id, origin: .sentence)
-        if playback.userPlayAction != plays { TransportHaptics.emit(.play) }
+        TransportHaptics.emit(playback.userPlayAction != plays ? .play : .place)
     }
 
     /// A pinch on the page ended (P044, R1-15): its net step, stored like

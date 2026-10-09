@@ -2011,8 +2011,8 @@ struct ReaderTextView: UIViewRepresentable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        /// The menu: Play from Here (the tap's path: Undo jump and the play
-        /// haptic as for a tap), a separator, then Copy, Look Up and Share
+        /// The menu: Play from Here (the tap's path: Undo jump and the
+        /// tap's one haptic, play or place), a separator, then Copy, Look Up and Share
         /// (R3-02, as the Mac's menu): an inline section draws the
         /// separator under Play from Here.
         func menu(for target: (sentence: Int, word: NSRange?)) -> UIMenu {

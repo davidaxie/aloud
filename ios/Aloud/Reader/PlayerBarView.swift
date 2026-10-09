@@ -71,7 +71,7 @@ struct PlayerBarView: View {
             // describes; Undo jump is one of its actions while it is offered.
             ReaderMessageLine(message: message,
                               position: position,
-                              onOpenContents: { showContents = true },
+                              onOpenContents: openContents,
                               onRetry: retry,
                               onBackFiveMinutes: backFiveMinutes,
                               rowAlignment: .bottom,
@@ -377,7 +377,10 @@ struct PlayerBarView: View {
     private var listeningChip: some View {
         let voiceName = ListeningFormat.shortName(playback.voice)
         let title = ListeningFormat.chipTitle(voice: playback.voice, rate: playback.rate)
-        return Button { showListening = true } label: {
+        return Button {
+            TransportHaptics.emit(.press)
+            showListening = true
+        } label: {
             ViewThatFits(in: .horizontal) {
                 Text(title)
                 Text(ListeningFormat.chipShortTitle(rate: playback.rate))
@@ -403,7 +406,8 @@ struct PlayerBarView: View {
                 .frame(width: target, height: target)
                 .contentShape(Rectangle())
         }
-        // textMuted at rest, Theme.text while pressed; no haptic (R20).
+        // textMuted at rest, Theme.text while pressed; the press haptic
+        // comes from `skip(_:)`, so a disabled Forward 15 stays silent.
         .buttonStyle(ReaderGlyphButtonStyle())
         // The glyph scales inside the target, so growth stops at xxxLarge;
         // a long press past the cap shows it large.
@@ -461,14 +465,24 @@ struct PlayerBarView: View {
     }
 
     /// Keeps play/pause: a skip while paused moves the cue, never starts
-    /// audio. No haptic: skips aren't in R20's vocabulary (TransportHaptics).
+    /// audio. A button press, so the press haptic (TransportHaptics), never
+    /// a play: the place it moves is the skip's own, not a pick.
     private func skip(_ seconds: TimeInterval) {
+        TransportHaptics.emit(.press)
         playback.skip(seconds: seconds)
     }
 
+    /// The chapter line's tap (and its named actions): Contents opens, a
+    /// press.
+    private func openContents() {
+        TransportHaptics.emit(.press)
+        showContents = true
+    }
+
     /// Undo jump from the scrub's or the chapter line's named action: the
-    /// same restore as the chip's tap.
+    /// same restore, and the same place tick, as the chip's tap.
     private func undoJump() {
+        TransportHaptics.emit(.place)
         playback.undoJump()
     }
 

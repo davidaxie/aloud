@@ -161,6 +161,10 @@ struct AppearanceView: View {
                             identifier: String) -> some View {
         let enabled = ReaderTextSize.stepped(from: currentStep, bigger: bigger) != nil
         return Button {
+            // The pinch's tick, so a step feels the same by hand or by
+            // button; the adjustable readout's VoiceOver steps stay silent.
+            // A disabled half never runs this.
+            TransportHaptics.emit(.preset)
             step(bigger: bigger)
         } label: {
             Text(verbatim: "A")
@@ -250,6 +254,9 @@ struct AppearanceView: View {
     private func appearanceSegment(_ preference: AppearancePreference) -> some View {
         let selected = preference.rawValue == appearanceRaw
         return Button {
+            // As a speed preset: a tap that changes the scheme ticks, a
+            // re-tap of the selected one changes nothing and is silent.
+            if !selected { TransportHaptics.emit(.preset) }
             select(preference)
         } label: {
             Text(preference.label)

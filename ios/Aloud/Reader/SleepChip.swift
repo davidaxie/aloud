@@ -45,7 +45,7 @@ struct SleepChip: View {
             if items.showsOff {
                 Section {
                     Button(SleepTimer.Option.off.title(endsAtChapter: sleepTimer.endsAtChapter)) {
-                        sleepTimer.select(.off)
+                        choose(.off)
                     }
                 }
             }
@@ -135,13 +135,21 @@ struct SleepChip: View {
     /// re-arms it from the top, as on the Mac.
     private func selection(_ option: SleepTimer.Option) -> Binding<Bool> {
         Binding(get: { sleepTimer.option == option },
-                set: { _ in sleepTimer.select(option) })
+                set: { _ in choose(option) })
+    }
+
+    /// A choice the hand just made: the press haptic, then the timer. The
+    /// menu's opening stays the system's; the timer's own stop stays silent.
+    private func choose(_ option: SleepTimer.Option) {
+        TransportHaptics.emit(.press)
+        sleepTimer.select(option)
     }
 
     // MARK: - Fading
 
     private var extendButton: some View {
         Button {
+            TransportHaptics.emit(.press)
             sleepTimer.addFifteenMinutes()
         } label: {
             Text(SleepTimer.Copy.extendChip)
