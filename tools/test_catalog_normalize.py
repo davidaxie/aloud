@@ -319,6 +319,15 @@ class TypographicMarksTests(unittest.TestCase):
         self.assertEqual(cn.normalize_title("The Phantom 'Rickshaw and Other Ghost Stories"),
                          "The Phantom \u2019Rickshaw and Other Ghost Stories", "never closed, so elided")
 
+    def test_a_sources_opening_quote_is_decided_again(self):
+        # Gutenberg sends #2806 with U+2018, an unclosed elision.
+        self.assertEqual(cn.normalize_title("The Phantom \u2018Rickshaw and Other Ghost Stories"),
+                         "The Phantom \u2019Rickshaw and Other Ghost Stories", "never closed, so elided")
+        self.assertEqual(cn.typographic_marks("\u2018Tis Done"), "\u2019Tis Done")
+        self.assertEqual(cn.typographic_marks("\u2018Firebrand\u2019 Trevison"), "\u2018Firebrand\u2019 Trevison",
+                         "a source's own pair stays open and closed")
+        self.assertEqual(cn.typographic_marks("\u2018Firebrand' Trevison"), "\u2018Firebrand\u2019 Trevison")
+
     def test_double_quotes_pair(self):
         self.assertEqual(cn.normalize_title('"And That\'s How It Was, Officer"'),
                          "\u201cAnd That\u2019s How It Was, Officer\u201d")

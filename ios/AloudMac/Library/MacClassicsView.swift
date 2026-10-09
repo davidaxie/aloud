@@ -157,7 +157,8 @@ struct MacClassicsView: View {
 
     /// R3-05, as on the iPhone: one button per shelf at the app-wide
     /// speed, its title and a quiet count, jumping to its heading. No
-    /// selected state: the pinned heading says where the list is.
+    /// selected state: the pinned heading says where the list is. No
+    /// identifier on the row, which would land on the buttons' own.
     private func shelfMap(_ scroller: ScrollViewProxy) -> some View {
         HStack(spacing: Theme.Space.xs) {
             ForEach(ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)) { jump in
@@ -184,7 +185,6 @@ struct MacClassicsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, Theme.Space.sm)
-        .accessibilityIdentifier("bookshelf.shelfMap")
     }
 
     /// To the shelf's heading, animated unless Reduce Motion is on, with a

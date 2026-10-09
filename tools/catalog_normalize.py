@@ -120,9 +120,10 @@ def _starts_elision(text: str, start: int) -> bool:
 def _closed_later(text: str, start: int) -> bool:
     """Whether a single quote after `start` closes one: a title is one line,
     so a quote that opens is closed in it, and an unclosed one before a word
-    is an elision the list doesn't know ('Rickshaw)."""
+    is an elision the list doesn't know ('Rickshaw). A source's own closing
+    mark (U+2019) closes as a straight one does."""
     for index in range(start + 1, len(text)):
-        if text[index] != "'":
+        if text[index] not in ("'", "\u2019"):
             continue
         following = text[index + 1] if index + 1 < len(text) else ""
         if not (text[index - 1].isalnum() and following.isalnum()):
@@ -135,12 +136,14 @@ def typographic_marks(text: str) -> str:
     apostrophe inside a word or after a plural's s, an opening single quote
     before a word that is not an elision and is closed later, a closing one
     anywhere else, and double quotes opening or closing by what is on
-    either side."""
+    either side. A source's opening single quote (U+2018) is decided again
+    the way a straight one is, since Gutenberg sets an unclosed elision
+    with it (#2806's 'Rickshaw), which takes the apostrophe instead."""
     out: list[str] = []
     for index, char in enumerate(text):
         previous = text[index - 1] if index else None
         following = text[index + 1] if index + 1 < len(text) else None
-        if char == "'":
+        if char in ("'", "\u2018"):
             if previous and following and previous.isalnum() and following.isalnum():
                 out.append("’")
             elif previous in ("s", "S") and (following is None or following.isspace()):

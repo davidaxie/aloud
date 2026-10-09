@@ -178,7 +178,9 @@ struct BookshelfView: View {
     /// longer shelves far down the list are one tap away and their being
     /// there is said at the top. Side by side while they fit, full-width
     /// rows at the large sizes. No selected state: the pinned heading
-    /// already says where the list is.
+    /// already says where the list is. No identifier on the row: a stack
+    /// isn't an accessibility element, so one set here would land on the
+    /// buttons and could replace their `bookshelf.jump.<shelf>` ids.
     private func shelfMap(_ proxy: ScrollViewProxy) -> some View {
         let jumps = ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)
         return ViewThatFits(in: .horizontal) {
@@ -191,7 +193,6 @@ struct BookshelfView: View {
         }
         .padding(.horizontal, Theme.Space.screenGutter - Theme.Space.sm)
         .padding(.top, Theme.Space.sm)
-        .accessibilityIdentifier("bookshelf.shelfMap")
     }
 
     private func jumpButton(_ jump: ShelfJump, _ proxy: ScrollViewProxy, fullWidth: Bool) -> some View {

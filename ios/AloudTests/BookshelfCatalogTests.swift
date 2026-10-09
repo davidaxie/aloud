@@ -160,6 +160,33 @@ final class BookshelfCatalogTests: XCTestCase {
         XCTAssertEqual(ShelfJump.hint, "Jumps to this shelf")
     }
 
+    /// R3-05: the shelf map's row carries no identifier of its own unless it
+    /// is a `.contain` element. A stack isn't an accessibility element, so
+    /// an identifier on it lands on its buttons and can replace their
+    /// `bookshelf.jump.<shelf>` ids, which the UI test taps by. On both apps.
+    func testTheShelfMapLeavesItsButtonsTheirIdentifiers() throws {
+        let s = try SourceTree.sources(only: ["Bookshelf/BookshelfView.swift"])
+        let mac = SourceTree.exists(SourceTree.macRoot)
+            ? try SourceTree.sources(in: SourceTree.macRoot, only: ["Library/MacClassicsView.swift"]) : [:]
+        var files = [("BookshelfView", try XCTUnwrap(s["Bookshelf/BookshelfView.swift"]))]
+        if SourceTree.exists(SourceTree.macRoot) {
+            files.append(("MacClassicsView", try XCTUnwrap(mac["Library/MacClassicsView.swift"])))
+        }
+        for (name, file) in files {
+            XCTAssertTrue(file.contains(".accessibilityIdentifier(jump.identifier)"), "\(name): each button's own id")
+            let start = try XCTUnwrap(file.range(of: "func shelfMap("), "\(name): shelfMap")
+            let end = file.range(of: "\n    }\n", range: start.upperBound..<file.endIndex)?.lowerBound ?? file.endIndex
+            let body = String(file[start.lowerBound..<end])
+            let containerIDs = body.components(separatedBy: ".accessibilityIdentifier(").dropFirst()
+                .map { String($0.prefix(while: { char in char != ")" })) }
+                .filter { $0 != "jump.identifier" }
+            if !containerIDs.isEmpty {
+                XCTAssertTrue(body.contains(".accessibilityElement(children: .contain)"),
+                              "\(name): \(containerIDs) on a plain stack would replace the jump buttons' ids")
+            }
+        }
+    }
+
     /// Every book the catalog lists ships beside it. A sync from an empty
     /// or half-synced books/ once emptied the folder but kept the old
     /// catalog, and every Classics row failed to open.

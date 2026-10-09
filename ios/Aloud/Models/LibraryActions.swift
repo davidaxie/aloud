@@ -40,7 +40,7 @@ struct ShelfJump: Equatable, Identifiable {
     /// The quiet count beside the title.
     var countText: String { "\(count)" }
     var identifier: String { "bookshelf.jump.\(section.rawValue)" }
-    /// "Long reads, 334 books".
+    /// VoiceOver's label: the shelf's title and its book count.
     var accessibilityLabel: String { "\(section.title), \(count == 1 ? "1 book" : "\(count) books")" }
 
     static let hint = "Jumps to this shelf"

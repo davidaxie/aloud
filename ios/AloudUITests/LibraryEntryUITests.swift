@@ -72,7 +72,10 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 15), "+ shows once the library holds a book")
         add.tap()
         XCTAssertTrue(app.buttons["Classics"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["From Files\u{2026}"].firstMatch.exists)
+        // BEGINSWITH: the item's second line (what it opens) may join its
+        // label as a subtitle.
+        let fromFiles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "From Files\u{2026}"))
+        XCTAssertTrue(fromFiles.firstMatch.exists, "From Files\u{2026}, whether or not its subtitle joins the label")
         XCTAssertTrue(app.buttons["Paste Text"].firstMatch.exists, "the clipboard's text, last")
         for retired in ["Scan pages", "Soon"] {
             XCTAssertFalse(app.buttons[retired].exists, "'\(retired)' is gone")
@@ -372,7 +375,7 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertFalse(springboard.buttons["Allow Paste"].firstMatch.waitForExistence(timeout: 2),
                        "no Allow Paste prompt")
         XCTAssertTrue(readerText(app).waitForExistence(timeout: 20),
-                      "the pasted text opens; \(pasteCalls(app)), label '\(paste.label)', frame \(paste.frame)")
+                      "the pasted text opens; \(pasteCalls(app)), \(pasteState(paste))")
         tapSystemBack(app)
         XCTAssertTrue(waitForLibraryCount(2, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
     }
@@ -420,7 +423,7 @@ final class LibraryEntryUITests: XCTestCase {
         assertTouchTarget(paste, "library.pasteText")
         paste.tap()
         XCTAssertTrue(readerText(app).waitForExistence(timeout: 20),
-                      "the pasted text opens; \(pasteCalls(app)), label '\(paste.label)', frame \(paste.frame)")
+                      "the pasted text opens; \(pasteCalls(app)), \(pasteState(paste))")
         tapSystemBack(app)
         XCTAssertTrue(waitForLibraryCount(1, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
     }
@@ -434,6 +437,14 @@ final class LibraryEntryUITests: XCTestCase {
         let probe = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "debug.pasteCalls.")).firstMatch
         return probe.exists ? probe.identifier : "no debug.pasteCalls probe"
+    }
+
+    /// The paste control's label and frame for the same message, read only
+    /// while it is still there: the importer's overlay or an emptied
+    /// clipboard can take it away, and reading a gone element stops the
+    /// test with no matches before the probe's count is recorded.
+    private func pasteState(_ paste: XCUIElement) -> String {
+        paste.exists ? "label '\(paste.label)', frame \(paste.frame)" : "paste control gone"
     }
 
     // MARK: - Delete to empty
