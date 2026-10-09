@@ -105,6 +105,12 @@ final class LibraryEntryTests: XCTestCase {
         XCTAssertEqual(OpenMenuItem.systemImage(plays: true), "play.fill")
         XCTAssertEqual(OpenMenuItem.title(plays: false), "Open")
         XCTAssertEqual(OpenMenuItem.systemImage(plays: false), "book")
+        // R4-10: offered under Play only, so a book opens without the voice.
+        XCTAssertEqual(OpenMenuItem.silentTitle, "Open Without Playing")
+        XCTAssertEqual(OpenMenuItem.silentSystemImage, "book")
+        XCTAssertEqual(OpenMenuItem.silentSystemImage, OpenMenuItem.systemImage(plays: false),
+                       "the same book glyph as the lead's Open")
+        XCTAssertNotEqual(OpenMenuItem.silentTitle, OpenMenuItem.title(plays: true))
     }
 
     // MARK: - Add menu

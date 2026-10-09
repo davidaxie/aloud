@@ -712,11 +712,11 @@ final class LibraryLintTests: XCTestCase {
     func testOpeningABookAsksForTheWarmUp() throws {
         let sources = try SourceTree.sources(only: [Self.libraryFile, "App/AppModel.swift"])
         let library = try XCTUnwrap(sources[Self.libraryFile])
-        let open = try XCTUnwrap(library.range(of: "private func open(_ document: LibraryDocument) {"))
-        let body = String(library[open.upperBound...].prefix(500))
+        let open = try XCTUnwrap(library.range(of: "private func open(_ document: LibraryDocument, autoplay: Bool = true) {"))
+        let body = String(library[open.upperBound...].prefix(600))
         let opens = try XCTUnwrap(body.range(of: "continuePlayback.readerOpens(document.id)"), body)
         let warms = try XCTUnwrap(body.range(of: "model.neuralPrewarm.bookIsOpening(document.id)"), body)
-        let routes = try XCTUnwrap(body.range(of: "router.open(document)"), body)
+        let routes = try XCTUnwrap(body.range(of: "router.open(document, autoplay: autoplay)"), body)
         XCTAssertLessThan(opens.lowerBound, warms.lowerBound, body)
         XCTAssertLessThan(warms.lowerBound, routes.lowerBound, body)
         let app = try XCTUnwrap(sources["App/AppModel.swift"])
@@ -731,7 +731,7 @@ final class LibraryLintTests: XCTestCase {
     func testDeleteHasItsOwnMenuSection() throws {
         let s = try SourceTree.sources(only: [Self.libraryFile])
         let text = try XCTUnwrap(s[Self.libraryFile])
-        XCTAssertTrue(text.contains(".accessibilityActions { documentActions(for: document) }"))
+        XCTAssertTrue(text.contains(".accessibilityActions {\n                    silentOpenAction(for: document)\n                    documentActions(for: document)\n                }"))
         XCTAssertTrue(text.contains(".contextMenu { contextMenuActions(for: document) }"))
         XCTAssertTrue(text.contains("} menu: {\n                        contextMenuActions(for: hero)"))
         let menu = try XCTUnwrap(text.range(of: "private func contextMenuActions(for document: LibraryDocument) -> some View {"))
@@ -749,7 +749,8 @@ final class LibraryLintTests: XCTestCase {
         let textSources = try SourceTree.sources(only: [Self.libraryFile])
         let text = try XCTUnwrap(textSources[Self.libraryFile])
         let menu = try XCTUnwrap(text.range(of: "private func contextMenuActions(for document: LibraryDocument) -> some View {"))
-        let lead = try XCTUnwrap(text[menu.upperBound...].range(of: "Section { openMenuItem(for: document) }"))
+        let lead = try XCTUnwrap(text[menu.upperBound...].range(of: "Section {\n            openMenuItem(for: document)\n            silentOpenMenuItem(for: document)\n        }"),
+                                 "the lead and its silent twin share the first section")
         let sections = try XCTUnwrap(text[menu.upperBound...].range(of: "ForEach(DocumentAction.menuSections(for: document)"))
         XCTAssertLessThan(lead.lowerBound, sections.lowerBound, "first, before the actions")
         let item = try XCTUnwrap(text.range(of: "private func openMenuItem(for document: LibraryDocument) -> some View {"))
@@ -757,8 +758,8 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(body.contains("let plays = model.playback.opensPlaying(document)"), body)
         XCTAssertTrue(body.contains("open(document)"), body)
         XCTAssertTrue(body.contains("Label(OpenMenuItem.title(plays: plays), systemImage: OpenMenuItem.systemImage(plays: plays))"), body)
-        let open = try XCTUnwrap(text.range(of: "private func open(_ document: LibraryDocument) {"))
-        XCTAssertTrue(text[open.upperBound...].prefix(120).contains("if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }"),
+        let open = try XCTUnwrap(text.range(of: "private func open(_ document: LibraryDocument, autoplay: Bool = true) {"))
+        XCTAssertTrue(text[open.upperBound...].prefix(120).contains("if autoplay, model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }"),
                       "the label and the haptic read one predicate")
         let actions = try XCTUnwrap(actionsSources["Models/LibraryActions.swift"])
         XCTAssertTrue(actions.contains("case rename, markFinished, markUnfinished, delete\n"), "no open case in DocumentAction")
@@ -804,5 +805,75 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(notice.contains("Text(UnreadableLibraryCopy.title)"))
         XCTAssertTrue(notice.contains("Text(UnreadableLibraryCopy.detail)"))
         XCTAssertTrue(notice.contains(".accessibilityElement(children: .combine)"), "read as one")
+    }
+
+    /// R4-10: the open that doesn't play sits under the lead, and as a
+    /// VoiceOver action on a grid card and the Continue card, only while the
+    /// card's own open would play (else the lead already only opens). It
+    /// opens as the tap does, less the autoplay request and the soft haptic,
+    /// which answers only an open that will start the voice.
+    func testTheSilentOpenIsOfferedOnlyWhenTheOpenPlays() throws {
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
+        let builders = ["private func silentOpenMenuItem(for document: LibraryDocument) -> some View {",
+                        "private func silentOpenAction(for document: LibraryDocument) -> some View {"]
+        for name in builders {
+            let body = try XCTUnwrap(MacKeyCommandLintTests.body(of: name, in: text), name)
+            let gate = try XCTUnwrap(body.range(of: "if model.playback.opensPlaying(document) {"), "\(name) \(body)")
+            let silent = try XCTUnwrap(body.range(of: "open(document, autoplay: false)"), "\(name) \(body)")
+            XCTAssertLessThan(gate.lowerBound, silent.lowerBound, "only while the open would play: \(body)")
+            XCTAssertTrue(body.contains("OpenMenuItem.silentTitle"), body)
+            XCTAssertFalse(body.contains("TransportHaptics"), "the silent open plays no haptic: \(body)")
+        }
+        let item = try XCTUnwrap(MacKeyCommandLintTests.body(of: builders[0], in: text))
+        XCTAssertTrue(item.contains("Label(OpenMenuItem.silentTitle, systemImage: OpenMenuItem.silentSystemImage)"), item)
+        // The Continue card takes it through its existing actions builder.
+        XCTAssertTrue(text.contains("onTogglePlayback: { toggleFromTap(hero) }) {\n                        silentOpenAction(for: hero)\n                        documentActions(for: hero)\n                    } menu: {"),
+                      "the Continue card's VoiceOver actions offer it")
+        // The haptic waits on autoplay; the router hears whether to play.
+        let open = try XCTUnwrap(MacKeyCommandLintTests.body(
+            of: "private func open(_ document: LibraryDocument, autoplay: Bool = true) {", in: text))
+        XCTAssertTrue(open.contains("if autoplay, model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }"), open)
+        XCTAssertEqual(open.components(separatedBy: "TransportHaptics").count - 1, 1, open)
+        XCTAssertTrue(open.contains("continuePlayback.readerOpens(document.id)"), "a silent open still stops another book's load")
+        XCTAssertTrue(open.contains("model.neuralPrewarm.bookIsOpening(document.id)"), "and still warms the voice")
+        XCTAssertTrue(open.contains("router.open(document, autoplay: autoplay)"), open)
+    }
+
+    /// R4-10, the Mac: the card menu offers the same silent open under the
+    /// same rule, through the library's open path (F026's readerOpens
+    /// first), with no autoplay request.
+    func testTheMacCardMenuOffersTheSilentOpen() throws {
+        let file = "Library/MacLibraryCard.swift"
+        let s = try SourceTree.sources(in: SourceTree.macRoot, only: [file])
+        let text = try XCTUnwrap(s[file])
+        let menu = body(ofStruct: "MacDocumentMenu", in: text)
+        let lead = try XCTUnwrap(menu.range(of: "Button(\"Open\", action: onOpen)"), menu)
+        let gate = try XCTUnwrap(menu.range(of: "if model.playback.opensPlaying(document) {"), menu)
+        let item = try XCTUnwrap(menu.range(of: "Button(OpenMenuItem.silentTitle) {"), menu)
+        let stops = try XCTUnwrap(menu.range(of: "model.continuePlayback.readerOpens(document.id)"), menu)
+        let opens = try XCTUnwrap(menu.range(of: "router.open(document, autoplay: false)"), menu)
+        let actions = try XCTUnwrap(menu.range(of: "ForEach(DocumentAction.available(for: document)"), menu)
+        XCTAssertLessThan(lead.lowerBound, gate.lowerBound, "right under Open")
+        XCTAssertLessThan(gate.lowerBound, item.lowerBound, "only while Open would play")
+        XCTAssertLessThan(stops.lowerBound, opens.lowerBound, "another book's circle load stops first")
+        XCTAssertLessThan(opens.lowerBound, actions.lowerBound, "ahead of the book's actions")
+    }
+
+    /// R4-07: the gear and + let the bar size their platters (44 pt from
+    /// iOS 26, as the back circle), through BarItemTarget; no label keeps
+    /// a 44 pt frame of its own, which iOS 26 padded into a wide pill.
+    func testTheGearAndPlusLetTheBarSizeTheirPlatters() throws {
+        let s = try SourceTree.sources(only: [Self.libraryFile])
+        let text = try XCTUnwrap(s[Self.libraryFile])
+        for (name, glyph) in [("private var settingsButton: some View {", "gearshape"),
+                              ("private var addMenu: some View {", "plus")] {
+            let control = try XCTUnwrap(MacKeyCommandLintTests.body(of: name, in: text), name)
+            let image = try XCTUnwrap(control.range(of: "Image(systemName: \"\(glyph)\")"), name)
+            let face = String(control[image.lowerBound...].prefix(320))
+            XCTAssertTrue(face.contains(".modifier(BarItemTarget())"), "\(name) \(face)")
+            XCTAssertFalse(face.contains("minWidth: 44"), "\(name) \(face)")
+            XCTAssertFalse(face.contains(".contentShape(Rectangle())"), "\(name) \(face)")
+        }
     }
 }

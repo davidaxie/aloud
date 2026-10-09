@@ -51,12 +51,15 @@ final class LibraryRouter: ObservableObject {
     private(set) var autoplayRequest: UUID?
 
     /// R4: the one way into the reader. The reader starts the book speaking on
-    /// arrival. A reader already on top is replaced, never stacked; the same
-    /// book is a no-op. R20 can attach its user-started-playback haptic here.
-    func open(_ document: LibraryDocument) {
+    /// arrival, unless `autoplay` is false (R4-10, a card menu's silent
+    /// open): then no request is left, not even an earlier book's, so the
+    /// reader rests paused at its place. A reader already on top is
+    /// replaced, never stacked; the same book is a no-op. R20 can attach its
+    /// user-started-playback haptic here.
+    func open(_ document: LibraryDocument, autoplay: Bool = true) {
         let route = Route.reader(document.id)
         guard path.last != route else { return }
-        autoplayRequest = document.id
+        autoplayRequest = autoplay ? document.id : nil
         if case .reader = path.last {
             path[path.count - 1] = route
         } else {

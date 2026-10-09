@@ -2,10 +2,13 @@ import SwiftUI
 
 /// The one chip above the player bar (R11, mac-ux §3.8), centered on the
 /// column 12 above the bar's top edge. The shared `ReaderChip` picks it:
-/// "Undo jump" for 10 s after a jump beats "More classics" at the end of a
-/// book, which beats "Follow the voice" while the voice is off the page.
-/// The slot never shows two. Keys: ⌘Z (Undo Jump) and ⌘J (Follow the
-/// Voice) reach the same actions from the menus; each tooltip names its key.
+/// "Undo jump" for 10 s after a jump beats the end of a book, which beats
+/// "Follow the voice" while the voice is off the page. At the end the chip
+/// offers the next book while the colophon shows, and leads back to the
+/// colophon once the page is scrolled away (R4-06), through the same
+/// follow action. The slot never shows two. Keys: ⌘Z (Undo Jump) and ⌘J
+/// (Follow the Voice) reach the same actions from the menus; each tooltip
+/// names its key.
 struct MacChipSlot: View {
 
     /// Where the voice is while the page isn't following it, as the page
@@ -39,7 +42,8 @@ struct MacChipSlot: View {
         switch chip {
         case .undoJump: playback.undoJump()
         case .moreClassics: router.showBookshelfFromReader()
-        case .followVoice: onFollowVoice()
+        // The way back to the colophon is Follow aimed at it (R4-06).
+        case .followVoice, .theEnd: onFollowVoice()
         }
     }
 }
@@ -68,12 +72,13 @@ struct MacChipView: View {
         .accessibilityIdentifier(chip.identifier)
     }
 
-    /// "Undo jump (⌘Z)", "Follow the voice (⌘J)"; More classics has no key.
+    /// "Undo jump (⌘Z)", "Follow the voice (⌘J)". The end's two chips name
+    /// no key: their tooltip is the chip's hint.
     static func help(for chip: ReaderChip) -> String {
         switch chip {
         case .undoJump: return MacCommand.undoJump.help
         case .followVoice: return MacCommand.followVoice.help
-        case .moreClassics: return chip.hint
+        case .moreClassics, .theEnd: return chip.hint
         }
     }
 }

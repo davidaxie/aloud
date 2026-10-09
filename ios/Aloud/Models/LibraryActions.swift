@@ -224,6 +224,12 @@ enum PasteTextAction {
 enum OpenMenuItem {
     static func title(plays: Bool) -> String { plays ? "Play" : "Open" }
     static func systemImage(plays: Bool) -> String { plays ? "play.fill" : "book" }
+
+    /// R4-10: the lead's quiet twin, offered only while the lead plays, so
+    /// a book can be opened to read without the voice starting. Not a
+    /// `DocumentAction` either: it is a way to open, not to manage.
+    static let silentTitle = "Open Without Playing"
+    static let silentSystemImage = "book"
 }
 
 // MARK: - Document actions

@@ -154,7 +154,11 @@ struct ReaderScreen: View {
         .task {
             await load()
         }
-        .onDisappear { BudgetSignposts.live.end(&openSignpost, gaveUp: true) }
+        .onDisappear {
+            BudgetSignposts.live.end(&openSignpost, gaveUp: true)
+            // R4-08: Back and the edge swipe take the Aa sheet along.
+            showAppearanceSheet = false
+        }
     }
 
     /// The page: the reading column and the chip slot over it.
@@ -251,15 +255,20 @@ struct ReaderScreen: View {
         // A page with no text has nothing to size (R2-11).
         if !loadFailed {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showAppearanceSheet = true } label: {
+                // R4-08: the sheet leaves Aa live, so a second tap closes it,
+                // as the Mac's toolbar button does.
+                Button { showAppearanceSheet.toggle() } label: {
                     Text("Aa")
                         .font(Theme.font(.headline))
                         .foregroundStyle(Theme.text)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
+                        // The bar sizes the platter: 44 pt, as the back circle (R4-07).
+                        .modifier(BarItemTarget())
                 }
                 // The sheet's own title, so Aa and Settings share one name.
                 .accessibilityLabel(AppearanceCopy.title)
+                // Selected while its sheet is up, so VoiceOver says what a
+                // second activation will do.
+                .accessibilityAddTraits(showAppearanceSheet ? .isSelected : [])
                 .accessibilityInputLabels([Text("Aa"), Text("Text and appearance"), Text("Appearance")])
                 // The bar caps its text size, and iOS hosts this custom label
                 // apart from the screen: long-press shows the glyph large.
@@ -390,7 +399,8 @@ struct ReaderScreen: View {
         switch chip {
         case .undoJump: playback.undoJump()
         case .moreClassics: router.showBookshelfFromReader()   // navigation, no haptic
-        case .followVoice: followChipTaps &+= 1
+        // The way back to the colophon is Follow aimed at it (R4-06).
+        case .followVoice, .theEnd: followChipTaps &+= 1
         }
     }
 

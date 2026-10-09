@@ -377,8 +377,9 @@ final class ContinuePlaybackTests: XCTestCase {
     func testTheShelfStopsTheCirclesLoadWhenItOpensABook() throws {
         let sources = try SourceTree.sources(only: ["Library/LibraryView.swift"])
         let library = try XCTUnwrap(sources["Library/LibraryView.swift"])
-        let open = try XCTUnwrap(Self.slice(of: library, from: "private func open(_ document: LibraryDocument)",
-                                            to: "router.open(document)"))
+        // R4-10: open(_:autoplay:) hands its autoplay on to the router.
+        let open = try XCTUnwrap(Self.slice(of: library, from: "private func open(_ document: LibraryDocument",
+                                            to: "router.open(document"))
         XCTAssertTrue(open.contains("continuePlayback.readerOpens(document.id)"))
     }
 }

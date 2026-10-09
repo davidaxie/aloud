@@ -90,7 +90,7 @@ final class MacPlayerBarTests: XCTestCase {
         + [.notice(.fellBackToSystem), .notice(.coolingDown), .naturalVoiceOffer,
            .downloadProgress(0.4), .downloadWaiting(NaturalVoiceCopy.waitingForWiFi), .preparingVoice]
 
-    private static let chips: [ReaderChip?] = [nil, .undoJump, .moreClassics, .followVoice(.up)]
+    private static let chips: [ReaderChip?] = [nil, .undoJump, .moreClassics, .theEnd(.down), .followVoice(.up)]
 
     /// At rest (no chip), whatever the line says, both layouts.
     func testAtMostNineFocusableControlsAtRest() {
@@ -455,7 +455,7 @@ final class MacPlayerBarTests: XCTestCase {
         }
         // The chip slot's one chip, glyph and title, centered over the
         // narrowest column.
-        for chip in [ReaderChip.undoJump, .moreClassics, .followVoice(.up)] {
+        for chip in [ReaderChip.undoJump, .moreClassics, .theEnd(.down), .followVoice(.up)] {
             let glyph = glyphSize(chip.systemImage, scale: .largest, style: .subhead)?.width ?? .infinity
             XCTAssertLessThanOrEqual(chipWidth(chip.title, scale: .largest) + Theme.Space.xs + glyph,
                                      MacPlayerBarLayout.minColumnWidth, chip.title)

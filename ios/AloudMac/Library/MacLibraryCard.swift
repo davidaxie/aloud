@@ -78,14 +78,26 @@ extension DocumentAction {
 }
 
 /// A book's context menu, on a grid card and the Continue card alike: Open,
-/// then the shared `DocumentAction` list, with Delete… set apart.
+/// then, while that open would start the voice, the open that doesn't
+/// (R4-10, as the iPhone's card menu offers it), then the shared
+/// `DocumentAction` list, with Delete… set apart.
 struct MacDocumentMenu: View {
     let document: LibraryDocument
     let onOpen: () -> Void
     let perform: (DocumentAction) -> Void
 
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var router: LibraryRouter
+
     var body: some View {
         Button("Open", action: onOpen)
+        if model.playback.opensPlaying(document) {
+            Button(OpenMenuItem.silentTitle) {
+                // The library's own open, less the autoplay request.
+                model.continuePlayback.readerOpens(document.id)
+                router.open(document, autoplay: false)
+            }
+        }
         ForEach(DocumentAction.available(for: document), id: \.self) { action in
             if action == .delete { Divider() }
             Button(action.menuTitle, role: action.role) { perform(action) }

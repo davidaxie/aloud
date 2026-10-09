@@ -280,8 +280,8 @@ struct LibraryView: View {
             Image(systemName: "gearshape")
                 .font(Theme.font(.body).weight(.semibold))
                 .foregroundStyle(Theme.text)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
+                // The bar sizes the platter: 44 pt, as the back circle (R4-07).
+                .modifier(BarItemTarget())
         }
         .accessibilityLabel("Settings")
         .accessibilityIdentifier("library.settings")
@@ -323,8 +323,7 @@ struct LibraryView: View {
             Image(systemName: "plus")
                 .font(Theme.font(.body).weight(.semibold))
                 .foregroundStyle(Theme.text)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
+                .modifier(BarItemTarget())
         }
         .accessibilityLabel("Add")
         .accessibilityInputLabels([Text("Add"), Text("Plus")])
@@ -394,6 +393,7 @@ struct LibraryView: View {
                                  focus: $voFocus,
                                  onOpen: { open(hero) },
                                  onTogglePlayback: { toggleFromTap(hero) }) {
+                        silentOpenAction(for: hero)
                         documentActions(for: hero)
                     } menu: {
                         contextMenuActions(for: hero)
@@ -433,7 +433,10 @@ struct LibraryView: View {
                 .accessibilityHint(document.isFinished ? "" : "Opens and starts reading aloud")
                 .accessibilityInputLabels(DocumentCardView.inputLabels(for: document))
                 .accessibilityIdentifier("library.card")
-                .accessibilityActions { documentActions(for: document) }
+                .accessibilityActions {
+                    silentOpenAction(for: document)
+                    documentActions(for: document)
+                }
                 .accessibilityFocused($voFocus, equals: document.id)
                 // What a VoiceOver hand-off scrolls to (`pendingFocus`).
                 .id(document.id)
@@ -451,15 +454,16 @@ struct LibraryView: View {
     // MARK: Playback
 
     /// A grid card or the hero's body: the reader takes over, and the soft
-    /// haptic answers a tap that will start the voice (R20).
-    private func open(_ document: LibraryDocument) {
-        if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }
+    /// haptic answers a tap that will start the voice (R20). A silent open
+    /// (`autoplay` false, R4-10) starts no voice, so it plays no haptic.
+    private func open(_ document: LibraryDocument, autoplay: Bool = true) {
+        if autoplay, model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }
         continuePlayback.readerOpens(document.id)
         // A book opened from a shelf with no Continue card would otherwise
         // load the natural voice cold behind the preparing-voice notice
         // (PlaybackController.isPreparingVoice).
         model.neuralPrewarm.bookIsOpening(document.id)
-        router.open(document)
+        router.open(document, autoplay: autoplay)
     }
 
     /// The hero's circle and magic tap. The haptic follows the glyph the
@@ -512,7 +516,10 @@ struct LibraryView: View {
     /// in red.
     @ViewBuilder
     private func contextMenuActions(for document: LibraryDocument) -> some View {
-        Section { openMenuItem(for: document) }
+        Section {
+            openMenuItem(for: document)
+            silentOpenMenuItem(for: document)
+        }
         ForEach(DocumentAction.menuSections(for: document), id: \.self) { section in
             Section {
                 ForEach(section, id: \.self) { action in
@@ -534,6 +541,30 @@ struct LibraryView: View {
             open(document)
         } label: {
             Label(OpenMenuItem.title(plays: plays), systemImage: OpenMenuItem.systemImage(plays: plays))
+        }
+    }
+
+    /// R4-10: while the lead plays, the open that doesn't, right under it.
+    /// When the lead already only opens, it is the same item, so it isn't
+    /// offered twice.
+    @ViewBuilder
+    private func silentOpenMenuItem(for document: LibraryDocument) -> some View {
+        if model.playback.opensPlaying(document) {
+            Button {
+                open(document, autoplay: false)
+            } label: {
+                Label(OpenMenuItem.silentTitle, systemImage: OpenMenuItem.silentSystemImage)
+            }
+        }
+    }
+
+    /// The same open as a VoiceOver action, on a grid card and the Continue
+    /// card alike, under the same rule: only when the card's own activation
+    /// would start the voice.
+    @ViewBuilder
+    private func silentOpenAction(for document: LibraryDocument) -> some View {
+        if model.playback.opensPlaying(document) {
+            Button(OpenMenuItem.silentTitle) { open(document, autoplay: false) }
         }
     }
 

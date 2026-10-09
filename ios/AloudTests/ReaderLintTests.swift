@@ -442,4 +442,72 @@ final class ReaderLintTests: XCTestCase {
         let glyph = try XCTUnwrap(cardCode.range(of: "struct PlayCircleGlyph: View {"))
         XCTAssertTrue(cardCode[glyph.upperBound...].prefix(200).contains(".fill(Theme.accentFill)"))
     }
+
+    // MARK: - Round 4 chrome
+
+    /// The Aa button's `ToolbarItem` body in ReaderScreen.
+    private func appearanceItem(in screen: String) throws -> String {
+        let start = try XCTUnwrap(screen.range(of: "ToolbarItem(placement: .topBarTrailing) {"), "Aa's bar item")
+        return String(screen[start.upperBound...].prefix(1500))
+    }
+
+    /// R4-07: Aa lets the bar size its platter (44 pt from iOS 26, as the
+    /// back circle), through BarItemTarget, and keeps no 44 pt frame of its
+    /// own; it stays a bare Text. BarItemTarget keeps the frame before
+    /// iOS 26, where nothing else gives the glyph a 44 pt target, and is
+    /// nothing on the Mac.
+    func testAaLetsTheBarSizeItsPlatter() throws {
+        let files = ["Reader/ReaderScreen.swift", "Platform/BarItemTarget.swift"]
+        let s = try SourceTree.sources(only: files)
+        let screen = try XCTUnwrap(s[files[0]])
+        let item = try appearanceItem(in: screen)
+        let label = try XCTUnwrap(item.range(of: "Text(\"Aa\")"), item)
+        let face = String(item[label.lowerBound...].prefix(400))
+        XCTAssertTrue(face.contains(".modifier(BarItemTarget())"), face)
+        XCTAssertFalse(face.contains("minWidth: 44"), face)
+        XCTAssertFalse(face.contains(".contentShape(Rectangle())"), face)
+        let target = try XCTUnwrap(s[files[1]])
+        let code = codeLines(target).joined(separator: "\n")
+        let ios = try XCTUnwrap(code.range(of: "#if os(iOS)"), code)
+        let available = try XCTUnwrap(code.range(of: "if #available(iOS 26, *) {"), code)
+        let frame = try XCTUnwrap(code.range(of: ".frame(minWidth: 44, minHeight: 44)"), code)
+        let otherwise = try XCTUnwrap(code.range(of: "#else"), code)
+        XCTAssertLessThan(ios.lowerBound, available.lowerBound, code)
+        XCTAssertLessThan(available.lowerBound, frame.lowerBound, "the frame is the pre-26 branch: \(code)")
+        XCTAssertLessThan(frame.lowerBound, otherwise.lowerBound, "the Mac draws no frame: \(code)")
+        XCTAssertTrue(code.contains(".contentShape(Rectangle())"), code)
+    }
+
+    /// R4-08: Aa toggles its non-modal sheet and reads as selected while it
+    /// is up; leaving the reader (Back, the edge swipe) closes it. The
+    /// system back button stays the system's.
+    func testAaTogglesItsSheetAndTheSheetLeavesWithTheReader() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let s = try SourceTree.sources(only: [path])
+        let screen = try XCTUnwrap(s[path])
+        let item = try appearanceItem(in: screen)
+        XCTAssertTrue(item.contains("Button { showAppearanceSheet.toggle() } label: {"), item)
+        XCTAssertFalse(item.contains("showAppearanceSheet = true"), item)
+        XCTAssertTrue(item.contains(".accessibilityAddTraits(showAppearanceSheet ? .isSelected : [])"), item)
+        let disappear = try XCTUnwrap(MacKeyCommandLintTests.body(of: ".onDisappear {", in: screen), "the reader's onDisappear")
+        XCTAssertTrue(disappear.contains("BudgetSignposts.live.end(&openSignpost, gaveUp: true)"), disappear)
+        XCTAssertTrue(disappear.contains("showAppearanceSheet = false"), disappear)
+        XCTAssertFalse(screen.contains("navigationBarBackButtonHidden"), "no custom Back")
+    }
+
+    /// R4-06: the way back to the colophon is Follow aimed at it, on both
+    /// apps: the iPhone bumps the follow request, the Mac calls its follow
+    /// action and tooltips the chip's hint.
+    func testBackToTheEndRoutesLikeFollow() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let s = try SourceTree.sources(only: [path])
+        let screen = try XCTUnwrap(s[path])
+        let handle = try XCTUnwrap(MacKeyCommandLintTests.body(of: "private func handle(_ chip: ReaderChip) {", in: screen))
+        XCTAssertTrue(handle.contains("case .followVoice, .theEnd: followChipTaps &+= 1"), handle)
+        let macPath = "Reader/MacChipSlot.swift"
+        let mac = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
+        let slot = try XCTUnwrap(mac[macPath])
+        XCTAssertTrue(slot.contains("case .followVoice, .theEnd: onFollowVoice()"), slot)
+        XCTAssertTrue(slot.contains("case .moreClassics, .theEnd: return chip.hint"), slot)
+    }
 }

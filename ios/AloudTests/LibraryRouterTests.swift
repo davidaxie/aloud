@@ -44,6 +44,48 @@ final class LibraryRouterTests: XCTestCase {
         XCTAssertEqual(router.path, [.reader(book.id)])
     }
 
+    /// R4: the plain open asks the reader to play, once.
+    func testOpenLeavesOneAutoplayRequest() {
+        let router = LibraryRouter()
+        let book = document()
+        router.open(book)
+        XCTAssertTrue(router.takeAutoplayRequest(for: book.id))
+        XCTAssertFalse(router.takeAutoplayRequest(for: book.id), "asked once")
+    }
+
+    /// R4-10: a silent open pushes the same reader and asks nothing of it,
+    /// so the reader rests paused at its place.
+    func testASilentOpenLeavesNoAutoplayRequest() {
+        let router = LibraryRouter()
+        let book = document()
+        router.open(book, autoplay: false)
+        XCTAssertEqual(router.path, [.reader(book.id)])
+        XCTAssertFalse(router.takeAutoplayRequest(for: book.id))
+    }
+
+    /// R4-10: a silent open clears an earlier book's request that its reader
+    /// never took, so no stale request fires on a later open of that book.
+    func testASilentOpenClearsAnEarlierRequest() {
+        let router = LibraryRouter()
+        let first = document(), second = document()
+        router.open(first)
+        router.open(second, autoplay: false)
+        XCTAssertEqual(router.path, [.reader(second.id)], "replaced, never stacked")
+        XCTAssertFalse(router.takeAutoplayRequest(for: first.id), "the earlier request is gone")
+        XCTAssertFalse(router.takeAutoplayRequest(for: second.id))
+    }
+
+    /// The same-route guard still holds: a silent open of the reader already
+    /// on top changes nothing, its request included.
+    func testASilentOpenOfTheBookOnTopIsANoOp() {
+        let router = LibraryRouter()
+        let book = document()
+        router.open(book)
+        router.open(book, autoplay: false)
+        XCTAssertEqual(router.path, [.reader(book.id)])
+        XCTAssertTrue(router.takeAutoplayRequest(for: book.id), "the first open's request stands")
+    }
+
     func testPopToRootEmptiesThePath() {
         let router = LibraryRouter()
         router.showBookshelf()
