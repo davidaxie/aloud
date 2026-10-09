@@ -89,7 +89,13 @@ struct ReaderMessageLine: View {
                         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                             positionTitle
                                 .lineLimit(2)
-                            positionDetail(position.detail)
+                            // The qualified time on one line, else the short
+                            // one (R3-16), so the stacked line never grows
+                            // for the qualifier.
+                            ViewThatFits(in: .horizontal) {
+                                positionDetail(position.qualifiedDetail)
+                                positionDetail(position.detail)
+                            }
                         }
                         .layoutPriority(1)
                         Spacer(minLength: 0)
@@ -97,16 +103,26 @@ struct ReaderMessageLine: View {
                     }
                 } else {
                     HStack(spacing: Theme.Space.xs) {
-                        HStack(alignment: .firstTextBaseline, spacing: 0) {
-                            positionTitle
-                                .lineLimit(1)
-                            // The time never truncates; a long chapter title
-                            // does. The first dot takes the detail's own
-                            // space-dot-space, so the gaps either side of
-                            // every dot match.
-                            positionDetail("\u{00A0}\u{00B7} " + position.detail)
-                                .fixedSize()
+                        // R3-16: the time says what it counts to where the
+                        // whole line fits, else the short form. The time
+                        // never truncates; a long chapter title does. The
+                        // first dot takes the detail's own space-dot-space,
+                        // so the gaps either side of every dot match.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                                positionTitle
+                                    .lineLimit(1)
+                                positionDetail("\u{00A0}\u{00B7} " + position.qualifiedDetail)
+                                    .fixedSize()
+                            }
+                            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                                positionTitle
+                                    .lineLimit(1)
+                                positionDetail("\u{00A0}\u{00B7} " + position.detail)
+                                    .fixedSize()
+                            }
                         }
+                        .layoutPriority(1)
                         Spacer(minLength: 0)
                         contentsGlyph
                     }
@@ -117,7 +133,8 @@ struct ReaderMessageLine: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // The whole visible line, title first, as the HUD may cut its end.
+        // The whole line, title first and its time qualified, as the HUD may
+        // cut its end.
         .largeContentViewerIfAvailable { Text(position.text) }
         .accessibilityLabel(position.accessibilityLabel)
         .accessibilityHint(Self.contentsHint)

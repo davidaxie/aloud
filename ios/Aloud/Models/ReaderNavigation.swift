@@ -648,11 +648,21 @@ struct ReaderPositionLine: Equatable {
     /// nil means finished.
     let minutesLeft: Int?
 
-    private var timeText: String {
-        minutesLeft.map { ListeningEstimate.leftPhrase(minutes: $0) } ?? "Finished"
+    /// The line's own words, beside ListeningEstimate's durations.
+    enum Copy {
+        static let finished = "Finished"
+        /// What a chapter's time counts to (R3-16): said after the time
+        /// wherever the line has room, and always to VoiceOver.
+        static let inChapter = "in chapter"
     }
 
-    /// "4 of 61 · 8 min left", "12 min left" or "1 hr 12 min left".
+    private var timeText: String {
+        minutesLeft.map { ListeningEstimate.leftPhrase(minutes: $0) } ?? Copy.finished
+    }
+
+    /// "4 of 61 · 8 min left", "12 min left" or "1 hr 12 min left": the
+    /// short form, which the line falls back to where `qualifiedDetail`
+    /// doesn't fit.
     var detail: String {
         if case let .chapter(number, count) = kind {
             return "\(number) of \(count) · \(timeText)"
@@ -660,14 +670,25 @@ struct ReaderPositionLine: Equatable {
         return timeText
     }
 
-    var text: String { "\(title) · \(detail)" }
+    /// The detail with what a chapter's time counts to (R3-16), so the
+    /// chapter's minutes never read as the whole book's, the bare time the
+    /// Library card shows. Only a chapter line (a mapped PDF's too) has it:
+    /// a book or page line already counts to the end, and a finished
+    /// chapter reads as `detail`.
+    var qualifiedDetail: String {
+        guard case let .chapter(number, count) = kind, let minutesLeft else { return detail }
+        return "\(number) of \(count) · \(ListeningEstimate.leftPhrase(minutes: minutesLeft)) \(Copy.inChapter)"
+    }
+
+    /// The whole line, qualified: what the Large Content Viewer shows.
+    var text: String { "\(title) · \(qualifiedDetail)" }
 
     /// Spelled out for VoiceOver: "Chapter IV, 4 of 61, 8 minutes left in
     /// chapter", "<Title>, 12 minutes left", "…, finished".
     var accessibilityLabel: String {
         if case let .chapter(number, count) = kind {
             let time = minutesLeft.map {
-                "\(ListeningEstimate.spokenPhrase(minutes: $0)) left in chapter"
+                "\(ListeningEstimate.spokenPhrase(minutes: $0)) left \(Copy.inChapter)"
             } ?? "finished"
             return "\(title), \(number) of \(count), \(time)"
         }

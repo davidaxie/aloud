@@ -195,7 +195,8 @@ struct MacCommandActions {
     // MARK: - Sleep timer
 
     /// Playback ▸ Sleep Timer: the chip's options, most recent first, with
-    /// Off kept apart (shown only while armed).
+    /// Off kept apart (shown only while armed). The submenu sets the most
+    /// recent apart and keeps the rest in order (`MacMenuSnapshot.sleepItems`).
     var sleepOptions: [SleepTimer.Option] { sleepTimer.menuOptions.filter { $0 != .off } }
 
     func sleepTitle(for option: SleepTimer.Option) -> String {
@@ -451,12 +452,25 @@ enum MacNavigationCache {
 struct MacMenuSnapshot: Equatable {
     var titles: [MacCommand: String] = [:]
     var enabled: Set<MacCommand> = []
+    /// Playback ▸ Sleep Timer's choices, most recent first (the chip's
+    /// shared order), with no Off.
     var sleepOptions: [SleepTimer.Option] = []
-    var sleepTitles: [String] = []
+    var sleepTitles: [SleepTimer.Option: String] = [:]
     var sleepSelection: SleepTimer.Option = .off
 
     func title(_ command: MacCommand) -> String { titles[command] ?? command.title }
     func isEnabled(_ command: MacCommand) -> Bool { enabled.contains(command) }
+
+    /// The submenu's rows by the chip's rule (R3-17): the most recent pick
+    /// apart at the top unless it already leads, then the rest in order.
+    /// Off follows apart while armed.
+    var sleepItems: (recent: SleepTimer.Option?, choices: [SleepTimer.Option]) {
+        let items = SleepTimer.menuItems(options: sleepOptions, isArmed: sleepSelection != .off)
+        return (items.recent, items.choices)
+    }
+
+    /// `option`'s submenu title, as the snapshot was built.
+    func sleepTitle(_ option: SleepTimer.Option) -> String { sleepTitles[option] ?? "" }
 }
 
 /// The menu bar's model: the shared actions, and a snapshot of their titles
@@ -486,7 +500,7 @@ final class MacCommandState: ObservableObject {
             if actions.isEnabled(command) { next.enabled.insert(command) }
         }
         next.sleepOptions = actions.sleepOptions
-        next.sleepTitles = next.sleepOptions.map(actions.sleepTitle(for:))
+        next.sleepTitles = Dictionary(uniqueKeysWithValues: next.sleepOptions.map { ($0, actions.sleepTitle(for: $0)) })
         next.sleepSelection = actions.sleepTimer.option
         if next != snapshot { snapshot = next }
         scheduleRestartRefresh()

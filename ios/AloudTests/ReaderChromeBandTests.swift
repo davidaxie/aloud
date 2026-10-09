@@ -77,10 +77,25 @@ final class ReaderChromeBandTests: XCTestCase {
         XCTAssertTrue(inline.contains("contentsGlyph"), "the inline line: " + String(inline))
         XCTAssertFalse(source.contains("\"chevron.up\""), "the line opens Contents, not a mini-player")
         XCTAssertTrue(source.contains("Image(systemName: \"list.bullet\")"))
-        XCTAssertTrue(inline.contains("\"\\u{00A0}\\u{00B7} \" + position.detail"),
-                      "the first dot's gaps match the detail's: " + String(inline))
-        XCTAssertTrue(inline.contains("HStack(alignment: .firstTextBaseline, spacing: 0)"),
-                      "the title and its detail sit with no gap of their own: " + String(inline))
+        // R3-16: the qualified time first, the short one where it doesn't
+        // fit, each set with the first dot's gaps.
+        let qualified = try XCTUnwrap(inline.range(of: "\"\\u{00A0}\\u{00B7} \" + position.qualifiedDetail"),
+                                      "the first dot's gaps match the qualified detail's: " + String(inline))
+        let short = try XCTUnwrap(inline.range(of: "\"\\u{00A0}\\u{00B7} \" + position.detail"),
+                                  "the first dot's gaps match the detail's: " + String(inline))
+        XCTAssertLessThan(qualified.lowerBound, short.lowerBound, "the qualified form is tried first")
+        XCTAssertTrue(inline.contains("ViewThatFits(in: .horizontal)"), String(inline))
+        XCTAssertEqual(inline.components(separatedBy: "HStack(alignment: .firstTextBaseline, spacing: 0)").count - 1, 2,
+                       "the title and either detail sit with no gap of their own: " + String(inline))
+        XCTAssertEqual(inline.components(separatedBy: ".fixedSize()").count - 1, 2,
+                       "neither time truncates: " + String(inline))
+        let stackedQualified = try XCTUnwrap(stacked.range(of: "positionDetail(position.qualifiedDetail)"),
+                                             "the stacked line: " + String(stacked))
+        let stackedShort = try XCTUnwrap(stacked.range(of: "positionDetail(position.detail)"),
+                                         "the stacked line: " + String(stacked))
+        XCTAssertLessThan(stackedQualified.lowerBound, stackedShort.lowerBound)
+        XCTAssertTrue(stacked.contains("ViewThatFits(in: .horizontal)"),
+                      "the stacked line drops to the short form rather than growing: " + String(stacked))
     }
 
     /// The offer row and the line's Contents glyph take the band through

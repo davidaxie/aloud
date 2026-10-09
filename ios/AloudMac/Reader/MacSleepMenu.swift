@@ -3,10 +3,12 @@ import SwiftUI
 /// The player bar's sleep chip on the Mac (R19, mac-ux §3.10): a pull-down
 /// menu bound to the app's one `SleepTimer`, which outlives the reader and
 /// the window. The chip shows a moon while off and the countdown ("28:14"),
-/// "Chapter end" or "Book end" while armed. The menu lists the most recent
-/// choice first, then 15 min, 30 min, 45 min, 1 hr and End of chapter (End
-/// of book without chapters), with a check on the armed one; Off sits apart
-/// below a separator, only while armed. Arming 30 minutes takes two clicks.
+/// "Chapter end" or "Book end" while armed. The menu lists the durations
+/// ascending, then End of chapter (End of book without chapters), always in
+/// that order, with a check on the armed one; the most recent pick, unless
+/// it already leads, sits apart above them, by the chip (R3-17). Off sits
+/// apart below a separator, only while armed. Arming 30 minutes takes two
+/// clicks.
 /// While the voice fades toward the stop the chip is a plain "+15 min"
 /// button. Playback ▸ Sleep Timer lists the same choices in title case.
 struct MacSleepMenu: View {
@@ -32,22 +34,16 @@ struct MacSleepMenu: View {
 
     private var menu: some View {
         // The shared rule: Off only while armed, apart from the choices.
+        // R3-17: the most recent pick apart at the top, by the chip, when it
+        // isn't already first; the rest in order below a separator.
         let items = SleepTimer.menuItems(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)
         return Menu {
+            if let recent = items.recent {
+                choice(recent)
+                Divider()
+            }
             ForEach(items.choices, id: \.self) { option in
-                let title = Self.title(for: option, endsAtChapter: sleepTimer.endsAtChapter)
-                let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil
-                Toggle(isOn: selection(option)) {
-                    Text(title)
-                    // How long that is, short, as the menu's subtitle.
-                    if let minutes, minutes > 0 {
-                        Text(ListeningEstimate.phrase(minutes: minutes))
-                    }
-                }
-                // Spoken spelled out, as on the iPhone (R2-22); Voice
-                // Control answers to the title alone.
-                .accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))
-                .accessibilityInputLabels([Text(title)])
+                choice(option)
             }
             if items.showsOff {
                 Divider()
@@ -88,6 +84,24 @@ struct MacSleepMenu: View {
             Image(systemName: "moon")
                 .foregroundStyle(Theme.textMuted)
         }
+    }
+
+    /// One choice's checkmark item, with End of chapter's time under it.
+    @ViewBuilder
+    private func choice(_ option: SleepTimer.Option) -> some View {
+        let title = Self.title(for: option, endsAtChapter: sleepTimer.endsAtChapter)
+        let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil
+        Toggle(isOn: selection(option)) {
+            Text(title)
+            // How long that is, short, as the menu's subtitle.
+            if let minutes, minutes > 0 {
+                Text(ListeningEstimate.phrase(minutes: minutes))
+            }
+        }
+        // Spoken spelled out, as on the iPhone (R2-22); Voice Control
+        // answers to the title alone.
+        .accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))
+        .accessibilityInputLabels([Text(title)])
     }
 
     /// A checkmark item: on while it is the armed choice; picking it again

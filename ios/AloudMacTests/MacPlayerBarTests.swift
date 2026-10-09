@@ -544,15 +544,33 @@ final class MacPlayerBarTests: XCTestCase {
 
     // MARK: - Sleep menu
 
+    /// R3-17: the most recent pick is listed first, apart at the top by the
+    /// chip, and the rest keep their order; Off only while armed. The menu
+    /// bar's Playback ▸ Sleep Timer splits its snapshot the same way.
     func testTheSleepMenuListsTheMostRecentFirstAndOffOnlyWhileArmed() {
         let options = SleepTimer.orderedOptions(lastUsed: .minutes(30), minuteChoices: SleepTimer.standardMinuteChoices)
         let off = SleepTimer.menuItems(options: options, isArmed: false)
-        XCTAssertEqual(off.choices, [.minutes(30), .minutes(15), .minutes(45), .minutes(60), .endOfChapter])
+        XCTAssertEqual(off.recent, .minutes(30))
+        XCTAssertEqual(off.choices, [.minutes(15), .minutes(45), .minutes(60), .endOfChapter])
         XCTAssertFalse(off.showsOff, "Off shows only while a timer is armed")
 
         let armed = SleepTimer.menuItems(options: options, isArmed: true)
         XCTAssertEqual(armed.choices, off.choices, "Off never joins the choices")
+        XCTAssertEqual(armed.recent, off.recent)
         XCTAssertTrue(armed.showsOff)
+
+        var snapshot = MacMenuSnapshot()
+        snapshot.sleepOptions = options.filter { $0 != .off }
+        snapshot.sleepTitles = Dictionary(uniqueKeysWithValues: snapshot.sleepOptions.map {
+            ($0, MacSleepMenu.title(for: $0, endsAtChapter: true))
+        })
+        snapshot.sleepSelection = .minutes(30)
+        XCTAssertEqual(snapshot.sleepItems.recent, .minutes(30))
+        XCTAssertEqual(snapshot.sleepItems.choices, off.choices)
+        XCTAssertEqual(snapshot.sleepTitle(.minutes(60)), "1 hr")
+
+        let first = SleepTimer.orderedOptions(lastUsed: .minutes(15), minuteChoices: SleepTimer.standardMinuteChoices)
+        XCTAssertNil(SleepTimer.menuItems(options: first, isArmed: true).recent, "15 leads the order already")
     }
 
     func testTheSleepMenuSpeaksTheChipsSentenceCase() {

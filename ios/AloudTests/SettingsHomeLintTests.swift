@@ -64,7 +64,7 @@ final class SettingsHomeLintTests: XCTestCase {
             XCTAssertTrue(item.contains(".accessibilityAddTraits(.isHeader)"), "\(path)'s title is a heading")
         }
         let licenses = try XCTUnwrap(sources[paths[1]])
-        for name in ["let name = Text(entry.id)", "Text(Self.classicsTitle)"] {
+        for name in ["private func cardHeading(for entry: Entry) -> some View {", "Text(Self.classicsTitle)"] {
             let start = try XCTUnwrap(licenses.range(of: name), name)
             let modifiers = licenses[start.upperBound...].prefix(250)
             XCTAssertTrue(modifiers.contains(".accessibilityAddTraits(.isHeader)"), "\(name) is a heading")
@@ -200,17 +200,22 @@ final class SettingsHomeLintTests: XCTestCase {
 
     // MARK: - Critique round 1
 
-    /// R1-31: a license name is muted, never the link colour (accent text
-    /// is a tap target); each card's name stays its one heading. R2-20:
-    /// the only link-coloured text is each card's source, a real Link, and
-    /// the only push is its License text row.
+    /// R1-31: a license name is never the link colour (accent text is a
+    /// tap target); each card's name stays its one heading. R2-20: the only
+    /// link-coloured text is each card's source, a real Link, and the only
+    /// push is its license row. R3-18: that row names the license, in the
+    /// text colour, where four rows all read the same generic words, and
+    /// the license is no longer repeated as a badge beside the name.
     func testLicenseNamesAreNotDrawnInTheLinkColour() throws {
         let path = "Settings/LicensesView.swift"
         let s = try SourceTree.sources(only: [path])
         let licenses = try XCTUnwrap(s[path])
-        let start = try XCTUnwrap(licenses.range(of: "let license = Text(entry.license)"))
-        let license = licenses[start.upperBound...].prefix(160)
-        XCTAssertTrue(license.contains(".foregroundStyle(Theme.textMuted)"), String(license))
+        let page = try XCTUnwrap(licenses.range(of: "struct LicenseTextView"))
+        let cards = licenses[..<page.lowerBound]
+        XCTAssertEqual(cards.components(separatedBy: "Text(entry.license)").count - 1, 1,
+                       "the license is named once, by its row, never as a badge too")
+        XCTAssertFalse(cards.contains("nameAndLicense"), "the name alone heads the card")
+        XCTAssertFalse(cards.contains("dynamicTypeSize"), "no accessibility-size badge layout left")
 
         XCTAssertEqual(licenses.components(separatedBy: "Theme.accent").count - 1, 1, "accent on one row only")
         let link = try XCTUnwrap(licenses.range(of: "Link(destination: entry.source) {"))
@@ -222,11 +227,13 @@ final class SettingsHomeLintTests: XCTestCase {
         let push = try XCTUnwrap(licenses.range(of: "NavigationLink {"))
         let pushRow = licenses[push.upperBound...].prefix(400)
         XCTAssertTrue(pushRow.contains("LicenseTextView(entry: entry)"), String(pushRow))
-        XCTAssertTrue(pushRow.contains("Text(LicensesCopy.licenseText)"), String(pushRow))
+        XCTAssertTrue(pushRow.contains("Text(entry.license)"), "the row names its license: \(String(pushRow))")
+        XCTAssertTrue(pushRow.contains(".foregroundStyle(Theme.text)"), String(pushRow))
+        XCTAssertTrue(pushRow.contains("Image(systemName: \"chevron.right\")"), String(pushRow))
         XCTAssertFalse(pushRow.contains("Theme.accent"), "the push row is no link colour: \(String(pushRow))")
+        XCTAssertFalse(licenses.contains("LicensesCopy.licenseText"), "the generic row title is gone")
 
-        let page = try XCTUnwrap(licenses.range(of: "struct LicenseTextView"))
-        XCTAssertEqual(licenses[..<page.lowerBound].components(separatedBy: ".accessibilityAddTraits(.isHeader)").count - 1, 3,
+        XCTAssertEqual(cards.components(separatedBy: ".accessibilityAddTraits(.isHeader)").count - 1, 3,
                        "the title, each card's name and the Classics card: one heading each")
         let textPage = licenses[page.lowerBound...]
         XCTAssertTrue(textPage.contains(".textSelection(.enabled)"), "a license's text is selectable")
@@ -234,6 +241,41 @@ final class SettingsHomeLintTests: XCTestCase {
         XCTAssertTrue(textPage.contains("Text(entry.id)"), "the component names the page")
         XCTAssertEqual(textPage.components(separatedBy: ".accessibilityAddTraits(.isHeader)").count - 1, 1,
                        "the pushed page's one heading")
+    }
+
+    /// R3-18: the license row is unique to assistive tech, as sherpa-onnx
+    /// and the Kokoro model share one license (Voice Control's one generic
+    /// name matched four rows), and the source link shows it
+    /// leaves the app with a faint trailing arrow, never a second accent and
+    /// never a hint naming a browser.
+    func testEachLicenseRowIsUniqueAndTheSourceShowsItLeaves() throws {
+        let path = "Settings/LicensesView.swift"
+        let s = try SourceTree.sources(only: [path])
+        let licenses = try XCTUnwrap(s[path])
+        let push = try XCTUnwrap(licenses.range(of: "NavigationLink {"))
+        let link = try XCTUnwrap(licenses.range(of: "Link(destination: entry.source) {", range: push.upperBound..<licenses.endIndex))
+        let pushRow = licenses[push.upperBound..<link.lowerBound]
+        XCTAssertTrue(pushRow.contains(".accessibilityLabel(LicensesCopy.licenseRowLabel(for: entry))"), String(pushRow))
+        XCTAssertTrue(pushRow.contains(".accessibilityInputLabels(LicensesCopy.licenseRowInputLabels(for: entry)"),
+                      String(pushRow))
+        let compact = licenses[link.upperBound...].prefix(1500).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertTrue(compact.contains("HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) { Text(LicensesCopy.source(entry.source))"),
+                      compact)
+        XCTAssertTrue(compact.contains("Spacer(minLength: Theme.Space.xs)"), compact)
+        XCTAssertTrue(compact.contains("Image(systemName: \"arrow.up.forward\") .font(Theme.font(.footnote).weight(.semibold)) .foregroundStyle(Theme.textFaint) .accessibilityHidden(true)"),
+                      compact)
+        XCTAssertFalse(licenses.contains("Safari"), "the default browser may be another")
+        XCTAssertFalse(licenses.contains("accessibilityHint"), "no hint names where the link opens")
+
+        let labels = LicensesView.entries.map(LicensesCopy.licenseRowLabel(for:))
+        XCTAssertEqual(Set(labels).count, labels.count, "every row speaks its own label: \(labels)")
+        let sherpa = try XCTUnwrap(LicensesView.entries.first { $0.id == "sherpa-onnx" })
+        XCTAssertEqual(LicensesCopy.licenseRowLabel(for: sherpa), "Apache License 2.0, sherpa-onnx")
+        XCTAssertEqual(LicensesCopy.licenseRowInputLabels(for: sherpa), ["sherpa-onnx license", "Apache License 2.0"])
+        let firstNames = LicensesView.entries.compactMap { LicensesCopy.licenseRowInputLabels(for: $0).first }
+        XCTAssertEqual(Set(firstNames).count, LicensesView.entries.count, "Voice Control finds one row by each name")
+        let apache = LicensesView.entries.filter { $0.license == "Apache License 2.0" }
+        XCTAssertEqual(apache.count, 2, "two cards share the license the labels tell apart")
     }
 
     /// R2-20: each card links its component's source, over https.

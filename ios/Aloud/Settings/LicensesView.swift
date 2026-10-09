@@ -2,7 +2,20 @@ import SwiftUI
 
 /// The Licenses page's own copy, beside the entries' text.
 enum LicensesCopy {
-    static let licenseText = "License text"
+
+    /// What a card's push row speaks (R3-18): the license it shows, then
+    /// whose it is, as two components share the Apache text and the row
+    /// would otherwise speak the same as its twin.
+    static func licenseRowLabel(for entry: LicensesView.Entry) -> String {
+        "\(entry.license), \(entry.id)"
+    }
+
+    /// The push row's Voice Control names: the component's license first,
+    /// so each card's row answers to a name no other row has, then the
+    /// license as shown.
+    static func licenseRowInputLabels(for entry: LicensesView.Entry) -> [String] {
+        ["\(entry.id) license", entry.license]
+    }
 
     /// A source row: the link's host and path, no scheme.
     static func source(_ url: URL) -> String {
@@ -20,14 +33,14 @@ enum LicensesCopy {
 
 /// Static licenses & acknowledgements page (pushed from Settings).
 ///
-/// Each component's card keeps its one heading, its license and its note,
-/// and at its foot, below a hairline, the license's full text (bundled
-/// under Resources/Licenses, pushed as `LicenseTextView`) and a real link
-/// to the component's source: the only accent text on the page.
+/// Each component's card keeps its name, its one heading, and its note,
+/// and at its foot, below a hairline, a row named for its license that
+/// pushes the full text (bundled under Resources/Licenses, pushed as
+/// `LicenseTextView`) and a real link to the component's source, marked as
+/// leaving the app: the only accent text on the page (R3-18).
 struct LicensesView: View {
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     // The page's text is internal, not private: the Mac's About Aloud builds
     // its Credits from it (`MacAboutCredits`), so the two can't disagree.
@@ -105,7 +118,7 @@ struct LicensesView: View {
 
                 ForEach(Self.entries) { entry in
                     VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                        nameAndLicense(for: entry)
+                        cardHeading(for: entry)
                         Text(entry.detail)
                             .font(Theme.font(.footnote))
                             .foregroundStyle(Theme.textMuted)
@@ -149,40 +162,23 @@ struct LicensesView: View {
         }
     }
 
-    /// Component name with its license badge trailing — or, at accessibility
-    /// sizes, the badge on its own line under the name: side by side, the
-    /// two split the card's width and wrapped a character per line at AX5.
-    @ViewBuilder
-    private func nameAndLicense(for entry: Entry) -> some View {
-        // Each card's name is a heading, so the rotor steps card to card.
-        let name = Text(entry.id)
+    /// The component's name alone (R3-18): the license is named once, by
+    /// the row that pushes its text. Each card's name is a heading, so the
+    /// rotor steps card to card.
+    private func cardHeading(for entry: Entry) -> some View {
+        Text(entry.id)
             .font(Theme.font(.body).weight(.semibold))
             .foregroundStyle(Theme.text)
             .accessibilityAddTraits(.isHeader)
-        // Muted, as the Mac's credits are: accent text is a tap target, and
-        // a license name isn't one.
-        let license = Text(entry.license)
-            .font(Theme.font(.caption).weight(.medium))
-            .foregroundStyle(Theme.textMuted)
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                name
-                license
-            }
-        } else {
-            HStack(alignment: .firstTextBaseline) {
-                name
-                Spacer()
-                license
-            }
-        }
     }
 }
 
 extension LicensesView {
 
     /// Below a hairline, the license's text and the source: two full-width
-    /// 44 pt rows. Only the source is accent, as a real link.
+    /// 44 pt rows. The first is named for its license, in plain text with a
+    /// chevron, as it pushes a page; only the source is accent, as a real
+    /// link, with the faint arrow that says it leaves the app (R3-18).
     @ViewBuilder
     func cardFoot(for entry: Entry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -196,7 +192,7 @@ extension LicensesView {
                     LicenseTextView(entry: entry)
                 } label: {
                     HStack(spacing: Theme.Space.xs) {
-                        Text(LicensesCopy.licenseText)
+                        Text(entry.license)
                             .font(Theme.font(.subhead))
                             .foregroundStyle(Theme.text)
                         Spacer(minLength: Theme.Space.xs)
@@ -209,16 +205,30 @@ extension LicensesView {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // Two cards share the Apache text: the row names whose it is,
+                // so VoiceOver and Voice Control tell the two apart.
+                .accessibilityLabel(LicensesCopy.licenseRowLabel(for: entry))
+                .accessibilityInputLabels(LicensesCopy.licenseRowInputLabels(for: entry).map { Text($0) })
                 .accessibilityIdentifier("licenses.text.\(entry.id)")
             }
+            // No hint names a browser: the default one may be any.
             Link(destination: entry.source) {
-                Text(LicensesCopy.source(entry.source))
-                    .font(Theme.font(.subhead))
-                    .foregroundStyle(Theme.accentStrong)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                    Text(LicensesCopy.source(entry.source))
+                        .font(Theme.font(.subhead))
+                        .foregroundStyle(Theme.accentStrong)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: Theme.Space.xs)
+                    // Faint, not accent: the address is the page's one
+                    // link-coloured text.
+                    Image(systemName: "arrow.up.forward")
+                        .font(Theme.font(.footnote).weight(.semibold))
+                        .foregroundStyle(Theme.textFaint)
+                        .accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .accessibilityIdentifier("licenses.source.\(entry.id)")
         }

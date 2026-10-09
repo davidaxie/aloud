@@ -256,13 +256,25 @@ final class SleepTimer: ObservableObject {
         return options + [.off]
     }
 
-    /// The sleep menu's rows on both apps: the choices in `options`' order
-    /// (most recent first) with Off never among them, and whether Off shows
-    /// apart below them, which it does only while a timer is armed. With
-    /// nothing set there is nothing to turn off, so no checked Off reads as
-    /// a choice.
-    nonisolated static func menuItems(options: [Option], isArmed: Bool) -> (choices: [Option], showsOff: Bool) {
-        (options.filter { $0 != .off }, isArmed)
+    /// The sleep menu's rows on both apps (R3-17): the durations ascending,
+    /// then End of chapter, always in that order, with the most recent pick
+    /// (`options`' first) set apart as `recent`, nearest the chip, and left
+    /// out of `choices`, unless it already leads that order, when `recent`
+    /// is nil and the menu reads as it does with nothing picked. Off is
+    /// never among them; `showsOff` says whether it shows apart, which it
+    /// does only while a timer is armed. With nothing set there is nothing
+    /// to turn off, so no checked Off reads as a choice.
+    nonisolated static func menuItems(options: [Option], isArmed: Bool)
+        -> (recent: Option?, choices: [Option], showsOff: Bool) {
+        let offered = options.filter { $0 != .off }
+        let minutes = offered.compactMap { option -> Int? in
+            if case .minutes(let minutes) = option { return minutes }
+            return nil
+        }
+        let natural = minutes.sorted().map(Option.minutes)
+            + (offered.contains(.endOfChapter) ? [.endOfChapter] : [])
+        let recent = offered.first.flatMap { $0 == natural.first ? nil : $0 }
+        return (recent, natural.filter { $0 != recent }, isArmed)
     }
 
     /// A menu item's spoken label on both apps (R2-22): its title, then the

@@ -42,9 +42,38 @@ final class ReaderPositionLineTests: XCTestCase {
         XCTAssertEqual(position.kind, .chapter(number: 2, count: 3))
         XCTAssertEqual(position.title, "Chapter II")
         XCTAssertEqual(position.minutesLeft, 2)
-        XCTAssertEqual(position.detail, "2 of 3 · 2 min left")
-        XCTAssertEqual(position.text, "Chapter II · 2 of 3 · 2 min left")
+        XCTAssertEqual(position.detail, "2 of 3 · 2 min left", "the short form, unchanged")
+        XCTAssertEqual(position.qualifiedDetail, "2 of 3 · 2 min left in chapter")
+        XCTAssertEqual(position.text, "Chapter II · 2 of 3 · 2 min left in chapter",
+                       "the Large Content Viewer shows the qualified line")
         XCTAssertEqual(position.accessibilityLabel, "Chapter II, 2 of 3, 2 minutes left in chapter")
+    }
+
+    /// R3-16: only a chapter's time counts to the chapter's end, so only a
+    /// chapter line says so; a book or page line counts to the end, and a
+    /// finished chapter has no time to qualify.
+    func testOnlyAChaptersTimeIsQualified() {
+        let book = line(chapterless, at: 0)
+        XCTAssertEqual(book.qualifiedDetail, book.detail)
+        XCTAssertFalse(book.text.contains("in chapter"), book.text)
+        XCTAssertFalse(book.accessibilityLabel.contains("in chapter"), book.accessibilityLabel)
+
+        let pdf = ReaderNavigation(content: content([(nil, 1), (nil, 1), (nil, 3)]), kind: .pdf)
+        for sentence in 0...2 {
+            let pages = line(pdf, at: sentence)
+            XCTAssertEqual(pages.kind, .pages)
+            XCTAssertEqual(pages.qualifiedDetail, pages.detail)
+            XCTAssertFalse(pages.text.contains("in chapter"), pages.text)
+            XCTAssertFalse(pages.accessibilityLabel.contains("in chapter"), pages.accessibilityLabel)
+        }
+
+        let finished = line(chaptered, at: 3, finished: true)
+        XCTAssertEqual(finished.qualifiedDetail, "2 of 3 · Finished")
+        XCTAssertEqual(finished.text, "Chapter II · 2 of 3 · Finished")
+
+        let hours = ReaderPositionLine(kind: .chapter(number: 24, count: 61), title: "Chapter XXIV", minutesLeft: 72)
+        XCTAssertEqual(hours.detail, "24 of 61 · 1 hr 12 min left")
+        XCTAssertEqual(hours.qualifiedDetail, "24 of 61 · 1 hr 12 min left in chapter")
     }
 
     func testDoubleSpeedHalvesTheTime() {

@@ -152,12 +152,18 @@ struct AloudCommands: Commands {
     }
 
     /// Playback ▸ Sleep Timer: the chip's options with a checkmark on the
-    /// armed one, then Off while armed. Both bind to the one `SleepTimer`.
+    /// armed one, then Off while armed. As on the chip (R3-17), the most
+    /// recent pick sits apart at the top unless it already leads, and the
+    /// rest keep their order. Both bind to the one `SleepTimer`.
     private var sleepTimerMenu: some View {
-        Menu(MacMenuCopy.sleepTimer) {
-            ForEach(Array(zip(snapshot.sleepOptions, snapshot.sleepTitles)), id: \.0) { option, title in
-                Toggle(title, isOn: Self.sleepToggle(option, selection: snapshot.sleepSelection,
-                                                     select: { state.actions.selectSleep($0) }))
+        let items = snapshot.sleepItems
+        return Menu(MacMenuCopy.sleepTimer) {
+            if let recent = items.recent {
+                sleepItem(recent)
+                Divider()
+            }
+            ForEach(items.choices, id: \.self) { option in
+                sleepItem(option)
             }
             if snapshot.sleepSelection != .off {
                 Divider()
@@ -165,6 +171,11 @@ struct AloudCommands: Commands {
             }
         }
         .disabled(!snapshot.isEnabled(.sleepTimer))
+    }
+
+    private func sleepItem(_ option: SleepTimer.Option) -> some View {
+        Toggle(snapshot.sleepTitle(option), isOn: Self.sleepToggle(option, selection: snapshot.sleepSelection,
+                                                                   select: { state.actions.selectSleep($0) }))
     }
 
     /// One Sleep Timer item's checkmark. Any pick selects it: the checked

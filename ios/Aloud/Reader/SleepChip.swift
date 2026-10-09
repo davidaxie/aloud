@@ -24,28 +24,22 @@ struct SleepChip: View {
 
     // MARK: - Armed or off
 
-    /// The most recent choice sits nearest the chip (`.priority` on the
-    /// iPhone), each a native checkmark item that VoiceOver reads as
-    /// selected; Off sits apart, and only while a timer is armed.
+    /// The durations keep their order (R3-17); the most recent pick, when
+    /// it isn't already first, sits apart in its own section nearest the
+    /// chip (`.priority` on the iPhone). Each is a native checkmark item
+    /// that VoiceOver reads as selected; Off sits apart, and only while a
+    /// timer is armed.
     private var menu: some View {
         let items = SleepTimer.menuItems(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)
         return Menu {
+            if let recent = items.recent {
+                Section {
+                    choice(recent)
+                }
+            }
             Section(SleepTimer.Copy.section) {
                 ForEach(items.choices, id: \.self) { option in
-                    let title = option.title(endsAtChapter: sleepTimer.endsAtChapter)
-                    let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil
-                    Toggle(isOn: selection(option)) {
-                        Text(title)
-                        // How long that is: the menu's subtitle line.
-                        if let minutes, minutes > 0 {
-                            Text(ListeningEstimate.spokenPhrase(minutes: minutes))
-                        }
-                    }
-                    // The cell speaks only its stored label, never the
-                    // subtitle, so the time joins the label (R2-22); Voice
-                    // Control still answers to the title alone.
-                    .accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))
-                    .accessibilityInputLabels([Text(title)])
+                    choice(option)
                 }
             }
             if items.showsOff {
@@ -116,6 +110,25 @@ struct SleepChip: View {
         } else {
             Label(SleepTimer.Copy.section, systemImage: "moon")
         }
+    }
+
+    /// One choice's checkmark item, with End of chapter's time under it.
+    @ViewBuilder
+    private func choice(_ option: SleepTimer.Option) -> some View {
+        let title = option.title(endsAtChapter: sleepTimer.endsAtChapter)
+        let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil
+        Toggle(isOn: selection(option)) {
+            Text(title)
+            // How long that is: the menu's subtitle line.
+            if let minutes, minutes > 0 {
+                Text(ListeningEstimate.spokenPhrase(minutes: minutes))
+            }
+        }
+        // The cell speaks only its stored label, never the subtitle, so the
+        // time joins the label (R2-22); Voice Control still answers to the
+        // title alone.
+        .accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))
+        .accessibilityInputLabels([Text(title)])
     }
 
     /// A checkmark item: on while it is the armed choice; picking it again
