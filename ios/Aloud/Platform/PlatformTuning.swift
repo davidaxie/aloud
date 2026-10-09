@@ -56,6 +56,10 @@ enum PlatformTuning {
     /// resumes mid-sentence; a longer one reads on from the sentence start,
     /// and lock-screen Play claims the session again on the way.
     static let idleEngineStopDelay: TimeInterval? = 60
+    /// The speed track waits for the scrub's 8pt of sideways travel before
+    /// it moves the speed: a touch that only presses it, or drags it
+    /// downward, stays the sheet's and the list's (R3-09).
+    static let speedTrackSetsOnClick = false
     #elseif os(macOS)
     /// Two kept synthesis at 3.0x real time on an M4 Pro (10 P + 4 E
     /// cores), level with a listener at 2.95x, so reading fell behind.
@@ -87,6 +91,10 @@ enum PlatformTuning {
     /// holds off idle sleep while it is. 30 s after playback stops the
     /// engine stops too, so a paused Mac on battery can sleep.
     static let idleEngineStopDelay: TimeInterval? = 30
+    /// A click on the speed track sets the speed where it lands, as the
+    /// stock macOS slider did and as MacScrub's click seeks; no pointer
+    /// drag there belongs to a sheet.
+    static let speedTrackSetsOnClick = true
 
     /// All but two performance cores, clamped to 4...6.
     static func kokoroThreadCount(performanceCores: Int) -> Int {

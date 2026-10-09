@@ -135,8 +135,56 @@ final class ListeningUITests: XCTestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 5))
         XCTAssertEqual(stringValue(of: slider), "1.5×")
         // R3-09: the stock slider stands in for the warm track to assistive
-        // tech, framed to the track's whole 44pt touch row.
-        XCTAssertGreaterThanOrEqual(slider.frame.height, 43.5, "the slider element is the 44pt row")
+        // tech, framed to the track's whole 44pt touch row. Measured against
+        // a 44pt preset in the same sheet: iOS 26 draws a partly raised sheet
+        // scaled by about 0.98-0.99 (Theme.SheetTarget), so no fixed number
+        // holds on screen.
+        let preset = app.buttons["listening.preset.1"].firstMatch
+        XCTAssertEqual(slider.frame.height, preset.frame.height, accuracy: 0.5,
+                       "the slider element is the 44pt row, as tall as a preset")
+    }
+
+    /// R3-09: the speed drag recognises alongside the sheet's pan, so a
+    /// swipe that starts on the speed row and goes down still moves the
+    /// sheet (here, all the way closed), and the speed stays where it was.
+    func testADownwardDragFromTheSpeedRowStillMovesTheSheet() {
+        let app = launchReader()
+        openListeningSheet(app)
+        let title = app.staticTexts["listening.title"].firstMatch
+        _ = settledFrame(of: title)
+        let slider = app.sliders["listening.speed.slider"].firstMatch
+        XCTAssertTrue(slider.waitForExistence(timeout: 5))
+        let before = stringValue(of: slider)
+        dragSheetClosed(app, by: slider)
+        XCTAssertTrue(waitForNonExistence(of: title, timeout: 10),
+                      "A drag down from the speed row closes the sheet, as one from its header does")
+        openListeningSheet(app)
+        XCTAssertEqual(stringValue(of: app.sliders["listening.speed.slider"].firstMatch), before,
+                       "A downward drag never moves the speed")
+        dismissListeningSheet(app)
+    }
+
+    /// R3-09: at AX3 the speed row scrolls with the voices, and a swipe up
+    /// that starts on it scrolls them: the speed drag never holds the
+    /// scroll view's pan, and the speed stays where it was.
+    func testAtAX3ASwipeUpFromTheSpeedRowScrollsTheVoices() {
+        let app = launchReader(["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"])
+        openListeningSheet(app)
+        let title = app.staticTexts["listening.title"].firstMatch
+        let opened = settledFrame(of: title)
+        let slider = app.sliders["listening.speed.slider"].firstMatch
+        XCTAssertTrue(slider.waitForExistence(timeout: 5))
+        XCTAssertTrue(wait(for: "hittable == true", slider, timeout: 5), "Set-up: the speed row is in view")
+        let before = settledFrame(of: slider)
+        let speed = stringValue(of: slider)
+        slider.swipeUp(velocity: .slow)
+        let after = settledFrame(of: slider)
+        XCTAssertLessThan(after.minY, before.minY - 20,
+                          "The voices scrolled: the speed row went from \(before.minY) to \(after.minY)")
+        XCTAssertEqual(settledFrame(of: title).minY, opened.minY, accuracy: 0.5,
+                       "The list scrolled inside the sheet; the sheet kept its height")
+        XCTAssertEqual(stringValue(of: slider), speed, "An upward swipe never moves the speed")
+        dismissListeningSheet(app)
     }
 
     func testVoiceRowsHaveNoNestedButtons() {

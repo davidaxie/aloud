@@ -259,6 +259,10 @@ struct ListeningSpeedControls: View {
     /// it as a lifted finger does, and either way the release persists.
     @GestureState private var speedDrag: SpeedTrack.Drag?
 
+    /// Whether a click sets the speed where it lands: the Mac's pointer,
+    /// as its stock slider did; never the iPhone's finger (R3-09).
+    private static let setsOnClick = PlatformTuning.speedTrackSetsOnClick
+
     var body: some View {
         VStack(spacing: Theme.Space.md) {
             if Self.showsNumeral(at: dynamicTypeSize) {
@@ -311,8 +315,10 @@ struct ListeningSpeedControls: View {
     /// a 44pt row, never the stock slider's glass thumb. A sideways drag
     /// moves the speed live (the audio follows) and ticks once on arriving
     /// at 1×; the release is the one persisted pick. A drag that starts
-    /// more downward than sideways is left to the sheet. To assistive tech
-    /// it is the stock slider, as the scrub is.
+    /// more downward than sideways is left to the sheet and the list, which
+    /// recognise alongside it, so a swipe that starts on the row still
+    /// scrolls or moves them. On the Mac a click sets the speed. To
+    /// assistive tech it is the stock slider, as the scrub is.
     private var speedTrack: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
@@ -321,7 +327,10 @@ struct ListeningSpeedControls: View {
                       reduceMotion: reduceMotion)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .gesture(speedGesture(width: width))
+                // Alongside, never exclusive: the speed stays still on a
+                // vertical drag, and the sheet's and the scroll view's pans
+                // keep theirs.
+                .simultaneousGesture(speedGesture(width: width))
         }
         // A full 44pt touch row around the 4pt line.
         .frame(height: 44)
@@ -364,12 +373,13 @@ struct ListeningSpeedControls: View {
 
     /// The scrub's drag on the speed scale: nothing until 8pt of travel,
     /// then only a sideways drag moves the speed, snapped to 0.05 with the
-    /// 1× detent, ticking once on arriving at 1×.
+    /// 1× detent, ticking once on arriving at 1×. On the Mac, from the
+    /// press: a click sets the speed under the pointer.
     private func speedGesture(width: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: ScrubGesture.minimumDistance)
+        DragGesture(minimumDistance: SpeedTrack.minimumDistance(setsOnClick: Self.setsOnClick))
             .updating($speedDrag) { value, state, _ in
                 let drag = SpeedTrack.Drag.next(after: state, translation: value.translation,
-                                                rate: playback.rate)
+                                                rate: playback.rate, setsOnClick: Self.setsOnClick)
                 state = drag
                 guard drag.engagement == .horizontal else { return }
                 let target = SpeedTrack.rate(startX: value.startLocation.x, x: value.location.x,
@@ -488,8 +498,10 @@ enum SpeedTrack {
         /// The drag after one frame, from the gesture state before it (nil
         /// at a drag's first frame); `rate` is the speed now, kept as the
         /// start only on that first frame.
-        static func next(after state: Drag?, translation: CGSize, rate: Double) -> Drag {
-            Drag(engagement: SpeedTrack.engagement(after: state?.engagement, translation: translation),
+        static func next(after state: Drag?, translation: CGSize, rate: Double,
+                         setsOnClick: Bool = false) -> Drag {
+            Drag(engagement: SpeedTrack.engagement(after: state?.engagement, translation: translation,
+                                                   setsOnClick: setsOnClick),
                  startRate: state?.startRate ?? rate)
         }
     }
@@ -523,10 +535,21 @@ enum SpeedTrack {
         return SpeedScale.snap(startRate + Double((x - startX) / width) * span)
     }
 
+    /// The travel before a press is a drag: the scrub's 8pt under a
+    /// finger, none where a click sets the speed (the Mac, as MacScrub's
+    /// click seeks).
+    static func minimumDistance(setsOnClick: Bool) -> CGFloat {
+        setsOnClick ? 0 : ScrubGesture.minimumDistance
+    }
+
     /// Decided once and kept: a drag is the track's when its first 8pt are
     /// more sideways than down, so a sheet drag that crosses the row, or
-    /// drifts sideways later, never moves the speed.
-    static func engagement(after state: Engagement?, translation: CGSize) -> Engagement {
+    /// drifts sideways later, never moves the speed. Where a click sets
+    /// the speed, every press is the track's from its first frame: the
+    /// stock macOS slider's click and drag, with no sheet to give way to.
+    static func engagement(after state: Engagement?, translation: CGSize,
+                           setsOnClick: Bool = false) -> Engagement {
+        if setsOnClick { return .horizontal }
         if let state, state != .undecided { return state }
         let across = abs(translation.width), down = abs(translation.height)
         if across >= ScrubGesture.minimumDistance, across > down { return .horizontal }

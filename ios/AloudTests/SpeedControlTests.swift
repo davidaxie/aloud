@@ -106,6 +106,38 @@ final class SpeedControlTests: XCTestCase {
         XCTAssertEqual(later.engagement, .horizontal)
     }
 
+    /// On the Mac a click sets the speed where it lands, as the stock macOS
+    /// slider did and as MacScrub's click seeks: no travel to wait for, and
+    /// the press is the track's from its first frame. The iPhone keeps the
+    /// scrub's 8pt wait and the sideways rule.
+    func testOnTheMacAClickSetsTheSpeed() {
+        #if os(macOS)
+        XCTAssertTrue(PlatformTuning.speedTrackSetsOnClick, "the Mac's pointer clicks to set")
+        #else
+        XCTAssertFalse(PlatformTuning.speedTrackSetsOnClick, "the iPhone's finger waits for a sideways drag")
+        #endif
+        XCTAssertEqual(SpeedTrack.minimumDistance(setsOnClick: true), 0, "a click is a press with no travel")
+        XCTAssertEqual(SpeedTrack.minimumDistance(setsOnClick: false), ScrubGesture.minimumDistance)
+
+        let click = SpeedTrack.Drag.next(after: nil, translation: .zero, rate: 1, setsOnClick: true)
+        XCTAssertEqual(click, SpeedTrack.Drag(engagement: .horizontal, startRate: 1), "the track's at once")
+        XCTAssertEqual(SpeedTrack.Drag.next(after: nil, translation: .zero, rate: 1).engagement, .undecided,
+                       "a touch waits for its 8pt")
+        XCTAssertEqual(SpeedTrack.engagement(after: .undecided, translation: CGSize(width: 0, height: 30),
+                                             setsOnClick: true),
+                       .horizontal, "a pointer drag that wanders down still moves the speed")
+
+        // Where it lands: off the thumb, the rate under the pointer; on the
+        // thumb, the speed it holds.
+        let width = Self.width
+        let landed = SpeedTrack.rate(startX: 200, x: 200, startRate: 1, width: width)
+        XCTAssertEqual(landed, SpeedTrack.rate(atX: 200, width: width), "the rate under the click")
+        XCTAssertNotEqual(landed, 1, "a click off the thumb moves the speed")
+        let thumb = WarmTrack.thumbCentre(fraction: SpeedTrack.fraction(of: 1), width: width)
+        XCTAssertEqual(SpeedTrack.rate(startX: thumb, x: thumb, startRate: 1, width: width), 1,
+                       "a click on the thumb holds the speed")
+    }
+
     // MARK: - The warm track (R3-09)
 
     /// WarmTrack's unfilled track is the scrub's warm track (never the
@@ -148,8 +180,22 @@ final class SpeedControlTests: XCTestCase {
             XCTAssertEqual(try controlsHeight(rig, size: size), rows, accuracy: 1,
                            "\(size): the presets and the track's row alone")
         }
-        XCTAssertGreaterThan(try controlsHeight(rig, size: .accessibility3), rows + 24,
-                             "AX3: the numeral is back above the two-column presets")
+        // AX3: the presets stand in two columns, three rows each 44pt or
+        // its callout line where that is taller, so the controls without a
+        // numeral are `withoutNumeral` tall; the numeral adds its line and
+        // the stack's spacing on top. (Two columns alone add over 100pt, so
+        // a bare margin over `rows` proves nothing.)
+        let ax3 = DynamicTypeSize.accessibility3
+        let presetRow = try max(44, lineHeight(Theme.font(.callout), ListeningFormat.rate(1.25), size: ax3))
+        let withoutNumeral = Theme.Space.xs + (3 * presetRow + 2 * Theme.Space.xs) + Theme.Space.md
+            + 44 + Theme.Space.sm
+        let numeral = try lineHeight(Theme.font(.numeral), ListeningFormat.rate(1), size: ax3)
+        XCTAssertGreaterThan(numeral, 20, "AX3: the numeral's line")
+        let height = try controlsHeight(rig, size: ax3)
+        // 3pt for the half-point rounding of the four measured lines.
+        XCTAssertGreaterThanOrEqual(height, withoutNumeral + Theme.Space.md + numeral - 3,
+                                    "AX3: the numeral is back above the two-column presets "
+                                    + "(\(height) against \(withoutNumeral) without it)")
     }
 
     /// The readout keeps one width at every rate, so the track beside it
@@ -228,8 +274,16 @@ final class SpeedControlTests: XCTestCase {
             XCTAssertTrue(element.contains(needle), "the representation keeps \(needle)")
         }
         XCTAssertFalse(controls.contains(".tint(Theme.accent)"), "no stock slider is drawn")
-        XCTAssertTrue(controls.contains("DragGesture(minimumDistance: ScrubGesture.minimumDistance)"),
-                      "the scrub's 8pt drag")
+        XCTAssertTrue(controls.contains("private static let setsOnClick = PlatformTuning.speedTrackSetsOnClick"),
+                      "the click rule is the platform's")
+        XCTAssertTrue(controls.contains("DragGesture(minimumDistance: SpeedTrack.minimumDistance(setsOnClick: Self.setsOnClick))"),
+                      "the scrub's 8pt drag on the iPhone, a click on the Mac")
+        XCTAssertTrue(controls.contains("rate: playback.rate, setsOnClick: Self.setsOnClick)"),
+                      "the Mac's press is the track's from its first frame")
+        XCTAssertTrue(controls.contains(".simultaneousGesture(speedGesture(width: width))"),
+                      "the sheet's and the scroll view's pans recognise alongside the speed drag")
+        XCTAssertFalse(controls.contains(".gesture(speedGesture("),
+                       "an exclusive drag would keep a vertical swipe from the list and the sheet")
         XCTAssertTrue(controls.contains("if new == nil, old?.engagement == .horizontal { playback.selectRate(playback.rate) }"),
                       "the release persists the pick, a cancel too")
         XCTAssertFalse(app.contains("SliderAppearance"), "the appearance proxy never reached a SwiftUI slider")
@@ -271,6 +325,14 @@ final class SpeedControlTests: XCTestCase {
             .environment(\.dynamicTypeSize, size)
         let image = try XCTUnwrap(render(view, width: 390, scale: 1), "\(size)")
         return CGFloat(image.height)
+    }
+
+    /// One line of `text` in `font` at `size`, to the half point.
+    private func lineHeight(_ font: Font, _ text: String, size: DynamicTypeSize) throws -> CGFloat {
+        let line = Text(text).font(font).monospacedDigit().fixedSize()
+            .environment(\.dynamicTypeSize, size)
+        let image = try XCTUnwrap(render(line, scale: 2), "\(text) at \(size)")
+        return CGFloat(image.height) / 2
     }
 
     private func render<V: View>(_ view: V, width: CGFloat? = nil, scale: CGFloat) -> CGImage? {
