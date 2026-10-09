@@ -55,8 +55,9 @@ final class AppModel: ObservableObject {
     /// (simulators inherit the Mac's memory and pass).
     let neuralVoiceOffered = ModelManager.deviceSupportsNeuralVoice
 
-    /// Color-only tint of the spoken word in the reader. OFF by default —
-    /// the default experience is the calm sentence pill only.
+    /// The spoken word's mark in the reader: a tint and an underline inside
+    /// the sentence highlight, so the exact word is easy to follow. ON by
+    /// default; a listener who turns it off keeps the sentence alone.
     @Published var wordHighlight: Bool {
         didSet {
             UserDefaults.standard.set(wordHighlight, forKey: PrefKey.wordHighlight)
@@ -217,7 +218,7 @@ final class AppModel: ObservableObject {
 
         globalRate = PlaybackController.clampedRate(
             defaults.object(forKey: PrefKey.rate) as? Double ?? 1.0)
-        wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
+        wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? true
         playback.wordHighlightEnabled = wordHighlight   // didSet doesn't fire in init
 
         // UI-test hook (no-op in Release): a text size the stepper can move.

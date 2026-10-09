@@ -4,15 +4,17 @@ import QuartzCore
 /// attributes: moving it never edits `textStorage`, so glyph metrics and
 /// layout never change while reading (PRD R6).
 ///
-/// Three shapes, all in the text view's content coordinates:
+/// Four shapes, all in the text view's content coordinates:
 /// - the sentence: one traced outline around the sentence's glyphs, line by
 ///   line, continuing across line breaks with every corner softened alike;
 ///   a chapter heading (a centred sentence) is a pill instead;
 /// - a 2pt margin mark in the left gutter spanning the sentence's lines
 ///   (a heading instead wears it as a 1.5pt edge inside its pill);
-/// - an optional 1.5pt underline under the spoken word.
+/// - an optional mark on the spoken word: a soft rounded tint behind it,
+///   over the sentence's, and a 2pt underline beneath it, so the exact word
+///   is easy to follow inside the highlighted sentence.
 /// Sentence changes crossfade over 200 ms (instant under Reduce Motion);
-/// the word underline slides over 90 ms.
+/// the word's tint and underline slide together over 90 ms.
 ///
 /// Shared by both columns: the shapes live under a host `CALayer` (the iOS
 /// `ReaderHighlightLayer` view's own layer), colors arrive resolved as
@@ -40,7 +42,7 @@ final class HighlightLayers {
     /// The accent edge a heading's pill wears in place of the gutter bar.
     static let headingEdgeWidth: CGFloat = 1.5
     static let markGap: CGFloat = 10
-    static let underlineHeight: CGFloat = 1.5
+    static let underlineHeight: CGFloat = 2
     static let underlineOffset: CGFloat = 2
     static let crossfade: CFTimeInterval = 0.2
     /// Neighbouring rows whose edges differ by less than this share the
@@ -51,10 +53,15 @@ final class HighlightLayers {
     static let headingPadding: CGFloat = 0.5
     static let headingMinAspect: CGFloat = 1.5
     static let wordSlide: CFTimeInterval = 0.09
+    /// How far the word's tint reaches past the word: 2pt either side, and
+    /// no higher or lower than its line, so it stays inside the sentence's.
+    static let wordOutset = CGSize(width: 2, height: 0)
+    static let wordCornerRadius: CGFloat = 4
 
     private let host: CALayer
     private var sentenceShape = CAShapeLayer()
     private var markShape = CAShapeLayer()
+    private let wordFillShape = CAShapeLayer()
     private let wordShape = CAShapeLayer()
     /// The style the shown mark was drawn for. A heading's ring and a body
     /// sentence's bar have unlike paths, which Core Animation can't
@@ -64,11 +71,13 @@ final class HighlightLayers {
     /// colophon (`setSentenceHidden`); a sentence drawn meanwhile stays out.
     private(set) var isSentenceHidden = false
 
-    /// Adds the three shapes to `host`, sentence lowest.
+    /// Adds the four shapes to `host`, sentence lowest, the word's underline
+    /// on top of its tint.
     init(host: CALayer) {
         self.host = host
         host.addSublayer(sentenceShape)
         host.addSublayer(markShape)
+        host.addSublayer(wordFillShape)
         host.addSublayer(wordShape)
     }
 
@@ -150,6 +159,7 @@ final class HighlightLayers {
         markShape.path = nil
         markStyle = nil
         wordShape.path = nil
+        wordFillShape.path = nil
         shownWordPieces = 0
         CATransaction.commit()
     }
@@ -180,11 +190,12 @@ final class HighlightLayers {
 
     // MARK: Word
 
-    /// Rect count of the underline currently shown; a path animation is
+    /// Rect count of the word mark currently shown; a path animation is
     /// only well-defined between paths with the same element count.
     private var shownWordPieces = 0
 
-    func showWord(_ segments: [Segment], color: CGColor, animated: Bool, reduceMotion: Bool) {
+    /// Marks the spoken word: `fill` tints it, `color` underlines it.
+    func showWord(_ segments: [Segment], color: CGColor, fill: CGColor, animated: Bool, reduceMotion: Bool) {
         let path = Self.underlinePath(segments)
         let pieces = segments.filter { $0.frame.width > 0 }.count
         let slide = animated && !reduceMotion
@@ -197,6 +208,8 @@ final class HighlightLayers {
         } else {
             CATransaction.setDisableActions(true)
         }
+        wordFillShape.fillColor = fill
+        wordFillShape.path = Self.wordFillPath(segments)
         wordShape.fillColor = color
         wordShape.path = path
         CATransaction.commit()
@@ -206,6 +219,7 @@ final class HighlightLayers {
         shownWordPieces = 0
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        wordFillShape.path = nil
         wordShape.path = nil
         CATransaction.commit()
     }
@@ -410,8 +424,21 @@ final class HighlightLayers {
         return outline.copy(strokingWithWidth: headingEdgeWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
     }
 
-    /// An underline under each piece of the word (a hyphenated word can
-    /// span two lines), `underlineOffset` below the baseline.
+    /// A rounded tint behind each piece of the word (a hyphenated word can
+    /// span two lines), `wordOutset` past it.
+    static func wordFillPath(_ segments: [Segment]) -> CGPath? {
+        let pieces = segments.filter { $0.frame.width > 0 }
+        guard !pieces.isEmpty else { return nil }
+        let path = CGMutablePath()
+        for piece in pieces {
+            path.addRoundedRect(in: piece.frame.insetBy(dx: -wordOutset.width, dy: -wordOutset.height),
+                                cornerWidth: wordCornerRadius, cornerHeight: wordCornerRadius)
+        }
+        return path
+    }
+
+    /// An underline under each piece of the word, `underlineOffset` below
+    /// the baseline.
     static func underlinePath(_ segments: [Segment]) -> CGPath? {
         let pieces = segments.filter { $0.frame.width > 0 }
         guard !pieces.isEmpty else { return nil }

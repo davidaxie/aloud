@@ -38,6 +38,6 @@ struct PreferenceToggleRow: View {
 /// Shared copy for prefs that surface in more than one place.
 enum PreferenceCopy {
     static let wordHighlightTitle = "Word highlight"
-    /// R13's word marker is an underline, not a tint, so the copy says so.
-    static let wordHighlightSubtitle = "Underline each word as it’s spoken"
+    /// The word's mark is a tint with an underline, so the copy says highlight.
+    static let wordHighlightSubtitle = "Highlight each word as it’s spoken"
 }

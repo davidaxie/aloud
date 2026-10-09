@@ -63,6 +63,16 @@ final class ThemeTokenContrastTests: XCTestCase {
         return (lighter + 0.05) / (darker + 0.05)
     }
 
+    /// The contrast of `text` on the spoken word: its tint over the sentence
+    /// fill over the page, the ground the word is read on.
+    private func contrastOnTheSpokenWord(_ text: Color, _ appearance: Appearance) -> CGFloat {
+        let bottom = resolve(Theme.wordHighlightBg, appearance)
+            .over(resolve(Theme.highlightBg, appearance).over(resolve(Theme.bg, appearance)))
+        let top = resolve(text, appearance).over(bottom)
+        let (lighter, darker) = (max(top.luminance, bottom.luminance), min(top.luminance, bottom.luminance))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
     private static let solidGrounds: [(name: String, color: Color)] = [
         ("bg", Theme.bg), ("bgTint", Theme.bgTint), ("surface", Theme.surface), ("surface2", Theme.surface2),
     ]
@@ -96,6 +106,9 @@ final class ThemeTokenContrastTests: XCTestCase {
         XCTAssertEqual(resolve(Theme.highlightBg, light).alpha, 0.26, accuracy: 0.001)
         XCTAssertEqual(resolve(Theme.highlightBg, dark).alpha, 0.28, accuracy: 0.001)
         XCTAssertEqual(resolve(Theme.highlightBg, lightHigh).alpha, 0.34, accuracy: 0.001)
+        XCTAssertEqual(resolve(Theme.wordHighlightBg, light).alpha, 0.24, accuracy: 0.001)
+        XCTAssertEqual(resolve(Theme.wordHighlightBg, dark).alpha, 0.24, accuracy: 0.001)
+        XCTAssertEqual(resolve(Theme.wordHighlightBg, darkHigh).alpha, 0.26, accuracy: 0.001)
         XCTAssertEqual(resolve(Theme.accentSoft, darkHigh).alpha, 0.20, accuracy: 0.001)
     }
 
@@ -133,6 +146,14 @@ final class ThemeTokenContrastTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(ratio, 4.5, "\(pair.name), \(appearance): "
                                             + String(format: "%.2f:1", ratio))
             }
+            // The spoken word: body text on its tint over the sentence fill,
+            // and its 2pt underline there (WCAG 1.4.11's 3:1).
+            let word = contrastOnTheSpokenWord(Theme.text, appearance)
+            XCTAssertGreaterThanOrEqual(word, 5.6, "text on the spoken word, \(appearance): "
+                                        + String(format: "%.2f:1", word))
+            let mark = contrastOnTheSpokenWord(Theme.accentStrong, appearance)
+            XCTAssertGreaterThanOrEqual(mark, 3.2, "the word underline on its tint, \(appearance): "
+                                        + String(format: "%.2f:1", mark))
         }
     }
 
@@ -280,6 +301,9 @@ final class ThemeTokenContrastTests: XCTestCase {
             let high = Appearance(dark: dark, highContrast: true)
             XCTAssertGreaterThanOrEqual(underline(high), underline(normal),
                                         "the word underline on the sentence fill, \(high)")
+            XCTAssertGreaterThanOrEqual(contrastOnTheSpokenWord(Theme.accentStrong, high),
+                                        contrastOnTheSpokenWord(Theme.accentStrong, normal),
+                                        "the word underline on the word's tint, \(high)")
             for ground in Self.solidGrounds {
                 XCTAssertGreaterThan(contrast(Theme.textFaint, on: ground.color, high),
                                      contrast(Theme.textFaint, on: ground.color, normal),

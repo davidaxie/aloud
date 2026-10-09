@@ -48,8 +48,8 @@ final class ReaderHighlightLayer: UIView {
 
     // MARK: Word
 
-    func showWord(_ segments: [HighlightLayers.Segment], color: UIColor, animated: Bool) {
-        shapes.showWord(segments, color: color.cgColor, animated: animated,
+    func showWord(_ segments: [HighlightLayers.Segment], color: UIColor, fill: UIColor, animated: Bool) {
+        shapes.showWord(segments, color: color.cgColor, fill: fill.cgColor, animated: animated,
                         reduceMotion: UIAccessibility.isReduceMotionEnabled)
     }
 

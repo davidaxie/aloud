@@ -105,7 +105,7 @@ enum Theme {
     static let accentFill = dynamic(light: 0xA87434, dark: 0xC99A5B,
                                     highContrast: (0x8A5B22, 0xC99A5B))
     /// Accent text and links, fills that carry a text label (a `bg` label on
-    /// it is 5.50:1), and the word underline. Increase Contrast deepens it
+    /// it is 5.50:1), and the word underline (over `wordHighlightBg`). Increase Contrast deepens it
     /// with the sentence fill, so the underline on the fill only gains.
     static let accentStrong = dynamic(light: 0x8A5B22, dark: 0xE0B478,
                                       highContrast: (0x7A4C17, 0xEBC690))
@@ -117,6 +117,15 @@ enum Theme {
     static let highlightBg = dynamic(light: 0xA87434, dark: 0xC99A5B,
                                      lightAlpha: 0.26, darkAlpha: 0.28,
                                      highContrastAlpha: 0.34)
+    /// The spoken word's tint, drawn over the sentence fill: the two make
+    /// about 44% of the accent (51% under Increase Contrast), a clear step
+    /// up from the sentence alone, while body text on it stays ≥ 9.3:1 in
+    /// light and ≥ 6.4:1 in dark (≥ 5.6:1 under Increase Contrast), and the
+    /// 2pt `accentStrong` underline on it ≥ 3.2:1. Increase Contrast adds
+    /// less here than to the sentence fill, so the underline still gains.
+    static let wordHighlightBg = dynamic(light: 0xA87434, dark: 0xC99A5B,
+                                         lightAlpha: 0.24, darkAlpha: 0.24,
+                                         highContrastAlpha: 0.26)
 
     // MARK: Elevation ink (R3)
 

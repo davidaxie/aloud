@@ -977,6 +977,7 @@ struct ReaderTextView: UIViewRepresentable {
             textView.highlightLayer.showWord(
                 segments(for: range),
                 color: UIColor(Theme.accentStrong).resolvedColor(with: textView.traitCollection),
+                fill: UIColor(Theme.wordHighlightBg).resolvedColor(with: textView.traitCollection),
                 animated: animated)
         }
 

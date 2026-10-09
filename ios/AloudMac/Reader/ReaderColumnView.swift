@@ -1072,6 +1072,7 @@ struct ReaderColumnView: NSViewRepresentable {
             }
             page.highlight.showWord(segments(for: range),
                                     color: textView.effectiveAppearance.resolvedCGColor(Theme.accentStrong),
+                                    fill: textView.effectiveAppearance.resolvedCGColor(Theme.wordHighlightBg),
                                     animated: animated, reduceMotion: reduceMotion())
         }
 

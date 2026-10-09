@@ -176,7 +176,7 @@ final class HighlightLayersTests: XCTestCase {
         layers.showSentence(heading, fill: ink, mark: ink, gutterX: 24, style: .heading, em: 24,
                             animated: true, reduceMotion: false)
         let shown = shapes(in: host)
-        XCTAssertEqual(shown.count, 5, "the fill and the mark each fade through a new shape")
+        XCTAssertEqual(shown.count, 6, "the fill and the mark each fade through a new shape")
         XCTAssertEqual(shown[2].path, HighlightLayers.markPath(line, gutterX: 24), "the bar is left as it was")
         XCTAssertEqual(shown[2].opacity, 0)
         XCTAssertEqual(shown[3].path, HighlightLayers.headingEdgePath(heading, em: 24))
@@ -188,7 +188,7 @@ final class HighlightLayersTests: XCTestCase {
         let body = HighlightLayers(host: bars)
         body.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
         body.showSentence(next, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
-        XCTAssertEqual(shapes(in: bars).count, 4, "bar to bar: one mark, moved in place")
+        XCTAssertEqual(shapes(in: bars).count, 5, "bar to bar: one mark, moved in place")
         XCTAssertEqual(shapes(in: bars)[2].path, HighlightLayers.markPath(next, gutterX: 24))
     }
 
@@ -229,9 +229,9 @@ final class HighlightLayersTests: XCTestCase {
             Segment(frame: CGRect(x: 24, y: 129, width: 30, height: 29), baseline: 22),
         ]
         let box = HighlightLayers.underlinePath(pieces)?.boundingBoxOfPath
-        // First piece: y = 100 + 22 + 2; second ends at 129 + 22 + 2 + 1.5.
+        // First piece: y = 100 + 22 + 2; second ends at 129 + 22 + 2 + 2.
         XCTAssertEqual(box?.minY, 124)
-        XCTAssertEqual(box?.maxY, 154.5)
+        XCTAssertEqual(box?.maxY, 155)
     }
 
     // MARK: - Shapes
@@ -244,10 +244,10 @@ final class HighlightLayersTests: XCTestCase {
         (host.sublayers ?? []).compactMap { $0 as? CAShapeLayer }
     }
 
-    func testTheThreeShapesJoinTheHostSentenceLowest() {
+    func testTheFourShapesJoinTheHostSentenceLowest() {
         let host = CALayer()
         let layers = HighlightLayers(host: host)
-        XCTAssertEqual(shapes(in: host).count, 3)
+        XCTAssertEqual(shapes(in: host).count, 4)
         layers.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: false, reduceMotion: false)
         XCTAssertNotNil(shapes(in: host)[0].path, "the sentence sits beneath the mark and the word")
         XCTAssertNotNil(shapes(in: host)[1].path)
@@ -259,9 +259,9 @@ final class HighlightLayersTests: XCTestCase {
         let host = CALayer()
         let layers = HighlightLayers(host: host)
         layers.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
-        XCTAssertEqual(shapes(in: host).count, 3, "nothing to fade from")
+        XCTAssertEqual(shapes(in: host).count, 4, "nothing to fade from")
         layers.showSentence(next, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: false)
-        XCTAssertEqual(shapes(in: host).count, 4, "the new shape fades in above the old")
+        XCTAssertEqual(shapes(in: host).count, 5, "the new shape fades in above the old")
         XCTAssertEqual(shapes(in: host)[1].opacity, 1)
     }
 
@@ -270,16 +270,38 @@ final class HighlightLayersTests: XCTestCase {
         let layers = HighlightLayers(host: host)
         layers.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: true)
         layers.showSentence(next, fill: ink, mark: ink, gutterX: 24, animated: true, reduceMotion: true)
-        XCTAssertEqual(shapes(in: host).count, 3, "no crossfade under Reduce Motion")
+        XCTAssertEqual(shapes(in: host).count, 4, "no crossfade under Reduce Motion")
         XCTAssertEqual(shapes(in: host)[0].path?.boundingBoxOfPath.minY ?? 0, 128, accuracy: 0.001)
     }
 
-    func testTheWordUnderlineShowsAndClears() {
+    func testTheWordsTintAndUnderlineShowAndClear() {
         let host = CALayer()
         let layers = HighlightLayers(host: host)
-        layers.showWord(line, color: ink, animated: false, reduceMotion: false)
-        XCTAssertEqual(shapes(in: host)[2].path?.boundingBoxOfPath.minY ?? 0, 124, accuracy: 0.001)
+        let tint = CGColor(red: 0, green: 0, blue: 1, alpha: 0.24)
+        layers.showWord(line, color: ink, fill: tint, animated: false, reduceMotion: false)
+        let (fill, underline) = (shapes(in: host)[2], shapes(in: host)[3])
+        XCTAssertEqual(fill.path, HighlightLayers.wordFillPath(line), "the tint sits under the underline")
+        XCTAssertEqual(fill.fillColor, tint)
+        XCTAssertEqual(underline.path?.boundingBoxOfPath.minY ?? 0, 124, accuracy: 0.001)
+        XCTAssertEqual(underline.fillColor, ink)
         layers.clearWord()
-        XCTAssertNil(shapes(in: host)[2].path)
+        XCTAssertNil(fill.path)
+        XCTAssertNil(underline.path)
+    }
+
+    /// The word's tint covers each piece of the word 2pt past it either side
+    /// and exactly its line's height, so it stays inside the sentence's.
+    func testTheWordsTintCoversEachPieceWithinItsLine() {
+        let pieces = [
+            Segment(frame: CGRect(x: 250, y: 100, width: 60, height: 29), baseline: 22),
+            Segment(frame: CGRect(x: 24, y: 129, width: 30, height: 29), baseline: 22),
+            Segment(frame: CGRect(x: 60, y: 129, width: 0, height: 29), baseline: 22),
+        ]
+        let box = HighlightLayers.wordFillPath(pieces)?.boundingBoxOfPath
+        XCTAssertEqual(box, CGRect(x: 22, y: 100, width: 312 - 22, height: 58))
+        XCTAssertNil(HighlightLayers.wordFillPath([]))
+        XCTAssertLessThanOrEqual(HighlightLayers.wordOutset.width, HighlightLayers.outset.width,
+                                 "inside the sentence's reach")
+        XCTAssertLessThanOrEqual(HighlightLayers.wordOutset.height, HighlightLayers.outset.height)
     }
 }
