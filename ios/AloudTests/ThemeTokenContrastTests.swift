@@ -122,8 +122,8 @@ final class ThemeTokenContrastTests: XCTestCase {
             ("text on highlightBg over bg", Theme.text, Theme.highlightBg, Theme.bg),
             // The cover's tonal ground.
             ("textMuted on accentSoft over surface", Theme.textMuted, Theme.accentSoft, Theme.surface),
-            // Selected chips: Listening and the player bar sit on surface,
-            // the Appearance sheet's segments on surface2.
+            // Selected chips: the player bar's sit on surface; the speed
+            // presets (R4-24) and the Appearance segments on surface2.
             ("accentStrong on accentSoft over surface", Theme.accentStrong, Theme.accentSoft, Theme.surface),
             ("accentStrong on accentSoft over surface2", Theme.accentStrong, Theme.accentSoft, Theme.surface2),
         ]

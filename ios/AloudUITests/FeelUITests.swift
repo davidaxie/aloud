@@ -184,8 +184,10 @@ final class FeelUITests: XCTestCase {
     }
 
     /// "1.25×" → 1.25.
+    /// The slider's value says the speed in words, "1.25 times" (R4-23):
+    /// its leading number, with or without a × sign.
     private static func rate(_ value: String) -> Double? {
-        Double(value.replacingOccurrences(of: "×", with: ""))
+        Double(value.replacingOccurrences(of: "×", with: "").split(separator: " ").first ?? "")
     }
 
     /// Where the thumb sits for `rate`: the warm track (R3-09) spans the

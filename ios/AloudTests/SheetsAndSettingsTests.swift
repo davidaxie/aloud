@@ -68,12 +68,12 @@ final class SheetsAndSettingsTests: XCTestCase {
                        "Text & appearance, 21 point, System appearance")
 
         let system = AVSpeechEngine(mutesOutput: true).defaultVoice
-        XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: system, rate: 1), "Voice & speed, System, 1×",
+        XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: system, rate: 1), "Voice & speed, System, 1 times",
                        "no natural-voice line, nothing more said")
         let line = SettingsView.naturalVoiceLine(supported: true, state: .notInstalled)
         XCTAssertEqual(line, "Natural voice available \u{00B7} 353 MB")
         XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: system, rate: 1, naturalVoice: line),
-                       "Voice & speed, System, 1×, Natural voice available, 353 MB")
+                       "Voice & speed, System, 1 times, Natural voice available, 353 MB")
     }
 
     /// The natural voice's line shows only where it could be installed and

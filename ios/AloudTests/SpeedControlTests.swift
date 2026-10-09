@@ -134,7 +134,8 @@ final class SpeedControlTests: XCTestCase {
         XCTAssertFalse(slider.accessibilityTraits.contains(.notEnabled), "never read as dimmed")
         XCTAssertEqual(slider.accessibilityLabel, ListeningCopy.speed)
         XCTAssertEqual(slider.accessibilityIdentifier, "listening.speed.slider")
-        XCTAssertEqual(slider.accessibilityValue, "0.8×")
+        // R4-23: the speed in words, never the × sign.
+        XCTAssertEqual(slider.accessibilityValue, "0.8 times")
         XCTAssertEqual(slider.minimumValue, Float(SpeedScale.range.lowerBound))
         XCTAssertEqual(slider.maximumValue, Float(SpeedScale.range.upperBound))
 
@@ -152,10 +153,10 @@ final class SpeedControlTests: XCTestCase {
 
         slider.accessibilityIncrement()
         XCTAssertEqual(steps, [true])
-        XCTAssertEqual(slider.accessibilityValue, "0.85×", "VoiceOver reads the speed it landed on")
+        XCTAssertEqual(slider.accessibilityValue, "0.85 times", "VoiceOver reads the speed it landed on")
         slider.accessibilityDecrement()
         XCTAssertEqual(steps, [true, false])
-        XCTAssertEqual(slider.accessibilityValue, "0.75×")
+        XCTAssertEqual(slider.accessibilityValue, "0.75 times")
 
         XCTAssertFalse(slider.isUserInteractionEnabled, "the slider takes no touches")
         XCTAssertTrue(surface.hitTest(CGPoint(x: thumb.midX, y: 22), with: nil) === surface,
@@ -191,7 +192,7 @@ final class SpeedControlTests: XCTestCase {
 
     private func input(rate: Double) -> SpeedTrackInput {
         SpeedTrackInput(rate: rate, range: SpeedScale.range, label: ListeningCopy.speed,
-                        identifier: "listening.speed.slider", spokenValue: ListeningFormat.rate,
+                        identifier: "listening.speed.slider", spokenValue: ListeningCopy.spokenTimes,
                         onDrag: { _, _, _ in }, onRelease: {}, onStep: { _ in rate }, onSet: { _ in })
     }
     #endif
@@ -333,7 +334,7 @@ final class SpeedControlTests: XCTestCase {
         let element = try XCTUnwrap(controls.range(of: ".speedTrackInput(SpeedTrackInput("))
         let wiring = String(controls[element.upperBound...].prefix(800))
         for needle in ["label: ListeningCopy.speed,", "identifier: \"listening.speed.slider\",",
-                       "spokenValue: ListeningFormat.rate,", "onDrag: dragSpeed,", "onRelease: releaseSpeed,",
+                       "spokenValue: ListeningCopy.spokenTimes,", "onDrag: dragSpeed,", "onRelease: releaseSpeed,",
                        "onStep: stepSpeed,", "onSet: setSpeed))"] {
             XCTAssertTrue(wiring.contains(needle), "the track hands the platform \(needle)")
         }
@@ -398,7 +399,7 @@ final class SpeedControlTests: XCTestCase {
     }
 
     private func controlsHeight(_ rig: PlaybackTestRig, size: DynamicTypeSize) throws -> CGFloat {
-        let view = ListeningSpeedControls(selectedChipUnderlay: nil)
+        let view = ListeningSpeedControls()
             .environmentObject(rig.controller)
             .environment(\.dynamicTypeSize, size)
         let image = try XCTUnwrap(render(view, width: 390, scale: 1), "\(size)")

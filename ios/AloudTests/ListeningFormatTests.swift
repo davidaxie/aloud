@@ -74,8 +74,10 @@ final class ListeningFormatTests: XCTestCase {
         XCTAssertEqual(ListeningFormat.chipTitle(voice: michael, rate: 1.25), "Michael · 1.25×")
         #if os(iOS)
         // H058: Settings' row says the chip's value without its middle dot,
-        // which VoiceOver reads aloud as a word, after the visible title.
-        XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: michael, rate: 1.25), "Voice & speed, Michael, 1.25×")
+        // which VoiceOver reads aloud as a word, after the visible title;
+        // R4-23: the speed in words, as the speed track says it.
+        XCTAssertEqual(SettingsView.listeningRowSpokenLabel(voice: michael, rate: 1.25), "Voice & speed, Michael, 1.25 times")
+        XCTAssertFalse(SettingsView.listeningRowSpokenLabel(voice: michael, rate: 1.25).contains("×"))
         XCTAssertFalse(SettingsView.listeningRowSpokenLabel(voice: michael, rate: 1.25).contains("\u{00B7}"))
         #endif
     }
@@ -86,6 +88,21 @@ final class ListeningFormatTests: XCTestCase {
         XCTAssertEqual(ListeningCopy.spokenRate(1.25), "1.25 times speed")
         XCTAssertEqual(ListeningCopy.spokenRate(2.5), "2.5 times speed")
         XCTAssertFalse(SpeedScale.presets.map(ListeningCopy.spokenRate).contains { $0.contains("×") })
+    }
+
+    /// R4-23: the speed track and the Settings row say a speed in words,
+    /// the presets' words without their "speed", which the track's label
+    /// already says; the presets keep theirs unchanged.
+    func testSpokenTimesIsTheRateInWords() throws {
+        try XCTSkipUnless(Locale.current.decimalSeparator == ".", "needs a '.' decimal separator")
+        XCTAssertEqual(ListeningCopy.spokenTimes(1.25), "1.25 times")
+        XCTAssertEqual(ListeningCopy.spokenTimes(1), "1 times")
+        XCTAssertEqual(ListeningCopy.spokenTimes(0.85), "0.85 times")
+        XCTAssertEqual(ListeningCopy.spokenRate(1.25), "1.25 times speed", "the presets' words are unchanged")
+        for rate in stride(from: 0.5, through: 3.0, by: 0.05) {
+            XCTAssertFalse(ListeningCopy.spokenTimes(rate).contains("×"), "\(rate)")
+            XCTAssertEqual(ListeningCopy.spokenRate(rate), ListeningCopy.spokenTimes(rate) + " speed")
+        }
     }
 
     func testIdentifierNumberIsLocaleFree() {
@@ -122,9 +139,9 @@ final class ListeningFormatTests: XCTestCase {
         let subtitle = ListeningCopy.subtitle(velvet.subtitle, note: ListeningCopy.blendStandIn(speaker: "Michael"))
         XCTAssertEqual(subtitle, velvet.subtitle + " \u{00B7} speaking as Michael for now")
         XCTAssertEqual(ListeningView.accessibilityLabel(name: velvet.name, subtitle: subtitle,
-                                                        origin: "US \u{00B7} male"),
-                       "\(velvet.name), \(velvet.subtitle), speaking as Michael for now, US, male",
-                       "VoiceOver hears commas, never the middle dot")
+                                                        origin: "US \u{00B7} male", spokenOrigin: "American, male"),
+                       "\(velvet.name), \(velvet.subtitle), speaking as Michael for now, American, male",
+                       "VoiceOver hears commas, never the middle dot, and an accent, never letters")
         XCTAssertEqual(ListeningCopy.subtitle(velvet.subtitle, note: nil), velvet.subtitle)
     }
 
@@ -146,6 +163,67 @@ final class ListeningFormatTests: XCTestCase {
         XCTAssertNil(ListeningView.standInNote(for: system, blendsAvailable: false, standingInFor: nil))
         XCTAssertNil(ListeningView.standInNote(for: natural, blendsAvailable: nil, standingInFor: natural),
                      "a natural voice is never a stand-in")
+    }
+
+    // MARK: - The origin in words (R4-26)
+
+    /// The row draws "US · male"; VoiceOver says the accent and the gender,
+    /// and nothing for the System voice.
+    @MainActor
+    func testTheOriginIsSpokenAsAnAccent() throws {
+        let emma = try XCTUnwrap(KokoroVoiceCatalog.curatedVoices.first { $0.name == "Emma" })
+        XCTAssertEqual(ListeningView.origin(for: emma), "GB \u{00B7} female", "the drawn origin stays")
+        XCTAssertEqual(ListeningView.spokenOrigin(for: emma), "British, female")
+        XCTAssertEqual(ListeningView.spokenOrigin(for: KokoroVoiceCatalog.defaultVoice), "American, male")
+        XCTAssertEqual(ListeningView.accessibilityLabel(name: emma.name, subtitle: emma.subtitle,
+                                                        origin: ListeningView.origin(for: emma),
+                                                        spokenOrigin: ListeningView.spokenOrigin(for: emma)),
+                       "Emma, Gentle, mellow, British, female")
+        let system = TtsVoice(id: AVSpeechEngine.systemVoiceID, name: "System voice", lang: "en-US",
+                              gender: "", engine: .avSpeech, quality: 1)
+        XCTAssertEqual(ListeningView.spokenOrigin(for: system), "", "the System voice has no origin")
+        XCTAssertEqual(ListeningCopy.accent(forRegion: "AU"), "Australia", "another region: its English name")
+    }
+
+    /// A voice with no description of its own shows its origin as its
+    /// subtitle: VoiceOver says the accent there, once, never the letters,
+    /// with or without a stand-in note after it.
+    @MainActor
+    func testARowWhoseSubtitleIsItsOriginNeverSpeaksTheLetters() {
+        for (lang, accent) in [("en-US", "American"), ("en-GB", "British")] {
+            let voice = TtsVoice(id: "kokoro:test_\(lang)", name: "Test", lang: lang, gender: "female",
+                                 engine: .kokoro, quality: 4)
+            let origin = ListeningView.origin(for: voice)
+            let spoken = ListeningView.spokenOrigin(for: voice)
+            let bare = ListeningView.accessibilityLabel(name: voice.name, subtitle: origin, origin: origin,
+                                                        spokenOrigin: spoken)
+            XCTAssertEqual(bare, "Test, \(accent), female")
+            let noted = ListeningView.accessibilityLabel(
+                name: voice.name, subtitle: ListeningCopy.subtitle(origin, note: ListeningCopy.blendStandIn(speaker: "Michael")),
+                origin: origin, spokenOrigin: spoken)
+            XCTAssertEqual(noted, "Test, \(accent), female, speaking as Michael for now")
+            for label in [bare, noted] {
+                for letters in ["US", "GB"] {
+                    XCTAssertFalse(label.components(separatedBy: ", ").contains(letters), label)
+                }
+            }
+        }
+    }
+
+    /// No curated voice's row says its region as letters.
+    @MainActor
+    func testNoCuratedVoiceSpeaksItsRegionAsLetters() {
+        XCTAssertEqual(KokoroVoiceCatalog.curatedVoices.count, 11)
+        for voice in KokoroVoiceCatalog.curatedVoices {
+            let label = ListeningView.accessibilityLabel(name: voice.name, subtitle: voice.subtitle,
+                                                         origin: ListeningView.origin(for: voice),
+                                                         spokenOrigin: ListeningView.spokenOrigin(for: voice))
+            XCTAssertFalse(label.contains(", US,") || label.hasSuffix(", US"), label)
+            XCTAssertFalse(label.contains(", GB"), label)
+            XCTAssertFalse(label.contains("\u{00B7}"), label)
+            XCTAssertTrue(label.hasSuffix(", American, male") || label.hasSuffix(", American, female")
+                          || label.hasSuffix(", British, female"), label)
+        }
     }
 
     private let michael = TtsVoice(id: "kokoro:am_michael", name: "Michael", lang: "en-US",

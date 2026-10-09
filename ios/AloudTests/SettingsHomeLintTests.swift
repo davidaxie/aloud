@@ -157,8 +157,18 @@ final class SettingsHomeLintTests: XCTestCase {
             XCTAssertTrue(try XCTUnwrap(sources[path]).contains("Theme.bgTint.ignoresSafeArea()"), path)
         }
         XCTAssertTrue(try XCTUnwrap(sources[paths[4]]).contains(".presentationBackground(Theme.surface)"))
-        // On bgTint a selected preset's tint alone is under AA in light.
-        XCTAssertTrue(try XCTUnwrap(sources[paths[0]]).contains("selectedChipUnderlay: Theme.surface2"))
+        // On bgTint a selected preset's tint alone is under AA in light: it
+        // is drawn over surface2 on every surface now (R4-24), so no page
+        // asks for an underlay.
+        let listening = try XCTUnwrap(sources[paths[0]])
+        XCTAssertFalse(listening.contains("selectedChipUnderlay"), "the underlay is no longer a parameter")
+        let preset = try XCTUnwrap(listening.range(of: "private func presetButton("))
+        let chip = listening[preset.upperBound...].prefix(2400).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertTrue(chip.contains(".background(selected ? Theme.accentSoft : Theme.surface2, "
+                                    + "in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)) "
+                                    + ".background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.md, "
+                                    + "style: .continuous))"),
+                      "the selected tint over surface2, always: \(chip)")
     }
 
     /// P040: the root keeps exactly three rows, the two preference rows say
@@ -293,9 +303,17 @@ final class SettingsHomeLintTests: XCTestCase {
             XCTAssertEqual(LicensesCopy.shortForm(of: entry.source), expected[entry.id], entry.id)
             XCTAssertEqual(LicensesCopy.source(entry.source), "Source \u{00B7} " + (expected[entry.id] ?? ""), entry.id)
         }
+        // R4-28: the GPL note points at the Source row below it, which
+        // names the exact source; no note repeats an address.
         let espeak = LicensesView.entries.first { $0.id == "espeak-ng" }
-        XCTAssertTrue(espeak?.detail.contains("github.com/espeak-ng/espeak-ng") == true,
-                      "the GPL note names the exact source")
+        XCTAssertTrue(espeak?.detail.hasSuffix("; its source is linked below.") == true, espeak?.detail ?? "")
+        XCTAssertEqual(espeak?.license, "GNU General Public License 3.0", "the license by its name")
+        XCTAssertEqual(espeak?.textResource, "espeak-ng-GPL-3.0", "its text's file is unchanged")
+        for entry in LicensesView.entries {
+            for address in [LicensesCopy.shortForm(of: entry.source), "github.com", "huggingface.co"] {
+                XCTAssertFalse(entry.detail.contains(address), "\(entry.id)'s note repeats \(address)")
+            }
+        }
     }
 
     /// R2-20: the cards' copy is set typographically: a copyright sign, a
@@ -304,9 +322,15 @@ final class SettingsHomeLintTests: XCTestCase {
     func testTheLicensesCopyIsTypographic() {
         let details = Dictionary(uniqueKeysWithValues: LicensesView.entries.map { ($0.id, $0.detail) })
         XCTAssertTrue(details["sherpa-onnx"]?.contains("by the k2\u{2011}fsa project") == true)
+        // R4-28: every copyright line sets the sign after the word.
+        XCTAssertTrue(details["sherpa-onnx"]?.hasSuffix("Copyright \u{00A9} the sherpa-onnx contributors.") == true,
+                      details["sherpa-onnx"] ?? "")
         XCTAssertTrue(details["ONNX Runtime"]?.contains("Copyright \u{00A9} Microsoft Corporation.") == true)
         XCTAssertTrue(details["Kokoro voice model"]?.contains("Aloud\u{2019}s own mixes") == true)
         for (id, detail) in details {
+            XCTAssertEqual(detail.components(separatedBy: "Copyright").count,
+                           detail.components(separatedBy: "Copyright \u{00A9} ").count,
+                           "\(id): a copyright without its sign")
             XCTAssertFalse(detail.contains("(c)"), id)
             XCTAssertFalse(detail.contains("'"), "\(id): a straight apostrophe")
             XCTAssertFalse(detail.contains("k2-fsa"), "\(id): a breakable hyphen in k2-fsa")
@@ -315,15 +339,95 @@ final class SettingsHomeLintTests: XCTestCase {
     }
 
     /// R2-21: Settings' row separators are drawn at the border's weight
-    /// and colour (the system draws them a full point wide), as quiet as
-    /// the Licenses cards' edges, never the main screen's strong hairline.
+    /// and colour, as quiet as the Licenses cards' edges, never the main
+    /// screen's strong hairline. R4-27: in the app's own cards, never a
+    /// system grouped list: the two preferences in one card, Licenses in
+    /// the next, the footer after it; each row with the Licenses rows'
+    /// faint chevron, 44 pt tall, pressed to surface2.
     func testSettingsSeparatorsAreDrawnAtTheBorderWeight() throws {
-        let path = "Settings/SettingsView.swift"
+        let paths = ["Settings/SettingsView.swift", "Theme/SurfaceCard.swift", "Settings/LicensesView.swift"]
+        let s = try SourceTree.sources(only: paths)
+        let home = try XCTUnwrap(s[paths[0]])
+        let card = try XCTUnwrap(s[paths[1]], "the shared card has its own file")
+        let licenses = try XCTUnwrap(s[paths[2]])
+        for gone in ["List {", ".insetGrouped", "listRowSeparator", "listRowBackground", "scrollContentBackground"] {
+            XCTAssertFalse(home.contains(gone), "no system list: \(gone)")
+        }
+        XCTAssertEqual(SourceTree.occurrences(of: ".surfaceCard()", in: [paths[0]: home]), 2, "two cards")
+        XCTAssertTrue(licenses.contains(".surfaceCard()"), "Licenses draws the same card")
+
+        let compact = home.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let listening = try XCTUnwrap(compact.range(of: ".accessibilityIdentifier(\"settings.listening\")"))
+        let separator = try XCTUnwrap(compact.range(of: "SurfaceCardSeparator()"))
+        let appearance = try XCTUnwrap(compact.range(of: ".accessibilityIdentifier(\"settings.appearance\")"))
+        let firstCard = try XCTUnwrap(compact.range(of: ".surfaceCard()"))
+        let licensesRow = try XCTUnwrap(compact.range(of: ".accessibilityIdentifier(\"settings.licenses\")"))
+        let secondCard = try XCTUnwrap(compact.range(of: ".surfaceCard()", range: firstCard.upperBound..<compact.endIndex))
+        XCTAssertLessThan(listening.lowerBound, separator.lowerBound)
+        XCTAssertLessThan(separator.lowerBound, appearance.lowerBound, "a rule between the two preferences")
+        XCTAssertLessThan(appearance.lowerBound, firstCard.lowerBound, "both preferences in the first card")
+        XCTAssertLessThan(firstCard.lowerBound, licensesRow.lowerBound, "Licenses after it")
+        XCTAssertLessThan(licensesRow.lowerBound, secondCard.lowerBound, "in a card of its own")
+        XCTAssertTrue(compact[secondCard.lowerBound...].hasPrefix(".surfaceCard() footer }"),
+                      "the privacy line and version close the list under the second card")
+        XCTAssertEqual(SourceTree.occurrences(of: "SurfaceCardSeparator()", in: [paths[0]: home]), 1)
+        XCTAssertEqual(SourceTree.occurrences(of: ".buttonStyle(SurfaceCardRowStyle())", in: [paths[0]: home]), 3)
+
+        let row = try XCTUnwrap(compact.range(of: "private func pushRow("))
+        let pushRow = compact[row.upperBound...].prefix(700)
+        for needle in ["Image(systemName: \"chevron.right\") .font(Theme.font(.footnote).weight(.semibold)) "
+                       + ".foregroundStyle(Theme.textFaint) .accessibilityHidden(true)",
+                       ".frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)", ".contentShape(Rectangle())"] {
+            XCTAssertTrue(pushRow.contains(needle), "the push row lacks \(needle)")
+        }
+        for kept in [".modifier(ShelfScrollEdge(ground: Theme.bgTint))", ".background(Theme.bgTint.ignoresSafeArea())",
+                     ".toolbarColorScheme(colorScheme, for: .navigationBar)", ".accessibilityShowsLargeContentViewer()",
+                     ".font(Theme.font(.aside))"] {
+            XCTAssertTrue(home.contains(kept), "Settings keeps \(kept)")
+        }
+
+        let cardCode = card.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        for needle in ["RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)",
+                       ".background(Theme.surface, in: Self.shape)",
+                       ".strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth)",
+                       ".fill(Theme.Stroke.borderColor) .frame(height: Theme.Stroke.borderWidth) .padding(.leading, inset)",
+                       "configuration.isPressed ? Theme.surface2 : Color.clear"] {
+            XCTAssertTrue(cardCode.contains(needle), "SurfaceCard lacks \(needle)")
+        }
+        XCTAssertFalse(card.contains("hairlineColor"), "the card's rules are the border's, never the hairline")
+        XCTAssertFalse(SwiftLiterals.code(in: card).contains(".opacity("), "a press fills, never fades")
+    }
+
+    /// R4-27, R4-28: each Licenses card is the shared card, at its corner;
+    /// a component's card leaves its foot to the Source row, which pads the
+    /// card's md under its text and runs its 44 pt target to the edge, so
+    /// every card's text ends md above its edge, wrapped or not. The
+    /// Classics card keeps the default md all round.
+    func testTheLicenseCardsShareTheCardAndAnEvenFoot() throws {
+        let path = "Settings/LicensesView.swift"
         let s = try SourceTree.sources(only: [path])
-        let home = try XCTUnwrap(s[path])
-        XCTAssertTrue(home.contains(".listRowSeparatorTint(Theme.Stroke.borderColor)"))
-        XCTAssertFalse(home.contains(".listRowSeparatorTint(Theme.Stroke.hairlineColor)"))
-        XCTAssertTrue(home.contains(".listStyle(.insetGrouped)"), "the list stays")
+        let licenses = try XCTUnwrap(s[path])
+        let compact = licenses.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertEqual(SourceTree.occurrences(of: ".modifier(LicenseCard(bottom: 0))", in: [path: licenses]), 1,
+                       "the component cards")
+        XCTAssertEqual(SourceTree.occurrences(of: ".modifier(LicenseCard())", in: [path: licenses]), 1, "the Classics card")
+        let entries = try XCTUnwrap(compact.range(of: "ForEach(Self.entries) { entry in"))
+        let classics = try XCTUnwrap(compact.range(of: "Text(Self.classicsTitle)"))
+        let entryCard = try XCTUnwrap(compact.range(of: ".modifier(LicenseCard(bottom: 0))"))
+        XCTAssertLessThan(entries.lowerBound, entryCard.lowerBound)
+        XCTAssertLessThan(entryCard.lowerBound, classics.lowerBound, "the component cards pass bottom: 0")
+        for needle in ["var bottom: CGFloat = Theme.Space.md",
+                       ".padding([.top, .horizontal], Theme.Space.md) .padding(.bottom, bottom) .surfaceCard()"] {
+            XCTAssertTrue(compact.contains(needle), "LicenseCard lacks \(needle)")
+        }
+        XCTAssertFalse(licenses.contains("Theme.Radius.md"), "the card's corner is the shared Radius.lg")
+        let link = try XCTUnwrap(compact.range(of: "Link(destination: entry.source) {"))
+        let sourceRow = compact[link.upperBound...].prefix(1200)
+        XCTAssertTrue(sourceRow.contains(".padding(.top, Theme.Space.sm) .padding(.bottom, Theme.Space.md) "
+                                         + ".frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading) "
+                                         + ".contentShape(Rectangle())"),
+                      "the Source row pads the card's foot before its 44 pt frame: \(sourceRow)")
+        XCTAssertFalse(licenses.contains("Theme.Space.md - "), "no fixed offset from the frame")
     }
 
     /// R1-28, R2-16: the Aa sheet's text size is a stepper in one capsule:

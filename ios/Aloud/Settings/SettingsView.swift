@@ -6,6 +6,11 @@ import SwiftUI
 /// Licenses. Each preference has one home in those views, so this screen
 /// holds no toggle. The privacy line and the version close the list.
 ///
+/// R4-27: the rows sit in the app's own cards (`SurfaceCard`), as the
+/// Licenses page's do, never a system grouped list: the two preferences in
+/// one, Licenses in its own, each row with the Licenses rows' faint chevron
+/// and a rule at the border's weight between.
+///
 /// Each row shows its current value (P040): the voice and speed, then the
 /// text size and scheme. While the natural voice could run here and isn't
 /// installed, the Voice & speed row says so under its value.
@@ -23,45 +28,53 @@ struct SettingsView: View {
     private var appearanceRaw = AppearancePreference.system.rawValue
 
     var body: some View {
-        List {
-            Section {
-                NavigationLink {
-                    ListeningSettingsPage()
-                } label: {
-                    listeningRowLabel
-                }
-                .accessibilityLabel(Self.listeningRowSpokenLabel(voice: playback.voice, rate: model.globalRate,
-                                                                 naturalVoice: naturalVoiceLine))
-                .accessibilityInputLabels([Text(ListeningCopy.title), Text("Voice"), Text("Speed")])
-                .accessibilityIdentifier("settings.listening")
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.xl) {
+                // The preferences: each pushes the view its reader sheet shows.
+                VStack(alignment: .leading, spacing: 0) {
+                    NavigationLink {
+                        ListeningSettingsPage()
+                    } label: {
+                        pushRow { listeningRowLabel }
+                    }
+                    .buttonStyle(SurfaceCardRowStyle())
+                    .accessibilityLabel(Self.listeningRowSpokenLabel(voice: playback.voice, rate: model.globalRate,
+                                                                     naturalVoice: naturalVoiceLine))
+                    .accessibilityInputLabels([Text(ListeningCopy.title), Text("Voice"), Text("Speed")])
+                    .accessibilityIdentifier("settings.listening")
 
-                NavigationLink {
-                    AppearanceSettingsPage()
-                } label: {
-                    appearanceRowLabel
-                }
-                .accessibilityLabel(Self.appearanceRowSpokenLabel(points: textPoints, appearance: appearance))
-                .accessibilityInputLabels([Text(AppearanceCopy.title), Text("Appearance"),
-                                           Text("Text size"), Text("Dark mode")])
-                .accessibilityIdentifier("settings.appearance")
+                    SurfaceCardSeparator()
 
-                NavigationLink {
-                    LicensesView()
-                } label: {
-                    rowTitle("Licenses")
+                    NavigationLink {
+                        AppearanceSettingsPage()
+                    } label: {
+                        pushRow { appearanceRowLabel }
+                    }
+                    .buttonStyle(SurfaceCardRowStyle())
+                    .accessibilityLabel(Self.appearanceRowSpokenLabel(points: textPoints, appearance: appearance))
+                    .accessibilityInputLabels([Text(AppearanceCopy.title), Text("Appearance"),
+                                               Text("Text size"), Text("Dark mode")])
+                    .accessibilityIdentifier("settings.appearance")
                 }
-                .accessibilityInputLabels([Text("Licenses")])
-                .accessibilityIdentifier("settings.licenses")
-            } footer: {
+                .surfaceCard()
+
+                // The legal row, in a group of its own.
+                VStack(alignment: .leading, spacing: 0) {
+                    NavigationLink {
+                        LicensesView()
+                    } label: {
+                        pushRow { rowTitle("Licenses") }
+                    }
+                    .buttonStyle(SurfaceCardRowStyle())
+                    .accessibilityInputLabels([Text("Licenses")])
+                    .accessibilityIdentifier("settings.licenses")
+                }
+                .surfaceCard()
+
                 footer
             }
-            .listRowBackground(Theme.surface)
-            // The system draws these a full point wide: at the border's
-            // weight they're as quiet as the Licenses cards' edges.
-            .listRowSeparatorTint(Theme.Stroke.borderColor)
+            .padding(Theme.Space.screenGutter)
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
         .modifier(ShelfScrollEdge(ground: Theme.bgTint))
         .background(Theme.bgTint.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -87,6 +100,24 @@ struct SettingsView: View {
 
     // MARK: Rows
 
+    /// A card's push row, as the Licenses cards' license row is: the label,
+    /// then a faint chevron, over the row's whole width and at least 44 pt
+    /// tall, so the press fills the row (`SurfaceCardRowStyle`).
+    private func pushRow(@ViewBuilder _ label: () -> some View) -> some View {
+        HStack(spacing: Theme.Space.xs) {
+            label()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "chevron.right")
+                .font(Theme.font(.footnote).weight(.semibold))
+                .foregroundStyle(Theme.textFaint)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.vertical, Theme.Space.sm)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
     private func rowTitle(_ title: String) -> some View {
         Text(title)
             .font(Theme.font(.body))
@@ -94,12 +125,12 @@ struct SettingsView: View {
     }
 
     /// The row as VoiceOver says it: the title first, so Voice Control still
-    /// matches it, then the value as the player chip says it, without the
-    /// middle dot VoiceOver would read aloud as a word, then the natural
-    /// voice's line when the row shows one.
+    /// matches it, then the voice and the speed in words (R4-23), as the
+    /// speed track says it, without the middle dot VoiceOver would read
+    /// aloud as a word, then the natural voice's line when the row shows one.
     nonisolated static func listeningRowSpokenLabel(voice: TtsVoice, rate: Double,
                                                     naturalVoice: String? = nil) -> String {
-        let value = "\(ListeningCopy.title), \(ListeningFormat.shortName(voice)), \(ListeningFormat.rate(rate))"
+        let value = "\(ListeningCopy.title), \(ListeningFormat.shortName(voice)), \(ListeningCopy.spokenTimes(rate))"
         guard let naturalVoice else { return value }
         return "\(value), \(NaturalVoiceCopy.spoken(naturalVoice))"
     }
@@ -183,7 +214,7 @@ struct SettingsView: View {
     // MARK: Footer
 
     /// The one privacy line, in the serif aside, over the version: words,
-    /// not settings. `textCase(nil)` keeps the List from upper-casing them.
+    /// not settings, under the Licenses card.
     private var footer: some View {
         VStack(spacing: Theme.Space.xs) {
             Text(PrivacyCopy.line)
@@ -197,8 +228,6 @@ struct SettingsView: View {
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)
-        .padding(.top, Theme.Space.xl)
-        .textCase(nil)
     }
 
     private static var versionLabel: String {

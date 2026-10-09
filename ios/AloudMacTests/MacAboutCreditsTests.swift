@@ -26,7 +26,7 @@ final class MacAboutCreditsTests: XCTestCase {
     func testTheRequiredAttributionsAppear() {
         let credits = MacAboutCredits.credits().string
         let owed = [("Kokoro", "Apache License 2.0"), ("sherpa-onnx", "Apache License 2.0"),
-                    ("ONNX Runtime", "MIT License"), ("espeak-ng", "GPL-3.0")]
+                    ("ONNX Runtime", "MIT License"), ("espeak-ng", "GNU General Public License 3.0")]
         for (name, license) in owed {
             let entry = LicensesView.entries.first { $0.id.hasPrefix(name) }
             XCTAssertEqual(entry?.license, license, name)

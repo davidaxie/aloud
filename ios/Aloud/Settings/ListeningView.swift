@@ -5,6 +5,13 @@ import SwiftUI
 enum ListeningCopy {
     static let title = "Voice & speed"
     static let naturalVoicesHeader = "Natural voices"
+    /// R4-25: the eyebrow over the System row, below the natural voices:
+    /// where that voice comes from, the device's own (never a second
+    /// name for the row's title).
+    static let systemVoiceHeader = "This \(DeviceNoun.device)"
+    /// R4-25: the eyebrow over the bracketed-asides switch. Never the Aa
+    /// sheet's own section name, which heads a different switch.
+    static let readingAloudHeader = "Reading aloud"
     static let readAsidesTitle = "Read bracketed asides"
     static let readAsidesSubtitle = "Text in ( ), [ ] and { } is skipped unless this is on"
     /// The speed track's accessibility label.
@@ -32,11 +39,29 @@ enum ListeningCopy {
         [described, note ?? ""].filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
     }
 
+    /// A speed in words (R4-23): ListeningFormat's number, minus its ×,
+    /// which is a sign, not a word. The speed track's value, said after its
+    /// label, and the Settings row's.
+    static func spokenTimes(_ rate: Double) -> String {
+        String(ListeningFormat.rate(rate).dropLast()) + " times"
+    }
+
     /// A preset's spoken name, "1.25 times speed". "1.25×" is a numeral and
     /// a sign, not words (the element-description audit flags it), so the
-    /// button shows it but says this. ListeningFormat's number, minus its ×.
+    /// button shows it but says this.
     static func spokenRate(_ rate: Double) -> String {
-        String(ListeningFormat.rate(rate).dropLast()) + " times speed"
+        spokenTimes(rate) + " speed"
+    }
+
+    /// R4-26: a natural voice's region as VoiceOver says it, an accent
+    /// where the row draws its two letters. Any other region is its English
+    /// name, never the device locale's: the copy is English.
+    static func accent(forRegion region: String) -> String {
+        switch region.uppercased() {
+        case "US": return "American"
+        case "GB": return "British"
+        default: return Locale(identifier: "en_US").localizedString(forRegionCode: region) ?? region
+        }
     }
 }
 
@@ -66,10 +91,6 @@ enum ListeningCopy {
 struct ListeningView: View {
 
     private let showsInstalledModel: Bool
-    /// Drawn under a selected speed preset's translucent tint, where the
-    /// ground beneath it would leave its label under AA (the Settings
-    /// page's bgTint). Nil: the tint sits on whatever is behind.
-    private let selectedChipUnderlay: Color?
     /// The speed controls pinned above the scrolling voice list (below the
     /// accessibility sizes).
     private let pinsSpeed: Bool
@@ -85,11 +106,10 @@ struct ListeningView: View {
     /// content-sized container sets above the list.
     private let onPinnedHeight: ((CGFloat) -> Void)?
 
-    init(showsInstalledModel: Bool = false, selectedChipUnderlay: Color? = nil, pinsSpeed: Bool = false,
+    init(showsInstalledModel: Bool = false, pinsSpeed: Bool = false,
          edgesUnselectedChips: Bool = false,
          onContentHeight: ((CGFloat) -> Void)? = nil, onPinnedHeight: ((CGFloat) -> Void)? = nil) {
         self.showsInstalledModel = showsInstalledModel
-        self.selectedChipUnderlay = selectedChipUnderlay
         self.pinsSpeed = pinsSpeed
         self.edgesUnselectedChips = edgesUnselectedChips
         self.onContentHeight = onContentHeight
@@ -135,8 +155,7 @@ struct ListeningView: View {
         if Self.pinsSpeed(pinsSpeed, dynamicTypeSize: dynamicTypeSize) {
             VStack(spacing: 0) {
                 VStack(spacing: 0) {
-                    ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay,
-                                           edgesUnselectedChips: edgesUnselectedChips)
+                    ListeningSpeedControls(edgesUnselectedChips: edgesUnselectedChips)
                     ListeningHairline()
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
@@ -155,8 +174,7 @@ struct ListeningView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if withSpeed {
-                        ListeningSpeedControls(selectedChipUnderlay: selectedChipUnderlay,
-                                           edgesUnselectedChips: edgesUnselectedChips)
+                        ListeningSpeedControls(edgesUnselectedChips: edgesUnselectedChips)
                         ListeningHairline()
                     }
                     ListeningVoiceList(showsInstalledModel: showsInstalledModel,
@@ -224,18 +242,37 @@ struct ListeningView: View {
     /// voice has no origin to show.
     static func origin(for voice: TtsVoice) -> String {
         guard voice.engine == .kokoro else { return "" }
-        let region = voice.lang.split(separator: "-").last.map(String.init) ?? voice.lang
+        let region = Self.region(of: voice)
         return voice.gender.isEmpty ? region : "\(region) · \(voice.gender)"
     }
 
-    /// Starts with the visible name and subtitle, then the origin: the
-    /// System row says its resolved voice after its own name.
-    nonisolated static func accessibilityLabel(name: String, subtitle: String, origin: String) -> String {
-        // When the subtitle already is the origin, don't say it twice.
-        let spokenOrigin = subtitle == origin ? "" : origin.replacingOccurrences(of: " · ", with: ", ")
+    /// The origin as VoiceOver says it (R4-26): "en-GB" + "female" says an
+    /// accent and the gender, where the row draws "GB · female", which
+    /// VoiceOver would spell out letter by letter. Empty for the System
+    /// voice.
+    nonisolated static func spokenOrigin(for voice: TtsVoice) -> String {
+        guard voice.engine == .kokoro else { return "" }
+        let accent = ListeningCopy.accent(forRegion: region(of: voice))
+        return voice.gender.isEmpty ? accent : "\(accent), \(voice.gender)"
+    }
+
+    /// "en-GB" → "GB".
+    nonisolated private static func region(of voice: TtsVoice) -> String {
+        voice.lang.split(separator: "-").last.map(String.init) ?? voice.lang
+    }
+
+    /// Starts with the visible name and subtitle, then the origin in words:
+    /// the System row says its resolved voice after its own name. A
+    /// subtitle that opens with the drawn origin (a voice with no
+    /// description of its own) says the spoken origin there instead, once.
+    nonisolated static func accessibilityLabel(name: String, subtitle: String, origin: String,
+                                               spokenOrigin: String) -> String {
+        let showsOrigin = !origin.isEmpty && subtitle.hasPrefix(origin)
+        let said = showsOrigin ? spokenOrigin + String(subtitle.dropFirst(origin.count)) : subtitle
         // A stand-in note's middle dot is read aloud as a word otherwise.
-        let spokenSubtitle = subtitle.replacingOccurrences(of: " · ", with: ", ")
-        return [name, spokenSubtitle, spokenOrigin].filter { !$0.isEmpty }.joined(separator: ", ")
+        let spokenSubtitle = said.replacingOccurrences(of: " · ", with: ", ")
+        return [name, spokenSubtitle, showsOrigin ? "" : spokenOrigin]
+            .filter { !$0.isEmpty }.joined(separator: ", ")
     }
 }
 
@@ -248,7 +285,6 @@ struct ListeningView: View {
 /// instead (R3-10, a deliberate change from R8's numeral at every size).
 struct ListeningSpeedControls: View {
 
-    let selectedChipUnderlay: Color?
     /// The unselected presets edged too (`ListeningView(edgesUnselectedChips:)`).
     var edgesUnselectedChips = false
 
@@ -329,7 +365,7 @@ struct ListeningSpeedControls: View {
                                              range: SpeedScale.range,
                                              label: ListeningCopy.speed,
                                              identifier: "listening.speed.slider",
-                                             spokenValue: ListeningFormat.rate,
+                                             spokenValue: ListeningCopy.spokenTimes,
                                              onDrag: dragSpeed,
                                              onRelease: releaseSpeed,
                                              onStep: stepSpeed,
@@ -399,7 +435,10 @@ struct ListeningSpeedControls: View {
     }
 
     /// Selected reads four ways: accentStrong semibold on accentSoft, its
-    /// edge (`Theme.Stroke.selected*`), and the `.isSelected` trait.
+    /// edge (`Theme.Stroke.selected*`), and the `.isSelected` trait. The
+    /// tint is drawn over surface2, the others' fill, on every surface, as
+    /// the Appearance segment's is over its track (R4-24): over surface
+    /// alone it was a shade from an unselected chip (about 1.03:1 in light).
     private func presetButton(_ preset: Double) -> some View {
         let selected = SpeedScale.isSelected(preset, at: playback.rate)
         return Button {
@@ -414,8 +453,7 @@ struct ListeningSpeedControls: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .background(selected ? Theme.accentSoft : Theme.surface2,
                             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-                .background(selected ? selectedChipUnderlay ?? Color.clear : Color.clear,
-                            in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 // The selected edge, so the selection is never a tint alone;
                 // where asked or under Increase Contrast, a border on the
                 // others, so each reads as a chip.
@@ -531,7 +569,7 @@ struct ListeningVoiceList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             voiceSection
-            ListeningHairline()
+            eyebrow(ListeningCopy.readingAloudHeader)
             PreferenceToggleRow(title: ListeningCopy.readAsidesTitle,
                                 subtitle: ListeningCopy.readAsidesSubtitle,
                                 isOn: readAsides)
@@ -542,26 +580,35 @@ struct ListeningVoiceList: View {
         }
     }
 
+    /// The natural voices under their eyebrow, then the System row: under
+    /// an eyebrow of its own where the natural voices show (R4-25), so the
+    /// headings rotor reaches both groups; alone, it needs none.
     @ViewBuilder
     private var voiceSection: some View {
         if model.neuralVoiceOffered, modelManager.isInstalled {
-            Text(ListeningCopy.naturalVoicesHeader)
-                .font(Theme.font(.eyebrow))
-                .eyebrowTracking()
-                .textCase(.uppercase)
-                .accessibilityLabel(Text(ListeningCopy.naturalVoicesHeader))
-                .foregroundStyle(Theme.textMuted)
-                .accessibilityAddTraits(.isHeader)
-                .padding(.horizontal, Theme.Space.sheetGutter)
-                .padding(.top, Theme.Space.lg)
-                .padding(.bottom, Theme.Space.xs)
+            eyebrow(ListeningCopy.naturalVoicesHeader)
             ForEach(model.kokoroEngine.voices) { voiceRow($0) }
-            ListeningHairline(inset: Theme.Space.sheetGutter)
+            eyebrow(ListeningCopy.systemVoiceHeader)
         }
         // The single System row, always offered as the fallback.
         ForEach(model.engine.voices) { voiceRow($0) }
         systemVoicesHint
         addSystemVoices
+    }
+
+    /// A section's eyebrow (R4-25): capitals drawn, its words spoken as
+    /// written, and a heading for the rotor.
+    private func eyebrow(_ title: String) -> some View {
+        Text(title)
+            .font(Theme.font(.eyebrow))
+            .eyebrowTracking()
+            .textCase(.uppercase)
+            .accessibilityLabel(Text(title))
+            .foregroundStyle(Theme.textMuted)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.horizontal, Theme.Space.sheetGutter)
+            .padding(.top, Theme.Space.lg)
+            .padding(.bottom, Theme.Space.xs)
     }
 
     /// iPhone only: a muted line under the System row naming where better
@@ -616,6 +663,7 @@ struct ListeningVoiceList: View {
     private func voiceRow(_ voice: TtsVoice) -> some View {
         let selected = voice.id == playback.voice.id
         let origin = ListeningView.origin(for: voice)
+        let spokenOrigin = ListeningView.spokenOrigin(for: voice)
         let resolvedName = voice.id == AVSpeechEngine.systemVoiceID ? systemVoiceName : nil
         // Read only for the System row in use: the stored pick it may be
         // standing in for (AppModel's engaged preference).
@@ -676,7 +724,8 @@ struct ListeningVoiceList: View {
         }
         .buttonStyle(.plain)
         .id(voice.id)
-        .accessibilityLabel(ListeningView.accessibilityLabel(name: voice.name, subtitle: subtitle, origin: origin))
+        .accessibilityLabel(ListeningView.accessibilityLabel(name: voice.name, subtitle: subtitle, origin: origin,
+                                                             spokenOrigin: spokenOrigin))
         .accessibilityHint(playback.content == nil ? ListeningCopy.hintSample : ListeningCopy.hintSentence)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("voice.\(voice.id)")
@@ -709,13 +758,10 @@ struct ListeningVoiceList: View {
 /// display holds the window, not the main one.
 private struct ListeningHairline: View {
 
-    var inset: CGFloat = 0
-
     var body: some View {
         Rectangle()
             .fill(Theme.Stroke.hairlineColor)
             .hairlineHeight()
-            .padding(.horizontal, inset)
     }
 }
 
@@ -723,15 +769,15 @@ private struct ListeningHairline: View {
 /// reader's chip presents, with the installed-model card, and with the
 /// speed pinned above the voices as in the sheet. On the Settings root's
 /// own ground, bgTint, so the paper doesn't change colour at the push
-/// (P041); the reader's sheet stays on surface. On bgTint a selected
-/// preset's tint alone leaves its label under AA in light, so it is drawn
-/// over surface2, the unselected chips' fill.
+/// (P041); the reader's sheet stays on surface. A selected preset's tint
+/// is drawn over surface2, the unselected chips' fill, here as on every
+/// surface (R4-24), so its label clears AA on bgTint too.
 struct ListeningSettingsPage: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true, edgesUnselectedChips: true)
+        ListeningView(showsInstalledModel: true, pinsSpeed: true, edgesUnselectedChips: true)
             .background(Theme.bgTint.ignoresSafeArea())
             // An opaque bar on the page's own ground, never a hard scroll
             // edge on a pushed screen (see `ShelfScrollEdge`).

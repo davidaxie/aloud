@@ -110,7 +110,9 @@ final class ListeningUITests: XCTestCase {
         XCTAssertTrue(prefixB.hasPrefix(shown), "'\(prefixB)' should start with the reader's title '\(shown)'")
         let chip = app.buttons["player.listening"].firstMatch
         XCTAssertTrue(chip.waitForExistence(timeout: 20))
-        XCTAssertTrue(wait(for: "label CONTAINS '1.5×'", chip),
+        // The chip's label or its value carries the speed (the player bar
+        // moves it to the value, in words).
+        XCTAssertTrue(wait(for: "label CONTAINS '1.5' OR value CONTAINS '1.5'", chip),
                       "Book B should play at the speed picked in book A, got: \(chip.label)")
     }
 
@@ -133,7 +135,7 @@ final class ListeningUITests: XCTestCase {
 
         let slider = app.sliders["listening.speed.slider"].firstMatch
         XCTAssertTrue(slider.waitForExistence(timeout: 5))
-        XCTAssertEqual(stringValue(of: slider), "1.5×")
+        XCTAssertEqual(stringValue(of: slider), "1.5 times", "the speed in words (R4-23)")
         // R3-09: the stock slider stands in for the warm track to assistive
         // tech, framed to the track's whole 44pt touch row. Measured against
         // a 44pt preset in the same sheet: iOS 26 draws a partly raised sheet

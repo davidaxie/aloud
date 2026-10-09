@@ -66,12 +66,13 @@ struct LicensesView: View {
     static let intro = "Aloud is built on open-source software."
 
     // A non-breaking hyphen keeps the project's name on one line; one
-    // Apache text covers sherpa-onnx and the Kokoro model.
+    // Apache text covers sherpa-onnx and the Kokoro model. Every copyright
+    // line sets its sign after the word (R4-28).
     static let entries: [Entry] = [
         Entry(id: "sherpa-onnx",
               license: "Apache License 2.0",
               detail: "On-device neural text-to-speech runtime by the k2\u{2011}fsa "
-                    + "project. Copyright the sherpa-onnx contributors.",
+                    + "project. Copyright \u{00A9} the sherpa-onnx contributors.",
               source: URL(string: "https://github.com/k2-fsa/sherpa-onnx")!,
               textResource: "Apache-2.0"),
         Entry(id: "ONNX Runtime",
@@ -90,12 +91,13 @@ struct LicensesView: View {
               source: URL(string: "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0")!,
               textResource: "Apache-2.0"),
         // "natural voice" is the user's word for Kokoro everywhere else.
+        // The license by its name, as the others are (its text's file keeps
+        // the SPDX id); the source's address is the card's Source row alone.
         Entry(id: "espeak-ng",
-              license: "GPL-3.0",
+              license: "GNU General Public License 3.0",
               detail: "Grapheme-to-phoneme engine used by the natural voice. "
                     + "Aloud bundles espeak-ng phoneme data and links the "
-                    + "espeak-ng library via sherpa-onnx; the corresponding "
-                    + "source is available at github.com/espeak-ng/espeak-ng.",
+                    + "espeak-ng library via sherpa-onnx; its source is linked below.",
               source: URL(string: "https://github.com/espeak-ng/espeak-ng")!,
               textResource: "espeak-ng-GPL-3.0"),
     ]
@@ -125,7 +127,8 @@ struct LicensesView: View {
                             .fixedSize(horizontal: false, vertical: true)
                         cardFoot(for: entry)
                     }
-                    .modifier(LicenseCard())
+                    // The foot's Source row carries the card's bottom inset.
+                    .modifier(LicenseCard(bottom: 0))
                 }
 
                 VStack(alignment: .leading, spacing: Theme.Space.xxs) {
@@ -227,7 +230,12 @@ extension LicensesView {
                         .foregroundStyle(Theme.textFaint)
                         .accessibilityHidden(true)
                 }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                // R4-28: the card's bottom inset is this row's, so its text
+                // ends md above the card's edge at every size, wrapped or
+                // not, and the 44 pt target runs to that edge.
+                .padding(.top, Theme.Space.sm)
+                .padding(.bottom, Theme.Space.md)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
                 .contentShape(Rectangle())
             }
             .accessibilityIdentifier("licenses.source.\(entry.id)")
@@ -298,15 +306,17 @@ enum LicenseText {
     }
 }
 
-/// One acknowledgement card: surface ground, continuous corners, 1 pt border.
+/// One acknowledgement card: the app's card (`SurfaceCard`, R4-27) around
+/// md padding. A card whose last row pads its own foot passes `bottom: 0`
+/// (R4-28), so the text ends md above the edge either way.
 private struct LicenseCard: ViewModifier {
+
+    var bottom: CGFloat = Theme.Space.md
+
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
         content
-            .padding(Theme.Space.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.surface, in: shape)
-            .overlay(shape.strokeBorder(Theme.Stroke.borderColor,
-                                        lineWidth: Theme.Stroke.borderWidth))
+            .padding([.top, .horizontal], Theme.Space.md)
+            .padding(.bottom, bottom)
+            .surfaceCard()
     }
 }

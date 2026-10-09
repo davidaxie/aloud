@@ -89,9 +89,53 @@ final class ListeningLintTests: XCTestCase {
         XCTAssertTrue(bar.contains(".accessibilityHidden(true)"), String(bar))
         XCTAssertFalse(bar.contains(".padding(.leading, Theme.Space.xs)"), "the bar is flush: \(bar)")
         XCTAssertFalse(bar.contains(".padding(.vertical, Theme.Space.xs)"), "the bar is full height: \(bar)")
-        let header = try XCTUnwrap(view.range(of: "Text(ListeningCopy.naturalVoicesHeader)"))
-        let eyebrow = view[header.upperBound...].prefix(300)
+        // R4-25: every eyebrow in the list is drawn by one helper.
+        XCTAssertTrue(view.contains("eyebrow(ListeningCopy.naturalVoicesHeader)"))
+        let header = try XCTUnwrap(view.range(of: "private func eyebrow(_ title: String) -> some View {"))
+        let eyebrow = view[header.upperBound...].prefix(600)
+        XCTAssertTrue(eyebrow.contains("Text(title)"), String(eyebrow))
         XCTAssertTrue(eyebrow.contains(".foregroundStyle(Theme.textMuted)"), String(eyebrow))
+    }
+
+    /// R4-25: the list's last two groups are labelled, so the headings
+    /// rotor reaches them: an eyebrow over the System row, shown only with
+    /// the natural voices it follows (alone, the System row needs none),
+    /// and one over the bracketed-asides switch, in place of the bare
+    /// hairline. Every eyebrow is the natural voices' own: capitals drawn,
+    /// its words spoken as written, a heading, lg over and xs under.
+    func testTheVoiceListLabelsItsLastTwoGroups() throws {
+        let path = "Settings/ListeningView.swift"
+        let s = try SourceTree.sources(only: [path])
+        let view = try XCTUnwrap(s[path])
+        let listStart = try XCTUnwrap(view.range(of: "struct ListeningVoiceList: View"))
+        let listEnd = try XCTUnwrap(view.range(of: "private struct ListeningHairline: View"))
+        let list = view[listStart.upperBound..<listEnd.lowerBound]
+        let compact = list.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+
+        XCTAssertTrue(compact.contains("voiceSection eyebrow(ListeningCopy.readingAloudHeader) "
+                                       + "PreferenceToggleRow(title: ListeningCopy.readAsidesTitle,"),
+                      "the asides switch sits under its eyebrow, with no bare hairline before it")
+        XCTAssertTrue(compact.contains("if model.neuralVoiceOffered, modelManager.isInstalled { "
+                                       + "eyebrow(ListeningCopy.naturalVoicesHeader) "
+                                       + "ForEach(model.kokoroEngine.voices) { voiceRow($0) } "
+                                       + "eyebrow(ListeningCopy.systemVoiceHeader) } "
+                                       + "// The single System row, always offered as the fallback. "
+                                       + "ForEach(model.engine.voices) { voiceRow($0) }"),
+                      "the System row's eyebrow shows only with the natural section, right above the row")
+        XCTAssertEqual(list.components(separatedBy: "eyebrow(ListeningCopy.").count - 1, 3, "three eyebrows")
+        XCTAssertFalse(list.contains("ListeningHairline("), "the list's groups are eyebrows, not rules")
+        XCTAssertFalse(view.contains("ListeningHairline(inset:"), "the inset rule under the natural voices is gone")
+
+        let helper = try XCTUnwrap(list.range(of: "private func eyebrow(_ title: String) -> some View {"))
+        let body = list[helper.upperBound...].prefix(700).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        for needle in ["Text(title) .font(Theme.font(.eyebrow)) .eyebrowTracking() .textCase(.uppercase)",
+                       ".accessibilityLabel(Text(title))", ".foregroundStyle(Theme.textMuted)",
+                       ".accessibilityAddTraits(.isHeader)", ".padding(.horizontal, Theme.Space.sheetGutter)",
+                       ".padding(.top, Theme.Space.lg) .padding(.bottom, Theme.Space.xs)"] {
+            XCTAssertTrue(body.contains(needle), "the eyebrow lacks \(needle): \(body)")
+        }
+        XCTAssertTrue(view.contains("static let readingAloudHeader = \"Reading aloud\""))
+        XCTAssertTrue(view.contains("static let systemVoiceHeader = \"This \\(DeviceNoun.device)\""))
     }
 
     /// R1-29: the origin column is fixed-width and trailing-aligned, so the
@@ -127,7 +171,7 @@ final class ListeningLintTests: XCTestCase {
         }
         let page = try XCTUnwrap(view.range(of: "struct ListeningSettingsPage"))
         XCTAssertTrue(view[page.upperBound...].contains(
-            "ListeningView(showsInstalledModel: true, selectedChipUnderlay: Theme.surface2, pinsSpeed: true, edgesUnselectedChips: true)"))
+            "ListeningView(showsInstalledModel: true, pinsSpeed: true, edgesUnselectedChips: true)"))
         let speed = try XCTUnwrap(view.range(of: "struct ListeningSpeedControls: View"))
         let speedBody = view[speed.upperBound...].prefix(3000)
         XCTAssertTrue(speedBody.contains(".padding(.bottom, Theme.Space.sm)"), "a small gap under the speed")
