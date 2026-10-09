@@ -44,6 +44,28 @@ final class ReaderLintTests: XCTestCase {
                        "no bar height measured on its own")
     }
 
+    /// R3-01 repair: the bar's reach also counts the page's bottom inset,
+    /// read inside the bar's inset (the page) and under it (the text), so a
+    /// reopen that reads the two edges level still has the bar in the band
+    /// and the band measured; the colophon used to wait on it for good.
+    func testTheBandCountsThePagesBottomInsetToo() throws {
+        let path = "Reader/ReaderScreen.swift"
+        let s = try SourceTree.sources(only: [path])
+        let screen = try XCTUnwrap(s[path])
+        XCTAssertTrue(screen.contains("FollowBand.chromeReach(textMaxY: textBottom, chromeMinY: barTop, "
+                                          + "pageBottomInset: bottomInset)"), "both measures of the bar's reach")
+        XCTAssertTrue(screen.contains("obscuredBottom: FollowBand.obscuredBottom(chrome: chromeReach,"),
+                      "the band stands on the bar's reach")
+        XCTAssertTrue(screen.contains("bandMeasured: FollowBand.isMeasured(chrome: chromeReach)"),
+                      "measured on the same reach")
+        XCTAssertEqual(SourceTree.occurrences(of: "proxy.safeAreaInsets.bottom", in: [path: screen]), 2,
+                       "the inset read on the page and on the text")
+        // The page's reading sits inside the bar's inset, or it would leave the bar out.
+        let page = try XCTUnwrap(screen.range(of: "pageBottomInset = inset"), "the page's reading")
+        let inset = try XCTUnwrap(screen.range(of: ".safeAreaInset(edge: .bottom, spacing: 0) {"), "the bar's inset")
+        XCTAssertLessThan(page.lowerBound, inset.lowerBound, "read on the page the bar's inset wraps")
+    }
+
     /// P046: the reader's principal item names the author under the title,
     /// one header for VoiceOver.
     func testTheTitleBarNamesTheAuthor() throws {

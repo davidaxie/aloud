@@ -138,6 +138,47 @@ final class ReaderPageStyleSharedTests: XCTestCase {
         XCTAssertTrue(FollowBand.isMeasured(textMaxY: 874, chromeMinY: 622))
     }
 
+    /// R3-01 repair: the bar's reach is the deeper of its two edges' measure
+    /// and the page's bottom inset (the bar's inset over the home-indicator
+    /// strip). A reopened Finished book read the edges level, the text's
+    /// bottom at the bar's own top: the band was the chip's alone and never
+    /// measured, so the colophon never landed and the page stayed on its
+    /// first chapter. The numbers are that run's, on a 402 by 874 iPhone: a
+    /// 150 pt bar over the 34 pt strip, its top at 690, the end chip 44 pt.
+    func testTheBarsReachCountsThePagesBottomInsetWhenTheEdgesComeInLevel() {
+        let chip = FollowBand.chipReach(previous: 0, slotHeight: 44)
+        // The failure: edges level, a band of the chip alone, unmeasured.
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 690, chromeMinY: 690, chipReach: chip, showsChip: true),
+                       chip + Theme.Space.sm)
+        XCTAssertFalse(FollowBand.isMeasured(textMaxY: 690, chromeMinY: 690))
+
+        let reach = FollowBand.chromeReach(textMaxY: 690, chromeMinY: 690, pageBottomInset: 184)
+        XCTAssertEqual(reach, 184, "the inset counts the bar and the strip")
+        XCTAssertTrue(FollowBand.isMeasured(chrome: reach), "measured, so the colophon lands")
+        XCTAssertEqual(FollowBand.obscuredBottom(chrome: reach, chipReach: chip, showsChip: true,
+                                                 windowTextMaxY: 874, sheetMinY: nil),
+                       184 + chip + Theme.Space.sm, "the chip above the bar, both in the band")
+        XCTAssertEqual(FollowBand.obscuredBottom(chrome: reach, chipReach: chip, showsChip: true,
+                                                 windowTextMaxY: 874, sheetMinY: 350),
+                       524, "a sheet reaching higher still wins")
+
+        // Edges that measure the bar agree with the inset; the deeper counts.
+        XCTAssertEqual(FollowBand.chromeReach(textMaxY: 874, chromeMinY: 690, pageBottomInset: 184), 184)
+        XCTAssertEqual(FollowBand.chromeReach(textMaxY: 874, chromeMinY: 640, pageBottomInset: 184), 234)
+        XCTAssertEqual(FollowBand.chromeReach(textMaxY: 874, chromeMinY: 690, pageBottomInset: nil), 184,
+                       "the edges alone, as before")
+
+        // The strip alone, before the bar has a height, is not yet the bar.
+        let strip = FollowBand.chromeReach(textMaxY: nil, chromeMinY: nil, pageBottomInset: 34)
+        XCTAssertEqual(strip, 34)
+        XCTAssertFalse(FollowBand.isMeasured(chrome: strip))
+        XCTAssertFalse(FollowBand.isMeasured(chrome: 44), "a reach of a touch target is not yet the bar")
+        // Nothing measured: no band, the chip with it.
+        XCTAssertNil(FollowBand.chromeReach(textMaxY: nil, chromeMinY: 690, pageBottomInset: nil))
+        XCTAssertFalse(FollowBand.isMeasured(chrome: nil))
+        XCTAssertEqual(FollowBand.obscuredBottom(chrome: nil, chipReach: chip, showsChip: true), 0)
+    }
+
     /// R3-01 on both apps: while the colophon shows, the Mac page's resting
     /// end is measured from the colophon itself too, so a range clamped
     /// short by TextKit's trailing usage bounds never leaves it below the

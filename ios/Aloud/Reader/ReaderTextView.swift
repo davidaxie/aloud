@@ -56,11 +56,12 @@ struct ReaderTextView: UIViewRepresentable {
     /// under it, so the band is measured above it and recomputed when the
     /// chrome changes height.
     var obscuredBottom: CGFloat = 0
-    /// R3-01: whether `obscuredBottom` stands on measured edges (the text's
-    /// bottom and the player bar's top, the bar with a real height). Until
-    /// it does, the band leaves the chrome out, and a colophon aimed on it
-    /// would land under the bar once the bar is measured, so the colophon
-    /// waits for it; sentence following never does.
+    /// R3-01: whether `obscuredBottom` stands on a measured chrome reach
+    /// (`FollowBand.chromeReach`: the player bar's reach over the text, the
+    /// bar with a real height). Until it does, the band leaves the chrome
+    /// out, and a colophon aimed on it would land under the bar once the bar
+    /// is measured, so the colophon waits for it; sentence following never
+    /// does.
     var bandMeasured: Bool = true
     /// R24: at the end of the book, the colophon that replaces the "· · ·"
     /// end mark; nil everywhere else. Appearing fades in, and a fresh
@@ -1533,9 +1534,13 @@ struct ReaderTextView: UIViewRepresentable {
         /// still move a landing, so it asks for another pass. Ends after
         /// `placementPassLimit` passes in any case.
         private func verifyPlacement() {
+            // Never under a finger (`isTouching`, as every placement path
+            // asks): a check the column's landing started moved the page
+            // under a resting finger and noted the band of a placement that
+            // had bailed (R3-01 repair).
             guard follow.isCheckingPlacement, !confirmingLayout,
                   let textView, glide == nil,
-                  !textView.isTracking, !textView.isDragging,
+                  !textView.isTracking, !textView.isDragging, !isTouching(textView),
                   textView.bounds.height > 0 else { return }
             let check = checkPlacement()
             if case .unresolved = check { return }   // no layout to measure yet
