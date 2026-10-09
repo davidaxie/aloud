@@ -213,8 +213,33 @@ final class LibraryLintTests: XCTestCase {
             // anywhere in its shelf, so a settling scroll to it never moved.
             XCTAssertTrue(text.contains("ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)"), path)
             XCTAssertTrue(text.contains(".id(section.rawValue)"), path)
-            XCTAssertTrue(text.contains("shelfAnchor(shelf.section)\n                Section {"),
+            XCTAssertTrue(text.contains("shelfAnchor(section)\n            Section {"),
                           "\(path) marks each shelf just above its section")
+            // A branch per shelf, never a ForEach over the shelves, whose
+            // elements (a mark and a whole section) the lazy stack can't
+            // count off its data; every shelf has its branch, in order
+            // (BookshelfCatalogTests holds this list to the shelves).
+            XCTAssertFalse(text.contains("ForEach(shelves)"), "\(path) lists the shelves in a ForEach")
+            XCTAssertFalse(text.contains("ForEach(model.bookshelfIndex"), "\(path) lists the shelves in a ForEach")
+            let branches = try ["underAnHour", "anEvening", "longReads"].map { section in
+                try XCTUnwrap(text.range(of: "shelf(.\(section), in: shelves)"), "\(path) has no branch for \(section)")
+            }
+            XCTAssertEqual(branches.map(\.lowerBound), branches.map(\.lowerBound).sorted(),
+                           "\(path) lists its shelves out of order")
+            // The jump walks to a far shelf through rows the lazy stack has
+            // laid out (ShelfWalk), hearing from every row and mark of the
+            // shelves, and lands only once the mark is laid out; a search
+            // ends a walk under way. A hop is never animated: an animated
+            // scroll re-estimates where a far target is on every frame.
+            for line in ["walk.begin(toward: section)", "walk.rowAppeared(book.id)", "walk.rowDisappeared(book.id)",
+                         "walk.markAppeared(section)", "walk.markDisappeared(section)", "walk.cancel()",
+                         "case .land(let section):", "DispatchQueue.main.async { walkStep(token, "] {
+                XCTAssertTrue(text.contains(line), "\(path): \(line)")
+            }
+            let step = try XCTUnwrap(text.range(of: "private func walkStep("), path)
+            let stepEnd = text.range(of: "\n    }\n", range: step.upperBound..<text.endIndex)?.lowerBound ?? text.endIndex
+            XCTAssertFalse(text[step.lowerBound..<stepEnd].contains("withAnimation"), "\(path) animates a hop")
+            XCTAssertFalse(text.contains("asyncAfter"), "\(path) walks on a timer")
             let header = try XCTUnwrap(text.range(of: "private func header(_ section: BookshelfSection)"), path)
             let headerEnd = text.range(of: "\n    }\n", range: header.upperBound..<text.endIndex)?.lowerBound
                 ?? text.endIndex

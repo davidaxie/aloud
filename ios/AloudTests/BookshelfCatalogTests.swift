@@ -187,6 +187,123 @@ final class BookshelfCatalogTests: XCTestCase {
         }
     }
 
+    // MARK: - The walk to a shelf (R3-05)
+
+    /// Both Classics screens draw a branch per shelf, named in
+    /// LibraryLintTests' list, not a ForEach over the shelves: a new shelf
+    /// needs its branch on both, and the lint's list with it.
+    func testEveryShelfHasItsBranchOnBothClassicsScreens() {
+        XCTAssertEqual(BookshelfSection.allCases.map(\.rawValue), ["underAnHour", "anEvening", "longReads"])
+    }
+
+    /// Three shelves of 4, 8 and 8 rows: the longest starts at the 13th.
+    private func walkShelves() -> [BookshelfShelf] {
+        func book(_ id: Int) -> BookshelfBook {
+            BookshelfBook(gutenbergID: id, title: "Book \(id)", author: "An Author", year: nil,
+                          file: "\(id).txt", words: 1_000)
+        }
+        return [BookshelfShelf(section: .underAnHour, books: (1...4).map(book)),
+                BookshelfShelf(section: .anEvening, books: (5...12).map(book)),
+                BookshelfShelf(section: .longReads, books: (13...20).map(book))]
+    }
+
+    /// From the top of the list, the jump to a far shelf scrolls only rows
+    /// the lazy stack has laid out, the deepest short of the shelf to the
+    /// top each turn, and lands once the shelf's mark is laid out: it never
+    /// asks the stack where a row it hasn't laid out might be.
+    func testTheWalkToAFarShelfHopsOnlyThroughLaidOutRows() {
+        let shelves = walkShelves()
+        let walk = ShelfWalk()
+        walk.markAppeared(.underAnHour)
+        (1...3).forEach(walk.rowAppeared)
+        let token = walk.begin(toward: .longReads)
+        XCTAssertEqual(walk.next(token, through: shelves), .hop(bookID: 3, edge: .top))
+        // The hop laid out the next screen and let the rows above it go.
+        (4...7).forEach(walk.rowAppeared)
+        (1...2).forEach(walk.rowDisappeared)
+        walk.markDisappeared(.underAnHour)
+        walk.markAppeared(.anEvening)
+        XCTAssertEqual(walk.next(token, through: shelves), .hop(bookID: 7, edge: .top),
+                       "another shelf's mark is no landing")
+        // The rows that hop brought in haven't appeared yet: scroll nothing.
+        XCTAssertEqual(walk.next(token, through: shelves), .wait)
+        (8...11).forEach(walk.rowAppeared)
+        XCTAssertEqual(walk.next(token, through: shelves), .hop(bookID: 11, edge: .top))
+        walk.rowAppeared(12)
+        walk.markAppeared(.longReads)
+        XCTAssertEqual(walk.next(token, through: shelves), .land(.longReads))
+        XCTAssertNil(walk.next(token, through: shelves), "a landed walk is over")
+    }
+
+    /// The mark lies between the shelf's first book and the one before it,
+    /// so with both laid out the walk lands though the mark hasn't said so;
+    /// from inside or past the shelf it walks up, the shallowest row to the
+    /// bottom; and a mark already laid out lands at once.
+    func testTheWalkLandsBetweenLaidOutRowsAndWalksUpFromPastTheShelf() {
+        let shelves = walkShelves()
+        let between = ShelfWalk()
+        (10...14).forEach(between.rowAppeared)
+        XCTAssertEqual(between.next(between.begin(toward: .longReads), through: shelves), .land(.longReads))
+
+        let past = ShelfWalk()
+        (16...19).forEach(past.rowAppeared)
+        let token = past.begin(toward: .longReads)
+        XCTAssertEqual(past.next(token, through: shelves), .hop(bookID: 16, edge: .bottom))
+        (12...15).forEach(past.rowAppeared)
+        XCTAssertEqual(past.next(token, through: shelves), .land(.longReads))
+
+        let near = ShelfWalk()
+        near.markAppeared(.anEvening)
+        (1...6).forEach(near.rowAppeared)
+        XCTAssertEqual(near.next(near.begin(toward: .anEvening), through: shelves), .land(.anEvening))
+    }
+
+    /// A hop that brings nothing in is waited on for `patience` turns, then
+    /// the walk lands as it is rather than walking forever; a list that has
+    /// laid out nothing, or a shelf the speed emptied, lands at once.
+    func testTheWalkGivesUpWaitingAndLandsWithNothingToStandOn() {
+        let shelves = walkShelves()
+        let walk = ShelfWalk()
+        walk.rowAppeared(2)
+        let token = walk.begin(toward: .anEvening)
+        XCTAssertEqual(walk.next(token, through: shelves), .hop(bookID: 2, edge: .top))
+        for turn in 0..<ShelfWalk.patience {
+            XCTAssertEqual(walk.next(token, through: shelves), .wait, "turn \(turn)")
+        }
+        XCTAssertEqual(walk.next(token, through: shelves), .land(.anEvening))
+
+        let empty = ShelfWalk()
+        XCTAssertEqual(empty.next(empty.begin(toward: .longReads), through: shelves), .land(.longReads))
+        let twoShelves = Array(shelves.prefix(2))
+        empty.rowAppeared(1)
+        XCTAssertEqual(empty.next(empty.begin(toward: .longReads), through: twoShelves), .land(.longReads))
+    }
+
+    /// Another jump replaces a walk, and a search ends it: the old walk's
+    /// next turn finds nothing to do. Appearances are counted, so a row
+    /// whose next appearance came before its last disappearance stays laid
+    /// out.
+    func testTheWalkEndsOnAnotherJumpOrASearchAndCountsAppearances() {
+        let shelves = walkShelves()
+        let walk = ShelfWalk()
+        walk.rowAppeared(3)
+        let first = walk.begin(toward: .longReads)
+        let second = walk.begin(toward: .anEvening)
+        XCTAssertNil(walk.next(first, through: shelves), "the first jump's walk is over")
+        XCTAssertEqual(walk.next(second, through: shelves), .hop(bookID: 3, edge: .top))
+        walk.cancel()
+        XCTAssertNil(walk.next(second, through: shelves), "a search ended it")
+
+        walk.rowAppeared(3)
+        walk.rowDisappeared(3)
+        XCTAssertTrue(walk.isLaidOut(3))
+        walk.rowDisappeared(3)
+        walk.rowDisappeared(3)
+        XCTAssertFalse(walk.isLaidOut(3))
+        walk.rowAppeared(3)
+        XCTAssertTrue(walk.isLaidOut(3), "an extra disappearance never leaves a debt")
+    }
+
     /// Every book the catalog lists ships beside it. A sync from an empty
     /// or half-synced books/ once emptied the folder but kept the old
     /// catalog, and every Classics row failed to open.

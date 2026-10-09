@@ -27,6 +27,10 @@ struct BookshelfView: View {
     /// Bumped by a Search key that opened nothing: the keyboard goes, the
     /// query and its results stay.
     @State private var keyboardDismissals = 0
+    /// What the lazy list has laid out, and the shelf-map jump under way
+    /// (`ShelfWalk`). A reference, never observed: rows appearing as the
+    /// list scrolls redraw nothing.
+    @State private var walk = ShelfWalk()
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,8 +61,12 @@ struct BookshelfView: View {
                 }
             }
             .accessibilityIdentifier("bookshelf.list")
-            // Each keystroke reshapes the list; start it from the top.
-            .onChange(of: query) { proxy.scrollTo("top", anchor: .top) }
+            // Each keystroke reshapes the list; start it from the top, and
+            // end a jump still walking to a shelf the search took away.
+            .onChange(of: query) {
+                walk.cancel()
+                proxy.scrollTo("top", anchor: .top)
+            }
             // The loaded book plays or pauses from anywhere on the list,
             // as on the Library (R12b).
             .accessibilityAction(.magicTap) { magicTap() }
@@ -139,15 +147,35 @@ struct BookshelfView: View {
                 ForEach(results) { row($0) }
             }
         } else {
+            let shelves = model.bookshelfIndex.shelves(rate: model.globalRate)
             // R3-05: the shelf map, unpinned, above the first heading.
             shelfMap(proxy)
-            ForEach(model.bookshelfIndex.shelves(rate: model.globalRate)) { shelf in
-                shelfAnchor(shelf.section)
-                Section {
-                    ForEach(shelf.books) { row($0) }
-                } header: {
-                    header(shelf.section)
+            // A branch per shelf, never a ForEach over the shelves, whose
+            // every element was a mark and a whole section: a number of
+            // views the lazy stack can't read off its data. Here the only
+            // ForEach is each shelf's books, one row per book, so every row
+            // the walk scrolls to (`jump(to:_:)`) is found by its index.
+            shelf(.underAnHour, in: shelves)
+            shelf(.anEvening, in: shelves)
+            shelf(.longReads, in: shelves)
+        }
+    }
+
+    /// One shelf, when the speed leaves it any books: its mark, then its
+    /// section under a pinned heading. Its rows tell the walk when the lazy
+    /// stack lays them out and lets them go (`jump(to:_:)`).
+    @ViewBuilder
+    private func shelf(_ section: BookshelfSection, in shelves: [BookshelfShelf]) -> some View {
+        if let shelf = shelves.first(where: { $0.section == section }) {
+            shelfAnchor(section)
+            Section {
+                ForEach(shelf.books) { book in
+                    row(book)
+                        .onAppear { walk.rowAppeared(book.id) }
+                        .onDisappear { walk.rowDisappeared(book.id) }
                 }
+            } header: {
+                header(section)
             }
         }
     }
@@ -171,18 +199,20 @@ struct BookshelfView: View {
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
     }
 
-    /// The shelf map's target (`jump(to:_:)`): a zero-height mark just
-    /// above the shelf's heading, never the heading itself. A pinned
-    /// heading sits at the top anywhere in its shelf, so a scroll to it
-    /// reads as already there wherever it lands, and the settling scroll
-    /// after a far jump left the list deep inside the shelf. Scrolled to
-    /// the top, the mark brings the heading to the top at its own place,
-    /// the shelf's first book under it.
+    /// The shelf map's target (`jump(to:_:)`): a one-point mark just above
+    /// the shelf's heading, never the heading itself. A pinned heading sits
+    /// at the top anywhere in its shelf, so a scroll to it reads as already
+    /// there wherever it lands. Scrolled to the top, the mark brings the
+    /// heading to the top at its own place, the shelf's first book under
+    /// it. A point tall, not zero, so it has an area for the lazy stack to
+    /// find in what it shows and lay out, and it says so to the walk.
     private func shelfAnchor(_ section: BookshelfSection) -> some View {
         Color.clear
-            .frame(height: 0)
+            .frame(height: 1)
             .accessibilityHidden(true)
             .id(section.rawValue)
+            .onAppear { walk.markAppeared(section) }
+            .onDisappear { walk.markDisappeared(section) }
     }
 
     // MARK: Shelf map
@@ -236,15 +266,42 @@ struct BookshelfView: View {
         .accessibilityIdentifier(jump.identifier)
     }
 
-    /// To the shelf's heading, by the mark above it (`shelfAnchor(_:)`),
-    /// animated unless Reduce Motion is on. A far heading the lazy stack
-    /// hasn't laid out yet can land off the top, its rows above still
-    /// estimated, so the jump settles once they are measured: a scroll
-    /// when the animation completes (at once without one), and another on
-    /// the next turn of the run loop, after the rows that scroll brought
-    /// in are measured; never on a timer. Silent, as a Contents pick is
-    /// (TransportHaptics: picks never answer with one).
+    /// To the shelf's heading, by the mark above it (`shelfAnchor(_:)`).
+    /// Silent, as a Contents pick is (TransportHaptics: picks never answer
+    /// with one).
+    ///
+    /// A scroll straight to a far mark the lazy stack hasn't laid out goes
+    /// where the stack estimates it is: from the top of Classics, some 160
+    /// books into the longest shelf, where a repeated scroll stayed. So the
+    /// jump walks there first (`ShelfWalk`): each step scrolls a row the
+    /// stack has laid out, unanimated, which lays out the screen past it,
+    /// and the next step runs a turn of the run loop later, once those rows
+    /// are laid out and have appeared; never on a timer. Once the mark is
+    /// laid out, it lands.
     private func jump(to section: BookshelfSection, _ proxy: ScrollViewProxy) {
+        walkStep(walk.begin(toward: section), proxy)
+    }
+
+    private func walkStep(_ token: Int, _ proxy: ScrollViewProxy) {
+        guard let step = walk.next(token, through: model.bookshelfIndex.shelves(rate: model.globalRate)) else {
+            return
+        }
+        switch step {
+        case .land(let section):
+            land(on: section, proxy)
+        case .hop(let bookID, let edge):
+            proxy.scrollTo(bookID, anchor: edge == .top ? .top : .bottom)
+            DispatchQueue.main.async { walkStep(token, proxy) }
+        case .wait:
+            DispatchQueue.main.async { walkStep(token, proxy) }
+        }
+    }
+
+    /// The mark, laid out now, to the top: animated from within a screen
+    /// unless Reduce Motion is on, then settled, as rows near it may be
+    /// measured afresh, by a scroll when the animation completes (at once
+    /// without one) and another on the next turn of the run loop.
+    private func land(on section: BookshelfSection, _ proxy: ScrollViewProxy) {
         let id = section.rawValue
         let settle = {
             proxy.scrollTo(id, anchor: .top)

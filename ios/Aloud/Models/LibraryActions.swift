@@ -51,6 +51,128 @@ struct ShelfJump: Equatable, Identifiable {
     }
 }
 
+/// R3-05: how a shelf-map jump reaches a far shelf in the lazy Classics
+/// list, on both apps. A lazy stack lays out only the rows near what it
+/// shows; where everything else sits is estimated from the rows it has
+/// measured. A scroll to a mark it hasn't laid out goes to that estimate,
+/// and from the top of Classics, past a hundred rows of one- and two-line
+/// titles, the longest shelf's mark was put some 160 books into it. A scroll
+/// repeated there asked the same estimate and stayed, however many turns
+/// it waited, since nothing between the top and the mark was ever laid out.
+///
+/// The walk never scrolls to anything the stack hasn't laid out. It
+/// scrolls the deepest row laid out short of the shelf to the top, which
+/// lays out the next screen of rows beside it from measured heights, and
+/// asks again a run-loop turn later, until the shelf's mark is laid out
+/// (it appeared, or rows on both sides of it did). Only then does the jump
+/// scroll the mark to the top, which lands where it really is. Walking up,
+/// from inside or past the shelf, scrolls the shallowest row to the bottom.
+/// Appearances are counted, not kept in a set, so a row whose next
+/// appearance comes before its last disappearance stays laid out.
+final class ShelfWalk {
+    enum Step: Equatable {
+        /// The shelf's mark is laid out: scroll it to the top.
+        case land(BookshelfSection)
+        /// Scroll this laid-out row to the edge (the top walking down, the
+        /// bottom walking up), then ask again a run-loop turn later.
+        case hop(bookID: Int, edge: Edge)
+        /// The rows the last hop brought in haven't appeared yet: ask again
+        /// a turn later, scrolling nothing.
+        case wait
+    }
+
+    enum Edge: Equatable { case top, bottom }
+
+    /// Turns a walk waits for the rows its last hop brought in before it
+    /// lands as it is, rather than walking forever on a stack that has
+    /// stopped saying what it lays out.
+    static let patience = 3
+
+    private var rows: [Int: Int] = [:]
+    private var marks: [BookshelfSection: Int] = [:]
+    private var target: BookshelfSection?
+    private var token = 0
+    private var lastHop: Int?
+    private var waits = 0
+    private var steps = 0
+
+    func rowAppeared(_ bookID: Int) { rows[bookID, default: 0] += 1 }
+    func rowDisappeared(_ bookID: Int) { rows[bookID] = max((rows[bookID] ?? 0) - 1, 0) }
+    func markAppeared(_ section: BookshelfSection) { marks[section, default: 0] += 1 }
+    func markDisappeared(_ section: BookshelfSection) { marks[section] = max((marks[section] ?? 0) - 1, 0) }
+
+    func isLaidOut(_ bookID: Int) -> Bool { (rows[bookID] ?? 0) > 0 }
+    func isLaidOut(_ section: BookshelfSection) -> Bool { (marks[section] ?? 0) > 0 }
+
+    /// Starts a walk to `section`, ending any walk before it; the token
+    /// its steps are asked for by.
+    @discardableResult
+    func begin(toward section: BookshelfSection) -> Int {
+        token += 1
+        target = section
+        lastHop = nil
+        waits = 0
+        steps = 0
+        return token
+    }
+
+    /// Ends the walk under way, if any: a search took the list.
+    func cancel() {
+        token += 1
+        target = nil
+    }
+
+    /// The walk's next step through `shelves`, the list's own, or nil once
+    /// that walk is over: landed, cancelled or replaced by another jump.
+    func next(_ token: Int, through shelves: [BookshelfShelf]) -> Step? {
+        guard token == self.token, let target else { return nil }
+        steps += 1
+        let order = shelves.flatMap { $0.books.map(\.id) }
+        // Every hop moves at least a row, and waits at most `patience`
+        // turns: past that the stack isn't saying what it lays out.
+        guard !isLaidOut(target),
+              let start = Self.start(of: target, in: shelves),
+              steps <= (order.count + 1) * (Self.patience + 1)
+        else { return land(target) }
+        // The mark sits between the shelf's first book and the book before
+        // it: with both laid out, so is the mark.
+        if start > 0, isLaidOut(order[start - 1]), isLaidOut(order[start]) { return land(target) }
+        if let before = order[..<start].lastIndex(where: { isLaidOut($0) }) {
+            return hop(order[before], .top, toward: target)
+        }
+        if let after = order[start...].firstIndex(where: { isLaidOut($0) }) {
+            return hop(order[after], .bottom, toward: target)
+        }
+        // Nothing laid out to stand on: the mark's own scroll is all there is.
+        return land(target)
+    }
+
+    /// Where the shelf's first book is in the list's order of rows.
+    private static func start(of section: BookshelfSection, in shelves: [BookshelfShelf]) -> Int? {
+        var start = 0
+        for shelf in shelves {
+            if shelf.section == section { return shelf.books.isEmpty ? nil : start }
+            start += shelf.books.count
+        }
+        return nil
+    }
+
+    private func hop(_ bookID: Int, _ edge: Edge, toward section: BookshelfSection) -> Step {
+        guard bookID == lastHop else {
+            lastHop = bookID
+            waits = 0
+            return .hop(bookID: bookID, edge: edge)
+        }
+        waits += 1
+        return waits > Self.patience ? land(section) : .wait
+    }
+
+    private func land(_ section: BookshelfSection) -> Step {
+        target = nil
+        return .land(section)
+    }
+}
+
 /// The iPhone's third way in: the text on the clipboard, added as a book of
 /// its own (`DocumentImporter.importText(_:)`), the article copied in
 /// Safari to listen to. The last item of the + menu; in the link row under

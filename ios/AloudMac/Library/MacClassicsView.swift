@@ -31,6 +31,10 @@ struct MacClassicsView: View {
     @FocusState private var focusedRow: Int?
     /// Whose ↓ handoff is offered: this screen's, until it goes.
     @State private var handoffOwner = UUID()
+    /// What the lazy list has laid out, and the shelf-map jump under way
+    /// (`ShelfWalk`), as on the iPhone. A reference, never observed: rows
+    /// appearing as the list scrolls redraw nothing.
+    @State private var walk = ShelfWalk()
 
     /// The row column's widest: rows past it would scatter title and length.
     private static let columnMaxWidth: CGFloat = 720
@@ -68,8 +72,12 @@ struct MacClassicsView: View {
                     .onMoveCommand(perform: moveFocus)
                 }
                 .accessibilityIdentifier("bookshelf.list")
-                // Each keystroke reshapes the list; start it from the top.
-                .onChange(of: query) { scroller.scrollTo("top", anchor: .top) }
+                // Each keystroke reshapes the list; start it from the top,
+                // and end a jump still walking to a shelf the search took.
+                .onChange(of: query) {
+                    walk.cancel()
+                    scroller.scrollTo("top", anchor: .top)
+                }
                 .onAppear {
                     MacSearchHandoff.shared.offer(by: handoffOwner) { focusFirstRow(scroller) }
                 }
@@ -123,15 +131,34 @@ struct MacClassicsView: View {
                 ForEach(results) { row($0) }
             }
         } else {
+            let shelves = self.shelves
             // R3-05: the shelf map, unpinned, above the first heading.
             shelfMap(scroller)
-            ForEach(shelves) { shelf in
-                shelfAnchor(shelf.section)
-                Section {
-                    ForEach(shelf.books) { row($0) }
-                } header: {
-                    header(shelf.section)
+            // A branch per shelf, never a ForEach over the shelves, as on
+            // the iPhone: the only ForEach is each shelf's books, one row
+            // per book, so every row the walk scrolls to is found by its
+            // index.
+            shelf(.underAnHour, in: shelves)
+            shelf(.anEvening, in: shelves)
+            shelf(.longReads, in: shelves)
+        }
+    }
+
+    /// One shelf, when the speed leaves it any books: its mark, then its
+    /// section under a pinned heading. Its rows tell the walk when the lazy
+    /// stack lays them out and lets them go (`jump(to:_:)`).
+    @ViewBuilder
+    private func shelf(_ section: BookshelfSection, in shelves: [BookshelfShelf]) -> some View {
+        if let shelf = shelves.first(where: { $0.section == section }) {
+            shelfAnchor(section)
+            Section {
+                ForEach(shelf.books) { book in
+                    row(book)
+                        .onAppear { walk.rowAppeared(book.id) }
+                        .onDisappear { walk.rowDisappeared(book.id) }
                 }
+            } header: {
+                header(section)
             }
         }
     }
@@ -153,14 +180,17 @@ struct MacClassicsView: View {
     }
 
     /// The shelf map's target (`jump(to:_:)`), as on the iPhone: a
-    /// zero-height mark just above the shelf's heading, never the pinned
+    /// one-point mark just above the shelf's heading, never the pinned
     /// heading, which sits at the top anywhere in its shelf and so reads
-    /// as already there wherever a far jump lands.
+    /// as already there wherever a jump lands. A point tall, so the lazy
+    /// stack lays it out among what it shows and it says so to the walk.
     private func shelfAnchor(_ section: BookshelfSection) -> some View {
         Color.clear
-            .frame(height: 0)
+            .frame(height: 1)
             .accessibilityHidden(true)
             .id(section.rawValue)
+            .onAppear { walk.markAppeared(section) }
+            .onDisappear { walk.markDisappeared(section) }
     }
 
     // MARK: Shelf map
@@ -203,11 +233,34 @@ struct MacClassicsView: View {
     }
 
     /// To the shelf's heading, by the mark above it (`shelfAnchor(_:)`),
-    /// animated unless Reduce Motion is on, settling as on the iPhone once
-    /// the lazy rows above a far heading are measured: a scroll when the
-    /// animation completes (at once without one) and another on the next
-    /// turn of the run loop; never on a timer.
+    /// walking there first as on the iPhone (`ShelfWalk`): a scroll
+    /// straight to a far mark the lazy stack hasn't laid out goes to its
+    /// estimate, so each step scrolls a row the stack has laid out,
+    /// unanimated, and the next runs a turn of the run loop later, once the
+    /// rows that step brought in have appeared; never on a timer. Once the
+    /// mark is laid out, it lands.
     private func jump(to section: BookshelfSection, _ scroller: ScrollViewProxy) {
+        walkStep(walk.begin(toward: section), scroller)
+    }
+
+    private func walkStep(_ token: Int, _ scroller: ScrollViewProxy) {
+        guard let step = walk.next(token, through: shelves) else { return }
+        switch step {
+        case .land(let section):
+            land(on: section, scroller)
+        case .hop(let bookID, let edge):
+            scroller.scrollTo(bookID, anchor: edge == .top ? .top : .bottom)
+            DispatchQueue.main.async { walkStep(token, scroller) }
+        case .wait:
+            DispatchQueue.main.async { walkStep(token, scroller) }
+        }
+    }
+
+    /// The mark, laid out now, to the top: animated from within a screen
+    /// unless Reduce Motion is on, then settled by a scroll when the
+    /// animation completes (at once without one) and another on the next
+    /// turn of the run loop.
+    private func land(on section: BookshelfSection, _ scroller: ScrollViewProxy) {
         let id = section.rawValue
         let settle = {
             scroller.scrollTo(id, anchor: .top)
