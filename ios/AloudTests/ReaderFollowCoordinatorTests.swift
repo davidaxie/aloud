@@ -1085,9 +1085,17 @@ extension ReaderFollowCoordinatorTests {
         let term = (textView.textStorage.string as NSString).substring(with: wordRange)
         XCTAssertEqual(term, "Line")
         let menu = coordinator.menu(for: target)
-        XCTAssertEqual(menu.children.map(\.title),
+        let items = menu.children.flatMap { ($0 as? UIMenu).map(\.children) ?? [$0] }
+        XCTAssertEqual(items.map(\.title),
                        ["Play from Here", "Copy", ReaderMenuCopy.lookUpTitle(for: term), "Share\u{2026}"])
-        XCTAssertEqual(menu.children.map(\.title)[2], "Look Up \u{201C}Line\u{201D}", "Look Up quotes its word")
+        XCTAssertEqual(items[2].title, "Look Up \u{201C}Line\u{201D}", "Look Up quotes its word")
+        // R3-02: Play from Here, a separator, then Copy, Look Up and Share,
+        // as on the Mac: the three in one inline section under Play.
+        XCTAssertEqual(menu.children.count, 2, "Play from Here and one section")
+        XCTAssertTrue(menu.children.first is UIAction, "Play from Here leads, on its own")
+        let section = try XCTUnwrap(menu.children.last as? UIMenu, "Copy, Look Up and Share in one section")
+        XCTAssertTrue(section.options.contains(.displayInline), "drawn inline, with the separator above it")
+        XCTAssertEqual(section.children.count, 3)
         XCTAssertEqual(taps.sentences, [], "building the menu plays nothing")
         XCTAssertEqual(coordinator.activeSentence, 0, "the playhead stays")
         XCTAssertEqual(coordinator.programmaticScrollCount, scrolls)
@@ -1617,6 +1625,136 @@ extension ReaderFollowCoordinatorTests {
                        onTapSentence: parent.onTapSentence)
     }
 
+    /// `parent` at the end of its 160 lines with the colophon showing, the
+    /// band's foot at `band` and its edges `measured` or not: what SwiftUI
+    /// hands `update(to:)` at the end of the book.
+    private func endParent(_ parent: ReaderTextView, band: CGFloat, measured: Bool = true) -> ReaderTextView {
+        ReaderTextView(content: parent.content, isChapterBook: parent.isChapterBook, navigation: parent.navigation,
+                       fontSize: parent.fontSize, activeSentence: 159, activeWord: parent.activeWord,
+                       followWord: parent.followWord, followRequest: parent.followRequest,
+                       obscuredBottom: band, bandMeasured: measured, colophon: endColophon,
+                       voiceOffscreen: parent.$voiceOffscreen, textUnderTopBar: parent.$textUnderTopBar,
+                       onTapSentence: parent.onTapSentence)
+    }
+
+    /// Forced layout passes until any placement check has run its course
+    /// (`placementPassLimit` is 12).
+    private func endTheChecks(_ textView: UITextView) {
+        for _ in 0..<(ReaderFollowEngine.placementPassLimit + 2) {
+            textView.setNeedsLayout()
+            textView.layoutIfNeeded()
+        }
+    }
+
+    // MARK: R3-01: a band edge is never lost
+
+    /// The band moving while a placement can't run (following briefly off,
+    /// a finger resting on the page) notes no band: the layout pass after
+    /// places the colophon on the band as it is. It used to be noted before
+    /// the placement bailed, and no pass placed it again: shot 27's colophon
+    /// under the chip and the bar.
+    func testABandThatMovesWhileAPlacementCantRunIsPlacedByTheNextLayoutPass() throws {
+        for blocker in ["not following", "a finger down"] {
+            let (coordinator, textView) = try atTheEnd(obscuredBottom: 68, reduceMotion: true)
+            coordinator.update(to: endParent(coordinator.parent, band: 68))
+            endTheChecks(textView)
+            let landed = try colophonFoot(coordinator)
+            XCTAssertEqual(landed.colophon, landed.viewport, accuracy: 1, "\(blocker): on the chip line of 68")
+
+            if blocker == "not following" { coordinator.isFollowing = false } else { coordinator.isTouching = { _ in true } }
+            coordinator.update(to: endParent(coordinator.parent, band: 252))
+            XCTAssertEqual(coordinator.colophonBand, 68, "\(blocker): a placement that bailed notes no band")
+            endTheChecks(textView)   // the passes that run meanwhile change nothing
+
+            if blocker == "not following" { coordinator.isFollowing = true } else { coordinator.isTouching = { _ in false } }
+            textView.setNeedsLayout()
+            textView.layoutIfNeeded()
+            settle()
+            runLayoutPasses(textView)
+            let foot = try colophonFoot(coordinator)
+            XCTAssertLessThanOrEqual(foot.colophon, foot.viewport + 1,
+                                     "\(blocker): placed above the chip of the band as it is")
+            XCTAssertEqual(coordinator.colophonBand, 252, blocker)
+        }
+    }
+
+    /// The band moving while a fresh column builds (the update returns
+    /// early) is kept for the column: it lands with the colophon above the
+    /// chip of the band as it is.
+    func testABandThatMovesWhileTheColumnBuildsPlacesTheColophonWhenItLands() async throws {
+        let content = lines(160)
+        let first = ReaderTextView(content: content, fontSize: 19, activeSentence: 159, activeWord: -1,
+                                   obscuredBottom: 68, colophon: endColophon,
+                                   voiceOffscreen: .constant(nil), textUnderTopBar: .constant(false),
+                                   onTapSentence: { _ in })
+        let coordinator = ReaderTextView.Coordinator(parent: first)
+        let textView = ReaderUITextView(usingTextLayoutManager: true)
+        textView.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        coordinator.install(on: textView)
+        coordinator.reduceMotion = { true }
+
+        coordinator.update(to: first)
+        XCTAssertNotNil(coordinator.freshBuild, "the column builds off the main thread")
+        coordinator.update(to: endParent(first, band: 252))
+        XCTAssertTrue(coordinator.bandMovedDuringBuild, "the moved band is kept for the column")
+        await coordinator.columnSettled()
+        XCTAssertFalse(coordinator.bandMovedDuringBuild, "and spent once it lands")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        endTheChecks(textView)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        endTheChecks(textView)
+        guard textView.contentSize.height > 2 * textView.bounds.height else {
+            throw XCTSkip("This host doesn't lay out a text view outside a window")
+        }
+        let foot = try colophonFoot(coordinator)
+        XCTAssertLessThanOrEqual(foot.colophon, foot.viewport + 1, "above the chip of the band as it is")
+        XCTAssertEqual(coordinator.colophonBand, 252)
+    }
+
+    /// Until the band's edges are measured the colophon doesn't land (the
+    /// band would leave the bar out); once they are, it lands, once.
+    func testTheColophonLandsOnlyOnceTheBandsEdgesAreMeasured() throws {
+        let (coordinator, textView) = try atTheEnd(reduceMotion: true)
+        let scrolls = coordinator.programmaticScrollCount
+        coordinator.update(to: endParent(coordinator.parent, band: 68, measured: false))
+        XCTAssertNotNil(coordinator.shownColophon)
+        endTheChecks(textView)
+        settle()
+        endTheChecks(textView)
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls, "no landing on an unmeasured band")
+        XCTAssertNil(coordinator.colophonBand, "no band noted")
+
+        coordinator.update(to: endParent(coordinator.parent, band: 252))
+        XCTAssertEqual(coordinator.programmaticScrollCount, scrolls + 1, "one landing once it is measured")
+        XCTAssertEqual(coordinator.colophonBand, 252)
+        endTheChecks(textView)
+        let foot = try colophonFoot(coordinator)
+        XCTAssertLessThanOrEqual(foot.colophon, foot.viewport + 1, "above the chip of the measured band")
+    }
+
+    /// The placement notes the band only once it runs, never the landing's
+    /// aim or a re-placement before it; a band-only update asks for the
+    /// layout pass that re-checks it; the colophon's resting end is measured
+    /// from the colophon itself.
+    func testTheColophonsBandIsNotedOnlyByAPlacementThatRan() throws {
+        let s = try SourceTree.sources(only: ["Reader/ReaderTextView.swift"])
+        let view = try XCTUnwrap(s["Reader/ReaderTextView.swift"])
+        let landing = try XCTUnwrap(view.range(of: "private func landingTarget(caller: String = #function) -> CGFloat? {"))
+        let aim = String(view[landing.upperBound...].prefix(2_400))
+        XCTAssertFalse(aim.contains("colophonBand = "), aim)
+        XCTAssertTrue(aim.contains("guard parent.bandMeasured else { return nil }"), aim)
+        let again = try XCTUnwrap(view.range(of: "private func placeColophonAgain() {"))
+        let replace = String(view[again.upperBound...].prefix(200))
+        XCTAssertFalse(replace.contains("colophonBand"), replace)
+        let update = try XCTUnwrap(view.range(of: "func update(to newParent: ReaderTextView) {"))
+        let body = String(view[update.upperBound...].prefix(2_400))
+        XCTAssertTrue(body.contains("if bandChanged { textView.setNeedsLayout() }"), body)
+        XCTAssertTrue(body.contains("if bandChanged { bandMovedDuringBuild = true }"), body)
+        let resting = try XCTUnwrap(view.range(of: "private func restingOffsets() -> ClosedRange<CGFloat> {"))
+        let range = String(view[resting.upperBound...].prefix(600))
+        XCTAssertTrue(range.contains("colophon.maxY + textView.textContainerInset.bottom"), range)
+    }
+
     /// The colophon's foot against the viewport's, measured afresh.
     private func colophonFoot(_ coordinator: ReaderTextView.Coordinator) throws -> (colophon: CGFloat, viewport: CGFloat) {
         let rect = try XCTUnwrap(coordinator.measureActiveSentenceRect(), "the colophon is measured")
@@ -1700,7 +1838,7 @@ extension ReaderFollowCoordinatorTests {
         let s = try SourceTree.sources(only: ["Reader/ReaderTextView.swift"])
         let view = try XCTUnwrap(s["Reader/ReaderTextView.swift"])
         let check = try XCTUnwrap(view.range(of: "private func checkPlacement() -> ReaderFollowEngine.PlacementCheck {"))
-        let body = String(view[check.upperBound...].prefix(2_000))
+        let body = String(view[check.upperBound...].prefix(3_000))
         XCTAssertFalse(body.contains("return .moveTo(confirmed)"), body)
         XCTAssertTrue(body.contains("guard let settled, abs(settled - textView.contentOffset.y) > 1 else { return .holds }"),
                       body)

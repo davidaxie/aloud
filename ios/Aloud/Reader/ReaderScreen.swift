@@ -176,6 +176,9 @@ struct ReaderScreen: View {
                                                           showsChip: chip != nil,
                                                           windowTextMaxY: textBottomInWindow,
                                                           sheetMinY: listeningSheetTop),
+                // R3-01: the colophon lands only on a band whose edges are
+                // measured, the bar with a real height.
+                bandMeasured: FollowBand.isMeasured(textMaxY: textBottom, chromeMinY: barTop),
                 colophon: colophon(for: content, navigation: navigation),
                 voiceOffscreen: $voiceOffscreen,
                 textUnderTopBar: $textUnderTopBar,
@@ -573,6 +576,16 @@ private struct ReaderFollowProbeOverlay: View {
                     .accessibilityElement()
                     .accessibilityLabel("Follow scrolls")
                     .accessibilityIdentifier("reader.followScrolls.\(probe.scrolls)")
+                // R3-01: the colophon's landing inputs, for the UI test's
+                // failure messages.
+                if let aim = probe.colophonAim {
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityLabel("Colophon aim")
+                        .accessibilityValue(aim)
+                        .accessibilityIdentifier("reader.colophonAim")
+                }
                 if let line = probe.activeLine {
                     Color.clear
                         .frame(width: 1, height: 1)

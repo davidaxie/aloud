@@ -92,25 +92,38 @@ final class ColophonUITest: XCTestCase {
         let barRow = app.descendants(matching: .any)["reader.chapterLine"].firstMatch
         XCTAssertTrue(barRow.waitForExistence(timeout: 5), "the player bar shows", file: file, line: line)
         guard let colophon = settledColophonFrame(app) else {
-            XCTFail("the follow probe frames the colophon", file: file, line: line)
+            XCTFail("the follow probe frames the colophon; \(colophonAim(app))", file: file, line: line)
             return
         }
+        // R3-01: every failure carries the landing's inputs.
+        let aim = colophonAim(app)
         let topChrome = app.navigationBars.firstMatch.frame.maxY
         XCTAssertGreaterThanOrEqual(colophon.minY, topChrome - 1,
-                                    "the colophon's top \(colophon.minY) is under the top bar (\(topChrome))",
+                                    "the colophon's top \(colophon.minY) is under the top bar (\(topChrome)); \(aim)",
                                     file: file, line: line)
         if whole {
             XCTAssertLessThanOrEqual(colophon.maxY, chip.frame.minY + 1,
-                                     "the colophon's foot \(colophon.maxY) is under the chip (\(chip.frame.minY))",
+                                     "the colophon's foot \(colophon.maxY) is under the chip (\(chip.frame.minY)); \(aim)",
                                      file: file, line: line)
         } else {
-            XCTAssertLessThan(colophon.minY, chip.frame.minY,
-                              "the chip (\(chip.frame.minY)) covers the colophon's first line (\(colophon.minY))",
-                              file: file, line: line)
+            // R3-01: whole above the chip, or (taller than the page) its top
+            // first, just under the top chrome. A colophon left low with the
+            // chip over its rule (shot 27) is neither.
+            XCTAssertTrue(colophon.maxY <= chip.frame.minY + 1 || colophon.minY <= topChrome + 8,
+                          "the colophon \(colophon.minY)-\(colophon.maxY) is neither whole above the chip "
+                              + "(\(chip.frame.minY)) nor top first under the top bar (\(topChrome)); \(aim)",
+                          file: file, line: line)
         }
         XCTAssertLessThanOrEqual(chip.frame.maxY, barRow.frame.minY + 1,
-                                 "the chip \(chip.frame) runs into the player bar (\(barRow.frame.minY))",
+                                 "the chip \(chip.frame) runs into the player bar (\(barRow.frame.minY)); \(aim)",
                                  file: file, line: line)
+    }
+
+    /// R3-01: the colophon's landing inputs (band, whether it is measured,
+    /// viewport, resting range, target, offset, clears) from the DEBUG probe.
+    private func colophonAim(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["reader.colophonAim"].firstMatch
+        return probe.exists ? "aim: \(stringValue(of: probe))" : "aim: no probe"
     }
 
     /// CritiqueCaptureTests.test07FinishedBook's path: the first classic,

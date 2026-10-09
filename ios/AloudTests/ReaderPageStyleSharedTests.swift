@@ -119,6 +119,23 @@ final class ReaderPageStyleSharedTests: XCTestCase {
                        100 + 52 + Theme.Space.sm)
         XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 800, chromeMinY: 700, chipReach: 52, showsChip: false), bar)
         XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: nil, chromeMinY: 700, chipReach: 52, showsChip: false), 0)
+        // R3-01: no chip term while either edge is unmeasured: a band of the
+        // chip alone looked measured, and the colophon landed under the bar.
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: nil, chromeMinY: 700, chipReach: 56, showsChip: true), 0)
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: 800, chromeMinY: nil, chipReach: 56, showsChip: true), 0)
+        XCTAssertEqual(FollowBand.obscuredBottom(textMaxY: nil, chromeMinY: nil, chipReach: 56, showsChip: true,
+                                                 windowTextMaxY: nil, sheetMinY: nil), 0,
+                       "the screen's whole band, nothing measured")
+    }
+
+    /// R3-01: the band is measured once both edges are, the bar taller
+    /// than a touch target.
+    func testTheBandIsMeasuredOnceBothEdgesAreAndTheBarHasAHeight() {
+        XCTAssertFalse(FollowBand.isMeasured(textMaxY: nil, chromeMinY: 700))
+        XCTAssertFalse(FollowBand.isMeasured(textMaxY: 874, chromeMinY: nil))
+        XCTAssertFalse(FollowBand.isMeasured(textMaxY: 874, chromeMinY: 874), "a bar of no height")
+        XCTAssertFalse(FollowBand.isMeasured(textMaxY: 874, chromeMinY: 830), "a bar of 44 pt is not yet the bar")
+        XCTAssertTrue(FollowBand.isMeasured(textMaxY: 874, chromeMinY: 622))
     }
 
     func testTheChipsReachIsARunningMaximum() {

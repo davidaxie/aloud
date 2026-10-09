@@ -113,9 +113,12 @@ enum FollowBand {
     /// The same, with the chip slot floating over the text above the
     /// chrome: while a chip shows, its reach (`chipReach`) and a small gap
     /// count too, so the spoken line is never read under the chip. With no
-    /// chip, the chrome alone.
+    /// chip, the chrome alone. 0, the chip with it, until both edges are
+    /// measured (R3-01): a chip counted over an unmeasured bar made a band
+    /// that looked measured, and the colophon landed on it under the bar.
     static func obscuredBottom(textMaxY: CGFloat?, chromeMinY: CGFloat?,
                                chipReach: CGFloat, showsChip: Bool) -> CGFloat {
+        guard textMaxY != nil, chromeMinY != nil else { return 0 }
         let chrome = obscuredBottom(textMaxY: textMaxY, chromeMinY: chromeMinY)
         guard showsChip, chipReach > 0 else { return chrome }
         return chrome + chipReach + Theme.Space.sm
@@ -134,6 +137,14 @@ enum FollowBand {
     /// from the pass a chip resolves in, before the chip is measured, so the
     /// first placement already keeps the page above the chip (R2-09).
     static let chipMinimumHeight: CGFloat = 44
+
+    /// R3-01: whether the band stands on measured edges: the text's bottom
+    /// and the bar's top, with the bar taller than a touch target (a bar
+    /// measured mid-layout at no height is not yet the bar).
+    static func isMeasured(textMaxY: CGFloat?, chromeMinY: CGFloat?) -> Bool {
+        guard let textMaxY, let chromeMinY else { return false }
+        return chromeMinY < textMaxY - chipMinimumHeight
+    }
 
     /// `chipReach` with a chip showing and not yet measured: at least the
     /// chip's minimum and the slot's padding; the running maximum as is
@@ -184,6 +195,9 @@ final class ReaderFollowProbe: ObservableObject {
     @Published private(set) var scrolls = 0
     @Published var activeRect: CGRect?
     @Published var activeLine: Int?
+    /// R3-01: every input of the colophon's last landing or ended check,
+    /// published through reader.colophonAim for the UI test's messages.
+    @Published var colophonAim: String?
 
     func noteScroll() { scrolls += 1 }
 
@@ -191,6 +205,18 @@ final class ReaderFollowProbe: ObservableObject {
         scrolls = 0
         activeRect = nil
         activeLine = nil
+        colophonAim = nil
+    }
+
+    /// One line of the colophon's landing inputs, in whole points.
+    static func describeColophonAim(stage: String, band: CGFloat, bandMeasured: Bool, colophon: CGRect,
+                            viewport: CGRect, resting: ClosedRange<CGFloat>, target: CGFloat?,
+                            contentOffsetY: CGFloat, clears: Bool) -> String {
+        func n(_ value: CGFloat) -> String { String(Int(value.rounded())) }
+        func span(_ rect: CGRect) -> String { "\(n(rect.minY))-\(n(rect.maxY))" }
+        return "\(stage): band \(n(band)) measured \(bandMeasured) colophon \(span(colophon)) "
+            + "viewport \(span(viewport)) resting \(n(resting.lowerBound))...\(n(resting.upperBound)) "
+            + "target \(target.map(n) ?? "none") offset \(n(contentOffsetY)) clears \(clears)"
     }
 }
 #endif

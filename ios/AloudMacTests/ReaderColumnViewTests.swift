@@ -1228,6 +1228,27 @@ final class ReaderColumnViewTests: XCTestCase {
         XCTAssertNotNil(page.coordinator.colophonVeil, "it fades in")
     }
 
+    /// R3-01, the iPhone's rule: on a long book (3,000 sentences) the
+    /// resting range reaches the colophon's own end, so a landing is never
+    /// clamped short of it by TextKit's trailing usage bounds, and the
+    /// colophon placed at the end sits whole on the page.
+    func testALongBooksColophonRestsWithinARangeMeasuredFromIt() throws {
+        let page = try makePage(sentences: 3_000, active: 2_999, reduceMotion: true)
+        page.update(activeSentence: 2_999, colophon: ReaderColophon(title: "Column", author: "A. Writer",
+                                                                    words: 900, rate: 1))
+        page.coordinator.placeActiveSentence()
+        page.window.contentView?.layoutSubtreeIfNeeded()
+
+        let colophon = try XCTUnwrap(page.coordinator.measureActiveSentenceRect(), "the colophon is measured")
+        let clip = page.scrollView.contentView.bounds.height
+        XCTAssertGreaterThanOrEqual(page.coordinator.restingRange.upperBound + clip,
+                                    colophon.maxY + page.textView.textContainerInset.height - 1,
+                                    "the resting range reaches the colophon's own end")
+        let viewport = try XCTUnwrap(page.coordinator.viewport())
+        XCTAssertLessThanOrEqual(colophon.maxY, viewport.maxY + 1, "the colophon's foot on the page")
+        XCTAssertGreaterThanOrEqual(colophon.minY, viewport.minY - 1, "its top on the page")
+    }
+
     // MARK: - Helpers
 
     /// Counts notifications; AppKit posts them on the main thread.

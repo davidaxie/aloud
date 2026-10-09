@@ -134,13 +134,24 @@ struct ReaderColumnLayout {
     /// sentence out on its own at an ESTIMATED y, and an ensureLayout
     /// pass never re-places the last fragment it reaches when that one
     /// is already placed, so the pass must reach one fragment past it.
+    /// The text's last paragraph (the end mark or the colophon) has none
+    /// past it: its layout is dropped and laid out again to the document's
+    /// end, so it too lands on its real frame (R3-01).
     func ensureLayout(through range: NSRange) {
         guard let contentManager = textLayoutManager.textContentManager,
               let text = (contentManager as? NSTextContentStorage)?.textStorage?.mutableString else { return }
         guard NSMaxRange(range) <= text.length else { return }
         // Paragraphs are TextKit 2's layout fragments.
-        let next = NSMaxRange(text.paragraphRange(for: range))
+        let paragraph = text.paragraphRange(for: range)
+        let next = NSMaxRange(paragraph)
         let start = textLayoutManager.documentRange.location
+        if next >= text.length, paragraph.length > 0,
+           let tail = contentManager.location(start, offsetBy: paragraph.location),
+           let last = NSTextRange(location: tail, end: textLayoutManager.documentRange.endLocation) {
+            textLayoutManager.invalidateLayout(for: last)
+            textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+            return
+        }
         guard let end = contentManager.location(start, offsetBy: min(next + 1, text.length)),
               let textRange = NSTextRange(location: start, end: end) else { return }
         textLayoutManager.ensureLayout(for: textRange)

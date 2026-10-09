@@ -1213,12 +1213,24 @@ struct ReaderColumnView: NSViewRepresentable {
         }
 
         /// Every offset the page can rest at: from its top to its end, the
-        /// paper under the text included.
+        /// paper under the text included. While the colophon shows, its end
+        /// is measured from the colophon itself too (R3-01, the iPhone's
+        /// rule): TextKit's usage bounds trail a deep layout on a long book,
+        /// and a range clamped short of the colophon left it below the page.
+        /// No band is noted for the colophon here: its placement measures
+        /// the band as it stands each time.
         private func restingOffsets() -> ClosedRange<CGFloat> {
             guard let scrollView, let page else { return 0...0 }
-            let highest = laidOutHeight() + page.bottomInset - scrollView.contentView.bounds.height
+            var end = laidOutHeight()
+            if shownColophon != nil, let colophon = follow.cachedActiveRect, let textView {
+                end = max(end, colophon.maxY + textView.textContainerInset.height)
+            }
+            let highest = end + page.bottomInset - scrollView.contentView.bounds.height
             return 0...max(highest, 0)
         }
+
+        /// Every resting offset (`restingOffsets`); for tests.
+        var restingRange: ClosedRange<CGFloat> { restingOffsets() }
 
         /// TextKit's own figure for the text's height (the text view's frame
         /// trails it after a deep layout pass); nil before any layout.

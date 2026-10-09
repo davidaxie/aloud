@@ -244,6 +244,29 @@ final class ColophonColumnTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(last.minY, viewport.minY, "the last sentence still shows")
     }
 
+    /// R3-01: a long book (about 3,000 paragraphs) reopened Finished, with
+    /// the bar and the More classics chip over the page, lands the colophon
+    /// whole between the top chrome and the chip. TextKit's usage bounds
+    /// trail a deep layout, and a resting range taken from them alone
+    /// clamped the landing short, the colophon under the chip and the bar.
+    func testALongBookReopenedFinishedLandsTheColophonWholeAboveTheChip() throws {
+        let (coordinator, textView) = try makeColumn(count: 3_000, height: 874, active: 2_999, colophon: colophon)
+        coordinator.parent.obscuredBottom = 252   // the bar's reach and the chip's
+        coordinator.placeActiveSentence()
+        settleLayout(textView)
+
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        let block = try colophonRect(coordinator, textView)
+        XCTAssertLessThanOrEqual(block.maxY, viewport.maxY + 1,
+                                 "the colophon's foot \(block.maxY) above the chip (\(viewport.maxY))")
+        XCTAssertGreaterThanOrEqual(block.minY, viewport.minY - 1,
+                                    "the colophon's top \(block.minY) under the top chrome (\(viewport.minY))")
+        _ = coordinator.measureActiveSentenceRect()   // the colophon, as the range measures it
+        XCTAssertGreaterThanOrEqual(coordinator.restingRange.upperBound + textView.bounds.height,
+                                    block.maxY + textView.textContainerInset.bottom - 1,
+                                    "the resting range reaches the colophon's own end")
+    }
+
     /// R1-19: following again at the end (the Follow chip, a follow
     /// request) puts the end block back on the chip line, as the live end
     /// and a reopen do, even with the block already in the band.

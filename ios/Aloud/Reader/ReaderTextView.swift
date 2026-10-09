@@ -56,6 +56,12 @@ struct ReaderTextView: UIViewRepresentable {
     /// under it, so the band is measured above it and recomputed when the
     /// chrome changes height.
     var obscuredBottom: CGFloat = 0
+    /// R3-01: whether `obscuredBottom` stands on measured edges (the text's
+    /// bottom and the player bar's top, the bar with a real height). Until
+    /// it does, the band leaves the chrome out, and a colophon aimed on it
+    /// would land under the bar once the bar is measured, so the colophon
+    /// waits for it; sentence following never does.
+    var bandMeasured: Bool = true
     /// R24: at the end of the book, the colophon that replaces the "· · ·"
     /// end mark; nil everywhere else. Appearing fades in, and a fresh
     /// column (a reopen) builds with it already in place.
@@ -96,48 +102,7 @@ struct ReaderTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: ReaderUITextView, context: Context) {
-        let coordinator = context.coordinator
-        let obscuredBottomChanged = coordinator.parent.obscuredBottom != obscuredBottom
-        coordinator.parent = self
-
-        if coordinator.builtHash == content.contentHash, coordinator.builtFontSize != fontSize {
-            // A text-size step keeps the reader's place: the voice while
-            // following, else the passage at the top of the screen.
-            // Following is left as it was (mirrors the Mac's changeTextSize).
-            // Quick steps coalesce (R1-15): the one reflow trails the last
-            // step, and the checks below pick up anything else meanwhile.
-            coordinator.reflowSoon()
-        } else if coordinator.builtHash != content.contentHash {
-            // A fresh column is set off the main thread (R1-16): the paper
-            // stays bare until it lands, then it starts on the voice.
-            coordinator.buildFreshColumn()
-            return
-        }
-
-        // Before the follow request: Listen again clears the colophon, so
-        // following then aims at sentence 0, not at the end mark.
-        if coordinator.shownColophon != colophon {
-            coordinator.setColophon(colophon, animated: true)
-        }
-
-        if coordinator.lastFollowRequest != followRequest {
-            coordinator.lastFollowRequest = followRequest
-            coordinator.setActiveSentence(activeSentence, scroll: false)
-            coordinator.resumeFollowing()
-        } else if coordinator.activeSentence != activeSentence {
-            coordinator.setActiveSentence(activeSentence, scroll: true)
-        }
-
-        if coordinator.activeWordToken != activeWord {
-            coordinator.setActiveWord(activeWord)
-        }
-        if coordinator.spokenWordToken != followWord {
-            coordinator.setSpokenWord(followWord, follows: true)
-        }
-
-        if obscuredBottomChanged {
-            coordinator.bandMoved()
-        }
+        context.coordinator.update(to: self)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -174,12 +139,82 @@ struct ReaderTextView: UIViewRepresentable {
         /// `Theme.Motion.colophon` after it appears on screen.
         private(set) var colophonVeil: UIView?
         /// The band foot (`parent.obscuredBottom`) the colophon was last
-        /// aimed with; nil until it is placed. A layout pass that finds the
-        /// band moved since places it again (R2-09).
+        /// placed on; nil until a placement ran. Noted only once a placement
+        /// passes its guards (R3-01), so one that bailed (not following, a
+        /// finger down) leaves it unnoted and the layout pass places it
+        /// again. A layout pass that finds the band moved since places it
+        /// again too (R2-09).
         private(set) var colophonBand: CGFloat?
         /// A re-placement on a moved band is queued for after the layout
         /// pass that found it.
         private var colophonReplaceQueued = false
+        /// R3-01: the layout pass's re-placements of the colophon on one
+        /// band and text, at most `colophonReplaceLimit`, so a target the
+        /// resting range clamps can't loop.
+        private var colophonReplacements: (band: CGFloat, hash: String, count: Int)?
+        private static let colophonReplaceLimit = 3
+        /// R3-01: the band an ended placement check last queued one more
+        /// placement for, with the colophon still below the band's foot.
+        private var colophonRetryBand: CGFloat?
+        /// R3-01: the band moved while a fresh column was building (the
+        /// update returned early); the column places on it once it lands.
+        private(set) var bandMovedDuringBuild = false
+        /// A placement check confirming the layout (`checkPlacement`): the
+        /// layout pass that runs inside it checks nothing again.
+        private var confirmingLayout = false
+
+        /// SwiftUI's update (`updateUIView`), with the view's new inputs.
+        func update(to newParent: ReaderTextView) {
+            // R3-01: the band's foot moved, or its edges became measured.
+            let bandChanged = parent.obscuredBottom != newParent.obscuredBottom
+                || parent.bandMeasured != newParent.bandMeasured
+            parent = newParent
+            guard let textView else { return }
+            // A band-only change in a window gets no layout pass of its own,
+            // and the pass is what places the colophon again.
+            if bandChanged { textView.setNeedsLayout() }
+
+            if builtHash == newParent.content.contentHash, builtFontSize != newParent.fontSize {
+                // A text-size step keeps the reader's place: the voice while
+                // following, else the passage at the top of the screen.
+                // Following is left as it was (mirrors the Mac's changeTextSize).
+                // Quick steps coalesce (R1-15): the one reflow trails the last
+                // step, and the checks below pick up anything else meanwhile.
+                reflowSoon()
+            } else if builtHash != newParent.content.contentHash {
+                // A fresh column is set off the main thread (R1-16): the paper
+                // stays bare until it lands, then it starts on the voice. A
+                // band edge that moves meanwhile is kept for then.
+                if bandChanged { bandMovedDuringBuild = true }
+                buildFreshColumn()
+                return
+            }
+
+            // Before the follow request: Listen again clears the colophon, so
+            // following then aims at sentence 0, not at the end mark.
+            if shownColophon != newParent.colophon {
+                setColophon(newParent.colophon, animated: true)
+            }
+
+            if lastFollowRequest != newParent.followRequest {
+                lastFollowRequest = newParent.followRequest
+                setActiveSentence(newParent.activeSentence, scroll: false)
+                resumeFollowing()
+            } else if activeSentence != newParent.activeSentence {
+                setActiveSentence(newParent.activeSentence, scroll: true)
+            }
+
+            if activeWordToken != newParent.activeWord {
+                setActiveWord(newParent.activeWord)
+            }
+            if spokenWordToken != newParent.followWord {
+                setSpokenWord(newParent.followWord, follows: true)
+            }
+
+            if bandChanged {
+                bandMoved()
+            }
+        }
 
         /// Content height of the last layout pass; a jump means TextKit
         /// swapped estimated line heights wholesale under a still offset.
@@ -455,6 +490,13 @@ struct ReaderTextView: UIViewRepresentable {
                     self.setColophon(self.parent.colophon, animated: false)
                 }
                 self.startOnTheVoice()
+                // R3-01: a band edge that moved while the column was building
+                // is not lost. A sentence's placement (just queued) reads the
+                // band live; the colophon is placed on it now.
+                if self.bandMovedDuringBuild {
+                    self.bandMovedDuringBuild = false
+                    if self.shownColophon != nil { self.bandMoved() }
+                }
                 self.parent.onColumnShown()
             }
         }
@@ -502,6 +544,8 @@ struct ReaderTextView: UIViewRepresentable {
             textView.highlightLayer.setSentenceHidden(colophon != nil)
             endMarkRange = built.endMarkRange
             colophonBand = nil
+            colophonRetryBand = nil
+            colophonReplacements = nil
             removeColophonVeil()
             builtHash = content.contentHash
             builtFontSize = fontSize
@@ -745,7 +789,11 @@ struct ReaderTextView: UIViewRepresentable {
             // the next highlight draws, when it clears.
             textView.highlightLayer.setSentenceHidden(colophon != nil,
                                                       fadeDuration: appearing && animated ? Theme.Motion.colophon : nil)
-            if colophon == nil { colophonBand = nil }
+            if colophon == nil {
+                colophonBand = nil
+                colophonRetryBand = nil
+                colophonReplacements = nil
+            }
             // R2-09: placed without a glide, on geometry laid out through the
             // end mark, and checked on the passes that follow, so the end
             // block lands whole above the chip, not where a glide aimed on
@@ -1063,29 +1111,58 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// The colophon re-measured and placed on the band as it is now.
-        /// The band is noted first, so a placement its layout can't yet
-        /// measure is not asked for again on every pass.
+        /// The band is noted by the placement itself, once it runs
+        /// (`placeActiveSentence`), never before: a placement that bails
+        /// leaves it for the layout pass to retry (R3-01).
         private func placeColophonAgain() {
             follow.cachedActiveRect = nil
-            colophonBand = parent.obscuredBottom
             placeActiveSentence()
         }
 
-        /// A layout pass found the colophon aimed with an older band (one
-        /// that moved while a fresh column was building, when the view's
-        /// update returns early, or between updates): place it again once
-        /// the pass is over, while following and with no glide in flight.
-        private func placeColophonIfTheBandMoved() {
-            guard shownColophon != nil, isFollowing, freshBuild == nil, glide == nil,
-                  let band = colophonBand, band != parent.obscuredBottom,
-                  !colophonReplaceQueued else { return }
+        /// A layout pass found the colophon not placed on the band as it is:
+        /// never placed since it showed (a placement that bailed), aimed
+        /// with an older band (one that moved while a fresh column was
+        /// building, when the view's update returns early, or between
+        /// updates), or still below the band's foot with its target
+        /// elsewhere. Placed again once the pass is over, while following,
+        /// with no glide in flight and no finger down; at most
+        /// `colophonReplaceLimit` times per band and text (R3-01).
+        func placeColophonIfTheBandMoved() {
+            guard colophonNeedsPlacing(), !colophonReplaceQueued else { return }
             colophonReplaceQueued = true
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.colophonReplaceQueued = false
-                guard self.shownColophon != nil, self.isFollowing, self.glide == nil,
-                      let band = self.colophonBand, band != self.parent.obscuredBottom else { return }
+                guard self.colophonNeedsPlacing() else { return }
+                self.noteColophonReplacement()
                 self.placeColophonAgain()
+            }
+        }
+
+        /// Whether the colophon is due a placement on the band as it is now,
+        /// with nothing in the way of one.
+        private func colophonNeedsPlacing() -> Bool {
+            guard shownColophon != nil, isFollowing, parent.bandMeasured, freshBuild == nil, glide == nil,
+                  let textView, !textView.isDragging, !textView.isTracking, !isTouching(textView),
+                  colophonReplacementsLeft > 0 else { return false }
+            guard let band = colophonBand, band == parent.obscuredBottom else { return true }
+            guard !colophonClearsTheBand(), let target = landingTarget() else { return false }
+            return abs(target - textView.contentOffset.y) > 1
+        }
+
+        /// Layout-pass re-placements left on this band and text.
+        private var colophonReplacementsLeft: Int {
+            guard let done = colophonReplacements, done.band == parent.obscuredBottom,
+                  done.hash == builtHash else { return Self.colophonReplaceLimit }
+            return Self.colophonReplaceLimit - done.count
+        }
+
+        private func noteColophonReplacement() {
+            let band = parent.obscuredBottom
+            if let done = colophonReplacements, done.band == band, done.hash == builtHash {
+                colophonReplacements = (band, builtHash, done.count + 1)
+            } else {
+                colophonReplacements = (band, builtHash, 1)
             }
         }
 
@@ -1107,6 +1184,9 @@ struct ReaderTextView: UIViewRepresentable {
                 return
             }
             follow.pendingReveal = nil
+            // R3-01: the band is noted only by a placement that runs, and
+            // only on measured edges, where the colophon may land at all.
+            if shownColophon != nil, parent.bandMeasured { colophonBand = parent.obscuredBottom }
             ensureLayoutThroughActiveSentence()
             follow.startPlacementCheck()
             if let target = landingTarget(), abs(target - textView.contentOffset.y) > 1 {
@@ -1126,11 +1206,15 @@ struct ReaderTextView: UIViewRepresentable {
             follow.cachedActiveRect = rect
             guard let viewport = viewport() else { return nil }
             if shownColophon != nil {
+                // R3-01: never aimed on a band whose edges aren't measured:
+                // it leaves the bar out, and the colophon would land under
+                // it. Unresolved meanwhile, so a placement check spends no
+                // pass; the band's edges arriving place it (`update(to:)`).
+                guard parent.bandMeasured else { return nil }
                 // R1-19: the end block sits just above the More classics chip
                 // (the viewport is measured above it), the live end and a
-                // reopen alike. The band it was aimed with is kept, so a band
-                // that moves later places it again (R2-09).
-                colophonBand = parent.obscuredBottom
+                // reopen alike. The placement notes the band it ran on, so a
+                // band that moves later places it again (R2-09).
                 let last = sentenceRanges.last.flatMap { boundingRect(for: $0) }
                 let target = FollowBand.colophonLandingOffsetY(colophon: rect, lastSentence: last, viewport: viewport,
                                                                contentOffsetY: textView?.contentOffset.y ?? 0,
@@ -1146,6 +1230,7 @@ struct ReaderTextView: UIViewRepresentable {
                     target \(String(describing: target), privacy: .public) \
                     offset \(Double(self.textView?.contentOffset.y ?? 0), privacy: .public)
                     """)
+                publishColophonAim("landing \(caller)", colophon: rect, viewport: viewport, target: target)
                 #endif
                 return target
             }
@@ -1165,14 +1250,25 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// Every contentOffset.y the text can rest at: from its top under
-        /// the top inset to its end above the bottom inset.
+        /// the top inset to its end above the bottom inset. While the
+        /// colophon shows, its end is measured from the colophon itself
+        /// too (R3-01): TextKit's usage bounds trail a deep layout on a long
+        /// book, and a range clamped short of the colophon left it under the
+        /// chip and the bar.
         private func restingOffsets() -> ClosedRange<CGFloat> {
             guard let textView else { return 0...0 }
             let inset = textView.adjustedContentInset
             let lowest = -inset.top
-            let highest = max(laidOutHeight() + inset.bottom - textView.bounds.height, lowest)
+            var end = laidOutHeight()
+            if shownColophon != nil, let colophon = follow.cachedActiveRect {
+                end = max(end, colophon.maxY + textView.textContainerInset.bottom)
+            }
+            let highest = max(end + inset.bottom - textView.bounds.height, lowest)
             return lowest...highest
         }
+
+        /// Every resting offset (`restingOffsets`); for tests.
+        var restingRange: ClosedRange<CGFloat> { restingOffsets() }
 
         /// The text's height as TextKit has laid it out. `contentSize`
         /// trails it: UIKit refreshes that in the text canvas's layout pass,
@@ -1233,6 +1329,9 @@ struct ReaderTextView: UIViewRepresentable {
                 guard let self, let animator, self.glide === animator else { return }
                 self.glide = nil
                 self.updateFollowChip()
+                // R3-01: a band that moved under the glide, or a colophon it
+                // left below the band's foot, is placed now it is over.
+                self.placeColophonIfTheBandMoved()
             }
             glide = animator
             animator.startAnimation()
@@ -1361,6 +1460,8 @@ struct ReaderTextView: UIViewRepresentable {
 
         /// Ends a placement or rotor-stop check and shows the chip it held.
         private func endPlacementCheck() {
+            // Measured as it stands (a layout pass may have dropped the cache).
+            if shownColophon != nil { _ = activeSentenceRect() }
             #if DEBUG
             if shownColophon != nil, let textView {
                 let rect = follow.cachedActiveRect.map { String(describing: $0) } ?? "unmeasured"
@@ -1371,14 +1472,45 @@ struct ReaderTextView: UIViewRepresentable {
                     band \(Double(self.parent.obscuredBottom), privacy: .public) \
                     clears \(self.colophonClearsTheBand(), privacy: .public)
                     """)
+                if let colophon = follow.cachedActiveRect, let viewport = viewport() {
+                    publishColophonAim("check ended", colophon: colophon, viewport: viewport, target: nil)
+                }
             }
             #endif
+            // A rotor stop's check ending never moves the page to the colophon.
+            let endsAPlacement = follow.pendingPlacement && follow.pendingReveal == nil
             follow.endPlacementCheck()
             updateFollowChip()
+            if endsAPlacement { retryColophonIfStillUnderTheBand() }
+        }
+
+        /// R3-01: a placement check that ended with the colophon still below
+        /// the band's foot queues one more placement on the next main-actor
+        /// turn, once per band.
+        private func retryColophonIfStillUnderTheBand() {
+            guard shownColophon != nil, isFollowing, parent.bandMeasured, !colophonClearsTheBand(),
+                  colophonRetryBand != parent.obscuredBottom else { return }
+            colophonRetryBand = parent.obscuredBottom
+            Task { @MainActor [weak self] in
+                guard let self, self.shownColophon != nil, self.isFollowing, self.glide == nil else { return }
+                self.placeColophonAgain()
+            }
         }
 
         #if DEBUG
         private static let colophonLog = Logger(subsystem: "com.davidxie.Aloud", category: "colophon")
+
+        /// R3-01: every input of the colophon's landing, published for the
+        /// UI test's failure messages (`reader.colophonAim`).
+        private func publishColophonAim(_ stage: String, colophon: CGRect, viewport: CGRect, target: CGFloat?) {
+            guard publishesProbe, let textView else { return }
+            let aim = ReaderFollowProbe.describeColophonAim(stage: stage, band: parent.obscuredBottom,
+                                                            bandMeasured: parent.bandMeasured, colophon: colophon,
+                                                            viewport: viewport, resting: restingOffsets(),
+                                                            target: target, contentOffsetY: textView.contentOffset.y,
+                                                            clears: colophonClearsTheBand())
+            if ReaderFollowProbe.shared.colophonAim != aim { ReaderFollowProbe.shared.colophonAim = aim }
+        }
         #endif
 
         /// One layout pass's check of a placement (`pendingPlacement`) or a
@@ -1390,7 +1522,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// still move a landing, so it asks for another pass. Ends after
         /// `placementPassLimit` passes in any case.
         private func verifyPlacement() {
-            guard follow.isCheckingPlacement,
+            guard follow.isCheckingPlacement, !confirmingLayout,
                   let textView, glide == nil,
                   !textView.isTracking, !textView.isDragging,
                   textView.bounds.height > 0 else { return }
@@ -1425,10 +1557,26 @@ struct ReaderTextView: UIViewRepresentable {
                 settled = revealOffset(for: id)
             } else {
                 guard let target = landingTarget() else { return .unresolved }
+                if abs(target - textView.contentOffset.y) <= 1 {
+                    if colophonClearsTheBand() {
+                        // In place, clear of the band: the band it holds on is noted.
+                        if shownColophon != nil { colophonBand = parent.obscuredBottom }
+                        return .holds
+                    }
+                    // R3-01: a colophon below the band's foot holds where it
+                    // is only on the resting range's end measured from the
+                    // colophon itself; anywhere else its geometry is stale.
+                    if abs(target - restingOffsets().upperBound) <= 1 { return .holds }
+                }
                 // A colophon below the band's foot never holds (R2-09): the
-                // check re-measures and re-aims it on each pass it has left.
-                guard abs(target - textView.contentOffset.y) > 1 || !colophonClearsTheBand() else { return .holds }
+                // check confirms the layout (the lines newly on screen
+                // included), re-measures and re-aims it on each pass it has left.
                 ensureLayoutThroughActiveSentence()
+                if shownColophon != nil, !confirmingLayout {
+                    confirmingLayout = true
+                    textView.layoutIfNeeded()
+                    confirmingLayout = false
+                }
                 guard let confirmed = landingTarget() else { return .unresolved }
                 // A colophon still below the band once re-measured moves only
                 // to a target that differs: one the offset already holds (the
@@ -1848,7 +1996,9 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         /// The menu: Play from Here (the tap's path: Undo jump and the play
-        /// haptic as for a tap), Copy, Look Up and Share.
+        /// haptic as for a tap), a separator, then Copy, Look Up and Share
+        /// (R3-02, as the Mac's menu): an inline section draws the
+        /// separator under Play from Here.
         func menu(for target: (sentence: Int, word: NSRange?)) -> UIMenu {
             let id = target.sentence
             let term = target.word.flatMap(lookUpTerm)
@@ -1866,7 +2016,7 @@ struct ReaderTextView: UIViewRepresentable {
             let share = UIAction(title: ReaderMenuCopy.share, image: UIImage(systemName: "square.and.arrow.up")) {
                 [weak self] _ in self?.shareSentence(id)
             }
-            return UIMenu(children: [play, copy, lookUp, share])
+            return UIMenu(children: [play, UIMenu(options: .displayInline, children: [copy, lookUp, share])])
         }
 
         private func lookUpTerm(_ range: NSRange) -> String? {
