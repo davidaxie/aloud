@@ -1734,16 +1734,20 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertEqual(ReaderFailureCopy.deleteTitle("Emma"), "Delete \u{201C}Emma\u{201D}?")
     }
 
-    /// The failure state: its icon hidden at a container that ignores its
-    /// children, its title a heading, magic tap on the page only, Delete
+    /// The failure state: its icon a masked colour with no image element,
+    /// hidden at a container that ignores its children, its title a heading, magic tap on the page only, Delete
     /// Book through the shelf's own entry point, and no Aa.
     func testTheFailureStateHidesItsIconAndOffersDelete() throws {
         let s = try SourceTree.sources(only: ["Reader/ReaderScreen.swift"])
         let screen = try XCTUnwrap(s["Reader/ReaderScreen.swift"])
         let failure = try XCTUnwrap(screen.range(of: "private var failureState: some View {"))
         let state = String(screen[failure.lowerBound...].prefix(3_200))
-        XCTAssertTrue(state.contains(".accessibilityElement(children: .ignore)\n                .accessibilityHidden(true)"),
-                      state)
+        XCTAssertTrue(state.contains("failureGlyph\n                .accessibilityElement(children: .ignore)\n"
+                                     + "                .accessibilityHidden(true)"), state)
+        let glyph = try XCTUnwrap(screen.range(of: "private var failureGlyph: some View {"))
+        let drawn = String(screen[glyph.upperBound...].prefix(320))
+        XCTAssertTrue(drawn.contains(".hidden()\n            .overlay { Theme.textFaint.mask { glyph } }"),
+                      "no image element for VoiceOver to read: \(drawn)")
         XCTAssertTrue(state.contains("Text(ReaderFailureCopy.title)"), state)
         XCTAssertTrue(state.contains(".accessibilityAddTraits(.isHeader)"), state)
         XCTAssertTrue(state.contains("reader.deleteBook"), state)

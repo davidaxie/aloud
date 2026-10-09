@@ -31,6 +31,9 @@ enum PasteTextAction {
     /// The shelf's paste control's VoiceOver hint (`PlatformPasteControl`);
     /// the control names itself.
     static let controlHint = "Adds the copied text as a book"
+    /// The system control's own English label, measured to size it when it
+    /// doesn't say (`PlatformPasteControl.labelSize`); never drawn by Aloud.
+    static let controlTitle = "Paste"
 
     /// What a read of the clipboard found.
     enum Outcome: Equatable {

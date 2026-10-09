@@ -48,9 +48,21 @@ struct PlatformPasteControl: UIViewRepresentable {
     /// target measures what the row lays out, and `ViewThatFits` sees an
     /// honest ideal width.
     func sizeThatFits(_ proposal: ProposedViewSize, uiView host: PasteControlHost, context: Context) -> CGSize? {
-        let i = host.control?.intrinsicContentSize ?? .zero
-        return CGSize(width: min(max(i.width + 2 * Theme.Space.sm, 44), proposal.width ?? .infinity),
-                      height: max(44, i.height))
+        let i = host.control.map { Self.labelSize(of: $0, traits: host.traitCollection) } ?? .zero
+        return CGSize(width: min(max(i.width, 44), proposal.width ?? .infinity), height: max(44, i.height))
+    }
+
+    /// Room for the control's label. The system draws UIPasteControl out of
+    /// process: it has no subviews and reports no size, so sized to 44 by
+    /// 44 it drew a blank square, and a secure control pastes only while
+    /// its label is whole and legible. The label is measured in the
+    /// callout face at the current text size, as its sibling links are
+    /// set, with their side padding.
+    static func labelSize(of control: UIPasteControl, traits: UITraitCollection) -> CGSize {
+        let title = control.accessibilityLabel ?? PasteTextAction.controlTitle
+        let font = UIFont.preferredFont(forTextStyle: .callout, compatibleWith: traits)
+        let text = (title as NSString).size(withAttributes: [.font: font])
+        return CGSize(width: ceil(text.width) + 2 * Theme.Space.sm, height: ceil(font.lineHeight) + 2 * Theme.Space.sm)
     }
 
     /// A control for the environment's look, in place of any before it.
@@ -137,6 +149,7 @@ struct PlatformPasteControl: UIViewRepresentable {
 /// can swap in a new control (`PlatformPasteControl.install`).
 final class PasteControlHost: UIView {
     private(set) var control: UIPasteControl?
+
 
     func show(_ next: UIPasteControl) {
         control?.removeFromSuperview()

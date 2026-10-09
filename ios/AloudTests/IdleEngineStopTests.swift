@@ -345,7 +345,10 @@ final class IdleEngineStopTests: XCTestCase {
     /// keeps its hold for the end, so Play after it claims the session
     /// again, even with the engine still running.
     func testAResumeAfterAnInterruptionClaimsTheSessionAgain() async throws {
-        let (rig, _) = try await startReading()
+        // The clock is held to the end: the interruption's pause arms the
+        // idle wait through it, and its closure holds it unowned.
+        let (rig, clock) = try await startReading()
+        defer { withExtendedLifetime(clock) {} }
         try XCTSkipIf(rig.controller.rendersOffline, "offline there is no session to claim")
         rig.audioSession.onInterruption?(.began)
         XCTAssertEqual(rig.controller.status, .paused)

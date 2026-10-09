@@ -217,6 +217,11 @@ final class AppModel: ObservableObject {
         wordHighlight = defaults.object(forKey: PrefKey.wordHighlight) as? Bool ?? false
         playback.wordHighlightEnabled = wordHighlight   // didSet doesn't fire in init
 
+        // UI-test hook (no-op in Release): a text size the stepper can move.
+        if let step = UITestHooks.textSizeStep {
+            defaults.set(step, forKey: ReaderTextSize.prefKey)
+            if let seedKey = ReaderTextSize.platformSeedKey { defaults.removeObject(forKey: seedKey) }
+        }
         ReaderTextSize.seedIfNeeded(defaults, step: ReaderTextSize.platformDefaultStep,
                                     seedKey: ReaderTextSize.platformSeedKey)
         // A size the listener never picked follows the system's (R1-38):

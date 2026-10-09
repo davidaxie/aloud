@@ -582,8 +582,8 @@ struct LibraryView: View {
             // VoiceOver follows it there, as a mark the other way does. The
             // feed is published now, while the Library shows, so the shelf
             // read here is the one about to be drawn.
-            feedShelf { $0.publish(store.documents, loadedID: model.playback.document?.id,
-                                   stop: model.playback.stopped, libraryShows: true) }
+            let loadedID = model.playback.document?.id
+            feedShelf { $0.publish(store.documents, loadedID: loadedID, stop: model.playback.stopped, libraryShows: true) }
             if shelf.hero?.id == document.id { moveVoiceOverFocus(to: document.id) }
             PlaybackController.postAnnouncement(DocumentAction.markedUnfinished,
                                                 muted: model.playback.isOutputMuted)

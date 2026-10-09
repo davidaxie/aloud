@@ -368,14 +368,22 @@ struct ReaderScreen: View {
         }
     }
 
+    private var failureGlyph: some View {
+        let glyph = Image(systemName: "doc.questionmark")
+            .font(Theme.font(.title))
+            .imageScale(.large)
+        return glyph
+            .hidden()
+            .overlay { Theme.textFaint.mask { glyph } }
+    }
+
     private var failureState: some View {
         VStack(spacing: Theme.Space.sm) {
-            // Hidden at a container that ignores its children, so no symbol
-            // name reaches VoiceOver (R2-10); never combined with the title.
-            Image(systemName: "doc.questionmark")
-                .font(Theme.font(.title))
-                .imageScale(.large)
-                .foregroundStyle(Theme.textFaint)
+            // No symbol name reaches VoiceOver (R2-10); never combined with
+            // the title. A hidden Image still reached the accessibility
+            // tree, so the glyph is its colour masked by the symbol, over
+            // an invisible copy that sizes it: no image element exists.
+            failureGlyph
                 .accessibilityElement(children: .ignore)
                 .accessibilityHidden(true)
             Text(ReaderFailureCopy.title)

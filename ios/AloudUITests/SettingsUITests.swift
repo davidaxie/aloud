@@ -219,8 +219,9 @@ final class SettingsUITests: XCTestCase {
     /// closes it, A+ changes the size with the sheet still open, and its
     /// header's close button (R2-17) closes it. The sheet passes the audit.
     func testTheAaSheetLeavesThePageLiveAndDoneClosesIt() throws {
+        // The hook, never a defaults argument: that would pin 19 pt over A+.
         let app = launch(["-uitest-reset-library", "-uitest-seed-first-classic", "-uitest-temp-model-dir",
-                          "-aloud.prefs.v1.textSize", "2"])
+                          "-uitest-text-size", "2"])
         openBook(app)
         let aa = app.buttons["reader.appearance"].firstMatch
         XCTAssertTrue(aa.waitForExistence(timeout: 20))
@@ -281,10 +282,13 @@ final class SettingsUITests: XCTestCase {
         }
         XCTAssertEqual(issues, [], "The Aa sheet")
 
-        // The bar under the sheet is out of VoiceOver's reach while it's up:
-        // its Voice chip would ask for a second sheet iOS refuses.
+        // The bar under the sheet is out of reach while it's up: its Voice
+        // chip would ask for a second sheet iOS refuses. iOS 26's UI test
+        // tree keeps elements hidden from VoiceOver, so the hiding itself
+        // is pinned in source (ReaderFollowCoordinatorTests); here the
+        // covered chip takes no tap.
         let voiceChip = app.buttons["player.listening"].firstMatch
-        XCTAssertFalse(voiceChip.exists, "The covered player bar is hidden from VoiceOver")
+        XCTAssertFalse(voiceChip.isHittable, "The covered player bar is out of reach")
 
         close.tap()
         XCTAssertTrue(waitForNonExistence(of: title, timeout: 10), "The close button closes the Aa sheet")
@@ -410,7 +414,10 @@ final class SettingsUITests: XCTestCase {
             let appearanceRow = app.buttons["settings.appearance"].firstMatch
             for _ in 0..<4 where !appearanceRow.isHittable { app.swipeDown() }
             appearanceRow.tap()
-            XCTAssertTrue(schemeControl(app).waitForExistence(timeout: 10))
+            // A segmented control in the row; at the accessibility sizes
+            // the three choices stack in a plain container of that name.
+            let scheme = app.descendants(matching: .any)["appearance.scheme"].firstMatch
+            XCTAssertTrue(scheme.waitForExistence(timeout: 10), "Text & appearance opens at \(size.name)")
             XCTAssertEqual(try auditIssues(app), [], "Text & appearance at \(size.name)")
             app.terminate()
         }

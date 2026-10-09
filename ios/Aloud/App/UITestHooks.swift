@@ -195,6 +195,12 @@ enum UITestHooks {
     /// reader shows its failure state and the way back to the Library.
     static var failReaderLoad: Bool { arguments.contains("-uitest-fail-reader-load") }
 
+    /// `-uitest-text-size <step>`: the reader's text size step, written to
+    /// the app's own defaults at launch with no size marked as seeded, so
+    /// the stepper can still change it. A `-aloud.prefs.v1.textSize`
+    /// argument would sit in the argument domain over every write.
+    static var textSizeStep: Int? { value(after: "-uitest-text-size", in: arguments).flatMap { Int($0) } }
+
     /// `-uitest-shortcut <name>`: the shortcut action this launch runs.
     static var shortcut: UITestShortcut? { shortcut(in: arguments) }
 
@@ -323,6 +329,7 @@ enum UITestHooks {
     static var seedClassicCount: Int { 0 }
     static var seedClassicIDs: [Int] { [] }
     static var seedFinished: Bool { false }
+    static var textSizeStep: Int? { nil }
     static var seedPlaceCount: Int { 0 }
     static var slowImport: Bool { false }
     static var openFixture: UITestFixtureKind? { nil }

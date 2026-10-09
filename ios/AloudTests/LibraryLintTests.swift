@@ -715,8 +715,9 @@ final class LibraryLintTests: XCTestCase {
     func testTheShelfHearsTheUnattendedStop() throws {
         let text = try XCTUnwrap(try SourceTree.sources(only: [Self.libraryFile])[Self.libraryFile])
         let derivations = text.components(separatedBy: .newlines).filter { $0.contains("feedShelf { $0.") }
-        XCTAssertEqual(derivations.count, 4,
-                       "both publishes, the Library appearing (a back swipe's start) and the pop completing")
+        XCTAssertEqual(derivations.count, 5,
+                       "both publishes, the Library appearing (a back swipe's start), the pop completing "
+                       + "and Mark as unfinished's hand-off")
         for line in derivations {
             XCTAssertTrue(line.contains("stop: model.playback.stopped"), line)
         }
