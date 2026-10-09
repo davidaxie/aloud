@@ -56,26 +56,53 @@ final class LibraryEntryUITests: XCTestCase {
             assertTouchTarget(element, identifier)
         }
         XCTAssertFalse(app.buttons["library.add"].exists, "No + until the library holds a book")
-        let privacy = app.staticTexts.matching(NSPredicate(format: "label == %@",
-                                                           "Everything stays on your device."))
-        XCTAssertEqual(privacy.count, 1, "The privacy line shows exactly once")
+        XCTAssertEqual(privacyLines(app).count, 1, "The privacy line shows exactly once")
+    }
+
+    /// The empty Library's privacy line, found by its words: it carries no
+    /// identifier.
+    private func privacyLines(_ app: XCUIApplication) -> XCUIElementQuery {
+        app.staticTexts.matching(NSPredicate(format: "label == %@", "Everything stays on your device."))
     }
 
     /// R4-22: the empty Library's block sits at the optical centre, a
     /// little above the middle, not centred in the scroll height under the
-    /// bar's tall chrome, where the card's top fell at about 40% of the
-    /// screen and the block's middle at 55%.
+    /// bar's tall chrome. On a 402 x 874 phone, centred, the card's top fell
+    /// at 40.0% of the screen and the block's middle at 55%; at the optical
+    /// centre the card's top is at about 36%, so the bound sits between.
+    ///
+    /// The slack ratio holds on every phone: the room above the block over
+    /// the room above and below it, from the bar's foot to the window's.
+    /// The block runs from the card to the privacy line, with its xl padding
+    /// (24 pt). The window's foot counts the home indicator's inset (34 pt,
+    /// or none) as room below, so the ratio reads about 0.39 to 0.42 at the
+    /// optical centre and 0.46 to 0.50 centred.
     func testTheEmptyLibrarySitsAtTheOpticalCentre() {
         let app = XCUIApplication.aloud([reset])
         app.launch()
 
         let featured = app.buttons["library.featured"].firstMatch
         XCTAssertTrue(featured.waitForExistence(timeout: 15), "the featured classic shows")
+        let privacy = privacyLines(app).firstMatch
+        XCTAssertTrue(privacy.waitForExistence(timeout: 5), "the privacy line shows")
         let window = app.windows.firstMatch.frame
         XCTAssertGreaterThan(window.height, 0)
-        let top = featured.frame.minY / window.height
-        XCTAssertGreaterThanOrEqual(top, 0.30, "the card's top at \(featured.frame.minY) of \(window.height)")
-        XCTAssertLessThanOrEqual(top, 0.40, "the card's top at \(featured.frame.minY) of \(window.height)")
+        let card = featured.frame
+        let cardTop = "the card's top at \(card.minY) of \(window.height)"
+        XCTAssertGreaterThanOrEqual(card.minY / window.height, 0.30, cardTop)
+        XCTAssertLessThanOrEqual(card.minY / window.height, 0.385, cardTop)
+
+        let padding: CGFloat = 24   // Theme.Space.xl, the block's vertical padding
+        let barFoot = app.navigationBars.firstMatch.frame.maxY
+        let above = card.minY - padding - barFoot
+        let below = window.maxY - (privacy.frame.maxY + padding)
+        let slack = "\(above) pt above the block and \(below) below (the bar's foot at \(barFoot), "
+            + "the card's top at \(card.minY), the privacy line's foot at \(privacy.frame.maxY))"
+        XCTAssertGreaterThan(above, 0, slack)
+        XCTAssertGreaterThan(below, 0, slack)
+        let ratio = above / (above + below)
+        XCTAssertGreaterThanOrEqual(ratio, 0.34, "the slack ratio \(ratio): \(slack)")
+        XCTAssertLessThanOrEqual(ratio, 0.44, "the slack ratio \(ratio), 0.5 when centred: \(slack)")
     }
 
     /// R10 with P017: Classics, From Files… and then Paste Text, which
