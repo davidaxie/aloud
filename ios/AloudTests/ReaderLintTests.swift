@@ -384,9 +384,18 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertFalse(placeBody.contains(".semibold"), "the snippet keeps one weight: \(String(placeBody))")
 
         let result = try XCTUnwrap(panel.range(of: "struct MacContentsResultLabel: View {"))
-        let resultBody = panel[result.upperBound...].prefix(1_050)
+        // The whole struct, to its closing brace at column 0.
+        let resultEnd = try XCTUnwrap(panel.range(of: "\n}", range: result.upperBound..<panel.endIndex))
+        let resultBody = panel[result.upperBound..<resultEnd.lowerBound]
         XCTAssertTrue(resultBody.contains(".font(Theme.excerpt(scale: scale))"), String(resultBody))
         XCTAssertTrue(resultBody.contains("Text(snippet.hit).foregroundColor(Theme.accentStrong)"), String(resultBody))
+        // With no weight change the tint was the hit's only cue: under
+        // Differentiate Without Color it is underlined too, as on the
+        // iPhone (P032).
+        XCTAssertTrue(resultBody.contains("accessibilityDifferentiateWithoutColor"), String(resultBody))
+        XCTAssertTrue(resultBody.contains("Self.emphasized(snippet, underlined: differentiateWithoutColor)"),
+                      String(resultBody))
+        XCTAssertTrue(resultBody.contains(".underline(underlined, color: Theme.accentStrong)"), String(resultBody))
         XCTAssertFalse(resultBody.contains(".semibold"), "the hit is tinted, not bolded: \(String(resultBody))")
         XCTAssertFalse(resultBody.contains("Theme.font(.body"), "no sans quote: \(String(resultBody))")
     }

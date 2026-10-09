@@ -136,6 +136,38 @@ final class MacContentsPanelTests: XCTestCase {
         }
     }
 
+    /// R3-13 review: with the semibold gone the hit's tint was its only
+    /// cue, so under Differentiate Without Color it is underlined too, as
+    /// on the iPhone (P032): the underline draws, and the snippet keeps its
+    /// size in every band so the hit stays on line one.
+    func testUnderDifferentiateWithoutColorTheHitIsUnderlinedTooAtTheSameSize() throws {
+        let content = Self.chaptered()
+        let match = try XCTUnwrap(content.matches(of: "amontillado").first)
+        let snippet = ContentsSearch.snippet(for: match, leadLimit: MacContents.leadLimit)
+        let width = MacContentsLayout.panelWidth - 2 * (Theme.Space.xs + Theme.Space.sm)
+        func label(_ underlined: Bool, _ scale: ChromeScale) -> some View {
+            MacContentsResultLabel.emphasized(snippet, underlined: underlined)
+                .font(Theme.excerpt(scale: scale))
+                .frame(width: width, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        func pixels(_ underlined: Bool) -> Data? {
+            let renderer = ImageRenderer(content: label(underlined, .standard)
+                .frame(height: 80, alignment: .topLeading)
+                .background(Color.white)
+                .environment(\.colorScheme, .light))
+            renderer.scale = 2
+            return renderer.cgImage?.dataProvider?.data as Data?
+        }
+        let plain = try XCTUnwrap(pixels(false), "the plain snippet draws")
+        XCTAssertEqual(plain, pixels(false), "the render is deterministic")
+        XCTAssertNotEqual(plain, pixels(true), "the underline draws")
+        for scale in ChromeScale.allCases {
+            XCTAssertEqual(NSHostingView(rootView: label(true, scale)).fittingSize,
+                           NSHostingView(rootView: label(false, scale)).fittingSize, "\(scale)")
+        }
+    }
+
     /// In a book without chapters every hit would name the same derived
     /// chapter (its first sentence), so a result has no location line; a
     /// chaptered book's hits still name theirs (F040).

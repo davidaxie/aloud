@@ -978,18 +978,21 @@ private struct MacContentsChapterLabel: View {
 
 /// A result: the sentence in the reading serif (`Theme.excerpt`), cut to
 /// start a few words before its hit (`ContentsSearch.snippet`), the hit
-/// tinted `accentStrong` as on the iPhone (never a weight change), over its
-/// chapter or page in the sans: none in a book without chapters, where
-/// every hit would name the same one (`ReaderNavigation.searchLocation`).
+/// tinted `accentStrong` as on the iPhone (never a weight change), and
+/// underlined too under Differentiate Without Color, over its chapter or
+/// page in the sans: none in a book without chapters, where every hit
+/// would name the same one (`ReaderNavigation.searchLocation`).
 struct MacContentsResultLabel: View {
     let match: SentenceMatch
     let location: String?
     let scale: ChromeScale
 
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+
     var body: some View {
         let snippet = ContentsSearch.snippet(for: match, leadLimit: MacContents.leadLimit)
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-            Self.emphasized(snippet)
+            Self.emphasized(snippet, underlined: differentiateWithoutColor)
                 .font(Theme.excerpt(scale: scale))
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
@@ -1006,10 +1009,13 @@ struct MacContentsResultLabel: View {
     }
 
     /// The hit in `accentStrong`, the rest in the reader's colour; one
-    /// weight throughout.
-    static func emphasized(_ snippet: ContentsSearch.Snippet) -> Text {
+    /// weight throughout. Under Differentiate Without Color (`underlined`)
+    /// the hit is underlined too, a cue that isn't colour and doesn't
+    /// change the snippet's width, as on the iPhone (P032).
+    static func emphasized(_ snippet: ContentsSearch.Snippet, underlined: Bool) -> Text {
         Text(snippet.lead).foregroundColor(Theme.text)
             + Text(snippet.hit).foregroundColor(Theme.accentStrong)
+                .underline(underlined, color: Theme.accentStrong)
             + Text(snippet.tail).foregroundColor(Theme.text)
     }
 }
