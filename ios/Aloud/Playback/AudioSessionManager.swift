@@ -82,16 +82,25 @@ final class AudioSessionManager: AudioOutputMonitoring {
         }
     }
 
-    /// Claims the audio: activation only, the category already set (R1-40).
-    /// A call, or an app that outranks Aloud, holding it throws
-    /// `AudioOutputHeldElsewhere`, so playback pauses as interrupted rather
-    /// than failed.
+    /// Where the session is activated and released, one at a time and in
+    /// the order asked (R4-33): a release is always done before a later
+    /// claim. Only a claim in place (`activate()`) holds the main actor
+    /// while it runs.
+    nonisolated private static let sessionQueue = DispatchQueue(label: "com.davidxie.Aloud.audioSession",
+                                                                qos: .utility)
+
+    /// Claims the audio in place: activation only, the category already
+    /// set (R1-40), waiting behind any release still queued. A call, or an
+    /// app that outranks Aloud, holding it throws `AudioOutputHeldElsewhere`,
+    /// so playback pauses as interrupted rather than failed.
     func activate() throws {
         setCategoryIfNeeded()
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch where Self.isHeldElsewhere(error) {
-            throw AudioOutputHeldElsewhere()
+        try Self.sessionQueue.sync {
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch where Self.isHeldElsewhere(error) {
+                throw AudioOutputHeldElsewhere()
+            }
         }
     }
 
@@ -99,10 +108,34 @@ final class AudioSessionManager: AudioOutputMonitoring {
     /// iOS can suspend a paused Aloud. An app it interrupted (Music, a
     /// podcast) is told it may resume only once listening is over
     /// (`notifyingOthers`): after a pause, that app would start by itself a
-    /// minute later.
+    /// minute later. Queued, so it never waits on the main actor and lands
+    /// before any later claim.
     func deactivate(notifyingOthers: Bool) {
-        try? AVAudioSession.sharedInstance()
-            .setActive(false, options: notifyingOthers ? .notifyOthersOnDeactivation : [])
+        let options: AVAudioSession.SetActiveOptions = notifyingOthers ? .notifyOthersOnDeactivation : []
+        Self.sessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: options)
+        }
+    }
+
+    /// A cold Play's claim (R4-33): `activate()`'s, run on the session's
+    /// queue while the main actor goes on (the busy ring turns, the first
+    /// clip is made), behind any release already queued.
+    func claim() async throws {
+        setCategoryIfNeeded()
+        try await withCheckedThrowingContinuation { (claimed: CheckedContinuation<Void, Error>) in
+            Self.sessionQueue.async {
+                claimed.resume(with: Result { try Self.activateOnQueue() })
+            }
+        }
+    }
+
+    /// `activate()`'s activation, for a caller already on the queue.
+    nonisolated private static func activateOnQueue() throws {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch where isHeldElsewhere(error) {
+            throw AudioOutputHeldElsewhere()
+        }
     }
 
     /// The session already plays to the route iOS picked; the engine is
@@ -176,3 +209,5 @@ final class AudioSessionManager: AudioOutputMonitoring {
             || code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue
     }
 }
+
+extension AudioSessionManager: AudioOutputClaiming {}

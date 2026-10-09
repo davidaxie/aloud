@@ -57,6 +57,28 @@ final class MacContentsPanelTests: XCTestCase {
         XCTAssertEqual(rows.map(\.isCompleted), [false, false, false])
     }
 
+    /// R4-29: under the title, the whole book's time left at the speed,
+    /// from the iPhone's helper; none over a search, once finished, or in
+    /// a book whose chapter line already counts to its end.
+    func testTheTitleSaysHowMuchOfTheBookIsLeft() {
+        let navigation = ReaderNavigation(content: Self.chaptered(), kind: .text)
+        // 1,137 words at 165 a minute; at 2× half that.
+        XCTAssertEqual(MacContents.bookMinutesLeft(navigation, playhead: 0, rate: 1, isFinished: false, query: ""), 7)
+        XCTAssertEqual(MacContents.bookMinutesLeft(navigation, playhead: 0, rate: 2, isFinished: false, query: ""), 3)
+        let mid = navigation.chapters[1].startSentence
+        XCTAssertEqual(MacContents.bookMinutesLeft(navigation, playhead: mid, rate: 1, isFinished: false, query: ""),
+                       navigation.bookMinutesLeft(at: mid, rate: 1, isFinished: false), "the shared helper")
+        XCTAssertEqual(ContentsSearch.bookLeftCaption(minutes: 7), "7 min left in the book")
+        XCTAssertEqual(ContentsSearch.bookLeftSpoken(minutes: 7), "7 minutes left in the book")
+        XCTAssertNil(MacContents.bookMinutesLeft(navigation, playhead: 0, rate: 1, isFinished: false, query: "Lucca"),
+                     "never over a search's results")
+        XCTAssertEqual(MacContents.bookMinutesLeft(navigation, playhead: 0, rate: 1, isFinished: false, query: "  "), 7,
+                       "a blank query is the list")
+        XCTAssertNil(MacContents.bookMinutesLeft(navigation, playhead: 0, rate: 1, isFinished: true, query: ""))
+        let chapterless = ReaderNavigation(content: Self.chapterless(), kind: .text)
+        XCTAssertNil(MacContents.bookMinutesLeft(chapterless, playhead: 0, rate: 1, isFinished: false, query: ""))
+    }
+
     // MARK: - What shows
 
     func testABookWithoutChaptersShowsSearchOnly() {

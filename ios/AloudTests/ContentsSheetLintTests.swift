@@ -282,7 +282,8 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertTrue(label.contains("Text(row.snippet)"), label)
         XCTAssertFalse(label.contains("Text(row.text)"), label)
         XCTAssertTrue(label.contains(".lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))"), "P024's line limits stay")
-        XCTAssertTrue(sheet.contains(".accessibilityLabel(row.accessibilityLabel)"))
+        // R4-32: the label without ", current"; the trait says it.
+        XCTAssertTrue(sheet.contains(".accessibilityLabel(row.rowLabel)"))
         // R3-13: the snippet in the reading serif and the reader's colour;
         // the detail line stays in the sans footnote, faint.
         XCTAssertTrue(label.contains("Text(row.snippet) .font(Theme.excerpt()) .foregroundStyle(Theme.text)"), label)
@@ -316,11 +317,117 @@ final class ContentsSheetLintTests: XCTestCase {
         let s = try SourceTree.sources(only: [Self.sheetPath])
         let sheet = try XCTUnwrap(s[Self.sheetPath])
         let body = try region(of: sheet, from: "var body: some View {", to: ".onAppear { opened() }")
+        // R4-30: no gap of its own, so the title sits at the other sheets'
+        // height; the field sits md under the header.
         XCTAssertTrue(body.contains("SheetHeader(title: ContentsSearch.title, titleIdentifier: \"contents.title\", "
-                                    + "closeIdentifier: \"contents.close\", grabberGap: Theme.Space.md)"), body)
+                                    + "closeIdentifier: \"contents.close\")"), body)
+        XCTAssertFalse(body.contains("grabberGap"), body)
+        XCTAssertTrue(body.contains("} .zIndex(1) .padding(.bottom, Theme.Space.md)"), body)
         XCTAssertTrue(body.contains(".sheetChrome(hasList ? [.medium, .large] : [.large], selection: $detent)"), body)
         XCTAssertTrue(body.contains("if focused { detent = .large }"), body)
         XCTAssertTrue(body.contains("if newDetent != .large { fieldFocused = false }"), body)
         XCTAssertFalse(body.contains("backgroundInteraction"), "the scrim stays")
+
+        let grabberPath = "Theme/SheetGrabber.swift"
+        let g = try SourceTree.sources(only: [grabberPath]).mapValues(SwiftLiterals.code(in:))
+        let grabber = try XCTUnwrap(g[grabberPath])
+        XCTAssertFalse(grabber.contains("grabberGap"), "one grabber gap for every sheet")
+        let header = try region(of: grabber, from: "struct SheetHeader: View", to: "private var titleText")
+        XCTAssertTrue(header.contains("VStack(spacing: Theme.Space.xs) { SheetGrabber()"), header)
+    }
+
+    // MARK: - Round 4
+
+    /// R4-29: the whole book's time left under the title, from the shared
+    /// helper, over the list only; spoken spelled out; wrapping.
+    func testTheBookLeftLineShowsOverTheListOnly() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let body = try region(of: sheet, from: "var body: some View {", to: ".onAppear { opened() }")
+        XCTAssertTrue(body.contains("if ContentsSearch.showsBookLeft(query: query), let minutes = bookMinutesLeft { "
+                                    + "bookLeftLine(minutes) }"), body)
+        let estimate = try region(of: sheet, from: "private var bookMinutesLeft: Int? {", to: "/// One caption line")
+        XCTAssertTrue(estimate.contains("navigation.bookMinutesLeft(at: playback.currentSentence, rate: playback.rate, "
+                                        + "isFinished: playback.isAtEnd)"), estimate)
+        let line = try region(of: sheet, from: "private func bookLeftLine(_ minutes: Int)", to: "// MARK: - Opening")
+        for needle in ["Text(ContentsSearch.bookLeftCaption(minutes: minutes))",
+                       ".font(Theme.font(.caption))", ".foregroundStyle(Theme.textMuted)",
+                       ".multilineTextAlignment(.center)", ".fixedSize(horizontal: false, vertical: true)",
+                       ".accessibilityLabel(ContentsSearch.bookLeftSpoken(minutes: minutes))",
+                       ".accessibilityIdentifier(\"contents.bookLeft\")"] {
+            XCTAssertTrue(line.contains(needle), "the line should contain '\(needle)': \(line)")
+        }
+        XCTAssertFalse(line.contains(".lineLimit("), "it wraps at the accessibility sizes")
+    }
+
+    /// R4-31: the field takes the Classics field's capsule, on surface2.
+    func testTheSearchFieldIsACapsule() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let field = try region(of: sheet, from: "private var fieldBox: some View {", to: "// MARK: - Chapters")
+        XCTAssertTrue(field.contains(".background(Theme.surface2, in: Capsule(style: .continuous))"), field)
+        XCTAssertTrue(field.contains(".overlay(Capsule(style: .continuous) .strokeBorder(Theme.Stroke.borderColor, "
+                                     + "lineWidth: Theme.Stroke.borderWidth))"), field)
+        XCTAssertFalse(field.contains("RoundedRectangle"), field)
+        XCTAssertTrue(field.contains(".frame(minHeight: 44)"), field)
+        XCTAssertTrue(field.contains(".foregroundStyle(Theme.textFaint)"), "the faint magnifier and prompt stay")
+        XCTAssertFalse(sheet.contains(".searchable("), "the sheet keeps its own keyboard and detent rules")
+    }
+
+    /// R4-32: both row kinds say "selected" through the trait alone, and
+    /// under Bold Text the current chapter keeps a mark that isn't weight.
+    func testCurrentRowsSayTheirStateOnceAndKeepAMarkUnderBoldText() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let chapter = try region(of: sheet, from: "private func chapterRow(", to: "// MARK: - Where you stopped")
+        XCTAssertTrue(chapter.contains(".accessibilityLabel(ContentsSearch.chapterRowLabel(title: title, "
+                                       + "minutes: minutes))"), chapter)
+        XCTAssertFalse(chapter.contains("chapterAccessibilityLabel"), chapter)
+        XCTAssertTrue(chapter.contains(".accessibilityAddTraits(isCurrent ? .isSelected : [])"), chapter)
+        XCTAssertTrue(chapter.contains(".frame(width: currentMarkerWidth)"), chapter)
+        let place = try region(of: sheet, from: "private func placeRow(", to: "/// An eyebrow over")
+        XCTAssertTrue(place.contains(".accessibilityLabel(row.rowLabel)"), place)
+        XCTAssertTrue(place.contains(".accessibilityAddTraits(row.isCurrent ? .isSelected : [])"), place)
+        let result = try region(of: sheet, from: "private func resultRow(", to: "private func emptyState(")
+        XCTAssertTrue(result.contains(".frame(width: currentMarkerWidth)"), "the restored pick's bar matches")
+
+        XCTAssertTrue(sheet.contains("ContentsChapterLabel.markerWidth(boldText: legibilityWeight == .bold "
+                                     + "|| Theme.BoldText.shared.isOn)"))
+        let label = try region(of: sheet, from: "struct ContentsChapterLabel: View", to: "// MARK: - Place label")
+        XCTAssertTrue(label.contains("@Environment(\\.legibilityWeight) private var legibilityWeight"), label)
+        XCTAssertTrue(label.contains(".foregroundStyle(Self.titleColor(isCurrent: isCurrent, isCompleted: isCompleted, "
+                                     + "boldText: legibilityWeight == .bold || Theme.BoldText.shared.isOn))"), label)
+        XCTAssertTrue(label.contains("if isCurrent && boldText { return Theme.accentStrong }"), label)
+        XCTAssertFalse(label.contains("accentSoft)"), "never a fill the faint time can't sit on")
+    }
+
+    /// R4-33: the iPhone's session claims and releases on one serial
+    /// queue, the claim off the main actor, so a release always lands
+    /// before a later claim; the graph stays on the main actor.
+    func testTheSessionClaimsAndReleasesOnOneQueue() throws {
+        let path = "Playback/AudioSessionManager.swift"
+        let s = try SourceTree.sources(only: [path]).mapValues(SwiftLiterals.code(in:))
+        let source = try XCTUnwrap(s[path])
+        XCTAssertEqual(occurrences(of: "DispatchQueue(label:", in: source), 1, "one queue")
+        let activate = try region(of: source, from: "func activate() throws {", to: "func deactivate(")
+        XCTAssertTrue(activate.contains("try Self.sessionQueue.sync {"), activate)
+        let deactivate = try region(of: source, from: "func deactivate(notifyingOthers: Bool) {", to: "func claim()")
+        XCTAssertTrue(deactivate.contains("Self.sessionQueue.async {"), deactivate)
+        let claim = try region(of: source, from: "func claim() async throws {", to: "func bindOutput(")
+        XCTAssertTrue(claim.contains("Self.sessionQueue.async {"), claim)
+        XCTAssertTrue(claim.contains("throw AudioOutputHeldElsewhere()"), claim)
+        XCTAssertTrue(source.contains("extension AudioSessionManager: AudioOutputClaiming {}"))
+
+        let controllerPath = "Playback/PlaybackController.swift"
+        let c = try SourceTree.sources(only: [controllerPath])
+        let controller = try XCTUnwrap(c[controllerPath])
+        let start = try region(of: controller, from: "private func startAudioHardware() throws {",
+                               to: "private static let audioStartSignposter")
+        for needle in ["audioOutput.bindOutput(of: audioEngine)", "audioEngine.prepare()", "try audioEngine.start()",
+                       "beginInterval(\"engineStart\")", "beginInterval(\"activate\")"] {
+            XCTAssertTrue(start.contains(needle), "the hardware start keeps '\(needle)': \(start)")
+        }
+        let begin = try region(of: controller, from: "private func beginClaim(", to: "private func awaitPendingClaim(")
+        XCTAssertTrue(begin.contains("beginInterval(\"activate\")"), "the claim keeps its signpost: \(begin)")
     }
 }

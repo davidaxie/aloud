@@ -273,6 +273,20 @@ struct ReaderNavigation {
         return wordsBefore[last + 1] - wordsBefore[first]
     }
 
+    /// The whole book's time left at `rate`, from `sentence` to the last
+    /// sentence, for Contents' line under its title (R4-29, both apps). nil
+    /// where the chapter line already counts to the end (text without a
+    /// chapter list, page-range PDFs), for a finished book, and when no
+    /// words are left. Its words are the card's (`LibraryDocument.wordCount`
+    /// less the place's word-weighted fraction), so the two agree.
+    func bookMinutesLeft(at sentence: Int, rate: Double, isFinished: Bool) -> Int? {
+        guard isChaptered, !isFinished, sentenceCount > 0 else { return nil }
+        let words = wordsRemaining(from: sentence, through: sentenceCount - 1)
+        guard words > 0 else { return nil }
+        return ListeningEstimate.minutes(words: words,
+                                         wordsPerMinute: LibraryDocument.spokenWordsPerMinute * rate)
+    }
+
     /// The chapter line's position: where the listener is and how long is
     /// left at `rate`, counted from the current sentence to the end of its
     /// chapter (chaptered text and mapped PDFs), or to the end of the

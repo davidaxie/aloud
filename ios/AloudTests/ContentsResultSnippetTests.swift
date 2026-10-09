@@ -345,6 +345,22 @@ final class ContentsChapterLabelLayoutTests: XCTestCase {
         XCTAssertEqual(Theme.rowTitle(emphasized: true, boldText: true), serif.weight(.bold))
     }
 
+    /// R4-32: under Bold Text weight no longer marks the current chapter,
+    /// so its title takes accentStrong and its bar widens; without it,
+    /// nothing changes.
+    func testUnderBoldTextTheCurrentChapterKeepsAMarkThatIsNotWeight() {
+        XCTAssertEqual(ContentsChapterLabel.titleColor(isCurrent: true, isCompleted: false, boldText: true),
+                       Theme.accentStrong)
+        XCTAssertEqual(ContentsChapterLabel.titleColor(isCurrent: true, isCompleted: false, boldText: false),
+                       Theme.text, "the semibold weight marks it")
+        XCTAssertEqual(ContentsChapterLabel.titleColor(isCurrent: false, isCompleted: false, boldText: true),
+                       Theme.text, "only the current row")
+        XCTAssertEqual(ContentsChapterLabel.titleColor(isCurrent: false, isCompleted: true, boldText: true),
+                       Theme.textMuted, "listened chapters still mute")
+        XCTAssertEqual(ContentsChapterLabel.markerWidth(boldText: false), 3)
+        XCTAssertEqual(ContentsChapterLabel.markerWidth(boldText: true), 4)
+    }
+
     func testALongTitleTakesTwoLinesBelowTheAccessibilitySizes() {
         XCTAssertEqual(Self.longTitle.count, 55)
         let oneLine = height(of: label("CHAPTER I"), size: .large)

@@ -39,9 +39,17 @@ struct PlaceRow: Equatable, Identifiable {
     /// "Yesterday, 10:41 PM · CHAPTER THREE".
     var detail: String { [when, location].compactMap { $0 }.joined(separator: " · ") }
 
-    /// "Yesterday, 10:41 PM, CHAPTER THREE, <sentence>, current".
+    /// "Yesterday, 10:41 PM, CHAPTER THREE, <sentence>, current": the form
+    /// the Mac's plain announcements speak, which carry no trait.
     var accessibilityLabel: String {
-        PlaybackCopy.spoken([detail, text].joined(separator: " · ")) + (isCurrent ? ", current" : "")
+        rowLabel + (isCurrent ? ", current" : "")
+    }
+
+    /// "Yesterday, 10:41 PM, CHAPTER THREE, <sentence>": the iPhone row's
+    /// label, whose `.isSelected` trait says the current place, so
+    /// VoiceOver says it once (R4-32).
+    var rowLabel: String {
+        PlaybackCopy.spoken([detail, text].joined(separator: " · "))
     }
 
     var identifier: String { "places.row.\(index)" }

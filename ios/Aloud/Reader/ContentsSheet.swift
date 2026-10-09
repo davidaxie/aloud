@@ -10,8 +10,11 @@ import SwiftUI
 /// carry no headings) list pages, whose rows name a page or a run of them
 /// ("Pages 12–14") because prose flowing across a page break leaves that
 /// break with no block of its own. The current chapter carries a 3pt
-/// accentStrong leading bar (and the `.isSelected` trait), completed chapters
-/// mute. Chapters under a Part, Book, Act or Epilogue heading are grouped
+/// accentStrong leading bar (4pt, with an accentStrong title, under Bold
+/// Text) and the `.isSelected` trait, which alone says it to VoiceOver
+/// (R4-32); completed chapters mute. Under the title, a caption gives the
+/// whole book's time left where the chapter line counts only to the
+/// chapter's end (R4-29). Chapters under a Part, Book, Act or Epilogue heading are grouped
 /// beneath it as a pinned section header (R17); the heading itself is
 /// folded into the chapter after it, so it is never a row of its own.
 ///
@@ -60,6 +63,7 @@ struct ContentsSheet: View {
     @EnvironmentObject private var playback: PlaybackController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.legibilityWeight) private var legibilityWeight
     @Environment(\.placeHistory) private var placeHistory
 
     @State private var query = ""
@@ -94,10 +98,18 @@ struct ContentsSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             // The shared header: at full height, and in a search-only book
-            // with the keyboard up, its close button is the way out.
-            SheetHeader(title: ContentsSearch.title, titleIdentifier: "contents.title",
-                        closeIdentifier: "contents.close", grabberGap: Theme.Space.md)
-                .padding(.bottom, Theme.Space.sm)
+            // with the keyboard up, its close button is the way out. Its
+            // title sits at the other sheets' height (R4-30), and the field
+            // as far under it as Voice & speed's chips sit under theirs.
+            VStack(spacing: Theme.Space.xxs) {
+                SheetHeader(title: ContentsSearch.title, titleIdentifier: "contents.title",
+                            closeIdentifier: "contents.close")
+                if ContentsSearch.showsBookLeft(query: query), let minutes = bookMinutesLeft {
+                    bookLeftLine(minutes)
+                }
+            }
+            .zIndex(1)
+            .padding(.bottom, Theme.Space.md)
 
             // Pinned: the field never scrolls away with the list.
             searchField
@@ -151,6 +163,30 @@ struct ContentsSheet: View {
             // Still scanning.
             keyboardDismissingArea { Color.clear.frame(height: 0) }
         }
+    }
+
+    // MARK: - The book's time left
+
+    /// The whole book's time left at the current speed (R4-29): nil where
+    /// the chapter line already counts to the end, and once finished.
+    private var bookMinutesLeft: Int? {
+        navigation.bookMinutesLeft(at: playback.currentSentence, rate: playback.rate,
+                                   isFinished: playback.isAtEnd)
+    }
+
+    /// One caption line under the title, wrapping at the accessibility
+    /// sizes rather than truncating.
+    private func bookLeftLine(_ minutes: Int) -> some View {
+        Text(ContentsSearch.bookLeftCaption(minutes: minutes))
+            .font(Theme.font(.caption))
+            .monospacedDigit()
+            .foregroundStyle(Theme.textMuted)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Theme.Space.sheetGutter)
+            .accessibilityLabel(ContentsSearch.bookLeftSpoken(minutes: minutes))
+            .accessibilityIdentifier("contents.bookLeft")
     }
 
     // MARK: - Opening
@@ -283,11 +319,12 @@ struct ContentsSheet: View {
         .padding(.leading, Theme.Space.sm)
         .padding(.trailing, Theme.Space.xxs)
         .frame(minHeight: 44)
-        .background(Theme.surface2,
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
-                .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
+        // The Classics field's capsule (R4-31), filled surface2 so it
+        // stands off the sheet's surface as the close circle does; it grows
+        // with the text.
+        .background(Theme.surface2, in: Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous)
+            .strokeBorder(Theme.Stroke.borderColor, lineWidth: Theme.Stroke.borderWidth))
     }
 
     // MARK: - Chapters
@@ -344,6 +381,12 @@ struct ContentsSheet: View {
 
     /// Opaque, so the rows scrolling beneath a pinned header never show
     /// through it.
+    /// The current row's leading bar, wider under Bold Text, where every
+    /// title is already bold (R4-32).
+    private var currentMarkerWidth: CGFloat {
+        ContentsChapterLabel.markerWidth(boldText: legibilityWeight == .bold || Theme.BoldText.shared.isOn)
+    }
+
     private func sectionHeader(_ title: String, id: Int) -> some View {
         Text(title)
             .font(Theme.font(.eyebrow))
@@ -410,15 +453,16 @@ struct ContentsSheet: View {
                 if isCurrent {
                     Rectangle()
                         .fill(Theme.accentStrong)
-                        .frame(width: 3)
+                        .frame(width: currentMarkerWidth)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(ContentsRowButtonStyle())
         .id(chapter.id)
-        .accessibilityLabel(ContentsSearch.chapterAccessibilityLabel(title: title, minutes: minutes,
-                                                                     isCurrent: isCurrent))
+        // The trait says "selected": the label leaves out ", current", so
+        // VoiceOver says the state once (R4-32).
+        .accessibilityLabel(ContentsSearch.chapterRowLabel(title: title, minutes: minutes))
         .accessibilityHint(ContentsSearch.playsFromHereHint)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
         .accessibilityIdentifier(navigation.rowIdentifier(at: index))
@@ -518,7 +562,8 @@ struct ContentsSheet: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(ContentsRowButtonStyle())
-        .accessibilityLabel(row.accessibilityLabel)
+        // As the chapter row: the trait alone says it is current (R4-32).
+        .accessibilityLabel(row.rowLabel)
         .accessibilityHint(ContentsSearch.playsFromHereHint)
         .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
         .accessibilityIdentifier(row.identifier)
@@ -603,7 +648,7 @@ struct ContentsSheet: View {
                     if isPicked {
                         Rectangle()
                             .fill(Theme.accentStrong)
-                            .frame(width: 3)
+                            .frame(width: currentMarkerWidth)
                     }
                 }
                 .contentShape(Rectangle())
@@ -706,6 +751,11 @@ private struct ContentsRowButtonStyle: ButtonStyle {
 /// almost no width (every row read as a cut-off first word), so the title
 /// wraps to three lines and the time stacks beneath it. Its own view so a
 /// layout test can host it without a controller.
+///
+/// Under Bold Text every title is bold (Iowan has no heavier face), so the
+/// current title takes accentStrong instead, and its bar widens
+/// (`markerWidth`): the current row keeps a mark that isn't weight
+/// (R4-32). Never an accentSoft fill, which the faint time can't sit on.
 struct ContentsChapterLabel: View {
 
     let title: String
@@ -714,11 +764,23 @@ struct ContentsChapterLabel: View {
     let isCompleted: Bool
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.legibilityWeight) private var legibilityWeight
+
+    /// The current row's leading bar: 3 pt, 4 under Bold Text.
+    static func markerWidth(boldText: Bool) -> CGFloat { boldText ? 4 : 3 }
+
+    /// The title's ink: accentStrong on the current row under Bold Text,
+    /// muted once listened past, else the text color.
+    static func titleColor(isCurrent: Bool, isCompleted: Bool, boldText: Bool) -> Color {
+        if isCurrent && boldText { return Theme.accentStrong }
+        return isCompleted ? Theme.textMuted : Theme.text
+    }
 
     var body: some View {
         let titleText = Text(title)
             .font(Theme.rowTitle(emphasized: isCurrent))
-            .foregroundStyle(isCompleted ? Theme.textMuted : Theme.text)
+            .foregroundStyle(Self.titleColor(isCurrent: isCurrent, isCompleted: isCompleted,
+                                             boldText: legibilityWeight == .bold || Theme.BoldText.shared.isOn))
             .truncationMode(.tail)
         let estimateText = Text(estimate)
             .font(Theme.font(.caption))

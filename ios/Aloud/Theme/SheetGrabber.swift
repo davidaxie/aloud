@@ -57,12 +57,14 @@ enum SheetCopy {
 ///
 /// The circle is solid surface2 with a border, never glass: the sheets
 /// stand on a solid surface.
+///
+/// One gap, `Theme.Space.xs`, from the grabber to the title on every
+/// sheet, so the three titles sit at one height (R4-30); a sheet spaces
+/// what follows its header with its own padding.
 struct SheetHeader: View {
     let title: String
     let titleIdentifier: String
     let closeIdentifier: String
-    /// From the grabber to the title.
-    var grabberGap: CGFloat = Theme.Space.xs
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -73,7 +75,7 @@ struct SheetHeader: View {
     static let closeTrailing = Theme.Space.sheetGutter - (Theme.SheetTarget.minimum - circle) / 2
 
     var body: some View {
-        VStack(spacing: grabberGap) {
+        VStack(spacing: Theme.Space.xs) {
             SheetGrabber()
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(spacing: 0) {

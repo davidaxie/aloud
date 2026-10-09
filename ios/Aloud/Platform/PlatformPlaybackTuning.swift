@@ -13,11 +13,17 @@ enum PlatformPlaybackTuning {
     /// queued sentence and R11's cooling switch lands within a few, so a
     /// deeper queue would delay both.
     static let lookAheadSentences = 2...6
-    /// Under Low Power Mode or at `.serious` heat the queue keeps two
-    /// sentences, as it always did: synthesis ahead is the heaviest work
-    /// the phone does, and a hot one is about to hand off to the System
-    /// voice anyway.
+    /// At `.serious` heat the queue keeps two sentences: a hot phone is
+    /// about to hand off to the System voice, and ThermalGuard's handoff
+    /// lands within `coolingSwitchLandsWithin` only over a short queue.
     static let lookAheadUnderStrain: Int? = 2
+    /// Under Low Power Mode (and no heat) the queue stays time-based, over
+    /// a shorter range (R4-34). Its depth only moves when a sentence is
+    /// synthesized, not how many are: every queued sentence is spoken
+    /// anyway. Two short lines of dialogue at speed would run a fixed two
+    /// dry, as before the time-based queue. The speculative work (skip
+    /// warm-ups, the cold load on return) still stops.
+    static let lookAheadSentencesUnderLowPower: ClosedRange<Int>? = 2...4
     /// R11: the cooling switch to the System voice lands within this many
     /// sentences. With more natural-voice clips queued than that, the ones
     /// past the next sentence boundary are dropped there
@@ -38,6 +44,7 @@ enum PlatformPlaybackTuning {
     static let lookAheadSentences = 3...10
     /// A Mac keeps its whole look-ahead under Low Power Mode and heat.
     static let lookAheadUnderStrain: Int? = nil
+    static let lookAheadSentencesUnderLowPower: ClosedRange<Int>? = nil
     /// The cooling switch splices after the last queued sentence, however
     /// deep the queue.
     static let coolingSwitchLandsWithin: Int? = nil

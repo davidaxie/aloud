@@ -169,8 +169,11 @@ final class AppModel: ObservableObject {
         // applied once the voice preference is engaged.
         thermalGuard = ThermalGuard(playback: playback, systemVoice: engine.defaultVoice,
                                     initialState: .nominal)
-        // Low Power Mode or heat shrinks the look-ahead where the platform
-        // says so (PlatformPlaybackTuning.lookAheadUnderStrain).
+        // Heat caps the look-ahead and Low Power Mode shortens it, where the
+        // platform says so (PlatformPlaybackTuning, R4-34); either stops the
+        // speculative work (the strain).
+        playback.isHot = Self.heat(of: thermalGuard)
+        playback.isLowPower = { ProcessInfo.processInfo.isLowPowerModeEnabled }
         playback.isUnderStrain = Self.strain(of: thermalGuard) { ProcessInfo.processInfo.isLowPowerModeEnabled }
         neuralPrewarm = NeuralPrewarm(
             playback: playback,
@@ -296,13 +299,20 @@ final class AppModel: ObservableObject {
         Self.routeOpenIn(url, router: router, importer: importer)
     }
 
-    /// What the controller asks before each top-up (P009,
-    /// `PlaybackController.isUnderStrain`): heat at `.serious` or hotter, or
-    /// Low Power Mode. Static so tests hold the very closure AppModel
-    /// installs, with Low Power Mode answered by them.
+    /// What the controller asks before its speculative work (P009,
+    /// `PlaybackController.isUnderStrain`): heat at `.serious` or hotter
+    /// (`heat`), or Low Power Mode. Static so tests hold the very closure
+    /// AppModel installs, with Low Power Mode answered by them.
     static func strain(of thermalGuard: ThermalGuard,
                        isLowPowerMode: @escaping () -> Bool) -> @MainActor () -> Bool {
-        { [weak thermalGuard] in (thermalGuard?.isHot ?? false) || isLowPowerMode() }
+        let hot = heat(of: thermalGuard)
+        return { hot() || isLowPowerMode() }
+    }
+
+    /// The heat half alone (`PlaybackController.isHot`), which keeps the
+    /// look-ahead's strained cap for ThermalGuard's handoff (R4-34).
+    static func heat(of thermalGuard: ThermalGuard) -> @MainActor () -> Bool {
+        { [weak thermalGuard] in thermalGuard?.isHot ?? false }
     }
 
     /// The import overlay and its failure alert belong to the Library root,

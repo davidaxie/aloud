@@ -51,14 +51,39 @@ final class CatchingUpTests: XCTestCase {
         #if os(iOS)
         XCTAssertEqual(PlatformPlaybackTuning.lookAheadSeconds, 10)
         XCTAssertEqual(PlatformPlaybackTuning.lookAheadSentences, 2...6)
-        XCTAssertEqual(PlatformPlaybackTuning.lookAheadUnderStrain, 2)
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadUnderStrain, 2, "heat keeps two")
+        XCTAssertEqual(PlatformPlaybackTuning.lookAheadSentencesUnderLowPower, 2...4,
+                       "Low Power Mode keeps a shorter time-based queue (R4-34)")
         XCTAssertEqual(PlatformPlaybackTuning.coolingSwitchLandsWithin, 3)
         #else
         XCTAssertEqual(PlatformPlaybackTuning.lookAheadSeconds, 12, "the Mac's look-ahead is unchanged")
         XCTAssertEqual(PlatformPlaybackTuning.lookAheadSentences, 3...10)
         XCTAssertNil(PlatformPlaybackTuning.lookAheadUnderStrain)
+        XCTAssertNil(PlatformPlaybackTuning.lookAheadSentencesUnderLowPower)
         XCTAssertNil(PlatformPlaybackTuning.coolingSwitchLandsWithin)
         #endif
+    }
+
+    /// R4-34: Low Power Mode's 2...4 keeps two short lines of dialogue at
+    /// 2.5x from running the voice dry (about 0.8 s each, so four);
+    /// long sentences keep the floor of two.
+    func testLowPowerModeKeepsAShortTimeBasedQueue() {
+        let dialogue = Array(repeating: 20, count: 30)
+        XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: dialogue, rate: 2.5, seconds: 10,
+                                                         range: 2...4), 4)
+        XCTAssertEqual(PlaybackController.lookAheadCount(characterCounts: Array(repeating: 300, count: 30),
+                                                         rate: 1, seconds: 10, range: 2...4), 2)
+        // Heat outranks Low Power Mode: the strained cap, over the whole range.
+        let hot = PlaybackController.lookAheadBounds(hot: true, lowPower: true)
+        XCTAssertEqual(hot.range, PlatformPlaybackTuning.lookAheadSentences)
+        XCTAssertEqual(hot.strainedCap, PlatformPlaybackTuning.lookAheadUnderStrain)
+        let lowPower = PlaybackController.lookAheadBounds(hot: false, lowPower: true)
+        XCTAssertEqual(lowPower.range,
+                       PlatformPlaybackTuning.lookAheadSentencesUnderLowPower ?? PlatformPlaybackTuning.lookAheadSentences)
+        XCTAssertNil(lowPower.strainedCap)
+        let neither = PlaybackController.lookAheadBounds(hot: false, lowPower: false)
+        XCTAssertEqual(neither.range, PlatformPlaybackTuning.lookAheadSentences)
+        XCTAssertNil(neither.strainedCap)
     }
 
     /// Under Low Power Mode or `.serious` heat the platform's cap holds,

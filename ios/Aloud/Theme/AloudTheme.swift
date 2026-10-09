@@ -207,7 +207,10 @@ enum Theme {
     /// on the row that is `emphasized` (the current chapter), so a long list
     /// isn't a wall of bold and the current row stands out by more than its
     /// bar. The Mac takes its ramp's headline at that weight. Under Bold Text
-    /// both are the serif's bold face, Iowan's only heavy one.
+    /// both are the serif's bold face, Iowan's only heavy one, so weight no
+    /// longer marks the current row: the iPhone's Contents inks its title
+    /// accentStrong and widens its bar instead (`ContentsChapterLabel`,
+    /// R4-32).
     static func rowTitle(emphasized: Bool) -> Font {
         rowTitle(emphasized: emphasized, boldText: BoldText.shared.isOn)
     }

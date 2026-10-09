@@ -19,6 +19,18 @@ enum UndoJumpCopy {
     static let available = "Undo jump available"
 }
 
+/// An output monitor that can claim its output off the main actor: the
+/// iPhone's audio session (R4-33), whose activation can take long enough
+/// to freeze the busy ring. A cold Play claims through it while its first
+/// clip is made. The Mac's monitor has no session and claims in place.
+@MainActor
+protocol AudioOutputClaiming: AnyObject {
+    /// Activates the output off the main actor, ordered behind any release
+    /// already asked for; throws `AudioOutputHeldElsewhere` when a call or
+    /// a higher-priority app holds it.
+    func claim() async throws
+}
+
 /// The app's heart. Drives an AVAudioEngine → player → time-pitch graph with
 /// gapless look-ahead scheduling. Sentences are the atom of playback: clips are
 /// synthesized at 1×, speed applied by the time-pitch unit, and every async
@@ -211,11 +223,19 @@ final class PlaybackController: ObservableObject {
     var isAppActive: () -> Bool = { PlatformApp.isActive }
 
     /// Whether the device is under strain now: Low Power Mode, or `.serious`
-    /// heat or hotter. Where the platform says so
-    /// (`PlatformPlaybackTuning.lookAheadUnderStrain`) the look-ahead
-    /// shrinks while it holds. AppModel answers through ThermalGuard; tests
-    /// set it.
+    /// heat or hotter (`isHot || isLowPower`, AppModel's `strain`). The
+    /// speculative work stops while it holds: skip warm-ups and the cold
+    /// natural-voice load on return. AppModel answers through ThermalGuard;
+    /// tests set it.
     var isUnderStrain: @MainActor () -> Bool = { false }
+    /// `.serious` heat or hotter: the look-ahead keeps the platform's
+    /// strained cap (`PlatformPlaybackTuning.lookAheadUnderStrain`), so the
+    /// cooling handoff lands within a few sentences (R4-34). AppModel
+    /// answers through ThermalGuard; tests set it.
+    var isHot: @MainActor () -> Bool = { false }
+    /// Low Power Mode: the look-ahead stays time-based over the platform's
+    /// shorter range (`lookAheadSentencesUnderLowPower`), unless hot too.
+    var isLowPower: @MainActor () -> Bool = { false }
 
     /// How long an "Undo jump" offer stays up. Tests shorten it.
     var undoJumpLifetime: TimeInterval = UndoableJump.displaySeconds
@@ -462,6 +482,17 @@ final class PlaybackController: ObservableObject {
     /// Aloud still holds it for the end. The next start claims it again
     /// even where the engine (a test host's) kept running.
     private var sessionClaimLapsed = false
+    /// A cold live start's claim, made off the main actor while its first
+    /// clip is fetched or made (R4-33), and the play token it serves.
+    private var pendingClaim: (token: UInt64, task: Task<Void, Error>)?
+    /// The play token whose claim has landed: its first clip's hardware
+    /// start activates nothing more.
+    private var claimedToken: UInt64?
+    /// Claims the output off the main actor (`AudioOutputClaiming`, the
+    /// iPhone's session); nil claims in place at the hardware start
+    /// (`audioOutput.activate()`), as the Mac, whose claim is a no-op, and
+    /// the test rig's monitor do. Tests set it.
+    var claimAudioOutput: (@MainActor () async throws -> Void)?
     private var noticeTask: Task<Void, Never>?
     /// True for the length of a document switch, so the `.paused` cue of the
     /// INCOMING book can't be mistaken for the outgoing book's stop.
@@ -580,6 +611,9 @@ final class PlaybackController: ObservableObject {
         self.scheduler = scheduler
         self.cache = cache
         self.audioOutput = audioOutput
+        if let claimer = audioOutput as? AudioOutputClaiming {
+            self.claimAudioOutput = { try await claimer.claim() }
+        }
         self.anchorStore = anchorStore
         self.stopStore = stopStore
         self.isOutputMuted = outputMuted
@@ -925,6 +959,9 @@ final class PlaybackController: ObservableObject {
         // A pause is the last word: no interruption's end resumes past it.
         // (`.began` sets the flag after its own stop has paused.)
         resumeAfterInterruption = false
+        // Paused before the first clip: the claim on its way goes, and the
+        // session with it (R4-33).
+        cancelPendingClaim()
         // No book: the only audio is a voice sample (status stays `.idle`),
         // and a Pause cuts it, heard or still being made.
         if content == nil {
@@ -1125,6 +1162,9 @@ final class PlaybackController: ObservableObject {
         // interruption's resume, even while already paused.
         let interruptionWouldResume = resumeAfterInterruption
         resumeAfterInterruption = false
+        // A claim still on its way goes; the session goes with it, except
+        // to an interruption, whose end comes only to a held session.
+        cancelPendingClaim(releasing: reason != .interrupted)
         // No book: the only audio is a voice sample (status stays `.idle`).
         // It is cut too, heard or still being made, so it never carries on
         // from the speaker once the headphones are gone.
@@ -1574,6 +1614,10 @@ final class PlaybackController: ObservableObject {
     private func startPlayback(at index: Int, keepingPlaying: Bool = false) {
         guard let content, !content.sentences.isEmpty else { return }
         let target = min(max(index, 0), content.sentences.count - 1)
+        // A restart while the last start still claims (a seek before its
+        // first clip) carries that claim on rather than giving it back.
+        let claimInFlight = pendingClaim?.task
+        pendingClaim = nil
         invalidateSchedule()
         if !(keepingPlaying && status == .playing) { status = .buffering }
         if voice.engine == .kokoro, let kokoro, !kokoro.isWarm {
@@ -1584,6 +1628,79 @@ final class PlaybackController: ObservableObject {
         consecutiveFailures = 0
         failedRunSkips = []
         chainTopUp(token: playToken)
+        beginClaim(carrying: claimInFlight)
+    }
+
+    /// R4-33: a cold live start claims the output now, off the main actor,
+    /// while `topUpSchedule` fetches or makes its first clip, so the busy
+    /// ring keeps turning and the claim costs no time of its own. Only a
+    /// start that will play and holds no claim (after the idle stop's
+    /// release, or an interruption's lapse); never offline, and never where
+    /// the platform has no claim to make off the main actor (the Mac, whose
+    /// claim is a no-op). The first clip awaits it (`awaitPendingClaim`).
+    private func beginClaim(carrying inFlight: Task<Void, Error>?) {
+        guard let claim = claimAudioOutput, !rendersOffline,
+              !holdsAudioSession || sessionClaimLapsed,
+              status == .buffering || status == .playing else {
+            if let inFlight {
+                pendingClaim = (playToken, inFlight)
+                cancelPendingClaim()
+            }
+            return
+        }
+        let task = inFlight ?? Task { @MainActor in
+            // Cancelled before it ran (a pause at once): nothing claimed,
+            // so the release queued by `cancelPendingClaim` ends nothing.
+            try Task.checkCancellation()
+            let interval = Self.audioStartSignposter.beginInterval("activate")
+            defer { Self.audioStartSignposter.endInterval("activate", interval) }
+            try await claim()
+        }
+        pendingClaim = (playToken, task)
+    }
+
+    /// The first clip's wait for its start's claim (R4-33). True to go on
+    /// and schedule; false when the start moved on meanwhile (a pause, a
+    /// seek, a stop) or a call held the audio, which pauses as interrupted
+    /// (`audioHardwareFailed`). With no claim pending, only the token
+    /// counts.
+    private func awaitPendingClaim(token: UInt64) async -> Bool {
+        guard !hasActiveSchedule, let pending = pendingClaim, pending.token == token else {
+            return token == playToken
+        }
+        let result = await pending.task.result
+        guard token == playToken, pendingClaim?.token == token,
+              status == .buffering || status == .playing else { return false }
+        pendingClaim = nil
+        switch result {
+        case .success:
+            holdsAudioSession = true
+            sessionClaimLapsed = false
+            claimedToken = token
+        case .failure(let error) where error is AudioOutputHeldElsewhere:
+            audioHardwareFailed(error)
+            return false
+        case .failure:
+            // As a claim in place: any other session failure alone
+            // shouldn't block simulator playback.
+            break
+        }
+        return true
+    }
+
+    /// A claim its start no longer needs (a pause, a stop, a start that
+    /// moved on): cancelled, and the session given back behind it on the
+    /// session's queue, so a pause before the first clip never keeps Music
+    /// interrupted. Never under a running engine (iOS refuses), nor for an
+    /// interruption's stop (`releasing` false), whose end comes only to a
+    /// session still held.
+    private func cancelPendingClaim(releasing: Bool = true) {
+        guard let pending = pendingClaim else { return }
+        pendingClaim = nil
+        pending.task.cancel()
+        guard releasing, !rendersOffline, !audioEngine.isRunning else { return }
+        audioOutput.deactivate(notifyingOthers: false)
+        holdsAudioSession = false
     }
 
     /// Serializes top-up runs by chaining on the previous task, so two loops
@@ -1599,8 +1716,8 @@ final class PlaybackController: ObservableObject {
     /// How many sentences past the playhead stay queued: the platform's
     /// listening time at `rate`, within its sentence range
     /// (`PlatformPlaybackTuning`), or a fixed `lookAhead` where it has none.
-    /// `strainedCap`: the platform's smaller count under Low Power Mode or
-    /// heat (`PlatformPlaybackTuning.lookAheadUnderStrain`), nil otherwise.
+    /// `strainedCap`: the platform's smaller count at `.serious` heat or
+    /// hotter (`PlatformPlaybackTuning.lookAheadUnderStrain`), nil otherwise.
     nonisolated static func lookAheadCount(characterCounts: [Int], rate: Double,
                                            seconds: TimeInterval?, range: ClosedRange<Int>,
                                            strainedCap: Int? = nil) -> Int {
@@ -1620,14 +1737,29 @@ final class PlaybackController: ObservableObject {
         return min(max(count, range.lowerBound), range.upperBound)
     }
 
+    /// The look-ahead's sentence range and cap now (R4-34). Heat keeps the
+    /// platform's strained cap, which ThermalGuard's cooling handoff
+    /// counts on; Low Power Mode alone keeps a time-based queue over the
+    /// platform's shorter range; otherwise the platform's own range.
+    nonisolated static func lookAheadBounds(hot: Bool, lowPower: Bool)
+        -> (range: ClosedRange<Int>, strainedCap: Int?) {
+        if hot, let cap = PlatformPlaybackTuning.lookAheadUnderStrain {
+            return (PlatformPlaybackTuning.lookAheadSentences, cap)
+        }
+        if lowPower, !hot, let shorter = PlatformPlaybackTuning.lookAheadSentencesUnderLowPower {
+            return (shorter, nil)
+        }
+        return (PlatformPlaybackTuning.lookAheadSentences, nil)
+    }
+
     /// The last sentence the node should hold now.
     private func lookAheadHorizon(in content: DocContent) -> Int {
-        let range = PlatformPlaybackTuning.lookAheadSentences
-        let ahead = content.sentences.dropFirst(currentSentence + 1).prefix(range.upperBound).map(\.text.count)
-        let strained = PlatformPlaybackTuning.lookAheadUnderStrain.flatMap { isUnderStrain() ? $0 : nil }
+        let bounds = Self.lookAheadBounds(hot: isHot(), lowPower: isLowPower())
+        let ahead = content.sentences.dropFirst(currentSentence + 1).prefix(bounds.range.upperBound)
+            .map(\.text.count)
         return currentSentence + Self.lookAheadCount(characterCounts: ahead, rate: rate,
                                                      seconds: PlatformPlaybackTuning.lookAheadSeconds,
-                                                     range: range, strainedCap: strained)
+                                                     range: bounds.range, strainedCap: bounds.strainedCap)
     }
 
     /// The most sentences past the look-ahead `warmSkipTargets` warms: with
@@ -1793,6 +1925,9 @@ final class PlaybackController: ObservableObject {
                 }
             }
             guard token == playToken else { return }
+            // A cold start's claim, begun with the start, lands before the
+            // first clip starts the hardware (R4-33).
+            guard await awaitPendingClaim(token: token) else { return }
             scheduleClip(clip, forSentence: next, voice: clipVoice, token: token)
         }
     }
@@ -1856,6 +1991,9 @@ final class PlaybackController: ObservableObject {
                 let clip = await Self.stretchedToSpeed(landing.clip, rate: leadRate)
                 guard token == playToken else { return .abandoned }
                 if landed == 0 {
+                    // A cold start's claim lands before its first clip
+                    // starts the hardware (R4-33).
+                    guard await awaitPendingClaim(token: token) else { return .abandoned }
                     // The splice was fixed while the lead was being made:
                     // the old voice never reaches the node at or past it.
                     guard clipVoice == voiceForSentence(index) else { return .voiceChanged }
@@ -2250,6 +2388,10 @@ final class PlaybackController: ObservableObject {
         // Only a pause's ramp ends here: any other (a sleep fade) carries on
         // across the restart.
         if isRampingToPause { cancelVolumeRamp() }
+        // A new token: a claim for the old one is no start's now (a
+        // restart carries its claim past this, `startPlayback`).
+        cancelPendingClaim()
+        claimedToken = nil
         playToken &+= 1
         scheduleTask?.cancel()
         hasActiveSchedule = false
@@ -2899,8 +3041,14 @@ final class PlaybackController: ObservableObject {
         // the idle window keeps the session it holds and its running
         // engine: an interruption stops the engine (and lapses the claim),
         // and a media-services reset drops the hold, so either way the
-        // next start claims it again.
-        if !rendersOffline, !(holdsAudioSession && audioEngine.isRunning && !sessionClaimLapsed) {
+        // next start claims it again. A cold start's claim that landed off
+        // the main actor (R4-33) leaves nothing to activate; one still on
+        // its way (a first clip that never waited for it, a skip's
+        // silence) is overtaken by this claim in place.
+        let claimed = claimedToken == playToken
+        claimedToken = nil
+        if pendingClaim?.token == playToken { pendingClaim = nil }
+        if !rendersOffline, !claimed, !(holdsAudioSession && audioEngine.isRunning && !sessionClaimLapsed) {
             let claim = Self.audioStartSignposter.beginInterval("activate")
             defer { Self.audioStartSignposter.endInterval("activate", claim) }
             do {
@@ -3024,12 +3172,18 @@ final class PlaybackController: ObservableObject {
         // From here iOS may suspend a paused Aloud: in the background the
         // natural voice goes now, as at the move there.
         releaseNeuralEngineIfBackgrounded()
-        guard audioEngine.isRunning else { return }
-        let engine = audioEngine
-        withEngineHeld { engine.stop() }
-        #if DEBUG
-        renderPump?.stop()
-        #endif
+        // A session held with no engine running (the system stopped it
+        // under the pause) is given back too, so iOS can still suspend the
+        // paused app (R4-33).
+        let engineWasRunning = audioEngine.isRunning
+        guard engineWasRunning || holdsAudioSession else { return }
+        if engineWasRunning {
+            let engine = audioEngine
+            withEngineHeld { engine.stop() }
+            #if DEBUG
+            renderPump?.stop()
+            #endif
+        }
         if !rendersOffline, !resumeAfterInterruption {
             let listeningIsOver = status == .idle || (status == .ended && requestedOutputVolume >= 1)
             audioOutput.deactivate(notifyingOthers: listeningIsOver)

@@ -74,6 +74,9 @@ struct MacContentsPanel: View {
     var body: some View {
         let mode = MacContents.mode(hasChapterList: navigation.hasChapterList, hasPlaces: !placeRows.isEmpty,
                                     query: query, searchedQuery: searchedQuery, resultCount: results.count)
+        let bookLeft = MacContents.bookMinutesLeft(navigation, playhead: playback.currentSentence,
+                                                   rate: playback.rate, isFinished: playback.isAtEnd,
+                                                   query: query)
         VStack(alignment: .leading, spacing: 0) {
             Text(MacContents.title)
                 .font(Theme.font(.headline, scale: scale))
@@ -82,7 +85,21 @@ struct MacContentsPanel: View {
                 .accessibilityIdentifier("contents.title")
                 .padding(.horizontal, Theme.Space.md)
                 .padding(.top, Theme.Space.md)
-                .padding(.bottom, Theme.Space.sm)
+                .padding(.bottom, bookLeft == nil ? Theme.Space.sm : Theme.Space.xxs)
+
+            // The whole book's time left, as the iPhone's Contents says it
+            // (R4-29): the chapter line counts only to the chapter's end.
+            if let bookLeft {
+                Text(ContentsSearch.bookLeftCaption(minutes: bookLeft))
+                    .font(Theme.font(.caption, scale: scale))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(ContentsSearch.bookLeftSpoken(minutes: bookLeft))
+                    .accessibilityIdentifier("contents.bookLeft")
+                    .padding(.horizontal, Theme.Space.md)
+                    .padding(.bottom, Theme.Space.sm)
+            }
 
             // Pinned: the field never scrolls away with the list.
             MacContentsSearchField(text: $query, focusRequest: fieldFocusRequest,
@@ -734,6 +751,15 @@ enum MacContents {
 
     static let title = ContentsSearch.title
     static let searchPrompt = ContentsSearch.searchPrompt
+
+    /// The line under the title (R4-29): the shared whole-book estimate,
+    /// over the list only, as on the iPhone. nil draws no line.
+    static func bookMinutesLeft(_ navigation: ReaderNavigation, playhead: Int, rate: Double,
+                                isFinished: Bool, query: String) -> Int? {
+        guard ContentsSearch.showsBookLeft(query: query) else { return nil }
+        return navigation.bookMinutesLeft(at: playhead, rate: rate, isFinished: isFinished)
+    }
+
     /// The iPhone's debounce: a scan per pause in typing, not per key.
     static let debounceNanoseconds: UInt64 = 200_000_000
     /// Characters kept before a result's hit: the iPhone's below the

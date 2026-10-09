@@ -40,9 +40,38 @@ enum ContentsSearch {
 
     /// "CHAPTER I, 1 hour 12 minutes, current": the row's visible title
     /// first, then its time spelled out, because VoiceOver reads "min" and
-    /// "hr" poorly (R25). ", current" only on the playhead's chapter.
+    /// "hr" poorly (R25). ", current" only on the playhead's chapter: the
+    /// form the Mac's plain announcements speak (`MacContents.cursorLabel`),
+    /// which carry no trait.
     static func chapterAccessibilityLabel(title: String, minutes: Int, isCurrent: Bool) -> String {
-        "\(title), \(ListeningEstimate.spokenPhrase(minutes: minutes))" + (isCurrent ? ", current" : "")
+        chapterRowLabel(title: title, minutes: minutes) + (isCurrent ? ", current" : "")
+    }
+
+    /// "CHAPTER I, 1 hour 12 minutes": the iPhone row's label. Its
+    /// `.isSelected` trait says which chapter is current, so VoiceOver says
+    /// it once (R4-32).
+    static func chapterRowLabel(title: String, minutes: Int) -> String {
+        "\(title), \(ListeningEstimate.spokenPhrase(minutes: minutes))"
+    }
+
+    // MARK: - The book's time left
+
+    /// What follows the time in Contents' line under its title (R4-29).
+    static let bookLeftSuffix = "in the book"
+
+    /// The line: the visible time left, then `bookLeftSuffix`.
+    static func bookLeftCaption(minutes: Int) -> String {
+        "\(ListeningEstimate.leftPhrase(minutes: minutes)) \(bookLeftSuffix)"
+    }
+
+    /// The line as VoiceOver says it, the time spelled out.
+    static func bookLeftSpoken(minutes: Int) -> String {
+        "\(ListeningEstimate.spokenPhrase(minutes: minutes)) left \(bookLeftSuffix)"
+    }
+
+    /// The line shows over the list, never over a search's results.
+    static func showsBookLeft(query: String) -> Bool {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // MARK: - Results

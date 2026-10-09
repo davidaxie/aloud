@@ -267,35 +267,59 @@ final class ThermalGuardTests: XCTestCase {
         rig.controller.pause()
     }
 
-    /// The look-ahead under strain: two sentences on an iPhone at
-    /// `.serious` heat or in Low Power Mode, the whole queue on a Mac.
+    /// The look-ahead in the heat: two sentences on an iPhone at
+    /// `.serious` heat, the whole queue on a Mac.
     func testStrainShrinksTheLookAheadWhereThePlatformSaysSo() async throws {
         let rig = makeRig(deepQueue: true)
+        rig.controller.isHot = { true }
         rig.controller.isUnderStrain = { true }
         try await startPlaying(rig)
         await assertLookAheadStaysStrained(rig)
     }
 
-    /// The strain AppModel installs (`AppModel.strain`), hot before Play:
-    /// the look-ahead shrinks where the platform says so.
+    /// The closures AppModel installs: the heat (`AppModel.heat`), Low
+    /// Power Mode as the test answers it, and the strain built of both
+    /// (`AppModel.strain`).
+    private func installAppModelsStrain(_ rig: PlaybackTestRig, _ thermal: ThermalGuard, lowPower: Bool) {
+        rig.controller.isHot = AppModel.heat(of: thermal)
+        rig.controller.isLowPower = { lowPower }
+        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { lowPower }
+    }
+
+    /// The strain AppModel installs, hot before Play: the look-ahead
+    /// shrinks to the strained two where the platform says so.
     func testHeatShrinksTheLookAheadThroughAppModelsStrain() async throws {
         let rig = makeRig(deepQueue: true)
         let thermal = makeGuard(rig)
-        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { false }
+        installAppModelsStrain(rig, thermal, lowPower: false)
         thermal.thermalStateChanged(.serious)
         try await startPlaying(rig, in: Self.system)
         await assertLookAheadStaysStrained(rig)
         XCTAssertTrue(thermal.isHot, "heat, not Low Power Mode, held it")
     }
 
-    /// The same closure in Low Power Mode, cool: the look-ahead shrinks too.
+    /// R4-34: in Low Power Mode, cool, the queue stays time-based over the
+    /// shorter 2...4: short lines fill it to four and no more on an
+    /// iPhone (heat alone keeps two); a Mac keeps its whole queue.
     func testLowPowerModeShrinksTheLookAheadThroughAppModelsStrain() async throws {
         let rig = makeRig(deepQueue: true)
         let thermal = makeGuard(rig)
-        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { true }
+        installAppModelsStrain(rig, thermal, lowPower: true)
         try await startPlaying(rig)
-        await assertLookAheadStaysStrained(rig)
+        let range = PlatformPlaybackTuning.lookAheadSentencesUnderLowPower ?? PlatformPlaybackTuning.lookAheadSentences
+        let expected = PlaybackController.lookAheadCount(
+            characterCounts: rig.content.sentences.map(\.text.count), rate: 1,
+            seconds: PlatformPlaybackTuning.lookAheadSeconds, range: range)
+        if PlatformPlaybackTuning.lookAheadSentencesUnderLowPower != nil {
+            XCTAssertEqual(expected, 4, "short lines reach the top of 2...4")
+        }
+        let reached = await rig.waitUntil(2) { Self.ahead(rig) >= expected }
+        XCTAssertTrue(reached, "\(Self.ahead(rig)) of \(expected)")
+        await elapse(0.1)
+        XCTAssertLessThanOrEqual(Self.ahead(rig), expected, "never past the Low Power range")
+        XCTAssertTrue(rig.controller.isUnderStrain(), "the speculative work still stops")
         XCTAssertFalse(thermal.isHot, "Low Power Mode, not heat, held it")
+        rig.controller.pause()
     }
 
     /// Cool and on full power, the closure leaves an iPhone its whole queue.
@@ -305,7 +329,7 @@ final class ThermalGuardTests: XCTestCase {
         }
         let rig = makeRig(deepQueue: true)
         let thermal = makeGuard(rig)
-        rig.controller.isUnderStrain = AppModel.strain(of: thermal) { false }
+        installAppModelsStrain(rig, thermal, lowPower: false)
         try await startPlaying(rig)
         let deep = PlatformPlaybackTuning.lookAheadSentences.upperBound
         let filled = await rig.waitUntil(2) { Self.ahead(rig) >= deep }
