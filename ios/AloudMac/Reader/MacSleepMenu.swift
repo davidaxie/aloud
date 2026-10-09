@@ -35,13 +35,19 @@ struct MacSleepMenu: View {
         let items = SleepTimer.menuItems(options: sleepTimer.menuOptions, isArmed: sleepTimer.isArmed)
         return Menu {
             ForEach(items.choices, id: \.self) { option in
+                let title = Self.title(for: option, endsAtChapter: sleepTimer.endsAtChapter)
+                let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil
                 Toggle(isOn: selection(option)) {
-                    Text(Self.title(for: option, endsAtChapter: sleepTimer.endsAtChapter))
-                    // How long that is ("37 min"), as the iPhone's menu says it.
-                    if option == .endOfChapter, let minutes = sleepTimer.untilStopMinutes, minutes > 0 {
+                    Text(title)
+                    // How long that is, short, as the menu's subtitle.
+                    if let minutes, minutes > 0 {
                         Text(ListeningEstimate.phrase(minutes: minutes))
                     }
                 }
+                // Spoken spelled out, as on the iPhone (R2-22); Voice
+                // Control answers to the title alone.
+                .accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))
+                .accessibilityInputLabels([Text(title)])
             }
             if items.showsOff {
                 Divider()

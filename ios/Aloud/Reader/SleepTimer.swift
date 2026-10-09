@@ -265,6 +265,16 @@ final class SleepTimer: ObservableObject {
         (options.filter { $0 != .off }, isArmed)
     }
 
+    /// A menu item's spoken label on both apps (R2-22): its title, then the
+    /// time `minutes` stands for, spelled out as the iPhone's subtitle line
+    /// is. A menu cell reads only the label it is given and drops its
+    /// subtitle once one is set, so the time has to be in the label itself.
+    /// Nil or no minutes leave the title alone.
+    nonisolated static func menuSpokenLabel(title: String, minutes: Int?) -> String {
+        guard let minutes, minutes > 0 else { return title }
+        return "\(title), \(ListeningEstimate.spokenPhrase(minutes: minutes))"
+    }
+
     /// The sentence whose end is nearest the deadline, within `window` either
     /// side of it (a tie goes to the earlier end); nil when none is that close.
     nonisolated static func landing(deadline: TimeInterval, ends: [SentenceEnd],

@@ -440,8 +440,9 @@ struct MacChipButtonStyle: ButtonStyle {
 
 /// A transport glyph (back and forward 15): textMuted that turns Theme.text
 /// under the pointer, in a 32 pt square hit region (36 and 40 in the larger
-/// bands). Disabled (Forward 15 on the last sentence) it is textFaint with
-/// no hover or press colour, as the iPhone's `ReaderGlyphButtonStyle`.
+/// bands). Disabled (Forward 15 on the last sentence) it is glyphDisabled,
+/// visibly dimmed (R2-24), with no hover or press colour, as the iPhone's
+/// `ReaderGlyphButtonStyle`.
 struct MacGlyphButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         MacGlyphFace(label: configuration.label, isPressed: configuration.isPressed)
@@ -459,7 +460,7 @@ private struct MacGlyphFace<Label: View>: View {
     var body: some View {
         label
             .font(Theme.font(.body, scale: scale))
-            .foregroundStyle(!isEnabled ? Theme.textFaint
+            .foregroundStyle(!isEnabled ? Theme.glyphDisabled
                              : (isHovered || isPressed ? Theme.text : Theme.textMuted))
             .frame(width: MacPlayerBarLayout.glyphHit(for: scale), height: MacPlayerBarLayout.glyphHit(for: scale))
             .contentShape(Rectangle())

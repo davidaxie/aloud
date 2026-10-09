@@ -49,6 +49,15 @@ enum Theme {
     /// tier under `textMuted`.
     static let textFaint = dynamic(light: 0x77694E, dark: 0x93856A,
                                    highContrast: (0x6A5B45, 0xA99A7C))
+    /// An INACTIVE control's glyph (Forward 15 at a book's end, on both
+    /// apps): `textMuted` blended about 40% over `surface` (about 50% under
+    /// Increase Contrast), so it sits ≥ 2.5:1 from the enabled `textMuted`
+    /// glyph and still ≥ 1.5:1 on `surface` and `surface2`. NEVER text:
+    /// WCAG 1.4.11 exempts inactive controls, text gets no such pass.
+    /// `textFaint` is a text tier, about 1.3:1 from `textMuted`, so it
+    /// can't read as dimmed beside it.
+    static let glyphDisabled = dynamic(light: 0xC3BCB0, dark: 0x534A3A,
+                                       highContrast: (0xACA396, 0x6E6452))
 
     // MARK: Lines
 

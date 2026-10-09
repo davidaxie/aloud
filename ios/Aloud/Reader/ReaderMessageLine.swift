@@ -309,6 +309,12 @@ extension ReaderMessageLine {
     nonisolated static let rowHeight: CGFloat = 44
     /// How far a `.bottom` row lifts its ink off the row's foot.
     nonisolated static let footInset: CGFloat = Theme.Space.xxs
+    /// The air a `.bottom` row keeps above its ink at the accessibility
+    /// sizes (R2-26), where a stacked or wrapped line outgrows its 44pt row
+    /// and would otherwise sit right under the bar's hairline, which has no
+    /// top inset on the iPhone. Below them, and on a centred row (the Mac),
+    /// it is zero, so nothing moves by a point.
+    nonisolated static let overflowHeadroom: CGFloat = Theme.Space.sm
 
     /// The lift for ink `inkHeight` tall in a `.bottom` row: `footInset`,
     /// less where the ink nearly fills the row, so the row never grows and
@@ -320,13 +326,37 @@ extension ReaderMessageLine {
 
 extension View {
     /// On a `.bottom` row, sets the ink `ReaderMessageLine.footLift` above
-    /// the row's foot (an alignment guide, so no frame or hit area changes).
+    /// the row's foot (an alignment guide, so no frame or hit area changes)
+    /// and, at the accessibility sizes, keeps `overflowHeadroom` above it.
     /// Nothing on a centred row. The natural-voice offer's row takes it too,
     /// so its ink sits where the line it replaces put it.
     func rowInk(_ alignment: VerticalAlignment) -> some View {
-        alignmentGuide(.bottom) { dimensions in
-            guard alignment == .bottom else { return dimensions[.bottom] }
-            return dimensions[.bottom] + ReaderMessageLine.footLift(inkHeight: dimensions.height)
-        }
+        modifier(RowInk(alignment: alignment))
+    }
+}
+
+/// `rowInk`'s work, a modifier so it can read the text size.
+struct RowInk: ViewModifier {
+    let alignment: VerticalAlignment
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// `overflowHeadroom` on a `.bottom` row at an accessibility size,
+    /// otherwise zero.
+    nonisolated static func headroom(alignment: VerticalAlignment, dynamicTypeSize: DynamicTypeSize) -> CGFloat {
+        alignment == .bottom && dynamicTypeSize.isAccessibilitySize ? ReaderMessageLine.overflowHeadroom : 0
+    }
+
+    func body(content: Content) -> some View {
+        let alignment = alignment
+        let headroom = Self.headroom(alignment: alignment, dynamicTypeSize: dynamicTypeSize)
+        // The headroom is padding, so a tall line's row grows by it; the
+        // lift is still measured on the ink alone.
+        return content
+            .padding(.top, headroom)
+            .alignmentGuide(.bottom) { dimensions in
+                guard alignment == .bottom else { return dimensions[.bottom] }
+                return dimensions[.bottom] + ReaderMessageLine.footLift(inkHeight: dimensions.height - headroom)
+            }
     }
 }

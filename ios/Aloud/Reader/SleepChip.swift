@@ -32,13 +32,20 @@ struct SleepChip: View {
         return Menu {
             Section(SleepTimer.Copy.section) {
                 ForEach(items.choices, id: \.self) { option in
+                    let title = option.title(endsAtChapter: sleepTimer.endsAtChapter)
+                    let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil
                     Toggle(isOn: selection(option)) {
-                        Text(option.title(endsAtChapter: sleepTimer.endsAtChapter))
+                        Text(title)
                         // How long that is: the menu's subtitle line.
-                        if option == .endOfChapter, let minutes = sleepTimer.untilStopMinutes, minutes > 0 {
+                        if let minutes, minutes > 0 {
                             Text(ListeningEstimate.spokenPhrase(minutes: minutes))
                         }
                     }
+                    // The cell speaks only its stored label, never the
+                    // subtitle, so the time joins the label (R2-22); Voice
+                    // Control still answers to the title alone.
+                    .accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))
+                    .accessibilityInputLabels([Text(title)])
                 }
             }
             if items.showsOff {

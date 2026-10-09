@@ -118,6 +118,20 @@ final class SleepTimerTests: XCTestCase {
         XCTAssertEqual(chaptered.chipText, "")
     }
 
+    /// R2-22, R2-23: a menu cell speaks only its stored label and drops its
+    /// subtitle, so End of chapter (End of book) carries its time in the
+    /// label, spelled out as the iPhone's subtitle shows it; with no time
+    /// known the title stands alone.
+    func testTheMenuItemSpeaksItsTimeInItsLabel() {
+        XCTAssertEqual(SleepTimer.menuSpokenLabel(title: "End of chapter", minutes: 37), "End of chapter, 37 minutes")
+        XCTAssertEqual(SleepTimer.menuSpokenLabel(title: "End of book", minutes: 125), "End of book, 2 hours 5 minutes")
+        XCTAssertEqual(SleepTimer.menuSpokenLabel(title: "End of book", minutes: 1), "End of book, 1 minute")
+        XCTAssertEqual(SleepTimer.menuSpokenLabel(title: "End of chapter", minutes: nil), "End of chapter")
+        XCTAssertEqual(SleepTimer.menuSpokenLabel(title: "End of chapter", minutes: 0), "End of chapter")
+        XCTAssertEqual(SleepTimer.menuSpokenLabel(title: "15 minutes", minutes: nil), "15 minutes",
+                       "a duration has no subtitle")
+    }
+
     // MARK: - Landing
 
     func testTheLandingIsTheNearestSentenceEndInsideTheWindow() {

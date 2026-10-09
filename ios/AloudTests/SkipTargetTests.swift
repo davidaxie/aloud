@@ -209,11 +209,14 @@ final class SkipTargetTests: XCTestCase {
         XCTAssertTrue(ended.controller.isAtEnd, "and leaves the end alone")
     }
 
-    /// R1-42: a disabled glyph draws faint and never presses, whatever
-    /// Reduce Motion says; an enabled one keeps its press.
+    /// R1-42: a disabled glyph draws dimmed and never presses, whatever
+    /// Reduce Motion says; an enabled one keeps its press. R2-24: dimmed is
+    /// the inactive-control tier, since textFaint sat about 1.3:1 from the
+    /// enabled glyph (ThemeTokenContrastTests pins the gap).
     func testADisabledSkipGlyphIsFaintAndNeverPresses() {
-        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: false, isEnabled: false), Theme.textFaint)
-        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: true, isEnabled: false), Theme.textFaint)
+        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: false, isEnabled: false), Theme.glyphDisabled)
+        XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: true, isEnabled: false), Theme.glyphDisabled)
+        XCTAssertNotEqual(ReaderGlyphButtonStyle.tint(isPressed: false, isEnabled: false), Theme.textFaint)
         XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: false, isEnabled: true), Theme.textMuted)
         XCTAssertEqual(ReaderGlyphButtonStyle.tint(isPressed: true, isEnabled: true), Theme.text)
         XCTAssertEqual(ReaderGlyphButtonStyle.scale(isPressed: true, isEnabled: false, reduceMotion: false), 1)

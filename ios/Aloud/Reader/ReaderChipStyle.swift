@@ -6,7 +6,9 @@ import SwiftUI
 /// and a rounded rectangle that wraps to two lines at them. `isOn` (an
 /// armed timer) is accentStrong on accentSoft, laid over the same ground so
 /// a press still deepens it. The visible chip is about 34pt; the hit area
-/// is the full 44, and only the visible shape moves on a press.
+/// is the full 44, and only the visible shape moves on a press. Where the
+/// visible chip sits in that 44pt box is `readerChipEdge`: centred, or on
+/// the bar's outer edge so its ink meets the gutter the scrub starts on.
 ///
 /// The label always keeps its type size: a chip that can't fit says less
 /// (a short form), never in smaller type.
@@ -29,6 +31,7 @@ struct ReaderChipStyle: ViewModifier {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.readerChipIsPressed) private var isPressed
+    @Environment(\.readerChipEdge) private var edge
     @ScaledMetric(relativeTo: .footnote) private var scaledHeight: CGFloat = 34
 
     private var height: CGFloat { min(scaledHeight, Self.maxHeight) }
@@ -62,7 +65,9 @@ struct ReaderChipStyle: ViewModifier {
             // colour change alone.
             .scaleEffect(isPressed && !reduceMotion ? Self.pressedScale : 1)
             .animation(.easeOut(duration: Theme.Motion.press), value: isPressed)
-            .frame(minWidth: 44, minHeight: 44)
+            // The 44pt box keeps its size and place; a chip on the bar's
+            // edge grows inward from it (R2-25).
+            .frame(minWidth: 44, minHeight: 44, alignment: Alignment(horizontal: edge, vertical: .center))
             .contentShape(Rectangle())
     }
 }
@@ -93,13 +98,15 @@ struct ReaderChipPressStyle: ButtonStyle {
 /// A transport glyph (back and forward 15): textMuted at rest, so Play
 /// stays the heaviest mark in the bar; Theme.text and a slight settle while
 /// pressed (the colour alone under Reduce Motion). Disabled (Forward 15 on
-/// the last sentence) it is textFaint and never presses.
+/// the last sentence) it is glyphDisabled, visibly dimmed beside an enabled
+/// glyph in every appearance (R2-24), and never presses.
 struct ReaderGlyphButtonStyle: ButtonStyle {
     static let pressedScale: CGFloat = 0.94
 
-    /// The glyph's colour: faint while disabled, whatever the press.
+    /// The glyph's colour: the inactive-control tier while disabled,
+    /// whatever the press (textFaint, a text tier, read as enabled).
     static func tint(isPressed: Bool, isEnabled: Bool) -> Color {
-        guard isEnabled else { return Theme.textFaint }
+        guard isEnabled else { return Theme.glyphDisabled }
         return isPressed ? Theme.text : Theme.textMuted
     }
 
@@ -144,11 +151,25 @@ private struct ReaderChipIsPressedKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct ReaderChipEdgeKey: EnvironmentKey {
+    static let defaultValue: HorizontalAlignment = .center
+}
+
 extension EnvironmentValues {
     /// The chip's button is held down.
     var readerChipIsPressed: Bool {
         get { self[ReaderChipIsPressedKey.self] }
         set { self[ReaderChipIsPressedKey.self] = newValue }
+    }
+
+    /// Where a chip's visible face sits in its 44pt hit box: `.center` (the
+    /// chip above the bar), or `.leading` / `.trailing` for the bar's outer
+    /// chips, so their faces start on the bar's gutter as the scrub does
+    /// rather than 5pt inside it (R2-25). Leading and trailing flip in a
+    /// right-to-left language, as the bar does.
+    var readerChipEdge: HorizontalAlignment {
+        get { self[ReaderChipEdgeKey.self] }
+        set { self[ReaderChipEdgeKey.self] = newValue }
     }
 }
 

@@ -391,6 +391,49 @@ final class PlayerBarLayoutTests: XCTestCase {
         XCTAssertTrue(light || dark, "rest \(rest), pressed \(pressed): surface, then surface2")
     }
 
+    /// R2-25: the bar's outer chips sit on its gutter, where the scrub
+    /// starts, not 5pt inside it. In its 44pt hit box the 34pt face rests
+    /// on the edge it is given, the box keeping its size; a chip given no
+    /// edge (the one above the bar) stays centred.
+    func testAnOuterChipsFaceRestsOnTheBarsEdge() throws {
+        func alpha(at x: Int, edge: HorizontalAlignment?) throws -> Int {
+            let moon = Image(systemName: "moon").readerChip()
+            let chip: AnyView = edge.map { AnyView(moon.environment(\.readerChipEdge, $0)) } ?? AnyView(moon)
+            let pixels = try XCTUnwrap(RenderedPixels(chip, size: CGSize(width: 44, height: 44), scale: 1))
+            return pixels.rgba(x: x, y: 22).a
+        }
+        XCTAssertGreaterThan(try alpha(at: 42, edge: .trailing), 200, "the moon's face reaches the trailing edge")
+        XCTAssertEqual(try alpha(at: 2, edge: .trailing), 0, "and leaves the box's inner side clear")
+        XCTAssertGreaterThan(try alpha(at: 2, edge: .leading), 200, "the voice chip's face reaches the leading edge")
+        XCTAssertEqual(try alpha(at: 42, edge: .leading), 0)
+        XCTAssertEqual(try alpha(at: 2, edge: nil), 0, "centred by default")
+        XCTAssertEqual(try alpha(at: 42, edge: nil), 0, "centred by default")
+    }
+
+    /// R2-26: the chapter line on the bar's foot (`.bottom`) is one 44pt row
+    /// through xxxLarge, as tall as a centred one; at an accessibility size
+    /// its stacked ink outgrows the row and the row keeps 12pt of air above
+    /// it, so the title no longer sits 6pt under the bar's hairline.
+    func testAStackedChapterLineKeepsAirUnderTheHairline() {
+        func height(_ size: DynamicTypeSize, _ rowAlignment: VerticalAlignment) -> CGFloat {
+            let position = ReaderPositionLine(kind: .chapter(number: 1, count: 9), title: "Chapter I",
+                                              minutesLeft: 23)
+            let line = ReaderMessageLine(message: nil, position: position, onOpenContents: {}, onRetry: {},
+                                         onBackFiveMinutes: {}, rowAlignment: rowAlignment)
+                .environment(\.dynamicTypeSize, size)
+            return UIHostingController(rootView: line)
+                .sizeThatFits(in: CGSize(width: 375, height: .greatestFiniteMagnitude))
+                .height
+        }
+        XCTAssertEqual(height(.large, .bottom), 44, accuracy: 0.5, "one row at the default size")
+        XCTAssertEqual(height(.xxxLarge, .bottom), height(.xxxLarge, .center), accuracy: 0.5,
+                       "nothing moves below the accessibility sizes")
+        let ink = height(.accessibility2, .center)
+        XCTAssertGreaterThan(ink, 44, "the stacked line outgrows its row")
+        XCTAssertEqual(height(.accessibility2, .bottom), ink + ReaderMessageLine.overflowHeadroom, accuracy: 0.5,
+                       "the stacked ink plus its air")
+    }
+
     /// Pure rules (P001-P003, P006).
     func testThePlayerBarLayoutRules() {
         let layout = PlayerBarLayout(barWidth: 362, dynamicTypeSize: .large, playDiameter: 54, skipTarget: 44,

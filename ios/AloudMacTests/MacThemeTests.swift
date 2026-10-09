@@ -263,6 +263,38 @@ final class MacThemeTests: XCTestCase {
         }
     }
 
+    /// R2-24: Forward 15 at a book's end reads as dimmed beside Back 15 on
+    /// the Mac bar too: the disabled transport glyph is glyphDisabled, ≥ 2.5:1
+    /// from the enabled textMuted glyph (textFaint was about 1.3:1), and
+    /// still ≥ 1.5:1 on the bar's surface and surface2. A test can't build
+    /// Increase Contrast here (see above); the iPhone's
+    /// ThemeTokenContrastTests checks the shared token's values there.
+    @MainActor
+    func testADisabledTransportGlyphIsVisiblyDimmed() throws {
+        for scheme: ColorScheme in [.light, .dark] {
+            func glyph(enabled: Bool) throws -> [Double] {
+                let button = Button {} label: { Rectangle() }
+                    .buttonStyle(MacGlyphButtonStyle())
+                    .disabled(!enabled)
+                    .environment(\.colorScheme, scheme)
+                let renderer = ImageRenderer(content: button)
+                renderer.scale = 1
+                return try centerColor(of: XCTUnwrap(renderer.cgImage))
+            }
+            let live = try glyph(enabled: true), dead = try glyph(enabled: false)
+            let ratio = contrast(live, dead)
+            XCTAssertGreaterThanOrEqual(ratio, 2.5, "\(scheme): Forward 15 reads as dimmed, \(ratio):1")
+        }
+        for name: NSAppearance.Name in [.aqua, .darkAqua] {
+            let glyph = try resolve({ NSColor(Theme.glyphDisabled) }, under: name).map { Double($0) }
+            for (ground, color) in [("surface", Theme.surface), ("surface2", Theme.surface2)] {
+                let beneath = try resolve({ NSColor(color) }, under: name).map { Double($0) }
+                let ratio = contrast(Array(glyph.prefix(3)), Array(beneath.prefix(3)))
+                XCTAssertGreaterThanOrEqual(ratio, 1.5, "\(name.rawValue): glyphDisabled on \(ground), \(ratio):1")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// The center pixel's sRGB components, 0 to 1.

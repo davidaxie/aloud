@@ -290,4 +290,28 @@ final class ThemeTokenContrastTests: XCTestCase {
             }
         }
     }
+
+    // MARK: Disabled glyph (R2-24)
+
+    /// A disabled transport glyph (Forward 15 at a book's end) reads as
+    /// dimmed beside the enabled `textMuted` glyph, ≥ 2.5:1 from it once
+    /// both sit on the bar's `surface`, and stays visible, ≥ 1.5:1 on
+    /// `surface` and `surface2`, in light, dark and both Increase Contrast
+    /// modes. `textFaint` was 1.23-1.35:1 from `textMuted`. An inactive
+    /// control, so it is never in `textColors` and has no 4.5:1 floor.
+    func testADisabledGlyphIsVisiblyDimmedYetVisible() {
+        for appearance in Appearance.all {
+            let apart = contrast(Theme.textMuted, on: Theme.glyphDisabled, over: Theme.surface, appearance)
+            XCTAssertGreaterThanOrEqual(apart, 2.5, "glyphDisabled from textMuted, \(appearance): "
+                                        + String(format: "%.2f:1", apart))
+            let faintApart = contrast(Theme.textMuted, on: Theme.textFaint, over: Theme.surface, appearance)
+            XCTAssertGreaterThan(apart, faintApart, "dimmer than textFaint read, \(appearance)")
+            for ground in [("surface", Theme.surface), ("surface2", Theme.surface2)] {
+                let ratio = contrast(Theme.glyphDisabled, on: ground.1, appearance)
+                XCTAssertGreaterThanOrEqual(ratio, 1.5, "glyphDisabled on \(ground.0), \(appearance): "
+                                            + String(format: "%.2f:1", ratio))
+            }
+        }
+        XCTAssertFalse(Self.textColors.contains { $0.name == "glyphDisabled" }, "never a text color")
+    }
 }

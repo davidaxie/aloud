@@ -144,25 +144,32 @@ final class SleepTimerUITest: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 20))
         chip.tap()
 
-        // The item may carry its subtitle in its label, so it is found by its title's start.
+        // The title first, so a missing item fails apart from a missing time.
         let endOfBook = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "End of book")).firstMatch
         XCTAssertTrue(endOfBook.waitForExistence(timeout: 5), "A book without chapters offers End of book")
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "End of chapter")).firstMatch.exists)
+        attachDescription(of: endOfBook, named: "End of book item")
 
-        // R1-27: the item says how long that is, spelled out ("17 minutes").
-        let spoken = #"\d+ (minute|hour)"#
-        let subtitled = endOfBook.label.range(of: spoken, options: .regularExpression) != nil
-            || endOfBook.staticTexts.allElementsBoundByIndex.contains {
-                $0.label.range(of: spoken, options: .regularExpression) != nil
-            }
-        XCTAssertTrue(subtitled, "End of book shows the book's remaining time: '\(endOfBook.label)'")
+        // R1-27, R2-23: the item's label says how long that is, spelled out.
+        // The book's minutes come from a detached build that can finish
+        // after the chip is first tapped, so a menu built before them is
+        // closed and opened once more.
+        var timed = timedItem("End of book", in: app)
+        if !timed.waitForExistence(timeout: 5) {
+            chip.tap()
+            XCTAssertTrue(chip.waitForExistence(timeout: 5))
+            chip.tap()
+            timed = timedItem("End of book", in: app)
+            _ = timed.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(timed.exists, "End of book speaks the book's remaining time: " + described(endOfBook))
     }
 
     // MARK: - End of chapter
 
     /// R1-27's main case: in a chaptered book (The Great Gatsby, opened
     /// muted, nothing playing) End of chapter says how long the rest of the
-    /// chapter is, spelled out.
+    /// chapter is, spelled out, in the label VoiceOver speaks (R2-22).
     func testEndOfChapterShowsHowLongTheChapterIs() {
         let app = XCUIApplication.aloud(["-uitest-reset-library", "-uitest-seed-first-classic",
                                          "-uitest-open-first-doc"])
@@ -174,15 +181,39 @@ final class SleepTimerUITest: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 10))
         chip.tap()
 
-        // Found by its title's start, as the item may carry its subtitle in its label.
+        // The title first, so a missing item fails apart from a missing time.
         let endOfChapter = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "End of chapter"))
             .firstMatch
         XCTAssertTrue(endOfChapter.waitForExistence(timeout: 5), "A chaptered book offers End of chapter")
-        let spoken = #"\d+ (minute|hour)"#
-        let subtitled = endOfChapter.label.range(of: spoken, options: .regularExpression) != nil
-            || endOfChapter.staticTexts.allElementsBoundByIndex.contains {
-                $0.label.range(of: spoken, options: .regularExpression) != nil
-            }
-        XCTAssertTrue(subtitled, "End of chapter shows the chapter's remaining time: '\(endOfChapter.label)'")
+        // Where the time lands (label, value or nowhere), for the record.
+        attachDescription(of: endOfChapter, named: "End of chapter item")
+
+        let timed = timedItem("End of chapter", in: app)
+        XCTAssertTrue(timed.waitForExistence(timeout: 5),
+                      "End of chapter speaks the chapter's remaining time: " + described(endOfChapter))
+    }
+
+    // MARK: - Menu items
+
+    /// The menu item titled `title` whose label also spells out a time
+    /// ("37 minutes", "2 hours 5 minutes").
+    private func timedItem(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label MATCHES %@",
+                                         title, ".*\\d+ (minute|hour).*")).firstMatch
+    }
+
+    /// The item's label and value, for a failure message.
+    private func described(_ item: XCUIElement) -> String {
+        guard item.exists else { return "the item is gone" }
+        return "label '\(item.label)', value '\(stringValue(of: item))'"
+    }
+
+    /// The item's accessibility tree, kept with the result.
+    private func attachDescription(of item: XCUIElement, named name: String) {
+        guard item.exists else { return }
+        let attachment = XCTAttachment(string: item.debugDescription)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

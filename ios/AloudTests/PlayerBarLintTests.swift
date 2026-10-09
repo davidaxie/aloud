@@ -123,6 +123,24 @@ final class PlayerBarLintTests: XCTestCase {
         XCTAssertTrue(chip.contains(".buttonStyle(ReaderChipButtonStyle("), "ReaderChipView presses like the bar's chips")
     }
 
+    /// R2-25: the voice chip and the sleep chip sit on the bar's gutter
+    /// through `readerChipEdge` (their slots serve the one row and the
+    /// stacked rows alike); the chip above the bar keeps the centred default.
+    func testTheBarsOuterChipsSitOnItsGutter() throws {
+        let s = try SourceTree.sources(only: ["Reader/PlayerBarView.swift", "Reader/ReaderChip.swift",
+                                              "Reader/ReaderChipStyle.swift"])
+        let bar = Self.code(try XCTUnwrap(s["Reader/PlayerBarView.swift"]))
+        let listening = try XCTUnwrap(Self.closure(after: "private func listeningChipSlot", in: bar))
+        XCTAssertTrue(listening.contains(".environment(\\.readerChipEdge, .leading)"), String(listening))
+        let sleep = try XCTUnwrap(Self.closure(after: "private func sleepChipSlot", in: bar))
+        XCTAssertTrue(sleep.contains(".environment(\\.readerChipEdge, .trailing)"), String(sleep))
+        XCTAssertFalse(Self.code(try XCTUnwrap(s["Reader/ReaderChip.swift"])).contains("readerChipEdge"),
+                       "the chip above the bar stays centred")
+        let style = Self.code(try XCTUnwrap(s["Reader/ReaderChipStyle.swift"]))
+        XCTAssertTrue(style.contains(".frame(minWidth: 44, minHeight: 44, alignment: Alignment(horizontal: edge, vertical: .center))"),
+                      "the 44pt box keeps its size")
+    }
+
     /// P005: a chip that can't fit says less, never in smaller type.
     func testChipLabelsNeverShrinkTheirType() throws {
         let paths = ["Reader/ReaderChipStyle.swift", "Reader/PlayerBarView.swift", "Reader/SleepChip.swift",
@@ -318,6 +336,29 @@ final class PlayerBarLintTests: XCTestCase {
         let mac = Self.code(try XCTUnwrap(macSources["Reader/MacSleepMenu.swift"]))
         XCTAssertTrue(mac.contains("SleepTimer.menuItems("), "the Mac reads the shared rule")
         XCTAssertFalse(mac.contains("static func items("), "one rule, not a Mac copy")
+    }
+
+    /// R2-22: the menu cell speaks only its stored label, never the subtitle
+    /// line, so End of chapter's time joins each item's label (spelled out,
+    /// by the shared rule SleepTimerTests pins) on both apps, while Voice
+    /// Control still answers to the title alone. The two visible lines stay.
+    func testEachSleepMenuItemSpeaksItsTimeOnBothApps() throws {
+        let s = try SourceTree.sources(only: ["Reader/SleepChip.swift"])
+        let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: ["Reader/MacSleepMenu.swift"])
+        let chip = Self.code(try XCTUnwrap(s["Reader/SleepChip.swift"]))
+        let mac = Self.code(try XCTUnwrap(macSources["Reader/MacSleepMenu.swift"]))
+        for (name, text) in [("SleepChip.swift", chip), ("MacSleepMenu.swift", mac)] {
+            XCTAssertTrue(text.contains(".accessibilityLabel(Text(SleepTimer.menuSpokenLabel(title: title, minutes: minutes)))"),
+                          "\(name) should speak each item's time in its label")
+            XCTAssertTrue(text.contains(".accessibilityInputLabels([Text(title)])"),
+                          "\(name) should keep Voice Control on the item's title")
+            XCTAssertTrue(text.contains("let minutes = option == .endOfChapter ? sleepTimer.untilStopMinutes : nil"),
+                          "\(name) should time only End of chapter")
+            XCTAssertTrue(text.contains("Text(title)\n"), "\(name) should keep the title as its own line")
+        }
+        XCTAssertTrue(chip.contains("Text(ListeningEstimate.spokenPhrase(minutes: minutes))"),
+                      "the iPhone's subtitle stays spelled out")
+        XCTAssertTrue(mac.contains("Text(ListeningEstimate.phrase(minutes: minutes))"), "the Mac's subtitle stays short")
     }
 
     /// `source` without its line comments.

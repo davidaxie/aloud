@@ -361,8 +361,11 @@ struct PlayerBarView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// The outer chips' faces sit on the bar's gutter, where the scrub
+    /// starts, their 44pt hit boxes growing inward (R2-25), in both rows.
     private func listeningChipSlot(_ layout: PlayerBarLayout) -> some View {
         listeningChip
+            .environment(\.readerChipEdge, .leading)
             .frame(maxWidth: layout.chipWidthLimit, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilitySortPriority(PlayerBarLayout.voiceOverOrder(of: .listening))
@@ -371,6 +374,7 @@ struct PlayerBarView: View {
     /// Its own view, so the countdown's tick never redraws the bar.
     private func sleepChipSlot(_ layout: PlayerBarLayout) -> some View {
         SleepChip()
+            .environment(\.readerChipEdge, .trailing)
             .dynamicTypeSize(...PlayerBarLayout.chipTypeCap)
             .frame(maxWidth: layout.chipWidthLimit, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)

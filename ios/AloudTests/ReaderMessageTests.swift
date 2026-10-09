@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Aloud
 
@@ -197,11 +198,31 @@ final class ReaderMessageTests: XCTestCase {
         XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 40), 4)
         XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 42), 2)
         XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 44), 0)
+        // A stacked line's ink (the accessibility sizes) fills its own row,
+        // so it takes no lift; the air above it is `overflowHeadroom`, which
+        // the lift never counts (R2-26).
         XCTAssertEqual(ReaderMessageLine.footLift(inkHeight: 90), 0, "a stacked line fills its own row")
         for height in stride(from: CGFloat(0), through: 100, by: 0.5) {
             let lift = ReaderMessageLine.footLift(inkHeight: height)
             XCTAssertGreaterThanOrEqual(lift, 0)
             XCTAssertLessThanOrEqual(height + lift, max(ReaderMessageLine.rowHeight, height), "\(height) pt of ink")
         }
+    }
+
+    /// R2-26: at the accessibility sizes a line on the bar's foot outgrows
+    /// its 44pt row (the stacked position line, a wrapped stop or notice, the
+    /// offer) and sat 6pt under the bar's hairline, which has no top inset
+    /// on the iPhone. A `.bottom` row keeps 12pt of air above its ink there;
+    /// below those sizes, and on a centred row (the Mac), nothing moves.
+    /// PlayerBarLayoutTests measures the hosted rows.
+    func testATallLineOnTheFootKeepsAirUnderTheHairline() {
+        XCTAssertEqual(ReaderMessageLine.overflowHeadroom, 12)
+        for size in DynamicTypeSize.allCases {
+            let footed = RowInk.headroom(alignment: .bottom, dynamicTypeSize: size)
+            XCTAssertEqual(footed, size.isAccessibilitySize ? 12 : 0, "\(size)")
+            XCTAssertEqual(RowInk.headroom(alignment: .center, dynamicTypeSize: size), 0, "a centred row, \(size)")
+        }
+        XCTAssertEqual(RowInk.headroom(alignment: .bottom, dynamicTypeSize: .xxxLarge), 0)
+        XCTAssertEqual(RowInk.headroom(alignment: .bottom, dynamicTypeSize: .accessibility1), 12)
     }
 }
