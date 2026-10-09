@@ -212,7 +212,8 @@ final class LibraryLintTests: XCTestCase {
             // its heading, never the pinned heading, which sits at the top
             // anywhere in its shelf, so a settling scroll to it never moved.
             XCTAssertTrue(text.contains("ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)"), path)
-            XCTAssertTrue(text.contains(".id(section.rawValue)"), path)
+            XCTAssertTrue(text.contains(".id(ShelfJump.anchorID(section))"), path)
+            XCTAssertFalse(text.contains(".id(section.rawValue)"), "\(path): the mark never shares its jump button's id")
             XCTAssertTrue(text.contains("shelfAnchor(section)\n            Section {"),
                           "\(path) marks each shelf just above its section")
             // A branch per shelf, never a ForEach over the shelves, whose

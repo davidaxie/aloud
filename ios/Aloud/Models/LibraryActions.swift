@@ -36,6 +36,10 @@ struct ShelfJump: Equatable, Identifiable {
     let count: Int
 
     var id: String { section.rawValue }
+    /// The list's mark above the shelf's heading (`shelfAnchor`), the
+    /// jump's scroll target: never `id`, which the map's ForEach gives the
+    /// jump's own button, so a scroll by it could find the button instead.
+    static func anchorID(_ section: BookshelfSection) -> String { "shelf.\(section.rawValue)" }
     var title: String { section.title }
     /// The quiet count beside the title.
     var countText: String { "\(count)" }

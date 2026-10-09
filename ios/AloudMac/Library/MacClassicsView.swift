@@ -188,7 +188,7 @@ struct MacClassicsView: View {
         Color.clear
             .frame(height: 1)
             .accessibilityHidden(true)
-            .id(section.rawValue)
+            .id(ShelfJump.anchorID(section))
             .onAppear { walk.markAppeared(section) }
             .onDisappear { walk.markDisappeared(section) }
     }
@@ -261,7 +261,7 @@ struct MacClassicsView: View {
     /// animation completes (at once without one) and another on the next
     /// turn of the run loop.
     private func land(on section: BookshelfSection, _ scroller: ScrollViewProxy) {
-        let id = section.rawValue
+        let id = ShelfJump.anchorID(section)
         let settle = {
             scroller.scrollTo(id, anchor: .top)
             DispatchQueue.main.async { scroller.scrollTo(id, anchor: .top) }

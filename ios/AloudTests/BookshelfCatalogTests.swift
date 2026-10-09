@@ -211,6 +211,17 @@ final class BookshelfCatalogTests: XCTestCase {
     /// the lazy stack has laid out, the deepest short of the shelf to the
     /// top each turn, and lands once the shelf's mark is laid out: it never
     /// asks the stack where a row it hasn't laid out might be.
+    /// A shelf's mark and its jump button never share an id: the map's
+    /// ForEach gives each button its jump's id, so a scroll by a shared one
+    /// could find the button at the top instead of the mark.
+    func testAShelfsMarkNeverSharesItsJumpButtonsID() {
+        for section in BookshelfSection.allCases {
+            let jump = ShelfJump(section: section, count: 1)
+            XCTAssertNotEqual(ShelfJump.anchorID(section), jump.id, "\(section)")
+        }
+        XCTAssertEqual(Set(BookshelfSection.allCases.map(ShelfJump.anchorID)).count, BookshelfSection.allCases.count)
+    }
+
     func testTheWalkToAFarShelfHopsOnlyThroughLaidOutRows() {
         let shelves = walkShelves()
         let walk = ShelfWalk()
