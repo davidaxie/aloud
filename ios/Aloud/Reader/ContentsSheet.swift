@@ -14,7 +14,8 @@ import SwiftUI
 /// Text) and the `.isSelected` trait, which alone says it to VoiceOver
 /// (R4-32); completed chapters mute. Under the title, a caption gives the
 /// whole book's time left where the chapter line counts only to the
-/// chapter's end (R4-29). Chapters under a Part, Book, Act or Epilogue heading are grouped
+/// chapter's end (R4-29); at half height on the shortest screens, over a
+/// stop, it waits for the sheet to grow (P024). Chapters under a Part, Book, Act or Epilogue heading are grouped
 /// beneath it as a pinned section header (R17); the heading itself is
 /// folded into the chapter after it, so it is never a row of its own.
 ///
@@ -85,6 +86,9 @@ struct ContentsSheet: View {
     /// The restored query, scanned at once as the sheet opens: its arrival
     /// in the field is not a keystroke to debounce.
     @State private var openedQuery: String?
+    /// Whether the sheet is too short for the book's time left over a stop
+    /// at half height (`PlaceHistory.isShortSheet`); nil until measured.
+    @State private var shortSheet: Bool?
 
     private static let debounceNanoseconds: UInt64 = 200_000_000
 
@@ -104,7 +108,7 @@ struct ContentsSheet: View {
             VStack(spacing: Theme.Space.xxs) {
                 SheetHeader(title: ContentsSearch.title, titleIdentifier: "contents.title",
                             closeIdentifier: "contents.close")
-                if ContentsSearch.showsBookLeft(query: query), let minutes = bookMinutesLeft {
+                if showsBookLeftLine, let minutes = bookMinutesLeft {
                     bookLeftLine(minutes)
                 }
             }
@@ -118,6 +122,9 @@ struct ContentsSheet: View {
             contentArea
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onGeometryChange(for: Bool.self) { PlaceHistory.isShortSheet(height: Double($0.size.height)) } action: {
+            shortSheet = $0
+        }
         .background(Theme.surface)
         // Search only gets one full-height detent: with the keyboard up, a
         // two-detent sheet springs back to full height on every drag, so it
@@ -172,6 +179,16 @@ struct ContentsSheet: View {
     private var bookMinutesLeft: Int? {
         navigation.bookMinutesLeft(at: playback.currentSentence, rate: playback.rate,
                                    isFinished: playback.isAtEnd)
+    }
+
+    /// The line over the list, never a search's results; at half height on
+    /// the shortest screens, over a stop, only once the sheet grows, so the
+    /// first chapter still starts above the fold (P024).
+    private var showsBookLeftLine: Bool {
+        ContentsSearch.showsBookLeft(query: query)
+            && PlaceHistory.showsBookLeft(hasChapterList: navigation.hasChapterList, hasStops: !placeRows.isEmpty,
+                                          atHalfHeight: detent == .medium, shortSheet: shortSheet,
+                                          accessibilitySize: dynamicTypeSize.isAccessibilitySize)
     }
 
     /// One caption line under the title, wrapping at the accessibility
@@ -379,14 +396,14 @@ struct ContentsSheet: View {
         }
     }
 
-    /// Opaque, so the rows scrolling beneath a pinned header never show
-    /// through it.
     /// The current row's leading bar, wider under Bold Text, where every
     /// title is already bold (R4-32).
     private var currentMarkerWidth: CGFloat {
         ContentsChapterLabel.markerWidth(boldText: legibilityWeight == .bold || Theme.BoldText.shared.isOn)
     }
 
+    /// Opaque, so the rows scrolling beneath a pinned header never show
+    /// through it.
     private func sectionHeader(_ title: String, id: Int) -> some View {
         Text(title)
             .font(Theme.font(.eyebrow))

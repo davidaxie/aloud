@@ -168,6 +168,32 @@ enum PlaceHistory {
             && (expanded || !waitsForTheSheet)
     }
 
+    /// The shortest half-height sheet that keeps the iPhone's Contents
+    /// line giving the book's time left (R4-29) over a stop and the
+    /// chapters: an iPhone SE's half height (about 330 pt) is under it, a
+    /// mini's (about 400 pt) over it.
+    static let bookLeftHalfHeightMinimum: Double = 360
+
+    /// A sheet too short for that line over a stop at half height. The
+    /// sheet measures this, not its height, so a detent drag redraws it
+    /// once, at the crossing, rather than on every frame.
+    static func isShortSheet(height: Double) -> Bool {
+        height < bookLeftHalfHeightMinimum
+    }
+
+    /// Whether the iPhone's Contents shows its line giving the book's time
+    /// left (R4-29). Over a stop above a chapter list, at half height on
+    /// the shortest screens, it waits for the sheet to grow, as the
+    /// earlier-stops toggle does, so the first chapter still starts above
+    /// the fold (P024). At the accessibility sizes, where one stop already
+    /// fills that fold, it shows at either height; so does a sheet not yet
+    /// measured (`shortSheet` nil).
+    static func showsBookLeft(hasChapterList: Bool, hasStops: Bool, atHalfHeight: Bool,
+                              shortSheet: Bool?, accessibilitySize: Bool) -> Bool {
+        guard hasChapterList, hasStops, atHalfHeight, !accessibilitySize, let shortSheet else { return true }
+        return !shortSheet
+    }
+
     /// Whether Contents opens scrolled to the current chapter: with no
     /// stops, or when the newest stop is in the playhead's chapter, where
     /// the current chapter's row tells the listener the same place. When

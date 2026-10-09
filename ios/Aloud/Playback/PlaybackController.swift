@@ -1682,8 +1682,11 @@ final class PlaybackController: ObservableObject {
             return false
         case .failure:
             // As a claim in place: any other session failure alone
-            // shouldn't block simulator playback.
-            break
+            // shouldn't block simulator playback. The claim still counts as
+            // made (the session not held), so the engine's start uses its
+            // result and never blocks the main actor on a second
+            // activation that has just failed.
+            claimedToken = token
         }
         return true
     }

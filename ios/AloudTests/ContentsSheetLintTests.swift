@@ -76,7 +76,8 @@ final class ContentsSheetLintTests: XCTestCase {
                                        + "expanded: showsEarlierPlaces, atHalfHeight: detent == .medium, "
                                        + "accessibilitySize: dynamicTypeSize.isAccessibilitySize)"),
                       "the toggle waits for the sheet to grow: \(section)")
-        XCTAssertEqual(occurrences(of: "accessibilitySize: dynamicTypeSize.isAccessibilitySize", in: sheet), 2)
+        XCTAssertEqual(occurrences(of: "accessibilitySize: dynamicTypeSize.isAccessibilitySize", in: sheet), 3,
+                       "the rows shown, the toggle and the book's time left (R4-29) read the same size")
         let place = try region(of: sheet, from: "private func placeRow(", to: "/// An eyebrow over a run of rows")
         XCTAssertTrue(place.contains(".padding(.vertical, Theme.Space.xs)"), "place rows pad 8pt: \(place)")
         XCTAssertTrue(place.contains(".frame(minHeight: 44)"))
@@ -344,8 +345,7 @@ final class ContentsSheetLintTests: XCTestCase {
         let s = try SourceTree.sources(only: [Self.sheetPath])
         let sheet = try XCTUnwrap(s[Self.sheetPath])
         let body = try region(of: sheet, from: "var body: some View {", to: ".onAppear { opened() }")
-        XCTAssertTrue(body.contains("if ContentsSearch.showsBookLeft(query: query), let minutes = bookMinutesLeft { "
-                                    + "bookLeftLine(minutes) }"), body)
+        XCTAssertTrue(body.contains("if showsBookLeftLine, let minutes = bookMinutesLeft { bookLeftLine(minutes) }"), body)
         let estimate = try region(of: sheet, from: "private var bookMinutesLeft: Int? {", to: "/// One caption line")
         XCTAssertTrue(estimate.contains("navigation.bookMinutesLeft(at: playback.currentSentence, rate: playback.rate, "
                                         + "isFinished: playback.isAtEnd)"), estimate)
@@ -358,6 +358,27 @@ final class ContentsSheetLintTests: XCTestCase {
             XCTAssertTrue(line.contains(needle), "the line should contain '\(needle)': \(line)")
         }
         XCTAssertFalse(line.contains(".lineLimit("), "it wraps at the accessibility sizes")
+    }
+
+    /// R4-29 against P024: the line adds a caption's height over the
+    /// field, so at half height on the shortest screens, over a stop, it
+    /// waits for the sheet to grow, as the earlier-stops toggle does, and
+    /// the first chapter still starts above the fold. The sheet's own
+    /// height decides it; the rule itself is in ContentsPlaybackRound4Tests.
+    func testTheBookLeftLineWaitsForTheSheetOnTheShortestScreens() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let shows = try region(of: sheet, from: "private var showsBookLeftLine: Bool {", to: "/// One caption line")
+        XCTAssertTrue(shows.contains("ContentsSearch.showsBookLeft(query: query) && "
+                                     + "PlaceHistory.showsBookLeft(hasChapterList: navigation.hasChapterList, "
+                                     + "hasStops: !placeRows.isEmpty, atHalfHeight: detent == .medium, "
+                                     + "shortSheet: shortSheet, accessibilitySize: dynamicTypeSize.isAccessibilitySize)"),
+                      shows)
+        let body = try region(of: sheet, from: "var body: some View {", to: ".onAppear { opened() }")
+        XCTAssertTrue(body.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top) "
+                                    + ".onGeometryChange(for: Bool.self) { PlaceHistory.isShortSheet(height: "
+                                    + "Double($0.size.height)) } action: { shortSheet = $0 }"),
+                      "the whole sheet's height, which its detent sets, not its content's: \(body)")
     }
 
     /// R4-31: the field takes the Classics field's capsule, on surface2.

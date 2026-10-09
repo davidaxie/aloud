@@ -286,6 +286,22 @@ final class ThermalGuardTests: XCTestCase {
         rig.controller.isUnderStrain = AppModel.strain(of: thermal) { lowPower }
     }
 
+    /// The rig installs AppModel's closures itself, so the tests above stay
+    /// green if AppModel stops installing them: without the heat line the
+    /// cap of 2 (and with it the cooling handoff's short queue) is gone in
+    /// the shipping app, and without the Low Power line Low Power Mode
+    /// keeps the full queue. Pin the wiring in AppModel's own source.
+    func testAppModelInstallsTheHeatAndLowPowerSplit() throws {
+        let s = try SourceTree.sources(only: ["App/AppModel.swift"])
+        let model = try XCTUnwrap(s["App/AppModel.swift"])
+        XCTAssertTrue(model.contains("playback.isHot = Self.heat(of: thermalGuard)"),
+                      "AppModel no longer hands playback its heat")
+        XCTAssertTrue(model.contains("playback.isLowPower = { ProcessInfo.processInfo.isLowPowerModeEnabled }"),
+                      "AppModel no longer hands playback Low Power Mode")
+        XCTAssertTrue(model.contains("playback.isUnderStrain = Self.strain(of: thermalGuard)"),
+                      "AppModel no longer hands playback the strain")
+    }
+
     /// The strain AppModel installs, hot before Play: the look-ahead
     /// shrinks to the strained two where the platform says so.
     func testHeatShrinksTheLookAheadThroughAppModelsStrain() async throws {

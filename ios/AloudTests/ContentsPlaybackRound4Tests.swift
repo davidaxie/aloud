@@ -14,8 +14,9 @@ final class ContentsPlaybackRound4Tests: XCTestCase {
     private static let minute = Array(repeating: "word", count: 165).joined(separator: " ")
 
     /// Five chapters ("I" to "V"), each a one-word heading and ten
-    /// one-minute sentences; or, `chaptered` false, the same sentences
-    /// with no headings.
+    /// one-minute sentences on its own page; or, `chaptered` false, the
+    /// same sentences with no headings on one page, since text makes a
+    /// chapter of each page.
     private static func book(chaptered: Bool = true) -> DocContent {
         var sentences: [Sentence] = []
         for (number, heading) in ["I", "II", "III", "IV", "V"].enumerated() {
@@ -23,10 +24,12 @@ final class ContentsPlaybackRound4Tests: XCTestCase {
                 sentences.append(Sentence(id: sentences.count, text: heading, para: sentences.count, page: number + 1))
             }
             for _ in 0..<10 {
-                sentences.append(Sentence(id: sentences.count, text: minute, para: sentences.count, page: number + 1))
+                sentences.append(Sentence(id: sentences.count, text: minute, para: sentences.count,
+                                           page: chaptered ? number + 1 : 1))
             }
         }
-        return DocContent(title: "Test", pageCount: 5, sentences: sentences, paragraphs: [], contentHash: "r4")
+        return DocContent(title: "Test", pageCount: chaptered ? 5 : 1, sentences: sentences, paragraphs: [],
+                          contentHash: "r4")
     }
 
     func testTheBooksTimeLeftCountsToTheEndOfTheBook() {
@@ -52,12 +55,40 @@ final class ContentsPlaybackRound4Tests: XCTestCase {
     /// line: text without a chapter list, and page-range PDFs.
     func testNoLineWhereTheChapterLineCountsToTheEnd() {
         let chapterless = ReaderNavigation(content: Self.book(chaptered: false), kind: .text)
+        XCTAssertEqual(chapterless.chapters.count, 1, "one page, one chapter")
         XCTAssertFalse(chapterless.isChaptered)
         XCTAssertNil(chapterless.bookMinutesLeft(at: 3, rate: 1, isFinished: false))
-        let pages = ReaderNavigation(content: Self.book(chaptered: false), kind: .pdf)
+        // Five pages, so five page rows: a list, but of pages, not chapters.
+        let pages = ReaderNavigation(content: Self.book(), kind: .pdf)
+        XCTAssertTrue(pages.hasChapterList)
+        XCTAssertFalse(pages.isChaptered)
         XCTAssertNil(pages.bookMinutesLeft(at: 3, rate: 1, isFinished: false))
         let empty = DocContent(title: "Empty", pageCount: 0, sentences: [], paragraphs: [], contentHash: "e")
         XCTAssertNil(ReaderNavigation(content: empty, kind: .text).bookMinutesLeft(at: 0, rate: 1, isFinished: false))
+    }
+
+    /// The iPhone's line costs a caption's height over the field, so at
+    /// half height on the shortest screens, over a stop above the chapters,
+    /// it waits for the sheet to grow, as the earlier-stops toggle does,
+    /// and the first chapter still starts above the fold (P024). Anywhere
+    /// with room, it shows.
+    func testTheLineWaitsForTheSheetOnlyWhereTheFoldIsTight() {
+        let se = 330.0, mini = 400.0
+        func shows(chapters: Bool = true, stops: Bool = true, half: Bool = true,
+                   height: Double? = se, ax: Bool = false) -> Bool {
+            PlaceHistory.showsBookLeft(hasChapterList: chapters, hasStops: stops, atHalfHeight: half,
+                                       shortSheet: height.map { PlaceHistory.isShortSheet(height: $0) },
+                                       accessibilitySize: ax)
+        }
+        XCTAssertFalse(shows(), "an SE's half height, a stop over the chapters: the sheet grows first")
+        XCTAssertTrue(shows(height: mini), "a mini's half height has the room")
+        XCTAssertTrue(shows(half: false), "grown, it shows")
+        XCTAssertTrue(shows(stops: false), "no stop: the chapters follow the field")
+        XCTAssertTrue(shows(ax: true), "the accessibility sizes: one stop already fills the fold")
+        XCTAssertTrue(shows(height: nil), "not yet measured")
+        XCTAssertTrue(shows(chapters: false), "no chapter list to keep above the fold")
+        XCTAssertGreaterThan(PlaceHistory.bookLeftHalfHeightMinimum, se)
+        XCTAssertLessThan(PlaceHistory.bookLeftHalfHeightMinimum, mini)
     }
 
     /// The card's "left" for the same place and speed: `wordCount` less the
@@ -217,6 +248,21 @@ final class ContentsPlaybackRound4Tests: XCTestCase {
         XCTAssertEqual(rig.controller.stopped, PlaybackStop(reason: .interrupted, documentID: rig.document.id))
         XCTAssertFalse(rig.controller.isEngineRunning)
         XCTAssertEqual(rig.audioSession.bindings, 0)
+    }
+
+    /// Any other refusal doesn't block playback, as a claim in place never
+    /// did, and the start uses the claim's result: no second activation on
+    /// the main actor, which would freeze the ring on the failure it just had.
+    func testAnOtherClaimFailurePlaysWithoutASecondClaim() async throws {
+        let (rig, probe, _) = try makeRig()
+        probe.error = NSError(domain: "AloudTests.claim", code: 1)
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        XCTAssertEqual(probe.claims, 1)
+        XCTAssertEqual(rig.audioSession.activations, 0, "no second claim in place")
+        XCTAssertEqual(rig.audioSession.bindings, 1, "the engine started once")
+        XCTAssertEqual(rig.controller.status, .playing)
+        rig.controller.pause()
     }
 
     /// R1-40 unchanged: a resume inside the idle window keeps the session
