@@ -121,6 +121,11 @@ enum ReaderMenuCopy {
     }
     /// The longest term the title quotes.
     static let lookUpTermLimit = 24
+    /// Look Up naming the word it will define, or plain past
+    /// `lookUpTermLimit` characters or with no word under the finger.
+    static func lookUpTitle(for term: String?) -> String {
+        lookUp(term.flatMap { $0.count <= lookUpTermLimit ? $0 : nil })
+    }
     static let share = "Share\u{2026}"
 
     /// A shared quote and where it is from: the words, then an em dash, the
@@ -148,7 +153,18 @@ enum ReaderTitleCopy {
 
 /// The reader's failure state (P050).
 enum ReaderFailureCopy {
-    static let title = "Couldn't open this book"
-    static let detail = "It may be damaged or a scanned document."
+    static let title = "Couldn\u{2019}t open this book"
+    /// Imports already refuse a PDF without text (`ImportFailure.pdfNoText`),
+    /// so the line names only what can still go wrong.
+    static let detail = "It may be damaged or missing."
     static let backToLibrary = "Back to Library"
+    /// A book that fails to open fails on every open: the way to let it go
+    /// (R2-11), confirmed as the shelf's Delete is.
+    static let deleteBook = "Delete Book\u{2026}"
+    /// The confirmation's title, worded as the shelf's.
+    static func deleteTitle(_ title: String) -> String {
+        "Delete \u{201C}\(title)\u{201D}?"
+    }
+    static let cancel = "Cancel"
+    static let ok = "OK"
 }

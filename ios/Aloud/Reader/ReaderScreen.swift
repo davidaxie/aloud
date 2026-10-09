@@ -33,6 +33,10 @@ struct ReaderScreen: View {
     /// scan on every body evaluation — word-highlight cadence during playback.
     @State private var navigation: ReaderNavigation?
     @State private var loadFailed = false
+    /// The failure state's Delete Book… confirmation, and a delete the
+    /// library couldn't record (R2-11).
+    @State private var confirmingDelete = false
+    @State private var deleteFailure: DeleteFailure?
     @State private var textUnderTopBar = false
     @State private var showAppearanceSheet = false
     /// Where the voice is while the column isn't following it (R16).
@@ -74,56 +78,12 @@ struct ReaderScreen: View {
             Theme.bg.ignoresSafeArea()
 
             if let content, let navigation {
-                ReaderTextView(
-                    content: content,
-                    isChapterBook: document.kind == .text,
-                    navigation: navigation,
-                    fontSize: ReaderTextSize.points(forStep: textSizeStep),
-                    activeSentence: playback.currentSentence,
-                    // The word-highlight pref is gated once, here at the source.
-                    activeWord: model.wordHighlight ? playback.currentWord : -1,
-                    // Following tracks the spoken word whatever the pref, so
-                    // a sentence taller than the band never ends under the bar.
-                    followWord: playback.currentWord,
-                    // Following resumes on a user Play, every jump and Undo,
-                    // and the Follow chip: never by itself.
-                    followRequest: playback.userPlayAction &+ playback.jumpSerial &+ followChipTaps,
-                    // The bar's reach, the chip's while one floats over the
-                    // text, and a resting sheet's, so the spoken line is
-                    // never under any of them.
-                    obscuredBottom: FollowBand.obscuredBottom(textMaxY: textBottom, chromeMinY: barTop,
-                                                              chipReach: chipReach, showsChip: chip != nil,
-                                                              windowTextMaxY: textBottomInWindow,
-                                                              sheetMinY: listeningSheetTop),
-                    colophon: colophon(for: content, navigation: navigation),
-                    voiceOffscreen: $voiceOffscreen,
-                    textUnderTopBar: $textUnderTopBar,
-                    onTapSentence: tapSentence,
-                    onMagicTap: togglePlayback,
-                    bookTitle: liveDocument.title,
-                    bookAuthor: liveDocument.author,
-                    pageWidth: pageWidth,
-                    onPinchTextSize: pinchTextSize,
-                    // R1-14: with Aa up, a tap on the page closes the sheet.
-                    onDismissTap: showAppearanceSheet ? { showAppearanceSheet = false } : nil,
-                    onColumnShown: { BudgetSignposts.live.end(&openSignpost) })
-                .ignoresSafeArea(edges: .bottom)
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.frame(in: .named(Self.space)).maxY
-                } action: { maxY in
-                    textBottom = maxY
-                }
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.frame(in: .global).maxY
-                } action: { maxY in
-                    textBottomInWindow = maxY
-                }
-                .overlay(alignment: .top) { topEdgeRule }
-                #if DEBUG
-                .overlay(alignment: .topLeading) { ReaderFollowProbeOverlay() }
-                #endif
-
-                bottomLayer
+                page(content: content, navigation: navigation)
+                    // R12b: a two-finger double-tap anywhere on the page plays
+                    // or pauses. On the page only: the failure state has
+                    // nothing to play, and an ancestor action there put its
+                    // hidden icon back in VoiceOver's order (R2-10).
+                    .accessibilityAction(.magicTap) { togglePlayback() }
             } else if loadFailed {
                 failureState
             }
@@ -144,6 +104,8 @@ struct ReaderScreen: View {
                     } action: { minY in
                         barTop = minY
                     }
+                    // R12b: the bar plays and pauses on a magic tap too.
+                    .accessibilityAction(.magicTap) { togglePlayback() }
                     // The Aa sheet covers the bar but leaves the page live
                     // (P037), so VoiceOver could walk into the bar behind it,
                     // where the Voice chip or the chapter line would ask for
@@ -154,8 +116,6 @@ struct ReaderScreen: View {
         // One space for the text's bottom and the bar's top: their gap is
         // the bar's height plus the home-indicator strip it paints over.
         .coordinateSpace(.named(Self.space))
-        // R12b: a two-finger double-tap anywhere on the screen plays or pauses.
-        .accessibilityAction(.magicTap) { togglePlayback() }
         #if DEBUG
         .overlay(alignment: .topLeading) { sentenceProbe }
         #endif
@@ -188,6 +148,66 @@ struct ReaderScreen: View {
         .onDisappear { BudgetSignposts.live.end(&openSignpost, gaveUp: true) }
     }
 
+    /// The page: the reading column and the chip slot over it.
+    private func page(content: DocContent, navigation: ReaderNavigation) -> some View {
+        ZStack {
+            ReaderTextView(
+                content: content,
+                isChapterBook: document.kind == .text,
+                navigation: navigation,
+                fontSize: ReaderTextSize.points(forStep: textSizeStep),
+                activeSentence: playback.currentSentence,
+                // The word-highlight pref is gated once, here at the source.
+                activeWord: model.wordHighlight ? playback.currentWord : -1,
+                // Following tracks the spoken word whatever the pref, so
+                // a sentence taller than the band never ends under the bar.
+                followWord: playback.currentWord,
+                // Following resumes on a user Play, every jump and Undo,
+                // and the Follow chip: never by itself.
+                followRequest: playback.userPlayAction &+ playback.jumpSerial &+ followChipTaps,
+                // The bar's reach, the chip's while one floats over the
+                // text, and a resting sheet's, so the spoken line is
+                // never under any of them.
+                // A chip counts from the pass it resolves in, at its
+                // minimum until it is measured (R2-09).
+                obscuredBottom: FollowBand.obscuredBottom(textMaxY: textBottom, chromeMinY: barTop,
+                                                          chipReach: FollowBand.chipReach(previous: chipReach,
+                                                                                          showsChip: chip != nil),
+                                                          showsChip: chip != nil,
+                                                          windowTextMaxY: textBottomInWindow,
+                                                          sheetMinY: listeningSheetTop),
+                colophon: colophon(for: content, navigation: navigation),
+                voiceOffscreen: $voiceOffscreen,
+                textUnderTopBar: $textUnderTopBar,
+                onTapSentence: tapSentence,
+                onMagicTap: togglePlayback,
+                bookTitle: liveDocument.title,
+                bookAuthor: liveDocument.author,
+                pageWidth: pageWidth,
+                onPinchTextSize: pinchTextSize,
+                // R1-14: with Aa up, a tap on the page closes the sheet.
+                onDismissTap: showAppearanceSheet ? { showAppearanceSheet = false } : nil,
+                onColumnShown: { BudgetSignposts.live.end(&openSignpost) })
+            .ignoresSafeArea(edges: .bottom)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.frame(in: .named(Self.space)).maxY
+            } action: { maxY in
+                textBottom = maxY
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.frame(in: .global).maxY
+            } action: { maxY in
+                textBottomInWindow = maxY
+            }
+            .overlay(alignment: .top) { topEdgeRule }
+            #if DEBUG
+            .overlay(alignment: .topLeading) { ReaderFollowProbeOverlay() }
+            #endif
+
+            bottomLayer
+        }
+    }
+
     // MARK: - Chrome
 
     @ToolbarContentBuilder
@@ -210,22 +230,25 @@ struct ReaderScreen: View {
                 .accessibilityAction(.magicTap) { togglePlayback() }
         }
         .withoutGlassCapsule()
-        ToolbarItem(placement: .topBarTrailing) {
-            Button { showAppearanceSheet = true } label: {
-                Text("Aa")
-                    .font(Theme.font(.headline))
-                    .foregroundStyle(Theme.text)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
+        // A page with no text has nothing to size (R2-11).
+        if !loadFailed {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showAppearanceSheet = true } label: {
+                    Text("Aa")
+                        .font(Theme.font(.headline))
+                        .foregroundStyle(Theme.text)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                // The sheet's own title, so Aa and Settings share one name.
+                .accessibilityLabel(AppearanceCopy.title)
+                .accessibilityInputLabels([Text("Aa"), Text("Text and appearance"), Text("Appearance")])
+                // The bar caps its text size, and iOS hosts this custom label
+                // apart from the screen: long-press shows the glyph large.
+                .accessibilityShowsLargeContentViewer { Text("Aa") }
+                .accessibilityIdentifier("reader.appearance")
+                .accessibilityAction(.magicTap) { togglePlayback() }
             }
-            // The sheet's own title, so Aa and Settings share one name.
-            .accessibilityLabel(AppearanceCopy.title)
-            .accessibilityInputLabels([Text("Aa"), Text("Text and appearance"), Text("Appearance")])
-            // The bar caps its text size, and iOS hosts this custom label
-            // apart from the screen: long-press shows the glyph large.
-            .accessibilityShowsLargeContentViewer { Text("Aa") }
-            .accessibilityIdentifier("reader.appearance")
-            .accessibilityAction(.magicTap) { togglePlayback() }
         }
     }
 
@@ -347,14 +370,18 @@ struct ReaderScreen: View {
 
     private var failureState: some View {
         VStack(spacing: Theme.Space.sm) {
+            // Hidden at a container that ignores its children, so no symbol
+            // name reaches VoiceOver (R2-10); never combined with the title.
             Image(systemName: "doc.questionmark")
                 .font(Theme.font(.title))
                 .imageScale(.large)
                 .foregroundStyle(Theme.textFaint)
+                .accessibilityElement(children: .ignore)
                 .accessibilityHidden(true)
             Text(ReaderFailureCopy.title)
                 .font(Theme.font(.headline))
                 .foregroundStyle(Theme.text)
+                .accessibilityAddTraits(.isHeader)
             Text(ReaderFailureCopy.detail)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
@@ -368,9 +395,45 @@ struct ReaderScreen: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("reader.backToLibrary")
+            // A book that fails to open fails on every open: the way to let
+            // it go, confirmed as on the shelf (R2-11).
+            Button(role: .destructive) { confirmingDelete = true } label: {
+                Text(ReaderFailureCopy.deleteBook)
+                    .font(Theme.font(.subheadline))
+                    .foregroundStyle(Theme.accentStrong)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("reader.deleteBook")
         }
         .multilineTextAlignment(.center)
         .padding(Theme.Space.xxl)
+        .confirmationDialog(ReaderFailureCopy.deleteTitle(liveDocument.title),
+                            isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button(DocumentAction.delete.title, role: .destructive) { deleteFailedBook() }
+            Button(ReaderFailureCopy.cancel, role: .cancel) {}
+        } message: {
+            Text(DocumentAction.deleteMessage(for: liveDocument))
+        }
+        .alert(deleteFailure?.title ?? "", isPresented: Binding(get: { deleteFailure != nil },
+                                                                 set: { if !$0 { deleteFailure = nil } }),
+               presenting: deleteFailure) { _ in
+            Button(ReaderFailureCopy.ok, role: .cancel) {}
+        } message: { failure in
+            Text(failure.nextStep)
+        }
+    }
+
+    /// The failure state's Delete: the shelf's own entry point. The audio
+    /// never loaded this book (the load failed first), so nothing stops.
+    /// A delete the library can't record keeps the book and says why.
+    private func deleteFailedBook() {
+        if let failure = model.deleteDocument(liveDocument) {
+            deleteFailure = failure
+            return
+        }
+        router.popToRoot()
     }
 
     // MARK: - Loading

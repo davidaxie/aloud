@@ -64,7 +64,83 @@ final class ColophonUITest: XCTestCase {
         return play
     }
 
+    /// The colophon's on-screen frame once two reads a quarter second apart
+    /// agree, polled for 3 s at most. While a colophon shows, the follow
+    /// probe (`reader.activeSentence`) frames the colophon, not a sentence.
+    private func settledColophonFrame(_ app: XCUIApplication) -> CGRect? {
+        var frame = activeSentenceFrame(app)
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "let the page come to rest")], timeout: 0.25)
+            let next = activeSentenceFrame(app)
+            if let next, next == frame { return next }
+            frame = next
+        }
+        return frame
+    }
+
+    /// R2-09: the end block lands between the top chrome and the More
+    /// classics chip, and the chip clears the player bar. `whole`: the
+    /// colophon fits above the chip; else (the accessibility sizes, where it
+    /// may show its top first) the chip never covers its first line.
+    private func assertTheColophonClearsTheChrome(_ app: XCUIApplication, whole: Bool,
+                                                  file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 15), "the page shows", file: file, line: line)
+        let chip = moreClassics(app)
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "More classics shows at the end", file: file, line: line)
+        // The player bar's top row: the bar starts at or above it.
+        let barRow = app.descendants(matching: .any)["reader.chapterLine"].firstMatch
+        XCTAssertTrue(barRow.waitForExistence(timeout: 5), "the player bar shows", file: file, line: line)
+        guard let colophon = settledColophonFrame(app) else {
+            XCTFail("the follow probe frames the colophon", file: file, line: line)
+            return
+        }
+        let topChrome = app.navigationBars.firstMatch.frame.maxY
+        XCTAssertGreaterThanOrEqual(colophon.minY, topChrome - 1,
+                                    "the colophon's top \(colophon.minY) is under the top bar (\(topChrome))",
+                                    file: file, line: line)
+        if whole {
+            XCTAssertLessThanOrEqual(colophon.maxY, chip.frame.minY + 1,
+                                     "the colophon's foot \(colophon.maxY) is under the chip (\(chip.frame.minY))",
+                                     file: file, line: line)
+        } else {
+            XCTAssertLessThan(colophon.minY, chip.frame.minY,
+                              "the chip (\(chip.frame.minY)) covers the colophon's first line (\(colophon.minY))",
+                              file: file, line: line)
+        }
+        XCTAssertLessThanOrEqual(chip.frame.maxY, barRow.frame.minY + 1,
+                                 "the chip \(chip.frame) runs into the player bar (\(barRow.frame.minY))",
+                                 file: file, line: line)
+    }
+
+    /// CritiqueCaptureTests.test07FinishedBook's path: the first classic,
+    /// seeded Finished, opened from its card.
+    private func reopenTheFinishedClassic(_ extra: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication.aloud([Self.reset, "-uitest-seed-first-classic", "-uitest-seed-finished",
+                                         Self.freshOffer, Self.systemVoice] + extra)
+        app.launch()
+        let card = app.buttons["library.card"].firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 15), "the seeded Finished classic is on the shelf")
+        card.tap()
+        return app
+    }
+
     // MARK: - Tests
+
+    /// R2-09: a reopened Finished book lands with the whole colophon above
+    /// More classics (shot 27 had the chip over the rule and the bar
+    /// cutting "The End").
+    func testAReopenedFinishedBookShowsTheWholeColophonAboveTheChip() {
+        let app = reopenTheFinishedClassic()
+        assertTheColophonClearsTheChrome(app, whole: true)
+    }
+
+    /// The same at an accessibility size, where the colophon may show its
+    /// top first: the chip never covers its first line.
+    func testAReopenedFinishedBookAtAnAccessibilitySizeKeepsTheColophonClearOfTheChip() {
+        let app = reopenTheFinishedClassic(AuditTextSize.all[1].launchArguments)
+        assertTheColophonClearsTheChrome(app, whole: false)
+    }
 
     /// The 4-sentence text fixture opens playing and runs to its end.
     func testTheEndOfABookShowsTheColophon() {
@@ -87,6 +163,8 @@ final class ColophonUITest: XCTestCase {
         XCTAssertTrue(chip.isHittable)
         XCTAssertGreaterThanOrEqual(chip.frame.width, 44)
         XCTAssertGreaterThanOrEqual(chip.frame.height, 44)
+        // R2-09: the live end lands as a reopen does, whole above the chip.
+        assertTheColophonClearsTheChrome(app, whole: true)
 
         XCTAssertTrue(eventually(timeout: 5) { hapticLog(app).contains("finished") }, "\(hapticLog(app))")
         XCTAssertEqual(hapticLog(app).filter { $0 == "finished" }.count, 1, "one success: \(hapticLog(app))")

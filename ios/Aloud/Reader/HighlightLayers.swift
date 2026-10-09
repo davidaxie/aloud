@@ -9,7 +9,7 @@ import QuartzCore
 ///   line, continuing across line breaks with every corner softened alike;
 ///   a chapter heading (a centred sentence) is a pill instead;
 /// - a 2pt margin mark in the left gutter spanning the sentence's lines
-///   (beside a heading's pill, never stranded at the gutter);
+///   (a heading instead wears it as a 1.5pt edge inside its pill);
 /// - an optional 1.5pt underline under the spoken word.
 /// Sentence changes crossfade over 200 ms (instant under Reduce Motion);
 /// the word underline slides over 90 ms.
@@ -37,6 +37,8 @@ final class HighlightLayers {
     /// 1pt above and below.
     static let outset = CGSize(width: 3, height: 1)
     static let markWidth: CGFloat = 2
+    /// The accent edge a heading's pill wears in place of the gutter bar.
+    static let headingEdgeWidth: CGFloat = 1.5
     static let markGap: CGFloat = 10
     static let underlineHeight: CGFloat = 1.5
     static let underlineOffset: CGFloat = 2
@@ -70,16 +72,18 @@ final class HighlightLayers {
 
     /// Shows `segments` as the active sentence. `animated` crossfades from the
     /// previous shape; geometry-only refreshes (relayout) pass `false`. A
-    /// `.heading` is a pill padded by `em` (its font's size) with its mark
-    /// beside the pill; `trailingEdge` is the text container's, which a
+    /// `.heading` is a pill padded by `em` (its font's size) whose mark is
+    /// its own edge; `trailingEdge` is the text container's, which a
     /// body row never passes by more than the outset.
     func showSentence(_ segments: [Segment], fill: CGColor, mark: CGColor,
                       gutterX: CGFloat, style: SentenceStyle = .body, em: CGFloat = 0,
                       trailingEdge: CGFloat? = nil, animated: Bool, reduceMotion: Bool) {
         let path = Self.sentencePath(segments, style: style, em: em, trailingEdge: trailingEdge)
-        let markX = style == .heading
-            ? (Self.headingPills(segments, em: em).map(\.minX).min() ?? gutterX) : gutterX
-        let markPath = Self.markPath(segments, gutterX: markX)
+        // A heading's non-colour signal is the pill's own accent edge: a bar
+        // beside a single serif numeral reads as a text cursor (R2-14).
+        let markPath = style == .heading
+            ? Self.headingEdgePath(segments, em: em)
+            : Self.markPath(segments, gutterX: gutterX)
         let fade = animated && !reduceMotion
         let shown: Float = isSentenceHidden ? 0 : 1
 
@@ -356,6 +360,26 @@ final class HighlightLayers {
                          width: markWidth, height: max(bottom - top - 4, markWidth))
         return CGPath(roundedRect: bar, cornerWidth: markWidth / 2, cornerHeight: markWidth / 2,
                       transform: nil)
+    }
+
+    /// A heading's mark: each pill's outline as a `headingEdgeWidth` ring,
+    /// stroked on the pill inset by half that width so the ring lies inside
+    /// the fill's outline. A fill path, so the mark layer's crossfade, fade
+    /// under the colophon and colours work as they do for the gutter bar.
+    static func headingEdgePath(_ segments: [Segment], em: CGFloat) -> CGPath? {
+        let pills = headingPills(segments, em: em)
+        guard !pills.isEmpty else { return nil }
+        let inset = headingEdgeWidth / 2
+        let path = CGMutablePath()
+        for pill in pills {
+            let edge = pill.insetBy(dx: inset, dy: inset)
+            guard edge.width > 0, edge.height > 0 else { continue }
+            let radius = edge.height / 2
+            let outline = CGPath(roundedRect: edge, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            path.addPath(outline.copy(strokingWithWidth: headingEdgeWidth, lineCap: .round,
+                                      lineJoin: .round, miterLimit: 1))
+        }
+        return path.isEmpty ? nil : path
     }
 
     /// An underline under each piece of the word (a hyphenated word can

@@ -135,8 +135,7 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         if obscuredBottomChanged {
-            coordinator.followIfNeeded(animated: true)
-            coordinator.updateFollowChip()
+            coordinator.bandMoved()
         }
     }
 
@@ -173,6 +172,13 @@ struct ReaderTextView: UIViewRepresentable {
         /// The paper-coloured cover the colophon fades in from, alive for
         /// `Theme.Motion.colophon` after it appears on screen.
         private(set) var colophonVeil: UIView?
+        /// The band foot (`parent.obscuredBottom`) the colophon was last
+        /// aimed with; nil until it is placed. A layout pass that finds the
+        /// band moved since places it again (R2-09).
+        private(set) var colophonBand: CGFloat?
+        /// A re-placement on a moved band is queued for after the layout
+        /// pass that found it.
+        private var colophonReplaceQueued = false
 
         /// Content height of the last layout pass; a jump means TextKit
         /// swapped estimated line heights wholesale under a still offset.
@@ -494,6 +500,7 @@ struct ReaderTextView: UIViewRepresentable {
             shownColophon = colophon
             textView.highlightLayer.setSentenceHidden(colophon != nil)
             endMarkRange = built.endMarkRange
+            colophonBand = nil
             removeColophonVeil()
             builtHash = content.contentHash
             builtFontSize = fontSize
@@ -712,11 +719,11 @@ struct ReaderTextView: UIViewRepresentable {
         /// edit of the text storage: every sentence range stays valid and
         /// nothing above the mark re-lays out. Never through the TextKit 1
         /// `layoutManager`, which would drop the view out of TextKit 2.
-        /// While following, the colophon is brought into the band like the
-        /// voice. Appearing with `animated` fades in through a paper veil
-        /// (opacity only, so Reduce Motion keeps it), framed AFTER that
-        /// follow scroll: a jump makes UIKit lay out the lines it lands on,
-        /// and real heights replace the estimates above the end mark, so a
+        /// While following, the colophon is placed above the chip without a
+        /// glide (`placeActiveSentence`). Appearing with `animated` fades in
+        /// through a paper veil (opacity only, so Reduce Motion keeps it),
+        /// framed AFTER that placement: a jump makes UIKit lay out the lines
+        /// it lands on, and real heights replace the estimates above the end mark, so a
         /// veil framed before it would sit off the colophon until the next
         /// layout pass reframed it.
         func setColophon(_ colophon: ReaderColophon?, animated: Bool) {
@@ -737,7 +744,12 @@ struct ReaderTextView: UIViewRepresentable {
             // the next highlight draws, when it clears.
             textView.highlightLayer.setSentenceHidden(colophon != nil,
                                                       fadeDuration: appearing && animated ? Theme.Motion.colophon : nil)
-            if colophon != nil, isFollowing { followIfNeeded(animated: true) }
+            if colophon == nil { colophonBand = nil }
+            // R2-09: placed without a glide, on geometry laid out through the
+            // end mark, and checked on the passes that follow, so the end
+            // block lands whole above the chip, not where a glide aimed on
+            // the estimate it started from.
+            if colophon != nil, isFollowing { placeActiveSentence() }
             if appearing, animated { fadeInColophon() }
             updateFollowChip()
         }
@@ -1033,6 +1045,58 @@ struct ReaderTextView: UIViewRepresentable {
             }
         }
 
+        /// The band's foot moved: the bar or the chip measured, a chip
+        /// shown or gone, a sheet resting or closed. While the colophon
+        /// shows it is placed again without a glide and checked on the
+        /// passes that follow (R2-09): a glide pauses the placement check,
+        /// which then spent its passes while the chip's reach grew from 0
+        /// and left the end block under the chip and the bar. Otherwise the
+        /// voice follows as ever.
+        func bandMoved() {
+            if shownColophon != nil {
+                placeColophonAgain()
+            } else {
+                followIfNeeded(animated: true)
+            }
+            updateFollowChip()
+        }
+
+        /// The colophon re-measured and placed on the band as it is now.
+        /// The band is noted first, so a placement its layout can't yet
+        /// measure is not asked for again on every pass.
+        private func placeColophonAgain() {
+            follow.cachedActiveRect = nil
+            colophonBand = parent.obscuredBottom
+            placeActiveSentence()
+        }
+
+        /// A layout pass found the colophon aimed with an older band (one
+        /// that moved while a fresh column was building, when the view's
+        /// update returns early, or between updates): place it again once
+        /// the pass is over, while following and with no glide in flight.
+        private func placeColophonIfTheBandMoved() {
+            guard shownColophon != nil, isFollowing, freshBuild == nil, glide == nil,
+                  let band = colophonBand, band != parent.obscuredBottom,
+                  !colophonReplaceQueued else { return }
+            colophonReplaceQueued = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.colophonReplaceQueued = false
+                guard self.shownColophon != nil, self.isFollowing, self.glide == nil,
+                      let band = self.colophonBand, band != self.parent.obscuredBottom else { return }
+                self.placeColophonAgain()
+            }
+        }
+
+        /// While the colophon shows, whether it sits whole above the band's
+        /// foot (or is taller than the band, when its top shows first), as
+        /// last measured. Always true for a sentence.
+        private func colophonClearsTheBand() -> Bool {
+            guard shownColophon != nil, let rect = follow.cachedActiveRect,
+                  let viewport = viewport() else { return true }
+            return rect.height > viewport.height || rect.maxY <= viewport.maxY + 1
+        }
+
         /// Puts the active sentence on the landing line without motion (a
         /// fresh column, a reflow), then verifies on every layout pass.
         func placeActiveSentence() {
@@ -1063,7 +1127,9 @@ struct ReaderTextView: UIViewRepresentable {
             if shownColophon != nil {
                 // R1-19: the end block sits just above the More classics chip
                 // (the viewport is measured above it), the live end and a
-                // reopen alike.
+                // reopen alike. The band it was aimed with is kept, so a band
+                // that moves later places it again (R2-09).
+                colophonBand = parent.obscuredBottom
                 let last = sentenceRanges.last.flatMap { boundingRect(for: $0) }
                 return FollowBand.colophonLandingOffsetY(colophon: rect, lastSentence: last, viewport: viewport,
                                                          contentOffsetY: textView?.contentOffset.y ?? 0,
@@ -1276,6 +1342,7 @@ struct ReaderTextView: UIViewRepresentable {
 
             reframeColophonVeil()
             verifyPlacement()
+            placeColophonIfTheBandMoved()
         }
 
         /// Ends a placement or rotor-stop check and shows the chip it held.
@@ -1328,9 +1395,12 @@ struct ReaderTextView: UIViewRepresentable {
                 settled = revealOffset(for: id)
             } else {
                 guard let target = landingTarget() else { return .unresolved }
-                guard abs(target - textView.contentOffset.y) > 1 else { return .holds }
+                // A colophon below the band's foot never holds (R2-09): the
+                // check re-measures and re-aims it on each pass it has left.
+                guard abs(target - textView.contentOffset.y) > 1 || !colophonClearsTheBand() else { return .holds }
                 ensureLayoutThroughActiveSentence()
                 guard let confirmed = landingTarget() else { return .unresolved }
+                if !colophonClearsTheBand() { return .moveTo(confirmed) }
                 settled = confirmed
             }
             guard let settled, abs(settled - textView.contentOffset.y) > 1 else { return .holds }
@@ -1755,7 +1825,8 @@ struct ReaderTextView: UIViewRepresentable {
             let copy = UIAction(title: ReaderMenuCopy.copy, image: UIImage(systemName: "doc.on.doc")) {
                 [weak self] _ in self?.copySentence(id)
             }
-            let lookUp = UIAction(title: ReaderMenuCopy.lookUp(nil), image: UIImage(systemName: "character.book.closed"),
+            // The title names the word; the action looks up the whole term.
+            let lookUp = UIAction(title: ReaderMenuCopy.lookUpTitle(for: term), image: UIImage(systemName: "character.book.closed"),
                                   attributes: term == nil ? .disabled : []) {
                 [weak self] _ in if let term { self?.lookUp(term) }
             }

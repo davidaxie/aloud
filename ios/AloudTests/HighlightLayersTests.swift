@@ -109,16 +109,41 @@ final class HighlightLayersTests: XCTestCase {
         }
     }
 
-    func testAHeadingsMarkSitsBesideItsPill() throws {
+    /// R2-14: a bar beside a single serif "I" read as a text cursor. The
+    /// heading's mark is the pill's own edge: its box is the pill's, nothing
+    /// sits left of the pill, and the pill stays filled inside the edge.
+    func testAHeadingsMarkIsItsPillsEdge() throws {
         let host = CALayer()
         let layers = HighlightLayers(host: host)
         let heading = [Segment(frame: CGRect(x: 180, y: 100, width: 20, height: 29), baseline: 22)]
         layers.showSentence(heading, fill: ink, mark: ink, gutterX: 24, style: .heading, em: 24,
                             animated: false, reduceMotion: false)
         let pill = try XCTUnwrap(HighlightLayers.headingPills(heading, em: 24).first)
-        let mark = try XCTUnwrap(shapes(in: host)[1].path).boundingBoxOfPath
-        XCTAssertEqual(mark.maxX, pill.minX - HighlightLayers.markGap, accuracy: 0.001,
-                       "the mark beside the pill, not stranded at the gutter")
+        let markPath = try XCTUnwrap(shapes(in: host)[1].path)
+        let mark = markPath.boundingBoxOfPath
+        XCTAssertEqual(mark.minX, pill.minX, accuracy: 0.75, "the edge starts at the pill, no bar beside it")
+        XCTAssertEqual(mark.maxX, pill.maxX, accuracy: 0.75)
+        XCTAssertEqual(mark.minY, pill.minY, accuracy: 0.75)
+        XCTAssertEqual(mark.maxY, pill.maxY, accuracy: 0.75)
+        XCTAssertGreaterThanOrEqual(mark.minX, pill.minX - 0.001, "nothing left of the pill")
+        XCTAssertGreaterThanOrEqual(mark.minY, pill.minY - 0.001, "the edge stays inside the pill")
+        XCTAssertLessThanOrEqual(mark.maxY, pill.maxY + 0.001,
+                                 "the edge stays inside the pill, clear of the rule under it")
+        // A ring, not a filled pill: the pill's middle is outside the edge,
+        // a point on its left side is on it.
+        XCTAssertFalse(markPath.contains(CGPoint(x: pill.midX, y: pill.midY)))
+        XCTAssertTrue(markPath.contains(CGPoint(x: pill.minX + HighlightLayers.headingEdgeWidth / 2,
+                                                y: pill.midY)))
+        XCTAssertEqual(markPath, HighlightLayers.headingEdgePath(heading, em: 24))
+    }
+
+    func testABodySentencesMarkStaysTheGutterBar() throws {
+        let host = CALayer()
+        let layers = HighlightLayers(host: host)
+        layers.showSentence(line, fill: ink, mark: ink, gutterX: 24, animated: false, reduceMotion: false)
+        let mark = try XCTUnwrap(shapes(in: host)[1].path)
+        XCTAssertEqual(mark, HighlightLayers.markPath(line, gutterX: 24))
+        XCTAssertEqual(mark.boundingBoxOfPath.maxX, 24 - HighlightLayers.markGap, accuracy: 0.001)
     }
 
     // MARK: - Under the colophon (R1-19)

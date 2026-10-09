@@ -80,6 +80,57 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertEqual(ReaderTypography.typeset("a --- b"), "a --- b")
     }
 
+    /// The segmenter trims each sentence, so the dash TextNormalizer spaced
+    /// out (" - ") ends a sentence as " -". The end of the text counts as a
+    /// space (R2-13: Gatsby's last page ends on a dash).
+    func testASpacedHyphenEndingASentenceBecomesAnEmDash() {
+        XCTAssertEqual(ReaderTypography.typeset("And one fine morning -"),
+                       "And one fine morning \u{2014}")
+    }
+
+    /// A sentence the paragraph already started may open on the dash that
+    /// joined it to the one before. Only the column knows that, so the
+    /// leading rule needs `opensParagraph: false`; by default a "- item"
+    /// list line keeps its hyphen.
+    func testALeadingSpacedHyphenIsADashOnlyInsideAParagraph() {
+        XCTAssertEqual(ReaderTypography.typeset("- and so it ended.", opensParagraph: false),
+                       "\u{2014} and so it ended.")
+        XCTAssertEqual(ReaderTypography.typeset("- milk"), "- milk")
+        XCTAssertEqual(ReaderTypography.typeset("- milk", opensParagraph: true), "- milk")
+    }
+
+    func testLoneAndTrailingWordHyphensAreUntouched() {
+        XCTAssertEqual(ReaderTypography.typeset("-"), "-")
+        XCTAssertEqual(ReaderTypography.typeset("-", opensParagraph: false), "-")
+        XCTAssertEqual(ReaderTypography.typeset("well-"), "well-")
+        XCTAssertEqual(ReaderTypography.typeset("x-"), "x-")
+        XCTAssertEqual(ReaderTypography.typeset("a well-"), "a well-")
+        XCTAssertEqual(ReaderTypography.typeset("a ---"), "a ---")
+    }
+
+    /// The column passes `opensParagraph: false` for every sentence after
+    /// the first in its paragraph and leaves a paragraph's first sentence on
+    /// the default, so a list line keeps its hyphen.
+    @MainActor
+    func testTheColumnTypesetsADashAcrossASentenceBreak() {
+        let sentences = [
+            Sentence(id: 0, text: "And one fine morning -", para: 0, page: 1),
+            Sentence(id: 1, text: "- and so it ended.", para: 0, page: 1),
+            Sentence(id: 2, text: "- milk", para: 1, page: 1),
+        ]
+        let paragraphs = [
+            Paragraph(id: 0, sentenceIDs: 0..<2, page: 1),
+            Paragraph(id: 1, sentenceIDs: 2..<3, page: 1),
+        ]
+        let content = DocContent(title: "Test", pageCount: 1, sentences: sentences,
+                                 paragraphs: paragraphs, contentHash: "h")
+        let built = ReaderColumnText.makeAttributedString(content: content, fontSize: 19)
+        let rendered = built.string.string as NSString
+        XCTAssertEqual(rendered.substring(with: built.sentenceRanges[0]), "And one fine morning \u{2014}")
+        XCTAssertEqual(rendered.substring(with: built.sentenceRanges[1]), "\u{2014} and so it ended.")
+        XCTAssertEqual(rendered.substring(with: built.sentenceRanges[2]), "- milk")
+    }
+
     func testPlainTextIsReturnedAsIs() {
         let text = "No quotes or dashes here."
         XCTAssertEqual(ReaderTypography.typeset(text), text)
@@ -97,6 +148,9 @@ final class ReaderTypographyTests: XCTestCase {
             let sample = String((0..<length).map { _ in alphabet.randomElement(using: &generator)! })
             XCTAssertEqual(ReaderTypography.typeset(sample).utf16.count, sample.utf16.count,
                            "length changed for \(sample.debugDescription)")
+            XCTAssertEqual(ReaderTypography.typeset(sample, opensParagraph: false).utf16.count,
+                           sample.utf16.count,
+                           "length changed mid-paragraph for \(sample.debugDescription)")
         }
     }
 }

@@ -130,6 +130,19 @@ enum FollowBand {
         return max(previous, (slotHeight + Theme.Space.sm).rounded(.up))
     }
 
+    /// The least a chip stands: its 44pt touch target. The band counts it
+    /// from the pass a chip resolves in, before the chip is measured, so the
+    /// first placement already keeps the page above the chip (R2-09).
+    static let chipMinimumHeight: CGFloat = 44
+
+    /// `chipReach` with a chip showing and not yet measured: at least the
+    /// chip's minimum and the slot's padding; the running maximum as is
+    /// while no chip shows.
+    static func chipReach(previous: CGFloat, showsChip: Bool) -> CGFloat {
+        guard showsChip else { return previous }
+        return chipReach(previous: previous, slotHeight: chipMinimumHeight)
+    }
+
     /// R1-19: the contentOffset.y that ends the book on the chip: the
     /// colophon's bottom on the viewport's bottom edge (measured above the
     /// More classics chip, `obscuredBottom(showsChip: true)`), clamped so

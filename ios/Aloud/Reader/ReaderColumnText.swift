@@ -165,13 +165,17 @@ enum ReaderColumnText {
                 if !first {
                     result.append(NSAttributedString(string: " ", attributes: attributes))
                 }
+                // A later sentence of the same paragraph may open on the
+                // dash that joined it to the one before.
+                let opensParagraph = first
                 first = false
                 let location = result.length
                 // Display-only typesetting; UTF-16 length is preserved, so
                 // this range (and the word-tint offsets walked from the
                 // source text) stay exact.
                 result.append(NSAttributedString(
-                    string: ReaderTypography.typeset(sentence.text), attributes: attributes))
+                    string: ReaderTypography.typeset(sentence.text, opensParagraph: opensParagraph),
+                    attributes: attributes))
                 ranges[sentence.id] = NSRange(location: location,
                                               length: result.length - location)
             }

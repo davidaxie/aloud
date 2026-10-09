@@ -276,7 +276,8 @@ final class ListeningLoopUITests: XCTestCase {
         let cue = try cueTapTarget()
         let app = cue.app
         textCoordinate(cue.point, in: app).press(forDuration: 1.2)
-        let lookUp = app.buttons["Look Up"].firstMatch
+        // Look Up names its word (R2-12), so match the item by its start.
+        let lookUp = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Look Up")).firstMatch
         XCTAssertTrue(lookUp.waitForExistence(timeout: 5), "The long press should open the menu")
         // On the reader's bar, below the status bar: iOS keeps a tap on the
         // status bar for itself, so it never reaches the menu to close it.

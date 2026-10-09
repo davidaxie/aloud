@@ -47,13 +47,19 @@ final class ReaderAccessibilityUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: .zero)
             .withOffset(CGVector(dx: frame.midX, dy: frame.minY + 10))
             .press(forDuration: 1.2)
-        for title in ["Play from Here", "Copy", "Look Up", "Share\u{2026}"] {
+        for title in ["Play from Here", "Copy", "Share\u{2026}"] {
             XCTAssertTrue(app.buttons[title].firstMatch.waitForExistence(timeout: 5), "The menu should offer \(title)")
         }
+        // R2-12: Look Up names the word under the finger, quoted.
+        let lookUp = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Look Up")).firstMatch
+        XCTAssertTrue(lookUp.waitForExistence(timeout: 5), "The menu should offer Look Up")
+        XCTAssertTrue(NSPredicate(format: "SELF MATCHES %@", "Look Up \u{201C}[^\u{201D}]+\u{201D}")
+                        .evaluate(with: lookUp.label),
+                      "Look Up should name the word it defines, not \(lookUp.label)")
         // On the reader's bar, below the status bar: iOS keeps a tap on the
         // status bar for itself, so it never reaches the menu to close it.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
-        XCTAssertTrue(app.buttons["Look Up"].firstMatch.waitForNonExistence(timeout: 5), "The menu should close")
+        XCTAssertTrue(lookUp.waitForNonExistence(timeout: 5), "The menu should close")
         XCTAssertEqual(currentSentence(app), before, "Dismissing the menu moves nothing")
         XCTAssertEqual(stringValue(of: play), "paused", "The press plays nothing")
     }
@@ -85,21 +91,33 @@ final class ReaderAccessibilityUITests: XCTestCase {
         // fixed 44 pt target can read 43.99999999999994.
         XCTAssertGreaterThanOrEqual(back.frame.height, 44 - 0.01, "The way back is a 44 pt target")
 
-        let title = "Couldn't open this book"
-        let detail = "It may be damaged or a scanned document."
+        let title = "Couldn\u{2019}t open this book"
+        let detail = "It may be damaged or missing."
+        let buttons = ["reader.backToLibrary", "reader.deleteBook"]
         var order: [String] = []
-        func visit(_ element: XCUIElementSnapshot) {
-            if element.identifier == "reader.backToLibrary" {
+        var imageChains: [String] = []
+        func visit(_ element: XCUIElementSnapshot, chain: [String]) {
+            let here = chain + ["\(element.elementType.rawValue) '\(element.identifier)' '\(element.label)'"]
+            if buttons.contains(element.identifier) {
                 order.append(element.identifier)
                 return
             }
             if element.elementType == .staticText, [title, detail].contains(element.label) {
                 order.append(element.label)
             }
-            element.children.forEach(visit)
+            if element.elementType == .image { imageChains.append(here.joined(separator: " > ")) }
+            element.children.forEach { visit($0, chain: here) }
         }
-        visit(try app.snapshot())
-        XCTAssertEqual(order, [title, detail, "reader.backToLibrary"], "The lines, then the way back")
+        visit(try app.snapshot(), chain: [])
+        XCTAssertEqual(order, [title, detail] + buttons, "The lines, then the way back, then Delete Book")
+        XCTAssertFalse(app.buttons["reader.appearance"].exists, "No Aa on a page with no text (R2-11)")
+        // R2-10's root cause, kept with the run: every image and the chain
+        // of nodes above it.
+        let attachment = XCTAttachment(string: (app.images.allElementsBoundByIndex.map(\.debugDescription)
+                                                + ["--- snapshot chains ---"] + imageChains).joined(separator: "\n"))
+        attachment.name = "Failed-load images"
+        attachment.lifetime = .keepAlways
+        add(attachment)
         let barBottom = app.navigationBars.firstMatch.frame.maxY
         let icons = app.images.allElementsBoundByIndex.filter {
             $0.frame.minY >= barBottom && $0.frame.maxY <= back.frame.minY
@@ -110,6 +128,28 @@ final class ReaderAccessibilityUITests: XCTestCase {
         let shelf = app.buttons.matching(NSPredicate(format: "identifier IN %@", ["library.card", "library.continue"]))
         XCTAssertTrue(shelf.firstMatch.waitForExistence(timeout: 10), "The button returns to the Library")
         XCTAssertFalse(back.exists)
+    }
+
+    /// R2-11: a book that fails to open can be deleted from its failure
+    /// state, confirmed as on the shelf; the reader closes and the book's
+    /// card is gone.
+    func testAFailedLoadCanDeleteTheBook() {
+        let app = XCUIApplication.aloud(["-uitest-seed-classic", "64317", "-uitest-reset-library",
+                                         "-uitest-open-first-doc", "-uitest-fail-reader-load"])
+        app.launch()
+        let delete = app.buttons["reader.deleteBook"].firstMatch
+        XCTAssertTrue(delete.waitForExistence(timeout: 15), "The failure state should offer Delete Book")
+        XCTAssertGreaterThanOrEqual(delete.frame.height, 44 - 0.01, "Delete Book is a 44 pt target")
+        delete.tap()
+        // The dialog's destructive button, apart from the one that opened it.
+        let confirm = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@",
+                                                       "Delete", "reader.deleteBook")).firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Delete asks first, as on the shelf")
+        confirm.tap()
+        XCTAssertTrue(waitForNonExistence(of: delete, timeout: 10), "The reader closes")
+        XCTAssertTrue(waitForNonExistence(of: app.buttons["library.card"].firstMatch, timeout: 10),
+                      "The book's card is gone from the shelf")
+        XCTAssertFalse(app.buttons["library.continue"].exists, "Nothing left to continue")
     }
 
     func testTheScrubReadsThePositionLikeTheChapterLine() {

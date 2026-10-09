@@ -2,8 +2,12 @@ import Foundation
 
 /// Display-only typesetting for the reading column: straight quotes become
 /// curly quotes, a spaced hyphen (" - ") and a double hyphen ("--") become em
-/// dashes. Speech, search, caching and the content hash all keep the source
-/// text; only the rendered attributed string changes.
+/// dashes. Sentences are typeset one at a time and the segmenter trims them,
+/// so a hyphen at the end of a sentence (" -") counts as spaced, and so does a
+/// hyphen opening a sentence in the middle of a paragraph ("- ", only when the
+/// caller says the sentence does not open its paragraph — a list line that
+/// starts with "- " keeps its hyphen). Speech, search, caching and the content
+/// hash all keep the source text; only the rendered attributed string changes.
 ///
 /// LENGTH-PRESERVING BY CONTRACT (UTF-16). Sentence ranges, word-tint token
 /// offsets and tap hit-testing are all computed from the source text, so
@@ -12,7 +16,10 @@ import Foundation
 /// `typeset` returns the source unchanged if a result ever differs in length.
 enum ReaderTypography {
 
-    static func typeset(_ text: String) -> String {
+    /// - Parameter opensParagraph: false when the text continues a paragraph
+    ///   an earlier sentence opened, so a leading "- " is the dash that
+    ///   joined the two sentences rather than a list marker.
+    static func typeset(_ text: String, opensParagraph: Bool = true) -> String {
         guard text.utf16.contains(where: { $0 == quote || $0 == apostrophe || $0 == hyphen })
         else { return text }
 
@@ -45,7 +52,11 @@ enum ReaderTypography {
                         output[index + 1] = wordJoiner
                         index += 1
                     }
-                } else if previous == space, next == space {
+                } else if previous == space, next == nil || next == space {
+                    // " - " mid-sentence, or " -" where the trimmed sentence ends.
+                    output[index] = emDash
+                } else if !opensParagraph, previous == nil, next == space {
+                    // "- " opening a sentence the paragraph already started.
                     output[index] = emDash
                 }
             default:

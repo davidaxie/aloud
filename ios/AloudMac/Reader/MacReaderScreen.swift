@@ -183,15 +183,19 @@ struct MacReaderScreen: View {
 
     private var failureState: some View {
         VStack(spacing: Theme.Space.sm) {
+            // Hidden at a container that ignores its children, so no symbol
+            // name reaches VoiceOver (R2-10), as on the iPhone.
             Image(systemName: "doc.questionmark")
                 .imageScale(.large)
                 .font(Theme.font(.title))
                 .foregroundStyle(Theme.textFaint)
+                .accessibilityElement(children: .ignore)
                 .accessibilityHidden(true)
-            Text("Couldn't open this book")
+            Text(ReaderFailureCopy.title)
                 .font(Theme.font(.headline))
                 .foregroundStyle(Theme.text)
-            Text("It may be damaged or a scanned document.")
+                .accessibilityAddTraits(.isHeader)
+            Text(ReaderFailureCopy.detail)
                 .font(Theme.font(.footnote))
                 .foregroundStyle(Theme.textMuted)
         }

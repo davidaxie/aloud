@@ -1596,3 +1596,166 @@ extension ReaderFollowCoordinatorTests {
         XCTAssertEqual(textView.textContainerInset.left, Theme.Space.md)
     }
 }
+
+// MARK: - iPhone critique round 2: the reader page
+
+extension ReaderFollowCoordinatorTests {
+
+    /// `parent` with the band's foot at `band` (the bar, the chip, a sheet).
+    private func withBand(_ parent: ReaderTextView, _ band: CGFloat) -> ReaderTextView {
+        ReaderTextView(content: parent.content, isChapterBook: parent.isChapterBook, navigation: parent.navigation,
+                       fontSize: parent.fontSize, activeSentence: parent.activeSentence, activeWord: parent.activeWord,
+                       followWord: parent.followWord, obscuredBottom: band,
+                       voiceOffscreen: parent.$voiceOffscreen, textUnderTopBar: parent.$textUnderTopBar,
+                       onTapSentence: parent.onTapSentence)
+    }
+
+    /// The colophon's foot against the viewport's, measured afresh.
+    private func colophonFoot(_ coordinator: ReaderTextView.Coordinator) throws -> (colophon: CGFloat, viewport: CGFloat) {
+        let rect = try XCTUnwrap(coordinator.measureActiveSentenceRect(), "the colophon is measured")
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        return (rect.maxY, viewport.maxY)
+    }
+
+    /// The last of 160 lines read, following, `obscuredBottom` covered.
+    private func atTheEnd(obscuredBottom: CGFloat = 0, reduceMotion: Bool = false) throws
+        -> (coordinator: ReaderTextView.Coordinator, textView: ReaderUITextView) {
+        let (coordinator, textView) = try makeColumn(obscuredBottom: obscuredBottom, reduceMotion: reduceMotion)
+        coordinator.setActiveSentence(159, scroll: false)
+        coordinator.resumeFollowing()
+        settleLayout(textView)
+        return (coordinator, textView)
+    }
+
+    private var endColophon: ReaderColophon {
+        ReaderColophon(title: "Lines", author: "A. Writer", words: 165 * 72, rate: 1)
+    }
+
+    // MARK: R2-09: the colophon lands whole above the chip
+
+    /// The end reached on screen is placed at once, with no glide: a glide
+    /// pauses the placement check, which then spent its passes on a band
+    /// still growing. The colophon's foot is on the chip line before any
+    /// animation could run.
+    func testTheColophonIsPlacedAtOnceWhenTheEndArrives() throws {
+        let (coordinator, _) = try atTheEnd(obscuredBottom: 120)
+        coordinator.setColophon(endColophon, animated: true)
+        let foot = try colophonFoot(coordinator)
+        XCTAssertEqual(foot.colophon, foot.viewport, accuracy: 1, "the colophon's foot on the chip line at once")
+        XCTAssertEqual(coordinator.colophonBand, 120, "placed on the band as it is")
+    }
+
+    /// The band moving under a showing colophon (the bar or the chip
+    /// measured after the first placement, a chip's reach growing from 0)
+    /// places it again at once, and the passes after keep it there.
+    func testABandMovingUnderTheColophonPlacesItAgainAboveTheChip() throws {
+        let (coordinator, textView) = try atTheEnd()
+        coordinator.setColophon(endColophon, animated: false)
+        settleLayout(textView)
+        let before = try colophonFoot(coordinator)
+        XCTAssertEqual(before.colophon, before.viewport, accuracy: 1, "on the band's foot with no chrome")
+
+        coordinator.parent = withBand(coordinator.parent, 200)
+        coordinator.bandMoved()
+        let moved = try colophonFoot(coordinator)
+        XCTAssertLessThanOrEqual(moved.colophon, moved.viewport + 1,
+                                 "placed again above the chip at once, not left gliding under it")
+        runLayoutPasses(textView)
+        let settled = try colophonFoot(coordinator)
+        XCTAssertEqual(settled.colophon, settled.viewport, accuracy: 1, "the passes after keep it on the chip line")
+        XCTAssertEqual(coordinator.colophonBand, 200)
+    }
+
+    /// A band that moved without the view's update seeing it (a fresh
+    /// column building, when the update returns early) is caught by the
+    /// layout passes that follow. Under Reduce Motion, so no glide is left
+    /// in flight on this windowless host.
+    func testALayoutPassPlacesTheColophonAgainOnABandItWasNotAimedWith() throws {
+        let (coordinator, textView) = try atTheEnd(reduceMotion: true)
+        coordinator.setColophon(endColophon, animated: false)
+        settleLayout(textView)
+        XCTAssertEqual(coordinator.colophonBand, 0)
+
+        coordinator.parent = withBand(coordinator.parent, 180)   // no bandMoved(): the update was skipped
+        settleLayout(textView)
+        settle()
+        settleLayout(textView)
+        let foot = try colophonFoot(coordinator)
+        XCTAssertEqual(foot.colophon, foot.viewport, accuracy: 1, "on the chip line of the band as it is")
+        XCTAssertEqual(coordinator.colophonBand, 180)
+    }
+
+    /// A chip counts toward the band from the pass it resolves in, at its
+    /// 44pt minimum and the slot's padding, before it is ever measured;
+    /// measured, the running maximum holds.
+    func testAShowingChipCountsAtItsMinimumBeforeItIsMeasured() throws {
+        XCTAssertEqual(FollowBand.chipReach(previous: 0, showsChip: true),
+                       (FollowBand.chipMinimumHeight + Theme.Space.sm).rounded(.up))
+        XCTAssertEqual(FollowBand.chipReach(previous: 0, showsChip: false), 0, "no chip, no reach")
+        XCTAssertEqual(FollowBand.chipReach(previous: 70, showsChip: true), 70, "a taller chip seen holds")
+        let s = try SourceTree.sources(only: ["Reader/ReaderScreen.swift"])
+        let screen = try XCTUnwrap(s["Reader/ReaderScreen.swift"])
+        XCTAssertTrue(screen.contains("chipReach: FollowBand.chipReach(previous: chipReach,"),
+                      "the band counts a resolved chip before it is measured")
+    }
+
+    // MARK: R2-10 / R2-11: the failed-load screen
+
+    func testTheFailureCopySaysWhatCanStillGoWrong() {
+        XCTAssertEqual(ReaderFailureCopy.title, "Couldn\u{2019}t open this book")
+        XCTAssertEqual(ReaderFailureCopy.detail, "It may be damaged or missing.")
+        XCTAssertEqual(ReaderFailureCopy.deleteBook, "Delete Book\u{2026}")
+        XCTAssertEqual(ReaderFailureCopy.deleteTitle("Emma"), "Delete \u{201C}Emma\u{201D}?")
+    }
+
+    /// The failure state: its icon hidden at a container that ignores its
+    /// children, its title a heading, magic tap on the page only, Delete
+    /// Book through the shelf's own entry point, and no Aa.
+    func testTheFailureStateHidesItsIconAndOffersDelete() throws {
+        let s = try SourceTree.sources(only: ["Reader/ReaderScreen.swift"])
+        let screen = try XCTUnwrap(s["Reader/ReaderScreen.swift"])
+        let failure = try XCTUnwrap(screen.range(of: "private var failureState: some View {"))
+        let state = String(screen[failure.lowerBound...].prefix(3_200))
+        XCTAssertTrue(state.contains(".accessibilityElement(children: .ignore)\n                .accessibilityHidden(true)"),
+                      state)
+        XCTAssertTrue(state.contains("Text(ReaderFailureCopy.title)"), state)
+        XCTAssertTrue(state.contains(".accessibilityAddTraits(.isHeader)"), state)
+        XCTAssertTrue(state.contains("reader.deleteBook"), state)
+        XCTAssertTrue(state.contains("DocumentAction.deleteMessage(for: liveDocument)"), state)
+        XCTAssertTrue(screen.contains("model.deleteDocument(liveDocument)"), "the shelf's own delete")
+        XCTAssertTrue(screen.contains("if !loadFailed {"), "Aa hides on a page with no text")
+        // Magic tap sits on the page, never on the stack that also holds
+        // the failure state.
+        let page = try XCTUnwrap(screen.range(of: "page(content: content, navigation: navigation)\n"))
+        let afterPage = String(screen[page.upperBound...].prefix(800))
+        XCTAssertTrue(afterPage.contains(".accessibilityAction(.magicTap)"), afterPage)
+        XCTAssertFalse(screen.contains("// R12b: a two-finger double-tap anywhere on the screen"),
+                       "no screen-wide magic tap over the failure state")
+    }
+
+    /// The Mac's failure state reads the shared copy, its title a heading.
+    func testTheMacFailureStateReadsTheSharedCopy() throws {
+        guard SourceTree.exists(SourceTree.macRoot) else { throw XCTSkip("No Mac sources in this checkout") }
+        let s = try SourceTree.sources(in: SourceTree.macRoot, only: ["Reader/MacReaderScreen.swift"])
+        let mac = try XCTUnwrap(s["Reader/MacReaderScreen.swift"])
+        XCTAssertTrue(mac.contains("Text(ReaderFailureCopy.title)"))
+        XCTAssertTrue(mac.contains("Text(ReaderFailureCopy.detail)"))
+        XCTAssertFalse(mac.contains("Couldn't open this book"), "no literal of its own")
+        XCTAssertTrue(mac.contains(".accessibilityElement(children: .ignore)"))
+        XCTAssertTrue(mac.contains(".accessibilityAddTraits(.isHeader)"))
+    }
+
+    // MARK: R2-12: Look Up names its word
+
+    func testLookUpNamesTheWordItWillDefine() throws {
+        XCTAssertEqual(ReaderMenuCopy.lookUpTitle(for: "borne"), "Look Up \u{201C}borne\u{201D}")
+        XCTAssertEqual(ReaderMenuCopy.lookUpTitle(for: nil), "Look Up", "no word under the finger")
+        let limit = String(repeating: "a", count: ReaderMenuCopy.lookUpTermLimit)
+        XCTAssertEqual(ReaderMenuCopy.lookUpTitle(for: limit), "Look Up \u{201C}\(limit)\u{201D}")
+        XCTAssertEqual(ReaderMenuCopy.lookUpTitle(for: limit + "a"), "Look Up", "past the limit, plain")
+        let s = try SourceTree.sources(only: ["Reader/ReaderTextView.swift"])
+        let view = try XCTUnwrap(s["Reader/ReaderTextView.swift"])
+        XCTAssertFalse(view.contains("ReaderMenuCopy.lookUp(nil)"), "the term is no longer dropped")
+        XCTAssertTrue(view.contains("ReaderMenuCopy.lookUpTitle(for: term)"))
+    }
+}
