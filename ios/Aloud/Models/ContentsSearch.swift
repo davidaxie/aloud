@@ -26,8 +26,9 @@ enum ContentsSearch {
     /// A pick in Contents (R15, M16): the shared jump, which offers Undo
     /// jump with the listener's status, then play from there if the book
     /// was not already playing. Undo jump restores the sentence and the
-    /// pause. True when this call started playback, so the iPhone plays
-    /// its soft impact only then (R20).
+    /// pause. True when this call started playback: the iPhone answers it
+    /// with the soft play impact, and any other pick with the place tick
+    /// (R20).
     @MainActor @discardableResult
     static func jumpAndPlay(_ playback: PlaybackController, to sentence: Int, origin: JumpOrigin) -> Bool {
         playback.jump(to: sentence, origin: origin)

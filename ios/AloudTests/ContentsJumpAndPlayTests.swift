@@ -40,7 +40,7 @@ final class ContentsJumpAndPlayTests: XCTestCase {
         XCTAssertTrue(playing)
 
         let started = ContentsSearch.jumpAndPlay(rig.controller, to: 9, origin: .searchResult)
-        XCTAssertFalse(started, "already playing: no second start, no haptic")
+        XCTAssertFalse(started, "already playing: no second start, so the place tick, not play")
         XCTAssertEqual(rig.controller.currentSentence, 9)
         XCTAssertTrue(rig.controller.isActive)
         rig.controller.pause()
