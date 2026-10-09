@@ -199,9 +199,12 @@ final class PlaceHistoryRulesTests: XCTestCase {
             texts.append("CHAPTER \(numeral)")
             texts += (1...3).map { "Sentence \($0) of chapter \(numeral) goes on for a little while." }
         }
-        let sentences = texts.enumerated().map { Sentence(id: $0.offset, text: $0.element, para: $0.offset, page: 0) }
-        let paragraphs = texts.indices.map { Paragraph(id: $0, sentenceIDs: $0..<($0 + 1), page: 0) }
-        let content = DocContent(title: "Chaptered", pageCount: 1, sentences: sentences,
+        // A text book's chapters are its page runs: each chapter is a page.
+        let sentences = texts.enumerated().map {
+            Sentence(id: $0.offset, text: $0.element, para: $0.offset, page: $0.offset / 4)
+        }
+        let paragraphs = texts.indices.map { Paragraph(id: $0, sentenceIDs: $0..<($0 + 1), page: $0 / 4) }
+        let content = DocContent(title: "Chaptered", pageCount: 6, sentences: sentences,
                                  paragraphs: paragraphs, contentHash: "opens-on-current")
         return ReaderNavigation(content: content, kind: .text)
     }

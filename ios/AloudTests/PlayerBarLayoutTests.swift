@@ -422,7 +422,7 @@ final class PlayerBarLayoutTests: XCTestCase {
                                          onBackFiveMinutes: {}, rowAlignment: rowAlignment)
                 .environment(\.dynamicTypeSize, size)
             return UIHostingController(rootView: line)
-                .sizeThatFits(in: CGSize(width: 375, height: .greatestFiniteMagnitude))
+                .sizeThatFits(in: CGSize(width: 375, height: CGFloat.greatestFiniteMagnitude))
                 .height
         }
         XCTAssertEqual(height(.large, .bottom), 44, accuracy: 0.5, "one row at the default size")

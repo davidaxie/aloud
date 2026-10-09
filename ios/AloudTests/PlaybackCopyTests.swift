@@ -72,9 +72,11 @@ final class PlaybackCopyTests: XCTestCase {
         XCTAssertEqual(PlaybackNotice.backedUp(sentences: 4).text, "Backed up 4 sentences")
     }
 
-    func testTheApostropheIsPlainASCII() {
-        XCTAssertTrue(PlaybackNotice.skippedSentence.text.contains("'"))
-        XCTAssertFalse(PlaybackNotice.skippedSentence.text.contains("\u{2019}"))
+    /// R2-33: copy sets typographer's marks, so the notice's apostrophe is
+    /// the right single quote, never the typewriter one.
+    func testTheApostropheIsTypographic() {
+        XCTAssertTrue(PlaybackNotice.skippedSentence.text.contains("\u{2019}"))
+        XCTAssertFalse(PlaybackNotice.skippedSentence.text.contains("'"))
     }
 
     /// Worded by ListeningEstimate from the rewind itself (R25); the words

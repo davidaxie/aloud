@@ -39,13 +39,12 @@ struct BookshelfView: View {
     static let searchPrompt = "Title or author"
 
     /// R2-32: the placeholder's ink, AA on the fill the system field draws
-    /// in both modes: textFaint in light (5.3:1 on the light fill), and
-    /// textMuted in dark, where textFaint is 4.0:1 on the dark fill
-    /// (tertiarySystemFill over bg) and textMuted 5.3:1. Both tokens carry
-    /// their Increase Contrast values, resolved in the field's own traits.
+    /// (tertiarySystemFill over bg) in both modes: textMuted, since
+    /// textFaint measures 4.4:1 on the light fill and 4.0:1 on the dark
+    /// one. The token carries its Increase Contrast value, resolved in the
+    /// field's own traits.
     static let searchPromptInk = UIColor { traits in
-        let token = traits.userInterfaceStyle == .dark ? Theme.textMuted : Theme.textFaint
-        return UIColor(token).resolvedColor(with: traits)
+        UIColor(Theme.textMuted).resolvedColor(with: traits)
     }
 
     var body: some View {

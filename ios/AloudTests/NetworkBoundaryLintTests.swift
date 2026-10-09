@@ -18,12 +18,22 @@ final class NetworkBoundaryLintTests: XCTestCase {
     private static let macRoot = SourceTree.appRoot.deletingLastPathComponent()
         .appendingPathComponent("AloudMac", isDirectory: true)
 
+    /// The license cards' source links (R2-20): addresses handed to the
+    /// system browser by a `Link`, never fetched by the app.
+    private static let linkOnly = "Settings/LicensesView.swift"
+
     func testOnlyTheDownloadNamesANetworkAPI() throws {
         let sources = try SourceTree.sources()
         for needle in Self.networkAPIs {
-            let elsewhere = SourceTree.files(containing: needle, in: sources).filter { !Self.allowed.contains($0) }
-            XCTAssertEqual(elsewhere, [], "'\(needle)' belongs only to \(Self.allowed.sorted())")
+            let allowed = needle == "\"http" ? Self.allowed.union([Self.linkOnly]) : Self.allowed
+            let elsewhere = SourceTree.files(containing: needle, in: sources).filter { !allowed.contains($0) }
+            XCTAssertEqual(elsewhere, [], "'\(needle)' belongs only to \(allowed.sorted())")
         }
+        // Its addresses only ever reach a Link.
+        let licenses = try XCTUnwrap(sources[Self.linkOnly])
+        XCTAssertEqual(licenses.components(separatedBy: "entry.source").count - 1, 2,
+                       "one Link and its label read the source")
+        XCTAssertTrue(licenses.contains("Link(destination: entry.source)"))
     }
 
     /// The scan sees the real ones, so an empty result above means

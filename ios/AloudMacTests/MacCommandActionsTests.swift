@@ -306,7 +306,7 @@ final class MacCommandActionsTests: XCTestCase {
             XCTAssertEqual(router.rootPresentation, alert, "the alert stays up")
             router.dismissRootPresentation(alert)
         }
-        XCTAssertEqual(performed.count, 3, "nothing ran under an alert")
+        XCTAssertEqual(performed.count, bookItems.count, "nothing ran under an alert")
     }
 
     /// Under Rename or the Delete confirmation, ⌘O would swap the alert for

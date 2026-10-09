@@ -143,7 +143,7 @@ final class ClassicsLintTests: XCTestCase {
     }
 
     /// R2-32: the Classics placeholder is drawn in BookshelfView's
-    /// searchPromptInk (textFaint in light, textMuted in dark), warm and AA
+    /// searchPromptInk (textMuted in both modes), warm and AA
     /// on the field, never the system's neutral grey (3.47:1 in the warm
     /// palette). Apple's contrast audit doesn't flag it, so the guard is
     /// here: the prompt asks for that ink, and the UIKit field underneath
@@ -159,8 +159,8 @@ final class ClassicsLintTests: XCTestCase {
         XCTAssertTrue(view.contains("SearchPlaceholderTint(prompt: Self.searchPrompt)"),
                       "the UIKit field's placeholder is set as well")
         let ink = try region(of: view, from: "static let searchPromptInk = UIColor { traits in", length: 220)
-        XCTAssertTrue(ink.contains("traits.userInterfaceStyle == .dark ? Theme.textMuted : Theme.textFaint"),
-                      "textMuted in dark, where textFaint is under AA on the field: \(String(ink))")
+        XCTAssertTrue(ink.contains("UIColor(Theme.textMuted).resolvedColor(with: traits)"),
+                      "textMuted, since textFaint is under AA on the field: \(String(ink))")
         let tint = try region(of: view, from: "private struct SearchPlaceholderTint: UIViewControllerRepresentable {",
                               length: 2_600)
         XCTAssertTrue(tint.contains("BookshelfView.searchPromptInk.resolvedColor(with: field.traitCollection)"),
@@ -177,8 +177,8 @@ final class ClassicsLintTests: XCTestCase {
 
     /// R2-32's gate, measured: the placeholder's ink reaches 4.5:1 on the
     /// fill the system search field draws (tertiarySystemFill over the
-    /// screen's bg) in light, dark and both under Increase Contrast. One
-    /// textFaint for both modes was 4.0:1 in dark.
+    /// screen's bg) in light, dark and both under Increase Contrast.
+    /// textFaint was 4.4:1 in light and 4.0:1 in dark.
     func testTheSearchPlaceholderInkClearsAAOnTheFieldInEveryMode() {
         struct RGB { var r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat }
         func rgb(_ color: UIColor, _ traits: UITraitCollection) -> RGB {
@@ -201,7 +201,7 @@ final class ClassicsLintTests: XCTestCase {
                     traits.accessibilityContrast = high ? .high : .normal
                 }
                 let mode = (dark ? "dark" : "light") + (high ? " + Increase Contrast" : "")
-                let (token, name) = dark ? (Theme.textMuted, "textMuted") : (Theme.textFaint, "textFaint")
+                let (token, name) = (Theme.textMuted, "textMuted")
                 let ink = rgb(BookshelfView.searchPromptInk, traits)
                 let want = rgb(UIColor(token), traits)
                 XCTAssertEqual(ink.r, want.r, accuracy: 0.002, "\(mode): \(name)")

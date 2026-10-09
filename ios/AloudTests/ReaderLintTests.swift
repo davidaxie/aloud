@@ -203,20 +203,24 @@ final class ReaderLintTests: XCTestCase {
     /// centered at the accessibility sizes, as the Voice & speed sheet's
     /// does: bare, it ran to the edges and wrapped "Text &" to the left.
     func testTheSheetTitlesWrapCenteredInsideTheGutters() throws {
-        let paths = ["Reader/AppearanceSheet.swift": "Text(AppearanceCopy.title)",
-                     "Settings/ListeningSheet.swift": "Text(ListeningCopy.title)"]
-        let sources = try SourceTree.sources(only: Array(paths.keys))
-        for (path, title) in paths {
-            let text = try XCTUnwrap(sources[path])
-            let start = try XCTUnwrap(text.range(of: title), path)
-            let modifiers = text[start.upperBound...].prefix(400)
-            let header = try XCTUnwrap(modifiers.range(of: ".accessibilityAddTraits(.isHeader)"), path)
-            let block = modifiers[..<header.lowerBound]
-            for needle in [".multilineTextAlignment(.center)", ".fixedSize(horizontal: false, vertical: true)",
-                           ".padding(.horizontal, Theme.Space.sheetGutter)"] {
-                XCTAssertTrue(block.contains(needle), "\(path): the title lacks \(needle)")
-            }
+        // Both sheets draw their title through the shared SheetHeader
+        // (SettingsHomeLintTests checks they do), so the rule lives there.
+        let path = "Theme/SheetGrabber.swift"
+        let sources = try SourceTree.sources(only: [path])
+        let chrome = try XCTUnwrap(sources[path])
+        let start = try XCTUnwrap(chrome.range(of: "private var titleText: some View {"), path)
+        let block = chrome[start.upperBound...].prefix(400)
+        for needle in ["Text(title)", ".multilineTextAlignment(.center)",
+                       ".fixedSize(horizontal: false, vertical: true)"] {
+            XCTAssertTrue(block.contains(needle), "SheetHeader's title lacks \(needle)")
         }
+        let header = try XCTUnwrap(chrome.range(of: "struct SheetHeader: View {"), path)
+        let body = chrome[header.upperBound..<start.lowerBound]
+        XCTAssertEqual(body.components(separatedBy: "titleText\n").count - 1, 2, "one title in each layout")
+        XCTAssertTrue(body.contains(".padding(.horizontal, Theme.Space.sheetGutter)\n"),
+                      "inside the gutters with the close on its own row")
+        XCTAssertTrue(body.contains(".padding(.horizontal, Theme.Space.sheetGutter + Theme.SheetTarget.minimum)"),
+                      "clear of the close beside it")
     }
 
     /// J027: under Bold Text the stepper's serif A glyphs set in the

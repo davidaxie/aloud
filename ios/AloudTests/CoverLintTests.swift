@@ -110,8 +110,11 @@ final class CoverLintTests: XCTestCase {
                        "CoverGeometry.panelInset", "CoverGeometry.spineOpacity", ".rotationEffect(.degrees(45))"] {
             XCTAssertTrue(plain.contains(needle), "the small face draws \(needle)")
         }
+        // From the small branch on: the grid branch's own test,
+        // `showsText(width:)`, would read as a Text.
+        let smallFace = String(plain[small.upperBound...])
         for banned in [".redacted", "Capsule(", "Text(", "title"] {
-            XCTAssertFalse(plain.contains(banned), "the small face draws no '\(banned)'")
+            XCTAssertFalse(smallFace.contains(banned), "the small face draws no '\(banned)'")
         }
         let grid = String(plain[branch.upperBound..<small.lowerBound])
         XCTAssertTrue(grid.contains("CoverGeometry.plainRuleTop"), "a grid-size loading face keeps its rule: \(grid)")

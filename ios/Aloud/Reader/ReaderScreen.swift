@@ -399,7 +399,7 @@ struct ReaderScreen: View {
             // it go, confirmed as on the shelf (R2-11).
             Button(role: .destructive) { confirmingDelete = true } label: {
                 Text(ReaderFailureCopy.deleteBook)
-                    .font(Theme.font(.subheadline))
+                    .font(Theme.font(.callout))
                     .foregroundStyle(Theme.accentStrong)
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
