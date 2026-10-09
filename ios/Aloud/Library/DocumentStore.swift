@@ -867,9 +867,10 @@ final class DocumentStore: ObservableObject {
 
     /// Mark as Unfinished: a finished book back at the place it had.
     /// Written at once, as `markFinished` is, and throws, the book as it
-    /// was, when library.json can't record it. `newestPlace` is the book's
-    /// newest "Where you stopped" sentence, the place to go back to when
-    /// the mark kept none.
+    /// was, when library.json can't record it. `newestPlace` is the
+    /// sentence of the book's newest place-history stop
+    /// (`PlaceHistoryStore.places`), the place to go back to when the mark
+    /// kept none.
     func markUnfinished(id: UUID, newestPlace: Int? = nil) throws {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
         try changeRecord(at: index, to: Self.markingUnfinished(documents[index], newestPlace: newestPlace))
@@ -877,10 +878,12 @@ final class DocumentStore: ObservableObject {
 
     /// The record back where it was before Mark as Finished: the place the
     /// mark kept, else `newestPlace` (a sentence of the book's current
-    /// content), else its start. A place that would still read Finished
-    /// (the newest stop of a book that played to its end) is no way back:
-    /// the start is. The kept place goes either way. Pure, for the unit
-    /// tests.
+    /// content) short of the end, else its start. The newest stop of a book
+    /// that played to its end is that end: one within
+    /// `PlaceHistory.samePlaceSentences` of the last sentence (or past it)
+    /// is no way back, nor is any place that would still read Finished, so
+    /// a book that finished by playing returns to the start, however short.
+    /// The kept place goes either way. Pure, for the unit tests.
     nonisolated static func markingUnfinished(_ document: LibraryDocument,
                                               newestPlace: Int? = nil) -> LibraryDocument {
         var unfinished = document
@@ -888,8 +891,9 @@ final class DocumentStore: ObservableObject {
         if let sentence = document.placeBeforeFinish, let fraction = document.fractionBeforeFinish {
             unfinished.progressSentence = min(max(sentence, 0), last)
             unfinished.progressFraction = min(max(fraction, 0), 1)
-        } else if let sentence = newestPlace, document.sentenceCount > 0 {
-            let place = min(max(sentence, 0), last)
+        } else if let sentence = newestPlace, document.sentenceCount > 0,
+                  sentence < last - PlaceHistory.samePlaceSentences {
+            let place = max(sentence, 0)
             unfinished.progressSentence = place
             unfinished.progressFraction = Double(place) / Double(document.sentenceCount)
         } else {

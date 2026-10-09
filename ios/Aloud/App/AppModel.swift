@@ -191,6 +191,9 @@ final class AppModel: ObservableObject {
             // (PlatformTuning.prewarmsForLoadedBook): on an iPhone that is
             // the reader LaunchRestore reopens, where no card ever shows.
             loadedBook: playback.$document.map { $0?.id }.eraseToAnyPublisher(),
+            // Back at the Library's root, a book that was opening and never
+            // loaded asks no more (NeuralPrewarm.bookIsOpening).
+            atLibraryRoot: router.$path.map(\.isEmpty).eraseToAnyPublisher(),
             isModelInstalled: { [unowned modelManager] in modelManager.isInstalled },
             // No warm-up while hot, on both apps: R11's heat policy, which
             // is shared, swaps the natural voice out at `.serious` anyway.
@@ -237,7 +240,7 @@ final class AppModel: ObservableObject {
         nowPlaying.onPlayWithNoBook = { [weak self] in
             Task { @MainActor [weak self] in _ = await self?.shortcutActions.continueListening() }
         }
-        // "Where you stopped": each stop is recorded per book.
+        // Place history: each stop is recorded per book.
         observePlaceHistory()
 
         // Persist progress even when playback continues outside the reader.
@@ -331,8 +334,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Mark as Unfinished, on both apps: the store puts a finished book back
-    /// at the place it had (`DocumentStore.markingUnfinished`), or at its
-    /// newest "Where you stopped" for this text when the mark kept none.
+    /// at the place it had (`DocumentStore.markingUnfinished`), or at the
+    /// book's newest place-history stop for this text
+    /// (`PlaceHistoryStore.places`) when the mark kept none.
     /// Nothing loads or plays. Only once that is written does a controller
     /// still holding the book at its end let go of it, as for Mark as
     /// Finished, so the next open or Play starts from the place put back,

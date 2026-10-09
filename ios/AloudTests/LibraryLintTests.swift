@@ -660,13 +660,15 @@ final class LibraryLintTests: XCTestCase {
         let open = try XCTUnwrap(library.range(of: "private func open(_ document: LibraryDocument) {"))
         let body = String(library[open.upperBound...].prefix(500))
         let opens = try XCTUnwrap(body.range(of: "continuePlayback.readerOpens(document.id)"), body)
-        let warms = try XCTUnwrap(body.range(of: "model.neuralPrewarm.bookIsOpening()"), body)
+        let warms = try XCTUnwrap(body.range(of: "model.neuralPrewarm.bookIsOpening(document.id)"), body)
         let routes = try XCTUnwrap(body.range(of: "router.open(document)"), body)
         XCTAssertLessThan(opens.lowerBound, warms.lowerBound, body)
         XCTAssertLessThan(warms.lowerBound, routes.lowerBound, body)
         let app = try XCTUnwrap(sources["App/AppModel.swift"])
         XCTAssertTrue(app.contains("browsingClassics: router.$path.map { $0.last == .bookshelf }\n                .removeDuplicates()"),
                       "Classics on top of the stack feeds the warm-up")
+        XCTAssertTrue(app.contains("atLibraryRoot: router.$path.map(\\.isEmpty)"),
+                      "the Library's root ends an open's ask")
     }
 
     /// P023: Delete sits in its own section of the long-press menu; the

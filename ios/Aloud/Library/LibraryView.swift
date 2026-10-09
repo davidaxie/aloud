@@ -438,8 +438,9 @@ struct LibraryView: View {
         if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }
         continuePlayback.readerOpens(document.id)
         // A book opened from a shelf with no Continue card would otherwise
-        // load the natural voice cold behind "Preparing voice…".
-        model.neuralPrewarm.bookIsOpening()
+        // load the natural voice cold behind the preparing-voice notice
+        // (PlaybackController.isPreparingVoice).
+        model.neuralPrewarm.bookIsOpening(document.id)
         router.open(document)
     }
 

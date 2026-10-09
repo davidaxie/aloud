@@ -5,7 +5,7 @@ import XCTest
 /// R18's pre-warm: Kokoro loads while the Continue card shows, for the
 /// neural voice with the model installed, in the foreground and never under
 /// Low Power Mode. A memory warning frees it and holds it cold until the card
-/// appears again. It never touches playback's status, "Preparing voice…",
+/// appears again. It never touches playback's status, `isPreparingVoice`,
 /// the schedule or announcements.
 ///
 /// Silent and isolated: the frozen rig's muted controller (nothing plays),
@@ -49,6 +49,8 @@ final class NeuralPrewarmTests: XCTestCase {
         /// Whether Classics is the top of the stack.
         let classics: PassthroughSubject<Bool, Never>
         let book: PassthroughSubject<UUID?, Never>
+        /// Whether nothing is pushed over the Library.
+        let root: PassthroughSubject<Bool, Never>
         let heat: CurrentValueSubject<Bool, Never>
         let conditions: Conditions
         let center: NotificationCenter
@@ -68,6 +70,7 @@ final class NeuralPrewarmTests: XCTestCase {
         let card = PassthroughSubject<Bool, Never>()
         let classics = PassthroughSubject<Bool, Never>()
         let book = PassthroughSubject<UUID?, Never>()
+        let root = PassthroughSubject<Bool, Never>()
         let heat = CurrentValueSubject<Bool, Never>(hot)
         let conditions = Conditions()
         let center = NotificationCenter()
@@ -76,6 +79,7 @@ final class NeuralPrewarmTests: XCTestCase {
                                     cardVisible: card.eraseToAnyPublisher(),
                                     browsingClassics: classics.eraseToAnyPublisher(),
                                     loadedBook: book.eraseToAnyPublisher(),
+                                    atLibraryRoot: root.eraseToAnyPublisher(),
                                     isModelInstalled: { conditions.modelInstalled },
                                     isLowPowerMode: { conditions.lowPowerMode },
                                     heat: heat.eraseToAnyPublisher(),
@@ -86,8 +90,8 @@ final class NeuralPrewarmTests: XCTestCase {
                                     memoryHoldEndsOnReturn: rules.holdEndsOnReturn,
                                     releasesPausedInBackground: rules.releasesPausedInBackground,
                                     notifications: center)
-        return Harness(rig: rig, neural: neural, card: card, classics: classics, book: book, heat: heat,
-                       conditions: conditions, center: center, prewarm: prewarm)
+        return Harness(rig: rig, neural: neural, card: card, classics: classics, book: book, root: root,
+                       heat: heat, conditions: conditions, center: center, prewarm: prewarm)
     }
 
     private func elapse(_ seconds: Double) async {
@@ -206,7 +210,7 @@ final class NeuralPrewarmTests: XCTestCase {
                 await elapse(0.1)
             }
             harness.classics.send(true)
-            harness.prewarm.bookIsOpening()
+            harness.prewarm.bookIsOpening(UUID())
             harness.prewarm.reevaluate()
             await elapse(0.3)
             XCTAssertEqual(harness.neural.warmUpCalls, 0, gate)
@@ -218,7 +222,7 @@ final class NeuralPrewarmTests: XCTestCase {
     /// freed engine isn't loaded again on its account.
     func testABookOpeningAsksOnce() async {
         let harness = makeHarness()
-        harness.prewarm.bookIsOpening()
+        harness.prewarm.bookIsOpening(UUID())
         await warm(harness)
 
         // Cold again with no memory hold (the idle stop, say): nothing asks.
@@ -234,14 +238,73 @@ final class NeuralPrewarmTests: XCTestCase {
     func testABookOpeningEndsWhenTheBookLoads() async {
         let harness = makeHarness()
         harness.conditions.lowPowerMode = true
-        harness.prewarm.bookIsOpening()
+        let opening = UUID()
+        harness.prewarm.bookIsOpening(opening)
         await elapse(0.2)
         XCTAssertEqual(harness.neural.warmUpCalls, 0, "Low Power Mode holds it")
-        harness.book.send(UUID())
+        harness.book.send(opening)
         harness.conditions.lowPowerMode = false
         harness.prewarm.reevaluate()
         await elapse(0.3)
         XCTAssertEqual(harness.neural.warmUpCalls, 0, "the book loaded: the open's ask is over (card-only rules)")
+    }
+
+    /// R2-07 review: opening the book playback already holds (the Continue
+    /// card's book) emits no load to end an ask, so it asks nothing: once
+    /// that book is let go (Mark as Finished, Delete) and the gate lifts,
+    /// the bare Library root never warms.
+    func testOpeningTheLoadedBookLeavesNoAskBehind() async {
+        let harness = makeHarness(rules: .iPhone)
+        harness.conditions.lowPowerMode = true
+        let loaded = UUID()
+        harness.book.send(loaded)
+        harness.prewarm.bookIsOpening(loaded)
+        await elapse(0.2)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0, "Low Power Mode holds it")
+        harness.book.send(nil)
+        harness.conditions.lowPowerMode = false
+        harness.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0, "no book, no card, no open: nothing asks")
+    }
+
+    /// R2-07 review: any change of book ends an open's ask, a book let go
+    /// included.
+    func testABookLetGoEndsAnOpensAsk() async {
+        let harness = makeHarness()
+        harness.conditions.lowPowerMode = true
+        harness.book.send(UUID())
+        harness.prewarm.bookIsOpening(UUID())
+        harness.book.send(nil)
+        harness.conditions.lowPowerMode = false
+        harness.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0)
+    }
+
+    /// R2-07 review: an open whose book never loads (its load failed) asks
+    /// no more once the Library's root shows again; the push to the reader
+    /// alone doesn't end it.
+    func testAnOpenWhoseBookNeverLoadsEndsAtTheRoot() async {
+        let pushed = makeHarness()
+        pushed.conditions.lowPowerMode = true
+        pushed.root.send(true)
+        pushed.prewarm.bookIsOpening(UUID())
+        pushed.root.send(false)
+        pushed.conditions.lowPowerMode = false
+        pushed.prewarm.reevaluate()
+        await warm(pushed)
+
+        let back = makeHarness()
+        back.conditions.lowPowerMode = true
+        back.root.send(true)
+        back.prewarm.bookIsOpening(UUID())
+        back.root.send(false)
+        back.root.send(true)
+        back.conditions.lowPowerMode = false
+        back.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(back.neural.warmUpCalls, 0, "the bare root never warms on a spent open's account")
     }
 
     func testContinueCardVisibility() {

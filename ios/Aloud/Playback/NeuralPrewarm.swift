@@ -7,8 +7,9 @@ import Foundation
 /// asks for it too (`PlatformTuning.prewarmsForLoadedBook`): the reader
 /// LaunchRestore reopens at launch shows no card. So does Classics on
 /// screen (`PlatformTuning.prewarmsOnClassics`), where a book is about to
-/// be picked, and a book opening from the Library (`bookIsOpening()`), so
-/// neither starts cold behind "Preparing voice…". On a Mac the launch asks
+/// be picked, and a book opening from the Library (`bookIsOpening(_:)`),
+/// so neither starts cold behind the preparing-voice notice
+/// (`PlaybackController.isPreparingVoice`). On a Mac the launch asks
 /// as well (`PlatformTuning.prewarmsAtLaunch`), until a warm-up first
 /// starts.
 ///
@@ -24,7 +25,7 @@ import Foundation
 /// again.
 ///
 /// It warms Kokoro directly and never touches the controller's status,
-/// "Preparing voice…", the schedule or the mixer. A load holds
+/// `isPreparingVoice`, the schedule or the mixer. A load holds
 /// `PlatformActivity`, so App Nap doesn't stretch it behind a hidden window.
 @MainActor
 final class NeuralPrewarm {
@@ -65,8 +66,9 @@ final class NeuralPrewarm {
     private var cardVisible = false
     /// Classics is the top of the stack.
     private var browsingClassics = false
-    /// A book is opening from the Library (`bookIsOpening()`): asks once,
-    /// until a warm-up starts or the book loads.
+    /// A book is opening from the Library (`bookIsOpening(_:)`): asks once,
+    /// until a warm-up starts, the loaded book changes or the Library's
+    /// root shows again, so the ask ends with the open.
     private var openingBook = false
     private var loadedBookID: UUID?
     /// The launch asks until a warm-up first starts.
@@ -92,11 +94,15 @@ final class NeuralPrewarm {
     /// hotter (ThermalGuard's `isHot`); never hot unless given.
     /// `browsingClassics` is whether Classics is the top of the stack, which
     /// warms where `warmsOnClassics`; leaving it never cancels or releases.
+    /// `atLibraryRoot` is whether nothing is pushed over the Library: its
+    /// return ends an open's ask (`bookIsOpening(_:)`) whose book never
+    /// loaded. Never at the root unless given.
     init(playback: PlaybackController,
          kokoro: any WarmableTtsEngine,
          cardVisible: AnyPublisher<Bool, Never>,
          browsingClassics: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher(),
          loadedBook: AnyPublisher<UUID?, Never> = Just(nil).eraseToAnyPublisher(),
+         atLibraryRoot: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher(),
          isModelInstalled: @escaping @MainActor () -> Bool,
          isLowPowerMode: @escaping () -> Bool = { ProcessInfo.processInfo.isLowPowerModeEnabled },
          heat: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher(),
@@ -151,10 +157,22 @@ final class NeuralPrewarm {
                 if self.warmsForLoadedBook, let id, id != self.loadedBookID {
                     self.suppressedByMemoryWarning = false
                 }
-                // The book that was opening has loaded: its own ask is over.
-                if id != nil { self.openingBook = false }
+                // Any change of book ends an open's ask: the book that was
+                // opening has loaded (and asks for itself where the platform
+                // says so), or playback let go of one, which no open waits on.
+                self.openingBook = false
                 self.loadedBookID = id
                 self.reevaluate()
+            }
+            .store(in: &subscriptions)
+
+        // Back at the Library's root, an open whose book never loaded (its
+        // load failed, say) asks no more: the bare root never warms on its
+        // account. Only ends an ask, so it needs no reevaluation.
+        atLibraryRoot
+            .removeDuplicates()
+            .sink { [weak self] atRoot in
+                if atRoot { self?.openingBook = false }
             }
             .store(in: &subscriptions)
 
@@ -197,11 +215,15 @@ final class NeuralPrewarm {
         reevaluate()
     }
 
-    /// The Library is opening a book (`LibraryView.open`): one ask, under
-    /// every gate, that ends once a warm-up starts or a book loads. A book
-    /// opened from a shelf with no Continue card otherwise loads the model
-    /// cold behind "Preparing voice…".
-    func bookIsOpening() {
+    /// The Library is opening book `id` (`LibraryView.open`): one ask, under
+    /// every gate, that ends once a warm-up starts, the loaded book changes
+    /// or the Library's root shows again. A book opened from a shelf with no
+    /// Continue card otherwise loads the model cold behind the
+    /// preparing-voice notice (`PlaybackController.isPreparingVoice`). The
+    /// book playback already holds asks nothing more where the platform
+    /// warms for a loaded book: no load follows to end the ask.
+    func bookIsOpening(_ id: UUID) {
+        if warmsForLoadedBook, id == loadedBookID { return }
         openingBook = true
         reevaluate()
     }
