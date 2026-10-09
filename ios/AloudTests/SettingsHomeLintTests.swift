@@ -225,7 +225,11 @@ final class SettingsHomeLintTests: XCTestCase {
 
         XCTAssertEqual(licenses.components(separatedBy: "NavigationLink").count - 1, 1, "one push per card")
         let push = try XCTUnwrap(licenses.range(of: "NavigationLink {"))
-        let pushRow = licenses[push.upperBound...].prefix(400)
+        // Bounded by the source link that follows, not a character count,
+        // so a comment or modifier added to the row never pushes a needle out.
+        let linkAfterPush = try XCTUnwrap(licenses.range(of: "Link(destination: entry.source) {",
+                                                         range: push.upperBound..<licenses.endIndex))
+        let pushRow = licenses[push.upperBound..<linkAfterPush.lowerBound]
         XCTAssertTrue(pushRow.contains("LicenseTextView(entry: entry)"), String(pushRow))
         XCTAssertTrue(pushRow.contains("Text(entry.license)"), "the row names its license: \(String(pushRow))")
         XCTAssertTrue(pushRow.contains(".foregroundStyle(Theme.text)"), String(pushRow))
