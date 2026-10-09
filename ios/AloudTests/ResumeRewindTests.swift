@@ -521,4 +521,63 @@ final class ResumeRewindTests: XCTestCase {
                        "8 − 2 and its successor")
         XCTAssertEqual(rig.controller.status, .paused, "warming plays nothing")
     }
+
+    /// The sentence indices `neural` was asked for, from request `mark` on.
+    private static func neuralSentences(_ neural: PlaybackTestRig.FakeNeuralEngine,
+                                        from mark: Int = 0) -> [Int] {
+        neural.requests.dropFirst(mark).map(\.text).compactMap(PlaybackTestRig.sentenceIndex(ofRequest:))
+    }
+
+    /// A natural-voice book cued at 8 whose rest, begun at the pause, is now
+    /// 6 minutes old, with the cue's own warm-up done. `warm`: the engine's
+    /// model is still loaded (an idle one is freed a minute after the pause).
+    private func naturalVoiceRestedRig(warm: Bool) async -> (PlaybackTestRig, PlaybackTestRig.FakeNeuralEngine) {
+        let neural = PlaybackTestRig.FakeNeuralEngine(warm: warm)
+        let rig = PlaybackTestRig(sentences: 16, neural: neural)
+        rig.controller.voice = PlaybackTestRig.michael   // no book yet: nothing restarts
+        rig.loadDefault(at: 8)
+        let cued = await rig.waitUntil(2) { Self.neuralSentences(neural).count >= 2 }
+        XCTAssertTrue(cued)
+        try? await Task.sleep(nanoseconds: 100_000_000)   // nothing else follows
+        XCTAssertEqual(Self.neuralSentences(neural), [8, 9], "no rest yet: the cue")
+        rig.controller.resumeAnchor = ResumeAnchor(documentID: rig.document.id,
+                                                   sentenceIndex: 8,
+                                                   wallClock: Date(timeIntervalSinceNow: -6 * 60),
+                                                   monotonic: MonotonicClock.now - 6 * 60)
+        XCTAssertEqual(rig.controller.status, .paused, "paused, so only the strain rule holds a warm-up back")
+        return (rig, neural)
+    }
+
+    /// Under Low Power Mode or heat, coming back never loads a cold natural
+    /// voice to warm the new target (pre-warm respects Low Power Mode, as
+    /// NeuralPrewarm does); Play pays that load, as before.
+    func testComingBackUnderStrainNeverLoadsAColdNaturalVoice() async {
+        let (rig, neural) = await naturalVoiceRestedRig(warm: false)
+        let mark = neural.requests.count
+        let warmUps = neural.warmUpCalls
+        rig.controller.isUnderStrain = { true }
+
+        rig.controller.sceneDidBecomeActive()
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(Self.neuralSentences(neural, from: mark), [],
+                       "nothing new for the cold engine to synthesize")
+        XCTAssertEqual(neural.warmUpCalls, warmUps, "and no warm-up of it")
+        XCTAssertFalse(neural.isWarm)
+        XCTAssertEqual(rig.controller.status, .paused)
+    }
+
+    /// The same return with the natural voice still loaded warms the new
+    /// target under strain too: only a cold load is held back.
+    func testComingBackUnderStrainWithTheNaturalVoiceWarmStillWarmsTheNewTarget() async {
+        let (rig, neural) = await naturalVoiceRestedRig(warm: true)
+        let mark = neural.requests.count
+        rig.controller.isUnderStrain = { true }
+
+        rig.controller.sceneDidBecomeActive()
+
+        let rewarmed = await rig.waitUntil(2) { Self.neuralSentences(neural, from: mark).count >= 2 }
+        XCTAssertTrue(rewarmed)
+        XCTAssertEqual(Self.neuralSentences(neural, from: mark), [6, 7], "8 − 2 and its successor")
+    }
 }

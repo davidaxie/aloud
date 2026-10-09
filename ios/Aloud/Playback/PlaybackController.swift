@@ -1159,9 +1159,17 @@ final class PlaybackController: ObservableObject {
     /// The app came to the front. Paused, the cue is warmed again: a rest
     /// that crossed the 5 or 30 minute mark in the background now rewinds
     /// further than the warm-up made at the pause (clips still cached cost
-    /// nothing). Then a stop VoiceOver couldn't hear is announced.
+    /// nothing). Never when that means loading a cold natural voice under
+    /// strain (Low Power Mode or `.serious` heat), the load NeuralPrewarm
+    /// skips there too (M19): the new target misses the cache by
+    /// definition, and the idle engine was freed a minute after the pause,
+    /// so Play pays that load, as it always has. Then a stop VoiceOver
+    /// couldn't hear is announced.
     func sceneDidBecomeActive() {
-        if content != nil, status == .paused { cuePrefetch() }
+        if content != nil, status == .paused,
+           voice.engine != .kokoro || kokoro?.isWarm == true || !isUnderStrain() {
+            cuePrefetch()
+        }
         announceHeldBackStop()
     }
 
