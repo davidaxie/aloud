@@ -138,6 +138,23 @@ final class ReaderPageStyleSharedTests: XCTestCase {
         XCTAssertTrue(FollowBand.isMeasured(textMaxY: 874, chromeMinY: 622))
     }
 
+    /// R3-01 on both apps: while the colophon shows, the Mac page's resting
+    /// end is measured from the colophon itself too, so a range clamped
+    /// short by TextKit's trailing usage bounds never leaves it below the
+    /// page. In an offscreen window those bounds already cover the colophon,
+    /// so the Mac's hosted test passes either way; this pins the bound.
+    func testTheMacsRestingEndIsMeasuredFromTheColophon() throws {
+        let macPath = "Reader/ReaderColumnView.swift"
+        let s = try SourceTree.sources(in: SourceTree.macRoot, only: [macPath])
+        let mac = try XCTUnwrap(s[macPath])
+        let open = try XCTUnwrap(mac.range(of: "private func restingOffsets() -> ClosedRange<CGFloat> {"),
+                                 "the Mac page's resting range")
+        let close = mac.range(of: "\n        }\n", range: open.upperBound..<mac.endIndex)?.lowerBound ?? mac.endIndex
+        let body = String(mac[open.upperBound..<close])
+        XCTAssertTrue(body.contains("shownColophon != nil"), body)
+        XCTAssertTrue(body.contains("colophon.maxY + textView.textContainerInset.height"), body)
+    }
+
     func testTheChipsReachIsARunningMaximum() {
         let first = FollowBand.chipReach(previous: 0, slotHeight: 44)
         XCTAssertEqual(first, (44 + Theme.Space.sm).rounded(.up))

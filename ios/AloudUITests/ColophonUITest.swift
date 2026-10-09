@@ -85,12 +85,17 @@ final class ColophonUITest: XCTestCase {
     /// may show its top first) the chip never covers its first line.
     private func assertTheColophonClearsTheChrome(_ app: XCUIApplication, whole: Bool,
                                                   file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertTrue(readerText(app).waitForExistence(timeout: 15), "the page shows", file: file, line: line)
+        // R3-01: every failure carries the landing's inputs, these too: a
+        // chip that never shows may be a colophon still waiting on the band.
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 15), "the page shows; \(colophonAim(app))",
+                      file: file, line: line)
         let chip = moreClassics(app)
-        XCTAssertTrue(chip.waitForExistence(timeout: 10), "More classics shows at the end", file: file, line: line)
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "More classics shows at the end; \(colophonAim(app))",
+                      file: file, line: line)
         // The player bar's top row: the bar starts at or above it.
         let barRow = app.descendants(matching: .any)["reader.chapterLine"].firstMatch
-        XCTAssertTrue(barRow.waitForExistence(timeout: 5), "the player bar shows", file: file, line: line)
+        XCTAssertTrue(barRow.waitForExistence(timeout: 5), "the player bar shows; \(colophonAim(app))",
+                      file: file, line: line)
         guard let colophon = settledColophonFrame(app) else {
             XCTFail("the follow probe frames the colophon; \(colophonAim(app))", file: file, line: line)
             return

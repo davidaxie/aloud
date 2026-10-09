@@ -170,6 +170,8 @@ struct ReaderTextView: UIViewRepresentable {
                 || parent.bandMeasured != newParent.bandMeasured
             parent = newParent
             guard let textView else { return }
+            // R3-01: the column's bottom inset covers a band deeper than it.
+            textView.obscuredBottom = newParent.obscuredBottom
             // A band-only change in a window gets no layout pass of its own,
             // and the pass is what places the colophon again.
             if bandChanged { textView.setNeedsLayout() }
@@ -341,6 +343,7 @@ struct ReaderTextView: UIViewRepresentable {
             textView.adjustsFontForContentSizeCategory = false
             textView.accessibilityIdentifier = "reader.text"
             textView.delegate = self
+            textView.obscuredBottom = parent.obscuredBottom
 
             let tap = UITapGestureRecognizer(target: self, action: #selector(Coordinator.handleTap(_:)))
             tap.delegate = self
@@ -1210,7 +1213,15 @@ struct ReaderTextView: UIViewRepresentable {
                 // it leaves the bar out, and the colophon would land under
                 // it. Unresolved meanwhile, so a placement check spends no
                 // pass; the band's edges arriving place it (`update(to:)`).
-                guard parent.bandMeasured else { return nil }
+                guard parent.bandMeasured else {
+                    #if DEBUG
+                    // A run stuck here reads as waiting on the band's edges,
+                    // never as a probe that isn't on.
+                    publishColophonAim("waiting \(caller): band unmeasured", colophon: rect, viewport: viewport,
+                                       target: nil)
+                    #endif
+                    return nil
+                }
                 // R1-19: the end block sits just above the More classics chip
                 // (the viewport is measured above it), the live end and a
                 // reopen alike. The placement notes the band it ran on, so a
@@ -2442,6 +2453,12 @@ final class ReaderUITextView: UITextView {
     /// The measure's cap, centered in a wider view.
     static let maximumMeasure: CGFloat = 640
 
+    /// The column's bottom inset: 0.45 of the view's height, or deeper than
+    /// the band (`obscuredBottom`) by the top inset when the band is deeper.
+    static func bottomInset(height: CGFloat, obscuredBottom: CGFloat) -> CGFloat {
+        max(height * 0.45, obscuredBottom + Theme.Space.xl)
+    }
+
     static func horizontalInset(viewWidth: CGFloat, fontSize: CGFloat) -> CGFloat {
         max(gutter(fontSize: fontSize), (viewWidth - maximumMeasure) / 2)
     }
@@ -2454,13 +2471,23 @@ final class ReaderUITextView: UITextView {
     /// screen's edge at the narrowest gutter.
     static let minimumMarkGutter: CGFloat = 8 + HighlightLayers.markGap + HighlightLayers.markWidth
 
+    /// R3-01: the band's foot over the column's end (the player bar, the
+    /// end chip, a sheet), as the coordinator last had it.
+    var obscuredBottom: CGFloat = 0 {
+        didSet { if obscuredBottom != oldValue { applyColumnInsets() } }
+    }
+
     /// The text container inset for the bounds and size as they stand: the
     /// gutter either side and a deep bottom inset, so the last lines can
-    /// reach the landing line.
+    /// reach the landing line. R3-01: never shallower than the band, or the
+    /// colophon's resting end (measured from this inset) holds it under a
+    /// band deeper than 0.45 of the screen: the listening sheet, or the bar
+    /// and the chip at the largest sizes.
     func applyColumnInsets() {
         let horizontal = Self.horizontalInset(viewWidth: bounds.width, fontSize: readingFontSize)
         let inset = UIEdgeInsets(top: Theme.Space.xl, left: horizontal,
-                                 bottom: bounds.height * 0.45, right: horizontal)
+                                 bottom: Self.bottomInset(height: bounds.height, obscuredBottom: obscuredBottom),
+                                 right: horizontal)
         if textContainerInset != inset {
             textContainerInset = inset
         }

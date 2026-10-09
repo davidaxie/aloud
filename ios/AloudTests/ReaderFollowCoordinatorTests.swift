@@ -1680,7 +1680,11 @@ extension ReaderFollowCoordinatorTests {
 
     /// The band moving while a fresh column builds (the update returns
     /// early) is kept for the column: it lands with the colophon above the
-    /// chip of the band as it is.
+    /// chip of the band as it is. A finger resting on the page through the
+    /// landing makes every placement then bail, so only a layout pass that
+    /// still finds the band unplaced puts the colophon on it once the
+    /// finger lifts: the band used to be noted before the placement bailed,
+    /// and no pass placed it again.
     func testABandThatMovesWhileTheColumnBuildsPlacesTheColophonWhenItLands() async throws {
         let content = lines(160)
         let first = ReaderTextView(content: content, fontSize: 19, activeSentence: 159, activeWord: -1,
@@ -1695,20 +1699,60 @@ extension ReaderFollowCoordinatorTests {
 
         coordinator.update(to: first)
         XCTAssertNotNil(coordinator.freshBuild, "the column builds off the main thread")
+        coordinator.isTouching = { _ in true }
         coordinator.update(to: endParent(first, band: 252))
+        // The mechanism, pinned; the behaviour is asserted below.
         XCTAssertTrue(coordinator.bandMovedDuringBuild, "the moved band is kept for the column")
         await coordinator.columnSettled()
         XCTAssertFalse(coordinator.bandMovedDuringBuild, "and spent once it lands")
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)   // the landing's placements run, and bail
         endTheChecks(textView)
-        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(coordinator.colophonBand, "a placement that bailed under a finger notes no band")
+
+        coordinator.isTouching = { _ in false }
+        textView.setNeedsLayout()
+        textView.layoutIfNeeded()   // one layout pass, as lifting the finger brings
+        try await Task.sleep(nanoseconds: 50_000_000)   // the placement it queued
         endTheChecks(textView)
         guard textView.contentSize.height > 2 * textView.bounds.height else {
             throw XCTSkip("This host doesn't lay out a text view outside a window")
         }
         let foot = try colophonFoot(coordinator)
         XCTAssertLessThanOrEqual(foot.colophon, foot.viewport + 1, "above the chip of the band as it is")
-        XCTAssertEqual(coordinator.colophonBand, 252)
+        XCTAssertEqual(coordinator.colophonBand, 252, "placed on the band once the finger lifts")
+    }
+
+    /// A band deeper than the column's usual bottom inset (0.45 of the
+    /// screen: the listening sheet, the bar and the chip at the largest
+    /// sizes) still has the colophon land whole above it: the inset covers
+    /// the band, so the colophon's resting end reaches above it. It used to
+    /// hold at the resting end with its foot under the band.
+    func testTheColophonLandsAboveABandDeeperThanTheColumnsBottomInset() throws {
+        XCTAssertEqual(ReaderUITextView.bottomInset(height: 800, obscuredBottom: 68), 360, accuracy: 0.001)
+        XCTAssertEqual(ReaderUITextView.bottomInset(height: 800, obscuredBottom: 420), 420 + Theme.Space.xl)
+
+        let (coordinator, textView) = try atTheEnd(obscuredBottom: 68, reduceMotion: true)
+        coordinator.update(to: endParent(coordinator.parent, band: 68))
+        endTheChecks(textView)
+        XCTAssertEqual(textView.textContainerInset.bottom, textView.bounds.height * 0.45, accuracy: 0.5)
+
+        let deep: CGFloat = 420
+        XCTAssertGreaterThan(deep, textView.bounds.height * 0.45, "deeper than the usual inset")
+        coordinator.update(to: endParent(coordinator.parent, band: deep))
+        XCTAssertGreaterThanOrEqual(textView.textContainerInset.bottom, deep, "the inset covers the band")
+        endTheChecks(textView)
+        settle()
+        runLayoutPasses(textView)
+        let rect = try XCTUnwrap(coordinator.measureActiveSentenceRect(), "the colophon is measured")
+        let viewport = try XCTUnwrap(coordinator.viewport())
+        XCTAssertLessThan(rect.height, viewport.height, "the colophon fits above the band")
+        XCTAssertLessThanOrEqual(rect.maxY, viewport.maxY + 1,
+                                 "whole above the deep band: \(rect) in \(viewport)")
+        XCTAssertEqual(coordinator.colophonBand, deep)
+
+        coordinator.update(to: endParent(coordinator.parent, band: 68))
+        XCTAssertEqual(textView.textContainerInset.bottom, textView.bounds.height * 0.45, accuracy: 0.5,
+                       "the usual band gives the usual inset back")
     }
 
     /// Until the band's edges are measured the colophon doesn't land (the
@@ -1742,7 +1786,12 @@ extension ReaderFollowCoordinatorTests {
         let landing = try XCTUnwrap(view.range(of: "private func landingTarget(caller: String = #function) -> CGFloat? {"))
         let aim = String(view[landing.upperBound...].prefix(2_400))
         XCTAssertFalse(aim.contains("colophonBand = "), aim)
-        XCTAssertTrue(aim.contains("guard parent.bandMeasured else { return nil }"), aim)
+        // R3-01: a landing waiting on the band's edges says so in the probe,
+        // so a run stuck there never reads as one with the probe off.
+        let waiting = try XCTUnwrap(aim.range(of: "guard parent.bandMeasured else {"), aim)
+        let wait = String(aim[waiting.upperBound...].prefix(600))
+        XCTAssertTrue(wait.contains("publishColophonAim(\"waiting \\(caller): band unmeasured\""), wait)
+        XCTAssertTrue(wait.contains("return nil"), wait)
         let again = try XCTUnwrap(view.range(of: "private func placeColophonAgain() {"))
         let replace = String(view[again.upperBound...].prefix(200))
         XCTAssertFalse(replace.contains("colophonBand"), replace)
