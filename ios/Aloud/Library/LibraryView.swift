@@ -69,6 +69,13 @@ struct LibraryView: View {
     /// The shelf as the feed has it.
     private var shelf: ShelfLayout { feed.layout }
 
+    /// The link row's prompt-free paste, under the featured classic and at
+    /// the shelf's foot: offered only while the clipboard holds text, so it
+    /// shows and hides with `refreshClipboard()`.
+    private var pasteHandler: (([String]) -> Void)? {
+        clipboardHasText ? { importer.importText($0.joined(separator: "\n\n")) } : nil
+    }
+
     private var metrics: PhoneShelfMetrics {
         PhoneShelfMetrics(width: shelfWidth, isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
     }
@@ -86,8 +93,7 @@ struct LibraryView: View {
         Group {
             if store.documents.isEmpty {
                 EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker },
-                                 onPaste: clipboardHasText
-                                    ? { importer.importText($0.joined(separator: "\n\n")) } : nil)
+                                 onPaste: pasteHandler)
             } else {
                 grid
             }
@@ -376,10 +382,13 @@ struct LibraryView: View {
                     }
                     .id(hero.id)
                 }
-                documentGrid
+                // Only with cards to hold: an empty grid would still take the
+                // stack's spacing on both sides, two steps under the card.
+                if !shelf.grid.isEmpty { documentGrid }
                 // The empty Library's links stay at the shelf's foot, so the
-                // next book is in reach without the + menu.
-                ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: nil,
+                // next book is in reach without the + menu; Paste joins them
+                // while the clipboard holds text.
+                ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: pasteHandler,
                            idPrefix: "library.shelf")
             }
             .padding(.horizontal, PhoneShelfMetrics.gutter)
@@ -428,6 +437,9 @@ struct LibraryView: View {
     private func open(_ document: LibraryDocument) {
         if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }
         continuePlayback.readerOpens(document.id)
+        // A book opened from a shelf with no Continue card would otherwise
+        // load the natural voice cold behind "Preparing voice…".
+        model.neuralPrewarm.bookIsOpening()
         router.open(document)
     }
 
@@ -510,6 +522,23 @@ struct LibraryView: View {
         Button(role: action.role) {
             perform(action, on: document)
         } label: {
+            actionLabel(action)
+        }
+    }
+
+    /// A menu's icons take the tint of the view the menu hangs from (the
+    /// app's accent), not the item's role: Delete's trash glyph is drawn red
+    /// in its own colours, to match its red title. VoiceOver's actions read
+    /// only the title.
+    @ViewBuilder
+    private func actionLabel(_ action: DocumentAction) -> some View {
+        if action.role == .destructive, let base = UIImage(systemName: action.systemImage) {
+            Label {
+                Text(action.title)
+            } icon: {
+                Image(uiImage: base.withTintColor(.systemRed, renderingMode: .alwaysOriginal))
+            }
+        } else {
             Label(action.title, systemImage: action.systemImage)
         }
     }
@@ -540,11 +569,26 @@ struct LibraryView: View {
         case .delete:
             deleteTarget = document
             router.rootPresentation = .deleteConfirmation
+        case .markUnfinished:
+            // The place it had goes back, written at once; nothing opens or
+            // plays (`AppModel.markUnfinished`). A mark the store can't
+            // record leaves the book Finished and says why.
+            if let failure = model.markUnfinished(document) {
+                showFailure(failure)
+                return
+            }
+            // Back in progress, the book may now be the Continue card:
+            // VoiceOver follows it there, as a mark the other way does.
+            let hero = ShelfLayout(for: store.documents, loadedID: model.playback.document?.id,
+                                   stop: model.playback.stopped).hero
+            if hero?.id == document.id { moveVoiceOverFocus(to: document.id) }
+            PlaybackController.postAnnouncement(DocumentAction.markedUnfinished,
+                                                muted: model.playback.isOutputMuted)
         }
     }
 
-    /// The failure alert, for a Delete, Rename or Mark as finished the
-    /// library couldn't record.
+    /// The failure alert, for a Delete, Rename, Mark as finished or Mark as
+    /// unfinished the library couldn't record.
     private func showFailure(_ failure: any ShelfFailure) {
         shelfFailure = failure
         router.rootPresentation = .deleteFailed

@@ -41,6 +41,12 @@ struct LibraryDocument: Codable, Identifiable {
     /// for Continue listening (`DocumentStore.continueListeningCandidate`).
     /// nil until then, and on records from before it existed.
     var firstPlayedAt: Date?
+    /// Where the listener was when they marked the book finished, so Mark
+    /// as Unfinished can put it back (`DocumentStore.markingUnfinished`).
+    /// nil for a book that finished by playing, once it is unfinished
+    /// again, after any progress write since, and on older records.
+    var placeBeforeFinish: Int?
+    var fractionBeforeFinish: Double?
 
     init(id: UUID,
          title: String,
@@ -59,7 +65,9 @@ struct LibraryDocument: Codable, Identifiable {
          preferredVoiceID: String? = nil,
          gutenbergID: Int? = nil,
          sourceHash: String? = nil,
-         firstPlayedAt: Date? = nil) {
+         firstPlayedAt: Date? = nil,
+         placeBeforeFinish: Int? = nil,
+         fractionBeforeFinish: Double? = nil) {
         self.id = id
         self.title = title
         self.fileName = fileName
@@ -78,12 +86,15 @@ struct LibraryDocument: Codable, Identifiable {
         self.gutenbergID = gutenbergID
         self.sourceHash = sourceHash
         self.firstPlayedAt = firstPlayedAt
+        self.placeBeforeFinish = placeBeforeFinish
+        self.fractionBeforeFinish = fractionBeforeFinish
     }
 
     // Forward-compatible decoding: kind/author/wordCount, the legacy per-book
-    // playback preferences, gutenbergID (library.json v2), sourceHash and
-    // firstPlayedAt are late additions. The synthesized encoder skips nil
-    // optionals, so a record with none of them writes no key.
+    // playback preferences, gutenbergID (library.json v2), sourceHash,
+    // firstPlayedAt and the place before a finish are late additions. The
+    // synthesized encoder skips nil optionals, so a record with none of them
+    // writes no key.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -104,6 +115,8 @@ struct LibraryDocument: Codable, Identifiable {
         gutenbergID = try c.decodeIfPresent(Int.self, forKey: .gutenbergID)
         sourceHash = try c.decodeIfPresent(String.self, forKey: .sourceHash)
         firstPlayedAt = try c.decodeIfPresent(Date.self, forKey: .firstPlayedAt)
+        placeBeforeFinish = try c.decodeIfPresent(Int.self, forKey: .placeBeforeFinish)
+        fractionBeforeFinish = try c.decodeIfPresent(Double.self, forKey: .fractionBeforeFinish)
     }
 }
 

@@ -31,12 +31,14 @@ final class NeuralPrewarmTests: XCTestCase {
         var atLaunch = false
         var holdEndsOnReturn = false
         var releasesPausedInBackground = false
+        var onClassics = false
 
         static let cardOnly = Rules()
         /// P010, P011, P013: a loaded book warms, the launch doesn't, the
         /// foreground ends a memory hold, the background frees a paused engine.
+        /// R2-07: Classics on screen warms.
         static let iPhone = Rules(forLoadedBook: true, atLaunch: false, holdEndsOnReturn: true,
-                                  releasesPausedInBackground: true)
+                                  releasesPausedInBackground: true, onClassics: true)
         static let mac = Rules(forLoadedBook: true, atLaunch: true)
     }
 
@@ -44,6 +46,8 @@ final class NeuralPrewarmTests: XCTestCase {
         let rig: PlaybackTestRig
         let neural: FakeNeuralEngine
         let card: PassthroughSubject<Bool, Never>
+        /// Whether Classics is the top of the stack.
+        let classics: PassthroughSubject<Bool, Never>
         let book: PassthroughSubject<UUID?, Never>
         let heat: CurrentValueSubject<Bool, Never>
         let conditions: Conditions
@@ -62,6 +66,7 @@ final class NeuralPrewarmTests: XCTestCase {
         let rig = PlaybackTestRig(neural: neural)
         if neuralVoice { rig.controller.voice = PlaybackTestRig.michael }
         let card = PassthroughSubject<Bool, Never>()
+        let classics = PassthroughSubject<Bool, Never>()
         let book = PassthroughSubject<UUID?, Never>()
         let heat = CurrentValueSubject<Bool, Never>(hot)
         let conditions = Conditions()
@@ -69,6 +74,7 @@ final class NeuralPrewarmTests: XCTestCase {
         let prewarm = NeuralPrewarm(playback: rig.controller,
                                     kokoro: neural,
                                     cardVisible: card.eraseToAnyPublisher(),
+                                    browsingClassics: classics.eraseToAnyPublisher(),
                                     loadedBook: book.eraseToAnyPublisher(),
                                     isModelInstalled: { conditions.modelInstalled },
                                     isLowPowerMode: { conditions.lowPowerMode },
@@ -76,11 +82,12 @@ final class NeuralPrewarmTests: XCTestCase {
                                     sceneActive: sceneActive,
                                     warmsForLoadedBook: rules.forLoadedBook,
                                     warmsAtLaunch: rules.atLaunch,
+                                    warmsOnClassics: rules.onClassics,
                                     memoryHoldEndsOnReturn: rules.holdEndsOnReturn,
                                     releasesPausedInBackground: rules.releasesPausedInBackground,
                                     notifications: center)
-        return Harness(rig: rig, neural: neural, card: card, book: book, heat: heat, conditions: conditions,
-                       center: center, prewarm: prewarm)
+        return Harness(rig: rig, neural: neural, card: card, classics: classics, book: book, heat: heat,
+                       conditions: conditions, center: center, prewarm: prewarm)
     }
 
     private func elapse(_ seconds: Double) async {
@@ -116,30 +123,125 @@ final class NeuralPrewarmTests: XCTestCase {
         XCTAssertEqual(rows, 128)
     }
 
-    /// The card asks everywhere; a loaded book where the platform warms
-    /// for it (both), the launch where it warms at launch (a Mac).
+    /// The card and a book opening ask everywhere; a loaded book where the
+    /// platform warms for it (both), the launch where it warms at launch (a
+    /// Mac), Classics on screen where it warms there (an iPhone).
     func testWhatAsksForAWarmUp() {
-        for bits in 0..<32 {
+        for bits in 0..<256 {
             let flag = { (bit: Int) in bits & (1 << bit) != 0 }
             let expected = flag(0) || (flag(3) && flag(1)) || (flag(4) && flag(2))
+                || (flag(6) && flag(5)) || flag(7)
             XCTAssertEqual(NeuralPrewarm.asksForWarmUp(cardVisible: flag(0), bookLoaded: flag(1),
                                                        launchPending: flag(2), warmsForLoadedBook: flag(3),
-                                                       warmsAtLaunch: flag(4)),
+                                                       warmsAtLaunch: flag(4), browsingClassics: flag(5),
+                                                       warmsOnClassics: flag(6), bookOpening: flag(7)),
                            expected, "row \(bits)")
         }
+        // R2-07, protect: the bare iPhone Library root (books, no card,
+        // nothing loaded or opening, no launch ask) asks for nothing.
+        XCTAssertFalse(NeuralPrewarm.asksForWarmUp(cardVisible: false, bookLoaded: false, launchPending: false,
+                                                   warmsForLoadedBook: true, warmsAtLaunch: false,
+                                                   browsingClassics: false, warmsOnClassics: true,
+                                                   bookOpening: false))
     }
 
     /// P010: the iPhone warms for a loaded book (the reader LaunchRestore
-    /// reopens) but never for a bare launch; the Mac does both.
+    /// reopens) and on Classics but never for a bare launch; the Mac warms
+    /// at launch and for a loaded book, so Classics adds nothing there.
     func testThePlatformsRules() {
         XCTAssertTrue(PlatformTuning.prewarmsForLoadedBook)
         #if os(iOS)
         XCTAssertFalse(PlatformTuning.prewarmsAtLaunch, "an iPhone launch never warms on its own")
         XCTAssertTrue(PlatformTuning.memoryHoldEndsOnReturn)
+        XCTAssertTrue(PlatformTuning.prewarmsOnClassics, "a book picked in Classics starts warm")
         #else
         XCTAssertTrue(PlatformTuning.prewarmsAtLaunch)
         XCTAssertFalse(PlatformTuning.memoryHoldEndsOnReturn)
+        XCTAssertFalse(PlatformTuning.prewarmsOnClassics, "the Mac's warm-up is unchanged")
         #endif
+    }
+
+    // MARK: - Classics and a book opening (R2-07)
+
+    /// With every gate open, Classics on screen warms the natural voice,
+    /// and going back to the Library never cancels the load.
+    func testClassicsOnScreenWarmsAndLeavingNeverCancels() async {
+        let harness = makeHarness(rules: .iPhone)
+        harness.prewarm.reevaluate()
+        await elapse(0.2)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0, "the bare Library root asks for nothing")
+
+        harness.classics.send(true)
+        let asked = await harness.rig.waitUntil(2) { harness.neural.warmUpCalls == 1 }
+        XCTAssertTrue(asked, "Classics on screen asks")
+        harness.classics.send(false)
+        await elapse(0.2)
+        XCTAssertTrue(harness.prewarm.isWarming, "popping Classics never cancels a warm-up in flight")
+        harness.neural.finishWarmUp()
+        let warmed = await harness.rig.waitUntil(2) { harness.neural.isWarm && !harness.prewarm.isWarming }
+        XCTAssertTrue(warmed)
+        XCTAssertEqual(harness.rig.statuses, [.idle], "playback never moved")
+        XCTAssertFalse(harness.rig.controller.isPreparingVoice)
+    }
+
+    /// Where the platform doesn't warm on Classics, Classics asks nothing.
+    func testClassicsAsksNothingWhereThePlatformDoesNotWarmThere() async {
+        let harness = makeHarness(rules: .cardOnly)
+        harness.classics.send(true)
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0)
+    }
+
+    /// Classics keeps every gate: Low Power Mode, heat, the background, a
+    /// memory warning's hold, no model, a System voice.
+    func testClassicsKeepsEveryGate() async {
+        for gate in ["low power", "hot", "background", "memory warning", "no model", "system voice"] {
+            let harness = makeHarness(neuralVoice: gate != "system voice", sceneActive: gate != "background",
+                                      rules: .iPhone)
+            if gate == "low power" { harness.conditions.lowPowerMode = true }
+            if gate == "hot" { harness.heat.send(true) }
+            if gate == "no model" { harness.conditions.modelInstalled = false }
+            if gate == "memory warning" {
+                PlatformLifecycle.post(.memoryWarning, to: harness.center)
+                await elapse(0.1)
+            }
+            harness.classics.send(true)
+            harness.prewarm.bookIsOpening()
+            harness.prewarm.reevaluate()
+            await elapse(0.3)
+            XCTAssertEqual(harness.neural.warmUpCalls, 0, gate)
+            XCTAssertFalse(harness.prewarm.isWarming, gate)
+        }
+    }
+
+    /// A book opening asks once: the ask ends when a warm-up starts, so a
+    /// freed engine isn't loaded again on its account.
+    func testABookOpeningAsksOnce() async {
+        let harness = makeHarness()
+        harness.prewarm.bookIsOpening()
+        await warm(harness)
+
+        // Cold again with no memory hold (the idle stop, say): nothing asks.
+        harness.neural.release()
+        XCTAssertFalse(harness.neural.isWarm)
+        harness.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 1, "the open's ask was spent on the first warm-up")
+    }
+
+    /// An open held back by a gate stays asked until the book loads, then
+    /// ends: the loaded book asks for itself where the platform says so.
+    func testABookOpeningEndsWhenTheBookLoads() async {
+        let harness = makeHarness()
+        harness.conditions.lowPowerMode = true
+        harness.prewarm.bookIsOpening()
+        await elapse(0.2)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0, "Low Power Mode holds it")
+        harness.book.send(UUID())
+        harness.conditions.lowPowerMode = false
+        harness.prewarm.reevaluate()
+        await elapse(0.3)
+        XCTAssertEqual(harness.neural.warmUpCalls, 0, "the book loaded: the open's ask is over (card-only rules)")
     }
 
     func testContinueCardVisibility() {

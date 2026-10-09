@@ -71,6 +71,26 @@ extension XCTestCase {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
+    /// Frames come back in window points from a fractional origin, so a fixed
+    /// 44 pt target can read 43.99999999999994: a hundredth of a point is
+    /// rounding, never a smaller target.
+    static var touchTargetMinimum: CGFloat { 44 - 0.01 }
+
+    func assertTouchTarget(_ frame: CGRect, _ name: String, checkWidth: Bool = true,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThanOrEqual(frame.height, Self.touchTargetMinimum,
+                                    "\(name) is \(frame.height) pt tall, must be a 44 pt target", file: file, line: line)
+        if checkWidth {
+            XCTAssertGreaterThanOrEqual(frame.width, Self.touchTargetMinimum,
+                                        "\(name) is \(frame.width) pt wide", file: file, line: line)
+        }
+    }
+
+    func assertTouchTarget(_ element: XCUIElement, _ name: String, checkWidth: Bool = true,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        assertTouchTarget(element.frame, name, checkWidth: checkWidth, file: file, line: line)
+    }
+
     /// Fails unless text measured at `size` is taller than the same text at
     /// the previous, smaller audit size. Without it, a content-size name
     /// UIKit doesn't recognize audits Large again and still passes.

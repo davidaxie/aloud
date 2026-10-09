@@ -268,7 +268,7 @@ final class MacCommandActionsTests: XCTestCase {
     /// Rename or the Delete confirmation, none asks for a second alert.
     func testEditsBookItemsActOnTheFocusedCard() {
         let (_, base) = makeActions()
-        let bookItems: [MacCommand] = [.renameBook, .markFinished, .deleteBook]
+        let bookItems: [MacCommand] = [.renameBook, .markFinished, .markUnfinished, .deleteBook]
         for command in bookItems {
             XCTAssertFalse(base.isEnabled(command), "\(command) with no focused card")
             XCTAssertFalse(base.perform(command), "\(command) with no focused card")
@@ -277,20 +277,25 @@ final class MacCommandActionsTests: XCTestCase {
         }
         XCTAssertNil(MacCommand.renameBook.shortcut)
         XCTAssertNil(MacCommand.markFinished.shortcut)
+        XCTAssertNil(MacCommand.markUnfinished.shortcut)
         XCTAssertEqual(MacCommand.renameBook.title, MacMenuCopy.renameBook)
         XCTAssertEqual(MacCommand.markFinished.title, MacMenuCopy.markFinished)
         XCTAssertEqual(DocumentAction.markFinished.menuTitle, MacMenuCopy.markFinished, "the context menu's wording")
+        // R2-06: a Finished book's card and Edit menu say the reverse.
+        XCTAssertEqual(MacCommand.markUnfinished.title, MacMenuCopy.markUnfinished)
+        XCTAssertEqual(DocumentAction.markUnfinished.menuTitle, MacMenuCopy.markUnfinished, "the context menu's wording")
 
         var actions = base
         var performed: [String] = []
         actions.renameBook = { performed.append("rename") }
         actions.markFinished = { performed.append("finish") }
+        actions.markUnfinished = { performed.append("unfinish") }
         actions.deleteBook = { performed.append("delete") }
         for command in bookItems {
             XCTAssertTrue(actions.isEnabled(command), "\(command)")
             XCTAssertTrue(actions.perform(command), "\(command)")
         }
-        XCTAssertEqual(performed, ["rename", "finish", "delete"])
+        XCTAssertEqual(performed, ["rename", "finish", "unfinish", "delete"])
 
         let router = actions.router
         for alert: LibraryRouter.RootPresentation in [.rename, .deleteConfirmation, .deleteFailed] {

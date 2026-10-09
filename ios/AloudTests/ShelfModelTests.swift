@@ -123,4 +123,58 @@ final class ShelfModelTests: XCTestCase {
         let fresh = doc(progress: 0, wordCount: 9_900, lastOpened: nil)
         XCTAssertNil(DocumentStore.markingFinished(fresh).lastOpenedAt)
     }
+
+    // MARK: - Mark as Unfinished (R2-06)
+
+    /// Partway, finished, unfinished: the place it had, and nothing kept.
+    func testUnfinishingRestoresThePlaceTheMarkKept() {
+        let opened = Date(timeIntervalSince1970: 5_000)
+        let book = doc(progress: 0.3, wordCount: 9_900, sentenceCount: 40, lastOpened: opened)
+        let finished = DocumentStore.markingFinished(book)
+        XCTAssertEqual(finished.placeBeforeFinish, 10)
+        XCTAssertEqual(finished.fractionBeforeFinish, 0.3)
+        let unfinished = DocumentStore.markingUnfinished(finished, newestPlace: 25)
+        XCTAssertEqual(unfinished.progressSentence, 10)
+        XCTAssertEqual(unfinished.progressFraction, 0.3)
+        XCTAssertFalse(unfinished.isFinished)
+        XCTAssertNil(unfinished.placeBeforeFinish)
+        XCTAssertNil(unfinished.fractionBeforeFinish)
+        XCTAssertEqual(unfinished.lastOpenedAt, opened, "unfinishing a book isn't listening to it")
+    }
+
+    /// A book that finished by playing kept no place: back to the start,
+    /// or to its newest "Where you stopped" short of the end.
+    func testABookThatPlayedToItsEndGoesBackToTheStartOrItsNewestStop() {
+        let played = doc(progress: 1, wordCount: 9_900, sentenceCount: 40)
+        let finished = DocumentStore.markingFinished(played)
+        XCTAssertNil(finished.placeBeforeFinish, "nothing to keep at the end")
+        let start = DocumentStore.markingUnfinished(finished)
+        XCTAssertEqual(start.progressSentence, 0)
+        XCTAssertEqual(start.progressFraction, 0)
+        XCTAssertFalse(start.isFinished)
+
+        let stop = DocumentStore.markingUnfinished(finished, newestPlace: 20)
+        XCTAssertEqual(stop.progressSentence, 20)
+        XCTAssertEqual(stop.progressFraction, 0.5, accuracy: 0.0001)
+        XCTAssertFalse(stop.isFinished)
+
+        // A stop past the text is held to its last sentence.
+        XCTAssertEqual(DocumentStore.markingUnfinished(finished, newestPlace: 400).progressSentence, 39)
+
+        // The newest stop at the very end of a long text would still read
+        // Finished (seconds left): the start instead.
+        let long = DocumentStore.markingFinished(doc(progress: 1, wordCount: 9_900, sentenceCount: 400))
+        let atTheEnd = DocumentStore.markingUnfinished(long, newestPlace: 399)
+        XCTAssertFalse(atTheEnd.isFinished)
+        XCTAssertEqual(atTheEnd.progressSentence, 0)
+        XCTAssertEqual(atTheEnd.progressFraction, 0)
+    }
+
+    /// Finishing twice keeps the first place, not the end.
+    func testMarkingAFinishedRecordAgainKeepsItsPlace() {
+        let finished = DocumentStore.markingFinished(doc(progress: 0.3, wordCount: 9_900, sentenceCount: 40))
+        let again = DocumentStore.markingFinished(finished)
+        XCTAssertEqual(again.placeBeforeFinish, 10)
+        XCTAssertEqual(again.fractionBeforeFinish, 0.3)
+    }
 }

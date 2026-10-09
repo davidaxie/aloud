@@ -582,6 +582,9 @@ final class DocumentStore: ObservableObject {
         refreshed.pageCount = fresh.pageCount
         refreshed.progressSentence = place.sentence
         refreshed.progressFraction = place.fraction
+        // A place kept by Mark as Finished counts the old text's sentences.
+        refreshed.placeBeforeFinish = nil
+        refreshed.fractionBeforeFinish = nil
         // A classic's count is the catalog's (see `link`).
         if refreshed.gutenbergID == nil { refreshed.wordCount = fresh.wordCount }
         documents[index] = refreshed
@@ -789,10 +792,17 @@ final class DocumentStore: ObservableObject {
     /// Updates in-memory progress immediately; the disk write follows within
     /// `saveInterval` (2 s), even while progress keeps coming, and is forced
     /// through on background and termination. One element write, so one
-    /// publish of `documents` per tick, not one per field.
+    /// publish of `documents` per tick, not one per field. A write that
+    /// moves the place forgets the one kept by Mark as Finished
+    /// (`placeBeforeFinish`), which would otherwise be stale; one that
+    /// leaves it where it is (a finished book reopened at its end) keeps it.
     func saveProgress(id: UUID, sentence: Int, fraction: Double) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
         var document = documents[index]
+        if sentence != document.progressSentence || fraction != document.progressFraction {
+            document.placeBeforeFinish = nil
+            document.fractionBeforeFinish = nil
+        }
         document.progressSentence = sentence
         document.progressFraction = fraction
         document.lastOpenedAt = Date()
@@ -840,13 +850,59 @@ final class DocumentStore: ObservableObject {
         }
     }
 
-    /// The record at its end: progress 1.0 at the last sentence. Pure, for
-    /// the unit tests.
+    /// The record at its end: progress 1.0 at the last sentence. The place
+    /// it had is kept for Mark as Unfinished, unless it was already at its
+    /// end (a book that finished by playing has no place to go back to).
+    /// Pure, for the unit tests.
     nonisolated static func markingFinished(_ document: LibraryDocument) -> LibraryDocument {
         var finished = document
+        if document.progressFraction < 1 {
+            finished.placeBeforeFinish = document.progressSentence
+            finished.fractionBeforeFinish = document.progressFraction
+        }
         finished.progressFraction = 1.0
         finished.progressSentence = max(document.sentenceCount - 1, 0)
         return finished
+    }
+
+    /// Mark as Unfinished: a finished book back at the place it had.
+    /// Written at once, as `markFinished` is, and throws, the book as it
+    /// was, when library.json can't record it. `newestPlace` is the book's
+    /// newest "Where you stopped" sentence, the place to go back to when
+    /// the mark kept none.
+    func markUnfinished(id: UUID, newestPlace: Int? = nil) throws {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        try changeRecord(at: index, to: Self.markingUnfinished(documents[index], newestPlace: newestPlace))
+    }
+
+    /// The record back where it was before Mark as Finished: the place the
+    /// mark kept, else `newestPlace` (a sentence of the book's current
+    /// content), else its start. A place that would still read Finished
+    /// (the newest stop of a book that played to its end) is no way back:
+    /// the start is. The kept place goes either way. Pure, for the unit
+    /// tests.
+    nonisolated static func markingUnfinished(_ document: LibraryDocument,
+                                              newestPlace: Int? = nil) -> LibraryDocument {
+        var unfinished = document
+        let last = max(document.sentenceCount - 1, 0)
+        if let sentence = document.placeBeforeFinish, let fraction = document.fractionBeforeFinish {
+            unfinished.progressSentence = min(max(sentence, 0), last)
+            unfinished.progressFraction = min(max(fraction, 0), 1)
+        } else if let sentence = newestPlace, document.sentenceCount > 0 {
+            let place = min(max(sentence, 0), last)
+            unfinished.progressSentence = place
+            unfinished.progressFraction = Double(place) / Double(document.sentenceCount)
+        } else {
+            unfinished.progressSentence = 0
+            unfinished.progressFraction = 0
+        }
+        if unfinished.isFinished {
+            unfinished.progressSentence = 0
+            unfinished.progressFraction = 0
+        }
+        unfinished.placeBeforeFinish = nil
+        unfinished.fractionBeforeFinish = nil
+        return unfinished
     }
 
     // MARK: - Mutation
@@ -991,6 +1047,8 @@ final class DocumentStore: ObservableObject {
         documents[index].contentHash = content.contentHash
         documents[index].progressSentence = 0
         documents[index].progressFraction = 0
+        documents[index].placeBeforeFinish = nil
+        documents[index].fractionBeforeFinish = nil
         documents[index].sentenceCount = content.sentences.count
         documents[index].pageCount = content.pageCount
         try? persistIndex()

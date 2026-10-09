@@ -36,6 +36,9 @@ enum PlatformTuning {
     static let prewarmsForLoadedBook = true
     /// A bare launch never warms it: only a book or the card asks.
     static let prewarmsAtLaunch = false
+    /// Classics on screen warms it too: a book picked there would otherwise
+    /// load the model cold. Never the bare Library root.
+    static let prewarmsOnClassics = true
     /// A memory warning's hold on the warm-up ends when the app comes back
     /// to the foreground, as when the card shows again or another book
     /// loads: the listener has returned.
@@ -72,6 +75,8 @@ enum PlatformTuning {
     /// Mac's reader is often opened without the Library's card showing.
     static let prewarmsForLoadedBook = true
     static let prewarmsAtLaunch = true
+    /// The launch already warms it, so Classics asks for nothing more.
+    static let prewarmsOnClassics = false
     /// A window coming back to the front isn't the listener returning: a
     /// memory warning's hold ends only with the card or another book.
     static let memoryHoldEndsOnReturn = false

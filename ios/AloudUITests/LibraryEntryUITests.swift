@@ -53,7 +53,7 @@ final class LibraryEntryUITests: XCTestCase {
         for identifier in ["library.featured", "library.moreClassics", "library.addFile"] {
             let element = app.buttons[identifier].firstMatch
             XCTAssertTrue(element.waitForExistence(timeout: 15), "\(identifier) should show")
-            XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(identifier) is a 44pt target")
+            assertTouchTarget(element, identifier)
         }
         XCTAssertFalse(app.buttons["library.add"].exists, "No + until the library holds a book")
         let privacy = app.staticTexts.matching(NSPredicate(format: "label == %@",
@@ -162,10 +162,7 @@ final class LibraryEntryUITests: XCTestCase {
 
         let cancel = app.buttons["import.cancel"].firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 15))
-        // A hundredth of a point absorbs the float error of a frame read in
-        // window coordinates (43.99999999999994); any real shrink still fails.
-        XCTAssertGreaterThanOrEqual(cancel.frame.width, 44 - 0.01)
-        XCTAssertGreaterThanOrEqual(cancel.frame.height, 44 - 0.01)
+        assertTouchTarget(cancel, "import.cancel")
         cancel.tap()
         XCTAssertTrue(waitForNonExistence(of: overlay(app), timeout: 5))
         let featured = app.buttons["library.featured"].firstMatch
@@ -325,12 +322,14 @@ final class LibraryEntryUITests: XCTestCase {
         return false
     }
 
-    // MARK: - The shelf's foot (R1-05)
+    // MARK: - The shelf's foot (R1-05, R2-03, R2-05)
 
     /// Once a book is on the shelf, the empty Library's links stay at its
     /// foot: More classics is a 44pt link that pushes Classics, and the
-    /// featured classic is gone.
+    /// featured classic is gone. With nothing on the clipboard there is no
+    /// Paste among them.
     func testTheShelfKeepsItsLinksAtItsFoot() {
+        UIPasteboard.general.items = []
         let app = XCUIApplication.aloud([reset, seed])
         app.launch()
 
@@ -338,12 +337,65 @@ final class LibraryEntryUITests: XCTestCase {
         XCTAssertFalse(app.buttons["library.featured"].exists, "no featured classic once there is a book")
         let more = app.buttons["library.shelf.moreClassics"].firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 5), "More classics at the shelf's foot")
-        XCTAssertGreaterThanOrEqual(more.frame.height, 44, "a 44pt target")
+        assertTouchTarget(more, "library.shelf.moreClassics")
         XCTAssertTrue(app.buttons["library.shelf.addFile"].firstMatch.exists, "Add a file beside it")
-        XCTAssertFalse(app.descendants(matching: .any)["library.shelf.pasteText"].exists, "no Paste there")
+        XCTAssertFalse(app.descendants(matching: .any)["library.shelf.pasteText"].exists,
+                       "no Paste with nothing to paste")
         more.tap()
         XCTAssertTrue(app.descendants(matching: .any)["bookshelf.list"].firstMatch.waitForExistence(timeout: 10),
                       "More classics pushes Classics")
+    }
+
+    /// R2-03: with text on the clipboard the shelf's foot offers the
+    /// system's paste control too, a 44pt link that adds the text with no
+    /// Allow Paste prompt.
+    func testTheShelfsFootPastesWhileTheClipboardHoldsText() {
+        UIPasteboard.general.string = """
+            A Note From The Shelf
+
+            One paragraph to listen to, pasted from the foot of a shelf that holds a book.
+            """
+        addTeardownBlock { UIPasteboard.general.items = [] }
+        let app = XCUIApplication.aloud([reset, seed, systemVoice])
+        app.launch()
+
+        XCTAssertTrue(anyCard(app).waitForExistence(timeout: 15), "the seeded book")
+        let paste = app.descendants(matching: .any)["library.shelf.pasteText"].firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 10), "Paste at the shelf's foot while there is text")
+        if !paste.isHittable { app.swipeUp() }
+        XCTAssertTrue(paste.isHittable)
+        assertTouchTarget(paste, "library.shelf.pasteText")
+        paste.tap()
+        // The secure control reads the text with no prompt: the system's
+        // Allow Paste never shows, where + > Paste Text's would.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        XCTAssertFalse(springboard.buttons["Allow Paste"].firstMatch.waitForExistence(timeout: 2),
+                       "no Allow Paste prompt")
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the pasted text opens")
+        tapSystemBack(app)
+        XCTAssertTrue(waitForLibraryCount(2, in: app, timeout: 10), "one book added; got \(libraryCount(app))")
+    }
+
+    /// R2-05: with only a Continue card on the shelf, the links sit one
+    /// step under it, as they sit under a grid, not two.
+    func testTheLinksSitOneStepUnderALoneContinueCard() {
+        UIPasteboard.general.items = []
+        let app = XCUIApplication.aloud([reset, seed, systemVoice])
+        app.launch()
+
+        let card = app.buttons["library.card"].firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 15), "the seeded book")
+        card.tap()
+        XCTAssertTrue(readerText(app).waitForExistence(timeout: 15), "the reader opens")
+        tapSystemBack(app)
+        // The loaded book is the Continue card; the grid is empty.
+        let hero = app.buttons["library.continue"].firstMatch
+        XCTAssertTrue(hero.waitForExistence(timeout: 10), "the opened book is the Continue card")
+        XCTAssertFalse(app.buttons["library.card"].exists, "nothing else on the shelf")
+        let addFile = app.buttons["library.shelf.addFile"].firstMatch
+        XCTAssertTrue(addFile.waitForExistence(timeout: 5))
+        let gap = addFile.frame.minY - hero.frame.maxY
+        XCTAssertEqual(gap, 32, accuracy: 2, "one heroToGrid step under the card; got \(gap)")
     }
 
     // MARK: - The empty Library's paste control (R1-06)
@@ -364,7 +416,7 @@ final class LibraryEntryUITests: XCTestCase {
         let paste = app.descendants(matching: .any)["library.pasteText"].firstMatch
         XCTAssertTrue(paste.waitForExistence(timeout: 15), "the paste control shows while the clipboard has text")
         XCTAssertTrue(paste.isHittable)
-        XCTAssertGreaterThanOrEqual(paste.frame.height, 44, "a 44pt target")
+        assertTouchTarget(paste, "library.pasteText")
         paste.tap()
         XCTAssertTrue(readerText(app).waitForExistence(timeout: 20), "the pasted text opens")
         tapSystemBack(app)

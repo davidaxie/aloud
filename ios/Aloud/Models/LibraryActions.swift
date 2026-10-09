@@ -14,9 +14,9 @@ enum LibraryAddMenuItem: CaseIterable {
 
 /// The iPhone's third way in: the text on the clipboard, added as a book of
 /// its own (`DocumentImporter.importText(_:)`), the article copied in
-/// Safari to listen to. The last item of the + menu; beside the empty
-/// Library's other two links it is the system's paste control, which
-/// labels itself.
+/// Safari to listen to. The last item of the + menu; in the link row under
+/// the empty Library's featured classic and at the shelf's foot it is the
+/// system's paste control, which labels itself, while there is text.
 enum PasteTextAction {
     /// The + menu's item.
     static let menuTitle = "Paste Text"
@@ -25,9 +25,12 @@ enum PasteTextAction {
     /// The + menu's item read nothing although the clipboard held text: the
     /// paste prompt was declined, or Settings denies pasting. Said, with a
     /// way to Settings, rather than nothing happening.
-    static let declinedTitle = "Aloud wasn't allowed to paste."
+    static let declinedTitle = "Aloud wasn’t allowed to paste."
     static let declinedMessage = "Choose Allow Paste, or turn on Paste from Other Apps in Settings > Aloud."
     static let openSettings = "Open Settings"
+    /// The shelf's paste control's VoiceOver hint (`PlatformPasteControl`);
+    /// the control names itself.
+    static let controlHint = "Adds the copied text as a book"
 
     /// What a read of the clipboard found.
     enum Outcome: Equatable {
@@ -61,14 +64,15 @@ enum OpenMenuItem {
 /// Kept apart from the views so every menu that acts on a book reads the
 /// one list.
 enum DocumentAction: CaseIterable {
-    case rename, markFinished, delete
+    case rename, markFinished, markUnfinished, delete
 
     var title: String {
         switch self {
         case .rename: return "Rename"
         // Title case, as Apple's menus spell items: the Mac's card menu
-        // and menu bar read this same string (`MacMenuCopy.markFinished`).
+        // and menu bar read these same strings (`MacMenuCopy`).
         case .markFinished: return "Mark as Finished"
+        case .markUnfinished: return "Mark as Unfinished"
         case .delete: return "Delete"
         }
     }
@@ -77,11 +81,16 @@ enum DocumentAction: CaseIterable {
         switch self {
         case .rename: return "pencil"
         case .markFinished: return "checkmark.circle"
+        case .markUnfinished: return "arrow.uturn.backward.circle"
         case .delete: return "trash"
         }
     }
 
     var role: ButtonRole? { self == .delete ? .destructive : nil }
+
+    /// What VoiceOver hears once Mark as Unfinished has put the place back,
+    /// on both apps.
+    static let markedUnfinished = "Marked as unfinished"
 
     /// Delete's confirmation message, on both apps: what goes, and for a
     /// bundled classic, that it can come back.
@@ -91,9 +100,18 @@ enum DocumentAction: CaseIterable {
         return removes + " You can add it again from Classics."
     }
 
-    /// A Finished book has nothing left to mark.
+    /// A Finished book has nothing left to mark, and offers its reverse in
+    /// the same slot: Mark as Unfinished puts back the place it had. So a
+    /// card always offers three.
     static func available(for document: LibraryDocument) -> [DocumentAction] {
-        allCases.filter { $0 != .markFinished || !document.isFinished }
+        let finished = document.isFinished
+        return allCases.filter { action in
+            switch action {
+            case .markFinished: return !finished
+            case .markUnfinished: return finished
+            case .rename, .delete: return true
+            }
+        }
     }
 
     /// The iPhone's long-press menu: the same actions, with Delete in a

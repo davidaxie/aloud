@@ -164,7 +164,7 @@ final class ImportFailureCopyTests: XCTestCase {
     /// it warns that deleting the app deletes them; a Mac app moved to the
     /// Trash leaves its files.
     func testTheUnreadableLibraryNoticeSaysTheBooksAreKept() {
-        XCTAssertEqual(UnreadableLibraryCopy.title, "Aloud couldn't read your library.")
+        XCTAssertEqual(UnreadableLibraryCopy.title, "Aloud couldn’t read your library.")
         XCTAssertEqual(UnreadableLibraryCopy.detail, DeviceCopy.unreadableLibraryDetail)
         #if os(iOS)
         XCTAssertEqual(UnreadableLibraryCopy.detail,

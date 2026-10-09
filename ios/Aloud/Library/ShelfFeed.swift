@@ -77,7 +77,8 @@ struct PhoneShelfMetrics: Equatable {
     static let rowSpacing: CGFloat = Theme.Space.xxl
     /// From the bar to the first card.
     static let topPadding: CGFloat = Theme.Space.lg
-    /// From the Continue card to the grid.
+    /// From the Continue card to the grid, or to the shelf's links when the
+    /// grid is empty.
     static let heroToGrid: CGFloat = Theme.Space.xxl
     /// The screen's side margin, as every iPhone screen has it.
     static let gutter: CGFloat = Theme.Space.screenGutter

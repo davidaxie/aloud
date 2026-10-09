@@ -5,7 +5,10 @@ import Foundation
 /// so a tap on it speaks in about the time a System sentence takes rather
 /// than after a multi-second model load. A book loaded in the neural voice
 /// asks for it too (`PlatformTuning.prewarmsForLoadedBook`): the reader
-/// LaunchRestore reopens at launch shows no card. On a Mac the launch asks
+/// LaunchRestore reopens at launch shows no card. So does Classics on
+/// screen (`PlatformTuning.prewarmsOnClassics`), where a book is about to
+/// be picked, and a book opening from the Library (`bookIsOpening()`), so
+/// neither starts cold behind "Preparing voice…". On a Mac the launch asks
 /// as well (`PlatformTuning.prewarmsAtLaunch`), until a warm-up first
 /// starts.
 ///
@@ -50,6 +53,8 @@ final class NeuralPrewarm {
     private let warmsForLoadedBook: Bool
     /// The launch asks for one too (a Mac).
     private let warmsAtLaunch: Bool
+    /// Classics on screen asks for one too.
+    private let warmsOnClassics: Bool
     /// The app coming back to the foreground ends a memory warning's hold
     /// (an iPhone).
     private let memoryHoldEndsOnReturn: Bool
@@ -58,6 +63,11 @@ final class NeuralPrewarm {
     private let releasesPausedInBackground: Bool
 
     private var cardVisible = false
+    /// Classics is the top of the stack.
+    private var browsingClassics = false
+    /// A book is opening from the Library (`bookIsOpening()`): asks once,
+    /// until a warm-up starts or the book loads.
+    private var openingBook = false
     private var loadedBookID: UUID?
     /// The launch asks until a warm-up first starts.
     private var launchPending: Bool
@@ -80,9 +90,12 @@ final class NeuralPrewarm {
     /// `loadedBook` is the id of the book playback holds, which warms where
     /// `warmsForLoadedBook`. `heat` is whether the device is `.serious` or
     /// hotter (ThermalGuard's `isHot`); never hot unless given.
+    /// `browsingClassics` is whether Classics is the top of the stack, which
+    /// warms where `warmsOnClassics`; leaving it never cancels or releases.
     init(playback: PlaybackController,
          kokoro: any WarmableTtsEngine,
          cardVisible: AnyPublisher<Bool, Never>,
+         browsingClassics: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher(),
          loadedBook: AnyPublisher<UUID?, Never> = Just(nil).eraseToAnyPublisher(),
          isModelInstalled: @escaping @MainActor () -> Bool,
          isLowPowerMode: @escaping () -> Bool = { ProcessInfo.processInfo.isLowPowerModeEnabled },
@@ -90,6 +103,7 @@ final class NeuralPrewarm {
          sceneActive: Bool? = nil,
          warmsForLoadedBook: Bool = PlatformTuning.prewarmsForLoadedBook,
          warmsAtLaunch: Bool = PlatformTuning.prewarmsAtLaunch,
+         warmsOnClassics: Bool = PlatformTuning.prewarmsOnClassics,
          memoryHoldEndsOnReturn: Bool = PlatformTuning.memoryHoldEndsOnReturn,
          releasesPausedInBackground: Bool = PlatformTuning.releasesNeuralOnBackground,
          notifications: NotificationCenter = .default) {
@@ -99,6 +113,7 @@ final class NeuralPrewarm {
         self.isLowPowerMode = isLowPowerMode
         self.warmsForLoadedBook = warmsForLoadedBook
         self.warmsAtLaunch = warmsAtLaunch
+        self.warmsOnClassics = warmsOnClassics
         self.memoryHoldEndsOnReturn = memoryHoldEndsOnReturn
         self.releasesPausedInBackground = releasesPausedInBackground
         launchPending = warmsAtLaunch
@@ -116,6 +131,17 @@ final class NeuralPrewarm {
             }
             .store(in: &subscriptions)
 
+        // Classics on screen asks; it is no return to the card, so a memory
+        // warning's hold stays, and going back never cancels or releases.
+        browsingClassics
+            .removeDuplicates()
+            .sink { [weak self] browsing in
+                guard let self else { return }
+                self.browsingClassics = browsing
+                self.reevaluate()
+            }
+            .store(in: &subscriptions)
+
         loadedBook
             .removeDuplicates()
             .sink { [weak self] id in
@@ -125,6 +151,8 @@ final class NeuralPrewarm {
                 if self.warmsForLoadedBook, let id, id != self.loadedBookID {
                     self.suppressedByMemoryWarning = false
                 }
+                // The book that was opening has loaded: its own ask is over.
+                if id != nil { self.openingBook = false }
                 self.loadedBookID = id
                 self.reevaluate()
             }
@@ -169,6 +197,15 @@ final class NeuralPrewarm {
         reevaluate()
     }
 
+    /// The Library is opening a book (`LibraryView.open`): one ask, under
+    /// every gate, that ends once a warm-up starts or a book loads. A book
+    /// opened from a shelf with no Continue card otherwise loads the model
+    /// cold behind "Preparing voice…".
+    func bookIsOpening() {
+        openingBook = true
+        reevaluate()
+    }
+
     /// Starts a warm-up when every condition holds and none is warm or in
     /// flight. Never cancels or releases.
     func reevaluate() {
@@ -176,7 +213,10 @@ final class NeuralPrewarm {
                                        bookLoaded: loadedBookID != nil,
                                        launchPending: launchPending,
                                        warmsForLoadedBook: warmsForLoadedBook,
-                                       warmsAtLaunch: warmsAtLaunch)
+                                       warmsAtLaunch: warmsAtLaunch,
+                                       browsingClassics: browsingClassics,
+                                       warmsOnClassics: warmsOnClassics,
+                                       bookOpening: openingBook)
         guard Self.shouldWarm(asked: asked,
                               sceneActive: sceneActive,
                               modelInstalled: isModelInstalled(),
@@ -186,6 +226,7 @@ final class NeuralPrewarm {
                               suppressedByMemoryWarning: suppressedByMemoryWarning),
               !kokoro.isWarm, warmTask == nil else { return }
         launchPending = false
+        openingBook = false
         warmGeneration &+= 1
         let generation = warmGeneration
         let kokoro = kokoro
@@ -219,14 +260,19 @@ final class NeuralPrewarm {
             && !lowPowerMode && !hot && !suppressedByMemoryWarning
     }
 
-    /// The Continue card asks everywhere; a loaded book and the launch ask
-    /// where the platform warms for them.
+    /// The Continue card and a book opening from the Library ask everywhere;
+    /// Classics on screen, a loaded book and the launch ask where the
+    /// platform warms for them. The bare Library root asks for nothing.
     nonisolated static func asksForWarmUp(cardVisible: Bool,
                                           bookLoaded: Bool,
                                           launchPending: Bool,
                                           warmsForLoadedBook: Bool,
-                                          warmsAtLaunch: Bool) -> Bool {
-        cardVisible || (warmsForLoadedBook && bookLoaded) || (warmsAtLaunch && launchPending)
+                                          warmsAtLaunch: Bool,
+                                          browsingClassics: Bool = false,
+                                          warmsOnClassics: Bool = false,
+                                          bookOpening: Bool = false) -> Bool {
+        cardVisible || bookOpening || (warmsOnClassics && browsingClassics)
+            || (warmsForLoadedBook && bookLoaded) || (warmsAtLaunch && launchPending)
     }
 
     /// The Library is the root of the stack and has a Continue card to show,

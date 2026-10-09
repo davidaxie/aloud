@@ -434,11 +434,89 @@ final class ProgressIndexTests: XCTestCase {
         XCTAssertEqual(EditFailure(.rename, full).title, DeleteFailure.outOfSpace.title)
         XCTAssertEqual(EditFailure(.markFinished, full).nextStep, "Free up some space, then try again.")
         let unreadable = EditFailure(.rename, LibraryIndexError.unreadable)
-        XCTAssertEqual(unreadable.title, "This book couldn't be renamed.")
+        XCTAssertEqual(unreadable.title, "This book couldn’t be renamed.")
         XCTAssertEqual(unreadable.nextStep, DeleteFailure.libraryUnreadable.nextStep)
         XCTAssertEqual(EditFailure(.markFinished, CocoaError(.fileWriteNoPermission)).title,
-                       "This book couldn't be marked as finished.")
+                       "This book couldn’t be marked as finished.")
         XCTAssertEqual(EditFailure(.markFinished, CocoaError(.fileWriteNoPermission)).nextStep, "Try again.")
+        XCTAssertEqual(EditFailure(.markUnfinished, CocoaError(.fileWriteNoPermission)).title,
+                       "This book couldn’t be marked as unfinished.")
+        XCTAssertEqual(EditFailure(.markUnfinished, full).title, DeleteFailure.outOfSpace.title)
+    }
+
+    // MARK: - Mark as Unfinished (R2-06)
+
+    /// Partway, then Mark as Finished, then Mark as Unfinished: the book is
+    /// back at its place, on disk at once, and the kept place is gone.
+    func testMarkAsUnfinishedPutsTheOldPlaceBack() throws {
+        let (store, book, index) = try makeStore(saveInterval: 60)
+        store.saveProgress(id: book.id, sentence: 120, fraction: 0.3)
+        try store.markFinished(id: book.id)
+        let finished = try XCTUnwrap(store.documents.first)
+        XCTAssertTrue(finished.isFinished)
+        XCTAssertEqual(finished.placeBeforeFinish, 120)
+        XCTAssertEqual(finished.fractionBeforeFinish, 0.3)
+        XCTAssertEqual(try sentenceOnDisk(index, book.id), 399, "Mark as Finished is written at once")
+
+        try store.markUnfinished(id: book.id, newestPlace: 7)
+        let unfinished = try XCTUnwrap(store.documents.first)
+        XCTAssertFalse(unfinished.isFinished)
+        XCTAssertEqual(unfinished.progressSentence, 120, "the kept place outranks the newest stop")
+        XCTAssertEqual(unfinished.progressFraction, 0.3, accuracy: 0.0001)
+        XCTAssertNil(unfinished.placeBeforeFinish)
+        XCTAssertNil(unfinished.fractionBeforeFinish)
+        XCTAssertEqual(try sentenceOnDisk(index, book.id), 120, "written at once, not debounced")
+    }
+
+    /// A progress write that moves the place forgets the kept one, which
+    /// would otherwise be stale; one that leaves the book where it is (a
+    /// finished book reopened at its end) keeps it.
+    func testAProgressWriteForgetsTheKeptPlace() throws {
+        let (store, book, _) = try makeStore(saveInterval: 60)
+        store.saveProgress(id: book.id, sentence: 120, fraction: 0.3)
+        try store.markFinished(id: book.id)
+        store.saveProgress(id: book.id, sentence: 399, fraction: 1)
+        XCTAssertEqual(store.documents.first?.placeBeforeFinish, 120, "no move, nothing forgotten")
+        store.saveProgress(id: book.id, sentence: 10, fraction: 0.025)
+        XCTAssertNil(store.documents.first?.placeBeforeFinish)
+        XCTAssertNil(store.documents.first?.fractionBeforeFinish)
+    }
+
+    /// A mark the index can't record leaves the book Finished, its kept
+    /// place with it.
+    func testAnUnfinishTheIndexCantRecordIsRolledBack() throws {
+        let (store, book, index) = try makeStore(saveInterval: 60)
+        store.saveProgress(id: book.id, sentence: 120, fraction: 0.3)
+        try store.markFinished(id: book.id)
+        store.writeIndexData = { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        XCTAssertThrowsError(try store.markUnfinished(id: book.id)) { error in
+            XCTAssertEqual(EditFailure(.markUnfinished, error).cause, .outOfSpace)
+        }
+        XCTAssertEqual(store.documents.first?.progressFraction, 1)
+        XCTAssertEqual(store.documents.first?.placeBeforeFinish, 120)
+        XCTAssertEqual(try sentenceOnDisk(index, book.id), 399)
+    }
+
+    /// A library.json written before the kept place existed still loads,
+    /// and a record that has one writes and reads it back.
+    func testTheKeptPlaceDecodesFromOldAndNewRecords() throws {
+        let old = """
+            {"id":"\(UUID().uuidString)","title":"Old","fileName":"old.txt","addedAt":"2024-01-01T00:00:00Z",
+             "pageCount":1,"sentenceCount":10,"progressSentence":9,"progressFraction":1,"contentHash":"h"}
+            """
+        let decoded = try Self.decoder.decode(LibraryDocument.self, from: Data(old.utf8))
+        XCTAssertNil(decoded.placeBeforeFinish)
+        XCTAssertNil(decoded.fractionBeforeFinish)
+        XCTAssertEqual(DocumentStore.markingUnfinished(decoded).progressSentence, 0, "no kept place: the start")
+
+        var kept = decoded
+        kept.placeBeforeFinish = 4
+        kept.fractionBeforeFinish = 0.4
+        let round = try Self.decoder.decode(LibraryDocument.self, from: Self.encoder.encode(kept))
+        XCTAssertEqual(round.placeBeforeFinish, 4)
+        XCTAssertEqual(round.fractionBeforeFinish, 0.4)
+        let plain = String(decoding: try Self.encoder.encode(decoded), as: UTF8.self)
+        XCTAssertFalse(plain.contains("BeforeFinish"), "a record without one writes no key")
     }
 
     /// A delete while an unreadable index is kept fails too, and frees

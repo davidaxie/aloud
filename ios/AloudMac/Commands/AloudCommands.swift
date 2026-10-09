@@ -18,6 +18,7 @@ struct AloudCommands: Commands {
     @FocusedValue(\.macFollowVoice) private var followVoice
     @FocusedValue(\.macRenameBook) private var renameBook
     @FocusedValue(\.macMarkFinished) private var markFinished
+    @FocusedValue(\.macMarkUnfinished) private var markUnfinished
     @FocusedValue(\.macDeleteBook) private var deleteBook
     @Environment(\.openSettings) private var openSettings
     @AppStorage(AppearancePreference.prefKey) private var appearanceRaw = AppearancePreference.system.rawValue
@@ -53,7 +54,13 @@ struct AloudCommands: Commands {
         CommandGroup(after: .pasteboard) {
             Divider()
             item(.renameBook)
-            item(.markFinished)
+            // The focused book's finish, either way: a Finished one offers
+            // Mark as Unfinished in Mark as Finished's place.
+            if markUnfinished != nil {
+                item(.markUnfinished)
+            } else {
+                item(.markFinished)
+            }
             item(.deleteBook)
         }
         CommandGroup(replacing: .textEditing) {
@@ -108,6 +115,7 @@ struct AloudCommands: Commands {
         actions.followVoice = followVoice
         actions.renameBook = renameBook
         actions.markFinished = markFinished
+        actions.markUnfinished = markUnfinished
         actions.deleteBook = deleteBook
         let openSettings = openSettings
         actions.openSettings = { openSettings() }
@@ -133,6 +141,7 @@ struct AloudCommands: Commands {
         case .followVoice: return followVoice != nil
         case .renameBook: return renameBook != nil
         case .markFinished: return markFinished != nil
+        case .markUnfinished: return markUnfinished != nil
         case .deleteBook: return deleteBook != nil
         default: return snapshot.isEnabled(command)
         }
@@ -195,7 +204,18 @@ struct MacMarkFinishedKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+/// Mark as Unfinished, published by the focused Library card while its
+/// book is Finished. The Edit menu shows it in Mark as Finished's place.
+struct MacMarkUnfinishedKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
+    var macMarkUnfinished: MacMarkUnfinishedKey.Value? {
+        get { self[MacMarkUnfinishedKey.self] }
+        set { self[MacMarkUnfinishedKey.self] = newValue }
+    }
+
     var macFollowVoice: MacFollowVoiceKey.Value? {
         get { self[MacFollowVoiceKey.self] }
         set { self[MacFollowVoiceKey.self] = newValue }

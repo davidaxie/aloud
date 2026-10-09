@@ -9,7 +9,7 @@ enum PrivacyCopy {
 /// The Library's standing notice while library.json can't be read (L011).
 /// The detail names the device, so it is spelled in `DeviceCopy`.
 enum UnreadableLibraryCopy {
-    static let title = "Aloud couldn't read your library."
+    static let title = "Aloud couldn’t read your library."
     static var detail: String { DeviceCopy.unreadableLibraryDetail }
 }
 
@@ -171,7 +171,8 @@ struct EmptyLibraryView: View {
 }
 
 /// The shelf's quiet text links: to Classics (while there is a catalog), to
-/// the Files picker and, when `onPaste` is set, the system's paste control.
+/// the Files picker and, when `onPaste` is set (the iPhone, while the
+/// clipboard holds text), the system's paste control.
 /// Under the empty Library's featured classic (`library.*`), and at the foot
 /// of a shelf that holds books (`library.shelf.*`), so the way to the next
 /// book stays in reach without the + menu.
@@ -220,24 +221,13 @@ struct ShelfLinks: View {
         .accessibilityIdentifier(identifier)
     }
 
-    /// The system's paste control, which reads the clipboard with no
-    /// prompt. Dressed as a link: its fill is the page's own ground, so the
-    /// featured card's play circle stays the screen's one accent fill.
-    /// The control keeps its own intrinsic height inside any outer frame,
-    /// so the 44pt target comes from its large size; the frame is a floor
-    /// for the row's layout only. Only the iPhone hands this an onPaste.
+    /// The system's prompt-free paste: it reads the clipboard on the tap,
+    /// with no Allow Paste prompt. Drawn as a third accent link on the
+    /// page's own ground (`PlatformPasteControl`), level with the two
+    /// beside it, so the featured card's Play stays the screen's one accent
+    /// fill. The control takes the 44pt frame its representable asks for.
+    /// Only the iPhone hands this an onPaste.
     private func pasteControl(_ onPaste: @escaping ([String]) -> Void) -> some View {
-        PasteButton(payloadType: String.self) { strings in
-            // Handed to the main actor, whichever thread the control
-            // delivers its payload on: the add publishes to the shelf.
-            Task { @MainActor in onPaste(strings) }
-        }
-        .labelStyle(.titleOnly)
-        .buttonBorderShape(.capsule)
-        .controlSize(.large)
-        .tint(Theme.bg)
-        .foregroundStyle(Theme.accentStrong)
-        .frame(minHeight: 44)
-        .accessibilityIdentifier("\(idPrefix).pasteText")
+        PlatformPasteControl(onPaste: onPaste, identifier: "\(idPrefix).pasteText")
     }
 }

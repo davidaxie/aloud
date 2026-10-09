@@ -249,10 +249,14 @@ struct MacLibraryView: View {
                 }
                 .macBookCommands(for: hero) { perform($0, on: hero) }
             }
-            grid(metrics)
-                // The cells carry the plates: pull them out by a
-                // plate so the covers line up with the card above.
-                .padding(.horizontal, -MacGridMetrics.plateOutset)
+            // Only with cards to hold: an empty grid would still take the
+            // stack's spacing on both sides, two steps under the card.
+            if !shelf.grid.isEmpty {
+                grid(metrics)
+                    // The cells carry the plates: pull them out by a
+                    // plate so the covers line up with the card above.
+                    .padding(.horizontal, -MacGridMetrics.plateOutset)
+            }
             // The empty Library's links stay at the shelf's foot, centred,
             // so the next book is in reach without the toolbar's +.
             MacShelfLinks(idPrefix: "library.shelf")
@@ -372,6 +376,20 @@ struct MacLibraryView: View {
             deleteTarget = document
             deleteHadFocus = focusedCard == document.id
             router.rootPresentation = .deleteConfirmation
+        case .markUnfinished:
+            // The place it had goes back, written at once; nothing opens or
+            // plays (`AppModel.markUnfinished`). A mark the store can't
+            // record leaves the book Finished, focus with it.
+            let hadFocus = focusedCard == document.id
+            if let failure = model.markUnfinished(document) {
+                showFailure(failure)
+                return
+            }
+            // Back in progress, the book may be redrawn as the Continue
+            // card: focus follows it there.
+            if hadFocus { refocus(document.id) }
+            PlaybackController.postAnnouncement(DocumentAction.markedUnfinished,
+                                                muted: model.playback.isOutputMuted)
         }
     }
 

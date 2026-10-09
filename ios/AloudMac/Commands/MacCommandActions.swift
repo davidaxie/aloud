@@ -51,9 +51,10 @@ struct MacCommandActions {
     var followVoice: (() -> Void)?
     /// The focused Library card's Rename…, Mark as Finished and Delete…,
     /// while one has focus (Mark as Finished only while it has something
-    /// left to mark).
+    /// left to mark, Mark as Unfinished only once it is Finished).
     var renameBook: (() -> Void)?
     var markFinished: (() -> Void)?
+    var markUnfinished: (() -> Void)?
     var deleteBook: (() -> Void)?
     /// The key window and any modal panel, where ⌘W looks. Tests replace it.
     var windows: @MainActor () -> (key: NSWindow?, modal: NSWindow?) = { (NSApp.keyWindow, NSApp.modalWindow) }
@@ -101,6 +102,7 @@ struct MacCommandActions {
         case .find: return place == .classics || place.isReader
         case .renameBook: return renameBook != nil
         case .markFinished: return markFinished != nil
+        case .markUnfinished: return markUnfinished != nil
         case .deleteBook: return deleteBook != nil
         case .toggleContents: return place.isReader
         case .biggerText: return ReaderTextSize.stepped(from: textSizeStep, bigger: true) != nil
@@ -150,6 +152,7 @@ struct MacCommandActions {
             }
         case .renameBook: renameBook?()
         case .markFinished: markFinished?()
+        case .markUnfinished: markUnfinished?()
         case .deleteBook: deleteBook?()
         case .toggleContents: ui.isContentsShown.toggle()
         case .biggerText: stepTextSize(bigger: true)

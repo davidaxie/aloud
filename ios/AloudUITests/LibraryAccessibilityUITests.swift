@@ -2,7 +2,8 @@ import XCTest
 
 /// R12f/R12g/R25 on the shelf: card and featured labels name the author and
 /// spell out durations in one of three forms, and every card (the hero too)
-/// offers Rename, Mark as Finished and Delete. Muted through
+/// offers Rename, Mark as Finished (Mark as Unfinished once Finished) and
+/// Delete. Muted through
 /// XCUIApplication.aloud; no launch allows autoplay and nothing taps Play.
 final class LibraryAccessibilityUITests: XCTestCase {
 
@@ -124,7 +125,19 @@ final class LibraryAccessibilityUITests: XCTestCase {
         XCTAssertTrue(menuItem("Delete", in: app).exists)
         XCTAssertFalse(menuItem("Mark as Finished", in: app).exists, "A Finished book has nothing to mark")
         XCTAssertTrue(menuItem("Open", in: app).exists, "a Finished book opens paused: Open")
-        dismissMenu(app, waitingFor: rename)
+
+        // R2-06: the reverse, in the same slot, puts back the place it had
+        // (here the start, where it was marked): the card reads a length
+        // again, not finished.
+        let unfinish = menuItem("Mark as Unfinished", in: app)
+        XCTAssertTrue(unfinish.exists, "A Finished book offers Mark as Unfinished")
+        unfinish.tap()
+        XCTAssertTrue(waitForNonExistence(of: unfinish, timeout: 10))
+        let back = app.buttons.matching(NSPredicate(format: "identifier == 'library.card' AND label BEGINSWITH %@",
+                                                    Self.caskPrefix)).firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForNonExistence(of: finished, timeout: 10), "card label: \(back.label)")
+        XCTAssertTrue(back.label.hasSuffix("minutes"), "the whole length again: \(back.label)")
     }
 
     func testMarkingTheHeroFinishedRetiresIt() {

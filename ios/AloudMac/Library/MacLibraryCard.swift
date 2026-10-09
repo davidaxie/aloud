@@ -45,13 +45,18 @@ extension View {
     /// Edit ▸ Rename Book…, Mark as Finished and Delete Book… (⌘⌫) act on
     /// the book whose card has keyboard focus, a grid card or the Continue
     /// card alike. Mark as Finished only while the book has something left
-    /// to mark, as its context menu offers it.
+    /// to mark, and Mark as Unfinished in its place once it is Finished, as
+    /// its context menu offers them.
     func macBookCommands(for document: LibraryDocument,
                          perform: @escaping (DocumentAction) -> Void) -> some View {
-        let markFinished: (() -> Void)? = DocumentAction.available(for: document).contains(.markFinished)
+        let available = DocumentAction.available(for: document)
+        let markFinished: (() -> Void)? = available.contains(.markFinished)
             ? { perform(.markFinished) } : nil
+        let markUnfinished: (() -> Void)? = available.contains(.markUnfinished)
+            ? { perform(.markUnfinished) } : nil
         return focusedValue(\.macRenameBook) { perform(.rename) }
             .focusedValue(\.macMarkFinished, markFinished)
+            .focusedValue(\.macMarkUnfinished, markUnfinished)
             .focusedValue(\.macDeleteBook) { perform(.delete) }
     }
 }
@@ -65,8 +70,8 @@ extension DocumentAction {
         switch self {
         case .rename: return "Rename\u{2026}"
         // The shared title, already in Apple's title case: the iPhone's card
-        // menu, this one and the menu bar (`MacMenuCopy.markFinished`) agree.
-        case .markFinished: return title
+        // menu, this one and the menu bar (`MacMenuCopy`) agree.
+        case .markFinished, .markUnfinished: return title
         case .delete: return "Delete\u{2026}"
         }
     }

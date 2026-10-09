@@ -167,19 +167,28 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertFalse(library.contains(".focusedValue(\\.macDeleteBook)"), "Delete alone would leave the others out")
 
         let helper = try XCTUnwrap(cardFile.range(of: "func macBookCommands(for document: LibraryDocument,"))
-        let published = cardFile[helper.upperBound...].prefix(700)
+        let published = cardFile[helper.upperBound...].prefix(1000)
+        XCTAssertTrue(published.contains("let available = DocumentAction.available(for: document)"), String(published))
         XCTAssertTrue(published.contains("focusedValue(\\.macRenameBook) { perform(.rename) }"), String(published))
         XCTAssertTrue(published.contains(".focusedValue(\\.macMarkFinished, markFinished)"), String(published))
-        XCTAssertTrue(published.contains("DocumentAction.available(for: document).contains(.markFinished)"),
-                      "a Finished book has nothing to mark")
+        XCTAssertTrue(published.contains("available.contains(.markFinished)"), "a Finished book has nothing to mark")
+        // R2-06: a Finished book offers the reverse in the same slot.
+        XCTAssertTrue(published.contains(".focusedValue(\\.macMarkUnfinished, markUnfinished)"), String(published))
+        XCTAssertTrue(published.contains("available.contains(.markUnfinished)"), "only a Finished book unmarks")
         XCTAssertTrue(published.contains(".focusedValue(\\.macDeleteBook) { perform(.delete) }"), String(published))
 
         let commands = try XCTUnwrap(mac[files[2]])
         let edit = try XCTUnwrap(commands.range(of: "CommandGroup(after: .pasteboard) {"))
-        let items = commands[edit.upperBound...].prefix { $0 != "}" }
-        XCTAssertTrue(items.contains("item(.renameBook)\n            item(.markFinished)\n            item(.deleteBook)"),
-                      "beside Delete Book…: \(items)")
-        for (key, value) in [("macRenameBook", "renameBook"), ("macMarkFinished", "markFinished")] {
+        let items = String(commands[edit.upperBound...].prefix(500))
+        let rename = try XCTUnwrap(items.range(of: "item(.renameBook)"), items)
+        let swap = try XCTUnwrap(items.range(of: "if markUnfinished != nil {\n                item(.markUnfinished)\n"
+                                                + "            } else {\n                item(.markFinished)\n            }"),
+                                 "Mark as Unfinished in Mark as Finished's place: \(items)")
+        let delete = try XCTUnwrap(items.range(of: "item(.deleteBook)"), items)
+        XCTAssertLessThan(rename.lowerBound, swap.lowerBound, "beside Delete Book…: \(items)")
+        XCTAssertLessThan(swap.lowerBound, delete.lowerBound, "beside Delete Book…: \(items)")
+        for (key, value) in [("macRenameBook", "renameBook"), ("macMarkFinished", "markFinished"),
+                             ("macMarkUnfinished", "markUnfinished")] {
             XCTAssertTrue(commands.contains("@FocusedValue(\\.\(key)) private var \(value)"), key)
             XCTAssertTrue(commands.contains("actions.\(value) = \(value)"), value)
             XCTAssertTrue(commands.contains("case .\(value): return \(value) != nil"), value)
@@ -326,7 +335,8 @@ final class LibraryLintTests: XCTestCase {
     /// the same as a link, which stays UIKit-free (the Mac compiles it).
     func testThePlusMenuEndsWithPasteText() throws {
         let empty = "Library/EmptyLibraryView.swift"
-        let sources = try SourceTree.sources(only: [Self.libraryFile, empty])
+        let pasteControl = "Platform/PlatformPasteControl.swift"
+        let sources = try SourceTree.sources(only: [Self.libraryFile, empty, pasteControl])
         let library = try XCTUnwrap(sources[Self.libraryFile])
         let menu = try XCTUnwrap(library.range(of: "private var addMenu: some View {"))
         let items = library[menu.upperBound...].prefix(900)
@@ -345,23 +355,27 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(body.contains("UIPasteboard.general.string"), String(body))
         XCTAssertTrue(body.contains("importer.importText(text)"), String(body))
 
-        // R1-06: the empty Library pastes through the system's control,
-        // which needs no prompt; the iPhone hands it the importer only
-        // while the clipboard holds text.
+        // R1-06, R2-01: the empty Library pastes through the system's
+        // control, which needs no prompt; the iPhone hands it the importer
+        // only while the clipboard holds text.
         let emptyView = try XCTUnwrap(sources[empty])
         XCTAssertTrue(emptyView.contains("var onPaste: (([String]) -> Void)? = nil"))
         XCTAssertTrue(emptyView.contains("ShelfLinks(onAddFile: onAddFile, onPaste: onPaste, idPrefix: \"library\")"))
-        XCTAssertTrue(emptyView.contains("PasteButton(payloadType: String.self)"))
-        // A 44pt target from the control's own size (an outer frame leaves
-        // the system control at its intrinsic height), still dressed as a
-        // link: title only, a capsule in the page's ground, accent text.
-        let control = try XCTUnwrap(emptyView.range(of: "private func pasteControl("))
-        let chain = String(emptyView[control.upperBound...].prefix(900))
-        for modifier in [".controlSize(.large)", ".labelStyle(.titleOnly)", ".buttonBorderShape(.capsule)",
-                         ".tint(Theme.bg)", ".foregroundStyle(Theme.accentStrong)"] {
-            XCTAssertTrue(chain.contains(modifier), "\(modifier): \(chain)")
+        XCTAssertTrue(emptyView.contains("PlatformPasteControl(onPaste: onPaste, identifier: \"\\(idPrefix).pasteText\")"))
+        XCTAssertFalse(SwiftLiterals.code(in: emptyView).contains("PasteButton("),
+                       "SwiftUI's PasteButton keeps a ~34pt height and greys its own fill")
+        // UIKit's control, dressed as a link: label only, a capsule in the
+        // page's ground, accent text, and a 44pt frame it draws in.
+        let control = try XCTUnwrap(sources[pasteControl])
+        for pin in [".labelOnly", ".capsule", "UIColor(Theme.bg)", "UIColor(Theme.accentStrong)",
+                    "UIPasteConfiguration(forAccepting: NSString.self)", "func sizeThatFits",
+                    "height: max(44, i.height)"] {
+            XCTAssertTrue(control.contains(pin), "\(pin) in \(pasteControl)")
         }
-        XCTAssertTrue(library.contains("onPaste: clipboardHasText\n                                    ? { importer.importText($0.joined(separator: \"\\n\\n\")) } : nil"))
+        XCTAssertTrue(library.contains("EmptyLibraryView(onAddFile: { router.rootPresentation = .filePicker },\n"
+                                       + "                                 onPaste: pasteHandler)"))
+        XCTAssertTrue(library.contains("clipboardHasText ? { importer.importText($0.joined(separator: \"\\n\\n\")) } : nil"),
+                      "the paste link's handler follows the clipboard")
         XCTAssertFalse(emptyView.contains("import UIKit"))
         XCTAssertFalse(SwiftLiterals.code(in: emptyView).contains("UIPasteboard"))
     }
@@ -389,23 +403,29 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(library[open.upperBound...].prefix(200).contains("UIApplication.openSettingsURLString"))
     }
 
-    /// R1-05: a shelf that holds books keeps the empty Library's links at
-    /// its foot, without Paste or the privacy line, on both apps.
+    /// R1-05, R2-03: a shelf that holds books keeps the empty Library's
+    /// links at its foot, without the privacy line, on both apps; on the
+    /// iPhone the shelf's foot offers Paste while the clipboard holds text.
+    /// R2-05: an empty grid (a Continue card alone) leaves the stack, so
+    /// the links sit one step under the card, not two.
     func testTheShelfKeepsItsLinksAtItsFoot() throws {
         let macSources = try SourceTree.sources(in: SourceTree.macRoot, only: [Self.macLibraryFile])
         let librarySources = try SourceTree.sources(only: [Self.libraryFile])
         let library = try XCTUnwrap(librarySources[Self.libraryFile])
         let scroll = try XCTUnwrap(library.range(of: "private var shelfScroll: some View {"))
-        let scrollBody = String(library[scroll.upperBound...].prefix(1400))
+        let scrollBody = String(library[scroll.upperBound...].prefix(1800))
         let grid = try XCTUnwrap(scrollBody.range(of: "documentGrid"), scrollBody)
-        let links = try XCTUnwrap(scrollBody.range(of: "ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: nil,"), scrollBody)
+        let links = try XCTUnwrap(scrollBody.range(of: "ShelfLinks(onAddFile: { router.rootPresentation = .filePicker }, onPaste: pasteHandler,"), scrollBody)
         XCTAssertLessThan(grid.lowerBound, links.lowerBound, "under the grid")
         XCTAssertTrue(scrollBody[links.upperBound...].prefix(60).contains("idPrefix: \"library.shelf\")"), scrollBody)
         XCTAssertFalse(scrollBody.contains("PrivacyCopy"), scrollBody)
+        XCTAssertTrue(scrollBody.contains("if !shelf.grid.isEmpty { documentGrid }"), scrollBody)
+        XCTAssertFalse(scrollBody.contains("\n                documentGrid\n"), "no bare grid in the stack")
 
         let mac = try XCTUnwrap(macSources[Self.macLibraryFile])
         let content = try XCTUnwrap(mac.range(of: "private func shelfContent("))
-        let shelf = String(mac[content.upperBound...].prefix(2600))
+        let shelf = String(mac[content.upperBound...].prefix(2800))
+        XCTAssertTrue(shelf.contains("if !shelf.grid.isEmpty {\n                grid(metrics)"), shelf)
         let macGrid = try XCTUnwrap(shelf.range(of: "grid(metrics)"), shelf)
         let macLinks = try XCTUnwrap(shelf.range(of: "MacShelfLinks(idPrefix: \"library.shelf\")"), shelf)
         XCTAssertLessThan(macGrid.lowerBound, macLinks.lowerBound, "under the Mac grid")
@@ -611,6 +631,44 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(text.contains("PlaybackController.postAnnouncement(\"Marked as finished\""), "still said")
     }
 
+    /// R2-04: a menu's icons take the tint of the view it hangs from (the
+    /// app's accent), so Delete's trash glyph is drawn red in its own
+    /// colours to match its red title; every other action keeps the plain
+    /// label, and RootView keeps the app-wide accent tint.
+    func testDeletesTrashGlyphIsRedLikeItsTitle() throws {
+        let sources = try SourceTree.sources(only: [Self.libraryFile, "App/RootView.swift"])
+        let library = try XCTUnwrap(sources[Self.libraryFile])
+        let button = try XCTUnwrap(library.range(of: "private func actionButton(_ action: DocumentAction, on document: LibraryDocument) -> some View {"))
+        XCTAssertTrue(library[button.upperBound...].prefix(200).contains("actionLabel(action)"))
+        let label = try XCTUnwrap(library.range(of: "private func actionLabel(_ action: DocumentAction) -> some View {"))
+        let body = String(library[label.upperBound...].prefix(600))
+        let red = try XCTUnwrap(body.range(of: "if action.role == .destructive, let base = UIImage(systemName: action.systemImage) {"), body)
+        let tinted = try XCTUnwrap(body.range(of: "Image(uiImage: base.withTintColor(.systemRed, renderingMode: .alwaysOriginal))"), body)
+        let plain = try XCTUnwrap(body.range(of: "Label(action.title, systemImage: action.systemImage)"), body)
+        XCTAssertLessThan(red.lowerBound, tinted.lowerBound, body)
+        XCTAssertLessThan(tinted.lowerBound, plain.lowerBound, "the plain label is the else: \(body)")
+        XCTAssertTrue(body.contains("Text(action.title)"), "VoiceOver still reads the title")
+        XCTAssertTrue(try XCTUnwrap(sources["App/RootView.swift"]).contains(".tint(Theme.accentStrong)"),
+                      "system chrome keeps the accent")
+    }
+
+    /// R2-07: opening a book from the Library asks for the natural voice's
+    /// warm-up once, beside the hand-off to the reader.
+    func testOpeningABookAsksForTheWarmUp() throws {
+        let sources = try SourceTree.sources(only: [Self.libraryFile, "App/AppModel.swift"])
+        let library = try XCTUnwrap(sources[Self.libraryFile])
+        let open = try XCTUnwrap(library.range(of: "private func open(_ document: LibraryDocument) {"))
+        let body = String(library[open.upperBound...].prefix(500))
+        let opens = try XCTUnwrap(body.range(of: "continuePlayback.readerOpens(document.id)"), body)
+        let warms = try XCTUnwrap(body.range(of: "model.neuralPrewarm.bookIsOpening()"), body)
+        let routes = try XCTUnwrap(body.range(of: "router.open(document)"), body)
+        XCTAssertLessThan(opens.lowerBound, warms.lowerBound, body)
+        XCTAssertLessThan(warms.lowerBound, routes.lowerBound, body)
+        let app = try XCTUnwrap(sources["App/AppModel.swift"])
+        XCTAssertTrue(app.contains("browsingClassics: router.$path.map { $0.last == .bookshelf }\n                .removeDuplicates()"),
+                      "Classics on top of the stack feeds the warm-up")
+    }
+
     /// P023: Delete sits in its own section of the long-press menu; the
     /// VoiceOver actions stay one flat list.
     func testDeleteHasItsOwnMenuSection() throws {
@@ -646,7 +704,7 @@ final class LibraryLintTests: XCTestCase {
         XCTAssertTrue(text[open.upperBound...].prefix(120).contains("if model.playback.opensPlaying(document) { TransportHaptics.emit(.play) }"),
                       "the label and the haptic read one predicate")
         let actions = try XCTUnwrap(actionsSources["Models/LibraryActions.swift"])
-        XCTAssertTrue(actions.contains("case rename, markFinished, delete\n"), "no open case in DocumentAction")
+        XCTAssertTrue(actions.contains("case rename, markFinished, markUnfinished, delete\n"), "no open case in DocumentAction")
     }
 
     /// F045: every shelf the Library derives hears the controller's

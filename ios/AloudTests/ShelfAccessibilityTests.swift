@@ -71,26 +71,37 @@ final class ShelfAccessibilityTests: XCTestCase {
                        ["Rename", "Mark as Finished", "Delete"], "the shelf's one Finished rule")
     }
 
-    func testFinishedBookHasNothingToMark() {
-        XCTAssertEqual(DocumentAction.available(for: doc(progress: 1)).map(\.title), ["Rename", "Delete"])
+    /// R2-06: a Finished book has nothing left to mark, and offers the
+    /// reverse in the same slot, so a card always offers three.
+    func testFinishedBookOffersMarkAsUnfinished() {
+        XCTAssertEqual(DocumentAction.available(for: doc(progress: 1)).map(\.title),
+                       ["Rename", "Mark as Unfinished", "Delete"])
         // 9,900 words is an hour: 0.99 leaves 36 seconds.
         XCTAssertEqual(DocumentAction.available(for: doc(progress: LibraryDocument.finishedThreshold,
                                                          wordCount: 9_900)).map(\.title),
-                       ["Rename", "Delete"], "the shelf's one Finished rule")
+                       ["Rename", "Mark as Unfinished", "Delete"], "the shelf's one Finished rule")
+        XCTAssertFalse(DocumentAction.available(for: doc()).contains(.markUnfinished), "nothing to unmark")
     }
 
     func testOnlyDeleteIsDestructive() {
         XCTAssertEqual(DocumentAction.delete.role, .destructive)
         XCTAssertNil(DocumentAction.rename.role)
         XCTAssertNil(DocumentAction.markFinished.role)
-        XCTAssertEqual(DocumentAction.allCases.map(\.systemImage), ["pencil", "checkmark.circle", "trash"])
+        XCTAssertNil(DocumentAction.markUnfinished.role)
+        XCTAssertEqual(DocumentAction.allCases.map(\.systemImage),
+                       ["pencil", "checkmark.circle", "arrow.uturn.backward.circle", "trash"])
     }
 
-    /// Mark as finished lands the record where the Finished rule reads it.
+    /// Mark as finished lands the record where the Finished rule reads it;
+    /// Mark as Unfinished takes its slot, and unmarking gives it back.
     func testMarkingFinishedDropsTheAction() {
         let marked = DocumentStore.markingFinished(doc())
         XCTAssertTrue(marked.isFinished)
         XCTAssertFalse(DocumentAction.available(for: marked).contains(.markFinished))
+        XCTAssertEqual(DocumentAction.available(for: marked), [.rename, .markUnfinished, .delete])
+        let unmarked = DocumentStore.markingUnfinished(marked)
+        XCTAssertFalse(unmarked.isFinished)
+        XCTAssertEqual(DocumentAction.available(for: unmarked), [.rename, .markFinished, .delete])
     }
 
     // MARK: - Voice Control

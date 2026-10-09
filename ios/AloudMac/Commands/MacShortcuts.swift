@@ -114,7 +114,7 @@ enum MacCommand: String, CaseIterable, Sendable {
     case playPause, back15, forward15, previousChapter, nextChapter, followVoice
     case faster, slower, voiceAndSpeed, sleepTimer
     // Edit
-    case undoJump, find, renameBook, markFinished, deleteBook
+    case undoJump, find, renameBook, markFinished, markUnfinished, deleteBook
     // View
     case toggleContents, biggerText, smallerText, appearance, back
     // File
@@ -140,6 +140,7 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .find: return MacMenuCopy.find
         case .renameBook: return MacMenuCopy.renameBook
         case .markFinished: return MacMenuCopy.markFinished
+        case .markUnfinished: return MacMenuCopy.markUnfinished
         case .deleteBook: return MacMenuCopy.deleteBook
         case .toggleContents: return MacMenuCopy.showContents
         case .biggerText: return MacMenuCopy.biggerText
@@ -169,7 +170,7 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .followVoice: return MacShortcut(key: .character("j"), modifiers: .command)
         case .faster: return MacShortcut(key: .character("]"))
         case .slower: return MacShortcut(key: .character("["))
-        case .voiceAndSpeed, .sleepTimer, .appearance, .renameBook, .markFinished: return nil
+        case .voiceAndSpeed, .sleepTimer, .appearance, .renameBook, .markFinished, .markUnfinished: return nil
         case .undoJump: return MacShortcut(key: .character("z"), modifiers: .command)
         case .find: return MacShortcut(key: .character("f"), modifiers: .command)
         case .deleteBook: return MacShortcut(key: .delete, modifiers: .command)
@@ -193,7 +194,7 @@ enum MacCommand: String, CaseIterable, Sendable {
         case .playPause, .back15, .forward15, .previousChapter, .nextChapter, .followVoice,
              .faster, .slower, .voiceAndSpeed, .sleepTimer:
             return .playback
-        case .undoJump, .find, .renameBook, .markFinished, .deleteBook: return .edit
+        case .undoJump, .find, .renameBook, .markFinished, .markUnfinished, .deleteBook: return .edit
         case .toggleContents, .biggerText, .smallerText, .appearance, .back, .fullScreen: return .view
         case .addFromFiles, .addClassic, .closeWindow: return .file
         case .settings, .hide, .quit: return .aloud
@@ -213,7 +214,7 @@ enum MacCommand: String, CaseIterable, Sendable {
     /// Edit's book items: they act on the Library card with keyboard
     /// focus, which publishes them (`FocusedValues`).
     var actsOnFocusedBook: Bool {
-        self == .renameBook || self == .markFinished || self == .deleteBook
+        self == .renameBook || self == .markFinished || self == .markUnfinished || self == .deleteBook
     }
 
     var isPlainKey: Bool { shortcut?.isPlain ?? false }
@@ -309,6 +310,7 @@ enum MacMenuCopy {
     /// "Book" keeps these apart from the system's text items beside them.
     static let renameBook = "Rename Book\u{2026}"
     static let markFinished = "Mark as Finished"
+    static let markUnfinished = "Mark as Unfinished"
     static let deleteBook = "Delete Book\u{2026}"
 
     static let showContents = "Show Contents"
@@ -332,7 +334,7 @@ enum MacMenuCopy {
     static let all: Set<String> = [
         playbackMenu, play, pause, tryAgain, listenAgain, back15, forward15, previousChapter, nextChapter,
         previousPage, nextPage, followVoice, faster, slower, voiceAndSpeed, sleepTimer, endOfChapter,
-        endOfBook, off, undoJump, findMenu, find, renameBook, markFinished, deleteBook, showContents,
+        endOfBook, off, undoJump, findMenu, find, renameBook, markFinished, markUnfinished, deleteBook, showContents,
         hideContents, biggerText, smallerText, appearance, back, addFromFiles, addClassic, close, settings,
         fullScreen, minimize, hide, quit, about,
     ]
@@ -355,6 +357,7 @@ enum MacMenuCopy {
             case .find: return "Find"
             case .renameBook: return "Rename book"
             case .markFinished: return DocumentAction.markFinished.title
+            case .markUnfinished: return DocumentAction.markUnfinished.title
             case .deleteBook: return "Delete book"
             case .toggleContents: return "Contents"
             case .biggerText: return "Bigger text"

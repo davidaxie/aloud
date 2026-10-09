@@ -182,6 +182,11 @@ final class AppModel: ObservableObject {
                 .map { NeuralPrewarm.continueCardVisible(pathIsEmpty: $0, documents: $1, loadedID: $2, stop: $3) }
                 .removeDuplicates()
                 .eraseToAnyPublisher(),
+            // Classics on top of the stack, where a book is about to be
+            // picked (PlatformTuning.prewarmsOnClassics).
+            browsingClassics: router.$path.map { $0.last == .bookshelf }
+                .removeDuplicates()
+                .eraseToAnyPublisher(),
             // The book loaded in the natural voice warms it too
             // (PlatformTuning.prewarmsForLoadedBook): on an iPhone that is
             // the reader LaunchRestore reopens, where no card ever shows.
@@ -322,6 +327,26 @@ final class AppModel: ObservableObject {
         continuePlayback.letGo(of: document.id, playback: playback)
         playback.discardStop(for: document.id)
         router.path.removeAll { $0 == .reader(document.id) }
+        return nil
+    }
+
+    /// Mark as Unfinished, on both apps: the store puts a finished book back
+    /// at the place it had (`DocumentStore.markingUnfinished`), or at its
+    /// newest "Where you stopped" for this text when the mark kept none.
+    /// Nothing loads or plays. Only once that is written does a controller
+    /// still holding the book at its end let go of it, as for Mark as
+    /// Finished, so the next open or Play starts from the place put back,
+    /// not the end. A mark the store can't record changes nothing, and the
+    /// reason comes back for the Library's alert.
+    @discardableResult
+    func markUnfinished(_ document: LibraryDocument) -> EditFailure? {
+        let newest = placeHistory.places(for: document.id, contentHash: document.contentHash).first?.sentence
+        do {
+            try documentStore.markUnfinished(id: document.id, newestPlace: newest)
+        } catch {
+            return EditFailure(.markUnfinished, error)
+        }
+        continuePlayback.letGo(of: document.id, playback: playback)
         return nil
     }
 
@@ -671,7 +696,7 @@ enum DeleteFailure: Equatable, CaseIterable {
     var title: String {
         switch self {
         case .outOfSpace: return "\(DeviceNoun.Subject) is out of space."
-        case .libraryUnreadable, .notSaved: return "This book couldn't be deleted."
+        case .libraryUnreadable, .notSaved: return "This book couldn’t be deleted."
         }
     }
 
@@ -679,18 +704,18 @@ enum DeleteFailure: Equatable, CaseIterable {
         switch self {
         case .outOfSpace: return "Free up some space, then delete it again."
         case .libraryUnreadable:
-            return "Aloud couldn't read your library, so it leaves it as it is. Update Aloud, then try again."
+            return "Aloud couldn’t read your library, so it leaves it as it is. Update Aloud, then try again."
         case .notSaved: return "Try again."
         }
     }
 }
 
-/// Why a Rename or Mark as finished didn't happen, by Delete's causes and in
-/// its words: the book is as it was. Before, the change showed on the shelf
-/// and was gone at the next launch, unsaid.
+/// Why a Rename, Mark as finished or Mark as unfinished didn't happen, by
+/// Delete's causes and in its words: the book is as it was. Before, the
+/// change showed on the shelf and was gone at the next launch, unsaid.
 struct EditFailure: Equatable {
     enum Edit: Equatable, CaseIterable {
-        case rename, markFinished
+        case rename, markFinished, markUnfinished
     }
 
     let edit: Edit
@@ -704,8 +729,9 @@ struct EditFailure: Equatable {
     var title: String {
         switch (cause, edit) {
         case (.outOfSpace, _): return DeleteFailure.outOfSpace.title
-        case (_, .rename): return "This book couldn't be renamed."
-        case (_, .markFinished): return "This book couldn't be marked as finished."
+        case (_, .rename): return "This book couldn’t be renamed."
+        case (_, .markFinished): return "This book couldn’t be marked as finished."
+        case (_, .markUnfinished): return "This book couldn’t be marked as unfinished."
         }
     }
 

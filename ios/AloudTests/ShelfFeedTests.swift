@@ -382,7 +382,7 @@ final class ShelfFeedTests: XCTestCase {
         let finished = PlaybackTestRig.makeDocument(hash: "menu-b", sentences: 10, progressSentence: 9,
                                                     progressFraction: 1)
         XCTAssertTrue(finished.isFinished)
-        XCTAssertEqual(DocumentAction.menuSections(for: finished), [[.rename], [.delete]])
+        XCTAssertEqual(DocumentAction.menuSections(for: finished), [[.rename, .markUnfinished], [.delete]])
         for document in [reading, finished] {
             XCTAssertEqual(DocumentAction.menuSections(for: document).flatMap { $0 },
                            DocumentAction.available(for: document),

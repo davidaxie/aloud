@@ -92,7 +92,7 @@ final class LibraryEntryTests: XCTestCase {
     /// The declined paste's alert names the prompt's button and the
     /// setting, and offers Settings.
     func testTheDeclinedPasteCopy() {
-        XCTAssertEqual(PasteTextAction.declinedTitle, "Aloud wasn't allowed to paste.")
+        XCTAssertEqual(PasteTextAction.declinedTitle, "Aloud wasn’t allowed to paste.")
         XCTAssertTrue(PasteTextAction.declinedMessage.contains("Allow Paste"))
         XCTAssertTrue(PasteTextAction.declinedMessage.contains("Paste from Other Apps in Settings > Aloud"))
         XCTAssertEqual(PasteTextAction.openSettings, "Open Settings")
