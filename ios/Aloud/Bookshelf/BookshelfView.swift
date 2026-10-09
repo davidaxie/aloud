@@ -142,6 +142,7 @@ struct BookshelfView: View {
             // R3-05: the shelf map, unpinned, above the first heading.
             shelfMap(proxy)
             ForEach(model.bookshelfIndex.shelves(rate: model.globalRate)) { shelf in
+                shelfAnchor(shelf.section)
                 Section {
                     ForEach(shelf.books) { row($0) }
                 } header: {
@@ -168,7 +169,19 @@ struct BookshelfView: View {
             .background(Theme.bg)
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
-            // The shelf map's target (`jump(to:_:)`).
+    }
+
+    /// The shelf map's target (`jump(to:_:)`): a zero-height mark just
+    /// above the shelf's heading, never the heading itself. A pinned
+    /// heading sits at the top anywhere in its shelf, so a scroll to it
+    /// reads as already there wherever it lands, and the settling scroll
+    /// after a far jump left the list deep inside the shelf. Scrolled to
+    /// the top, the mark brings the heading to the top at its own place,
+    /// the shelf's first book under it.
+    private func shelfAnchor(_ section: BookshelfSection) -> some View {
+        Color.clear
+            .frame(height: 0)
+            .accessibilityHidden(true)
             .id(section.rawValue)
     }
 
@@ -206,9 +219,16 @@ struct BookshelfView: View {
                 Text(jump.countText)
                     .font(Theme.font(.callout))
                     .foregroundStyle(Theme.textMuted)
+                    .fixedSize()
             }
-            .lineLimit(1)
+            // No line limit: the side-by-side map is only chosen while its
+            // labels fit whole, and on the full-width rows a title wraps at
+            // the largest sizes rather than being cut. A one-line limit on
+            // text drawn at its own width is what the clipping audit
+            // reported here; the count never breaks.
+            .multilineTextAlignment(.leading)
             .padding(.horizontal, Theme.Space.sm)
+            .padding(.vertical, Theme.Space.xxs)
             .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -218,22 +238,27 @@ struct BookshelfView: View {
         .accessibilityIdentifier(jump.identifier)
     }
 
-    /// To the shelf's heading, animated unless Reduce Motion is on. A far
-    /// heading the lazy stack hasn't laid out yet can land short of the
-    /// top, its rows above still estimated, so a second scroll follows
-    /// once they are measured: when the animation completes, or on the
-    /// next turn of the run loop without one; never on a timer. Silent, as
-    /// a Contents pick is (TransportHaptics: picks never answer with one).
+    /// To the shelf's heading, by the mark above it (`shelfAnchor(_:)`),
+    /// animated unless Reduce Motion is on. A far heading the lazy stack
+    /// hasn't laid out yet can land off the top, its rows above still
+    /// estimated, so the jump settles once they are measured: a scroll
+    /// when the animation completes (at once without one), and another on
+    /// the next turn of the run loop, after the rows that scroll brought
+    /// in are measured; never on a timer. Silent, as a Contents pick is
+    /// (TransportHaptics: picks never answer with one).
     private func jump(to section: BookshelfSection, _ proxy: ScrollViewProxy) {
         let id = section.rawValue
-        if reduceMotion {
+        let settle = {
             proxy.scrollTo(id, anchor: .top)
             DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+        }
+        if reduceMotion {
+            settle()
         } else {
             withAnimation(.smooth, completionCriteria: .logicallyComplete) {
                 proxy.scrollTo(id, anchor: .top)
             } completion: {
-                proxy.scrollTo(id, anchor: .top)
+                settle()
             }
         }
     }

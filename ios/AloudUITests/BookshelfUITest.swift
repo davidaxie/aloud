@@ -252,19 +252,30 @@ final class BookshelfUITest: XCTestCase {
         XCTAssertTrue(jump.label.hasPrefix("Long reads, "), "got '\(jump.label)'")
         XCTAssertTrue(jump.label.hasSuffix(" books"), "got '\(jump.label)'")
         assertTouchTarget(jump, "bookshelf.jump.longReads")
+        // Where the list's content starts, under the bars: the map's first
+        // button, a padding below it. The scroll view itself runs up under
+        // the bars, so its frame can't say where a landed heading sits.
+        let firstJump = app.buttons["bookshelf.jump.underAnHour"].firstMatch
+        XCTAssertTrue(firstJump.waitForExistence(timeout: 5))
+        let contentTop = firstJump.frame.minY
         jump.tap()
 
+        // Landed means the shelf's first book, Pride and Prejudice, sits
+        // right under its heading at the top. A pinned heading shows at the
+        // top anywhere in its shelf, so the heading alone can't tell a
+        // landing from an overshoot deep into the shelf.
         let heading = app.descendants(matching: .any)["bookshelf.section.longReads"].firstMatch
         XCTAssertTrue(heading.waitForExistence(timeout: 5))
-        let list = app.scrollViews["bookshelf.list"].firstMatch
+        let pride = app.buttons["bookshelf.row.1342"].firstMatch
         let landed = NSPredicate { _, _ in
-            heading.isHittable && heading.frame.minY - list.frame.minY < 120
+            guard heading.exists, pride.exists, pride.isHittable else { return false }
+            let top = heading.frame, book = pride.frame
+            return abs(top.minY - contentTop) < 44
+                && book.minY >= top.maxY - 1 && book.minY - top.maxY < 44
         }
         let settled = expectation(for: landed, evaluatedWith: nil)
-        wait(for: [settled], timeout: 5)
-        let pride = app.buttons["bookshelf.row.1342"].firstMatch
-        XCTAssertTrue(pride.waitForExistence(timeout: 5), "Pride and Prejudice, near the top of Long reads")
-        XCTAssertTrue(pride.isHittable, "on screen under the heading")
+        wait(for: [settled], timeout: 10)
+        XCTAssertTrue(pride.isHittable, "Pride and Prejudice, first under the Long reads heading")
 
         search(app, for: "pride")
         XCTAssertTrue(app.buttons["bookshelf.row.1342"].firstMatch.waitForExistence(timeout: 5))

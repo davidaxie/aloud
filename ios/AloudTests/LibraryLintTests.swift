@@ -208,9 +208,18 @@ final class LibraryLintTests: XCTestCase {
             XCTAssertFalse(text.contains("bookshelfIndex.shelves."), "\(path) shelves at 1×")
             XCTAssertTrue(text.contains("book.listeningMinutes(rate: rate)"), "\(path)'s rows use the shelves' measure")
             // R3-05: the shelf map takes its shelves from the same call,
-            // never a fixed list, and each heading is its jump's target.
+            // never a fixed list, and each jump's target is a mark above
+            // its heading, never the pinned heading, which sits at the top
+            // anywhere in its shelf, so a settling scroll to it never moved.
             XCTAssertTrue(text.contains("ShelfJump.jumps(in: model.bookshelfIndex, rate: model.globalRate)"), path)
             XCTAssertTrue(text.contains(".id(section.rawValue)"), path)
+            XCTAssertTrue(text.contains("shelfAnchor(shelf.section)\n                Section {"),
+                          "\(path) marks each shelf just above its section")
+            let header = try XCTUnwrap(text.range(of: "private func header(_ section: BookshelfSection)"), path)
+            let headerEnd = text.range(of: "\n    }\n", range: header.upperBound..<text.endIndex)?.lowerBound
+                ?? text.endIndex
+            XCTAssertFalse(text[header.lowerBound..<headerEnd].contains(".id("),
+                           "\(path) jumps to the pinned heading itself")
             XCTAssertTrue(text.contains("scrollTo(id, anchor: .top)"), path)
             XCTAssertTrue(text.contains("if reduceMotion {"), "\(path) jumps without animation under Reduce Motion")
             XCTAssertFalse(text.contains("Task.sleep"), "\(path) settles a far heading without a timer")

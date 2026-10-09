@@ -92,7 +92,10 @@ final class ClassicsLintTests: XCTestCase {
         let s = try SourceTree.sources(only: [Self.path])
         let view = try XCTUnwrap(s[Self.path])
         XCTAssertTrue(view.contains("@ScaledMetric(relativeTo: .caption) private var statusWidth = BookshelfView.statusColumnWidth"))
-        let column = try region(of: view, from: "HStack(alignment: .firstTextBaseline", length: 800)
+        // The row's own stack: the file's first such stack is the shelf
+        // map's jump label (R3-05), which comes before the row.
+        let rowView = try region(of: view, from: "private struct BookshelfRow: View {", length: 3000)
+        let column = try region(of: String(rowView), from: "HStack(alignment: .firstTextBaseline", length: 800)
         XCTAssertTrue(column.contains("detail(BookshelfView.rowByline(for: book))"), "the author under the title: \(column)")
         XCTAssertTrue(column.contains("statusLine"), "the trailing column always holds a status: \(column)")
         XCTAssertTrue(column.contains(".font(Theme.font(.caption))"), String(column))

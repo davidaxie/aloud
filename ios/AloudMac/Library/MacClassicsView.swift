@@ -126,6 +126,7 @@ struct MacClassicsView: View {
             // R3-05: the shelf map, unpinned, above the first heading.
             shelfMap(scroller)
             ForEach(shelves) { shelf in
+                shelfAnchor(shelf.section)
                 Section {
                     ForEach(shelf.books) { row($0) }
                 } header: {
@@ -149,7 +150,16 @@ struct MacClassicsView: View {
             .background(Theme.bg)
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("bookshelf.section.\(section.rawValue)")
-            // The shelf map's target (`jump(to:_:)`).
+    }
+
+    /// The shelf map's target (`jump(to:_:)`), as on the iPhone: a
+    /// zero-height mark just above the shelf's heading, never the pinned
+    /// heading, which sits at the top anywhere in its shelf and so reads
+    /// as already there wherever a far jump lands.
+    private func shelfAnchor(_ section: BookshelfSection) -> some View {
+        Color.clear
+            .frame(height: 0)
+            .accessibilityHidden(true)
             .id(section.rawValue)
     }
 
@@ -172,9 +182,14 @@ struct MacClassicsView: View {
                         Text(jump.countText)
                             .font(Theme.font(.callout))
                             .foregroundStyle(Theme.textMuted)
+                            .fixedSize()
                     }
-                    .lineLimit(1)
+                    // No line limit, as on the iPhone: a title wraps in a
+                    // narrow column rather than being cut; the count never
+                    // breaks.
+                    .multilineTextAlignment(.leading)
                     .padding(.horizontal, Theme.Space.sm)
+                    .padding(.vertical, Theme.Space.xxs)
                     .frame(minHeight: 44)
                 }
                 .buttonStyle(MacHoverPlateStyle(radius: Theme.Radius.md))
@@ -187,19 +202,24 @@ struct MacClassicsView: View {
         .padding(.top, Theme.Space.sm)
     }
 
-    /// To the shelf's heading, animated unless Reduce Motion is on, with a
-    /// second scroll once the lazy rows above a far heading are measured
-    /// (as on the iPhone; never on a timer).
+    /// To the shelf's heading, by the mark above it (`shelfAnchor(_:)`),
+    /// animated unless Reduce Motion is on, settling as on the iPhone once
+    /// the lazy rows above a far heading are measured: a scroll when the
+    /// animation completes (at once without one) and another on the next
+    /// turn of the run loop; never on a timer.
     private func jump(to section: BookshelfSection, _ scroller: ScrollViewProxy) {
         let id = section.rawValue
-        if reduceMotion {
+        let settle = {
             scroller.scrollTo(id, anchor: .top)
             DispatchQueue.main.async { scroller.scrollTo(id, anchor: .top) }
+        }
+        if reduceMotion {
+            settle()
         } else {
             withAnimation(.smooth, completionCriteria: .logicallyComplete) {
                 scroller.scrollTo(id, anchor: .top)
             } completion: {
-                scroller.scrollTo(id, anchor: .top)
+                settle()
             }
         }
     }
