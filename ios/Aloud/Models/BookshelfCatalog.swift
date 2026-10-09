@@ -82,9 +82,11 @@ struct BookshelfShelf: Identifiable {
 
 // MARK: - Index
 
-/// The catalog, shelved and searchable. Built once at launch: every string
-/// search compares against is folded to search words here, so a keystroke is
-/// one pass of substring checks over ~450 books.
+/// The catalog, shelved and searchable. The books, shelves and IDs are
+/// built at launch (the featured classic needs them on the first frame);
+/// the search keys, every string search compares against folded to search
+/// words, are built off the main thread just after (`SearchKeyBox`), so a
+/// keystroke is one pass of substring checks over ~450 books.
 struct BookshelfIndex {
 
     let books: [BookshelfBook]
@@ -93,7 +95,9 @@ struct BookshelfIndex {
     /// shelve at the app-wide speed (`shelves(rate:)`).
     let shelves: [BookshelfShelf]
 
-    private let keys: [SearchKey]
+    private let searchKeys: SearchKeyBox
+    /// The off-main build `init` starts; nil when it was asked not to.
+    private let searchKeysWarmUp: Task<Void, Never>?
     private let byID: [Int: Int]
 
     private struct SearchKey {
@@ -110,19 +114,24 @@ struct BookshelfIndex {
         /// `aliases`: the author's names the display author leaves out
         /// (`BookshelfIndex.authorAliases`), already search words.
         init(_ book: BookshelfBook, aliases: [String] = []) {
-            // Title and author fold apart, so initials never join across them.
-            title = BookshelfIndex.searchWords(book.title).joined(separator: " ")
+            // Each string is folded once, for its search words and its
+            // hyphen-joined words alike. Title and author fold apart, so
+            // initials never join across them.
+            let foldedTitle = BookshelfIndex.fold(book.title)
+            let foldedAuthor = BookshelfIndex.fold(book.author)
+            let foldedHeader = book.headerTitle.map(BookshelfIndex.fold)
+            title = BookshelfIndex.searchWords(folded: foldedTitle).joined(separator: " ")
             sortTitle = Self.droppingArticle(title)
             titleWords = Self.words(title)
-            let author = ([BookshelfIndex.searchWords(book.author).joined(separator: " ")] + aliases)
+            let author = ([BookshelfIndex.searchWords(folded: foldedAuthor).joined(separator: " ")] + aliases)
                 .joined(separator: " ")
             authorWords = Self.words(author)
             // The header's own title, where the catalog shortened it, and
             // each hyphenated word written as one, as a reader may type it.
-            let headerTitle = book.headerTitle.map { BookshelfIndex.searchWords($0) } ?? []
-            let joined = BookshelfIndex.hyphenJoinedWords(book.title)
-                + (book.headerTitle.map(BookshelfIndex.hyphenJoinedWords) ?? [])
-                + BookshelfIndex.hyphenJoinedWords(book.author)
+            let headerTitle = foldedHeader.map { BookshelfIndex.searchWords(folded: $0) } ?? []
+            let joined = BookshelfIndex.hyphenJoinedWords(folded: foldedTitle)
+                + (foldedHeader.map { BookshelfIndex.hyphenJoinedWords(folded: $0) } ?? [])
+                + BookshelfIndex.hyphenJoinedWords(folded: foldedAuthor)
             haystack = ([title, author] + headerTitle + joined).joined(separator: " ")
         }
 
@@ -149,13 +158,57 @@ struct BookshelfIndex {
         }
     }
 
-    init(books: [BookshelfBook]) {
+    /// The search keys of `books`, with each author's aliases
+    /// (`authorAliases`): about 90% of building the index, and only Classics
+    /// search reads them, so they are built off the main thread after
+    /// launch (`prewarm`). Built once, under the lock: a search that comes
+    /// first builds them itself, or waits out the build already running
+    /// (lending it its priority), at worst on the first keystroke.
+    private final class SearchKeyBox: @unchecked Sendable {
+        private let books: [BookshelfBook]
+        private let built = OSAllocatedUnfairLock<[SearchKey]?>(initialState: nil)
+
+        init(books: [BookshelfBook]) {
+            self.books = books
+        }
+
+        var keys: [SearchKey] {
+            built.withLockUnchecked { built in
+                if let built { return built }
+                let aliases = BookshelfIndex.authorAliases(in: books)
+                let keys = books.map { SearchKey($0, aliases: aliases[BookshelfIndex.authorKey($0.author)] ?? []) }
+                built = keys
+                return keys
+            }
+        }
+
+        var isBuilt: Bool { built.withLockUnchecked { $0 != nil } }
+
+        /// Builds the keys at utility priority, off the launch path.
+        func prewarm() -> Task<Void, Never> {
+            Task.detached(priority: .utility) { [self] in _ = self.keys }
+        }
+    }
+
+    /// `prewarmingSearch: false` leaves the keys to the first search (a
+    /// test's cold path); the app always prewarms.
+    init(books: [BookshelfBook], prewarmingSearch: Bool = true) {
         self.books = books
-        let aliases = Self.authorAliases(in: books)
-        self.keys = books.map { SearchKey($0, aliases: aliases[Self.authorKey($0.author)] ?? []) }
+        let searchKeys = SearchKeyBox(books: books)
+        self.searchKeys = searchKeys
+        self.searchKeysWarmUp = prewarmingSearch ? searchKeys.prewarm() : nil
         self.byID = Dictionary(books.enumerated().map { ($1.gutenbergID, $0) },
                                uniquingKeysWith: { first, _ in first })
         self.shelves = Self.shelve(books, rate: 1)
+    }
+
+    /// Whether the search keys are built yet.
+    var hasSearchKeys: Bool { searchKeys.isBuilt }
+
+    /// Returns once the off-main build `init` started has finished (at
+    /// once when none was started).
+    func searchKeysPrewarmed() async {
+        await searchKeysWarmUp?.value
     }
 
     /// The shelves at `rate`, the app-wide speed the rows show their times
@@ -207,7 +260,7 @@ struct BookshelfIndex {
         let q = tokens.joined(separator: " ")
 
         var hits: [(rank: Int, index: Int)] = []
-        for (index, key) in keys.enumerated()
+        for (index, key) in searchKeys.keys.enumerated()
         where tokens.allSatisfy({ key.haystack.contains($0) }) {
             hits.append((key.rank(query: q, tokens: tokens), index))
         }
@@ -234,7 +287,7 @@ struct BookshelfIndex {
     }
 
     /// One display author however it is spaced or cased.
-    private static func authorKey(_ author: String) -> String {
+    fileprivate static func authorKey(_ author: String) -> String {
         searchWords(author).joined(separator: " ")
     }
 
@@ -243,10 +296,15 @@ struct BookshelfIndex {
     /// punctuation, so "case book" already matches; this lets the one-word
     /// spelling match too.
     static func hyphenJoinedWords(_ text: String) -> [String] {
+        hyphenJoinedWords(folded: fold(text))
+    }
+
+    /// `hyphenJoinedWords` of a string `fold` already folded.
+    fileprivate static func hyphenJoinedWords(folded: String) -> [String] {
         let hyphens: Set<Character> = ["-", "\u{2010}", "\u{2011}"]
-        return fold(text).split(whereSeparator: \.isWhitespace).flatMap { chunk -> [String] in
+        return folded.split(whereSeparator: \.isWhitespace).flatMap { chunk -> [String] in
             guard chunk.contains(where: hyphens.contains) else { return [] }
-            return searchWords(String(chunk.filter { !hyphens.contains($0) }))
+            return searchWords(folded: String(chunk.filter { !hyphens.contains($0) }))
         }
     }
 
@@ -266,7 +324,13 @@ struct BookshelfIndex {
     /// "hg". With `lastWordUnfinished`, a single letter at the end stays its
     /// own word, since it may be the start of the next one.
     static func searchWords(_ text: String, lastWordUnfinished: Bool = false) -> [String] {
-        let raw = fold(text)
+        searchWords(folded: fold(text), lastWordUnfinished: lastWordUnfinished)
+    }
+
+    /// `searchWords` of a string `fold` already folded (folding twice
+    /// changes nothing, so the words are the same).
+    fileprivate static func searchWords(folded: String, lastWordUnfinished: Bool = false) -> [String] {
+        let raw = folded
             .replacingOccurrences(of: "&", with: " and ")
             .replacingOccurrences(of: "'", with: "")
             .split { !($0.isLetter || $0.isNumber) }

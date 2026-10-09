@@ -119,4 +119,30 @@ final class AudioClipCacheTests: XCTestCase {
         XCTAssertNil(cache.clip(forKey: k1))
         XCTAssertNotNil(cache.clip(forKey: k2))
     }
+
+    // MARK: - Capacity
+
+    /// A default cache holds 16 clips: the 17th evicts only the oldest.
+    func testTheDefaultCacheHoldsSixteenClips() {
+        let cache = AudioClipCache()
+        let keys = (0...16).map {
+            AudioClipCache.key(voice: voice, skipBrackets: true, contentHash: bookA, sentenceID: $0)
+        }
+        for (index, key) in keys.prefix(16).enumerated() { cache.store(clip(Float(index)), forKey: key) }
+        XCTAssertTrue(keys.prefix(16).allSatisfy { cache.clip(forKey: $0) != nil }, "sixteen fit")
+
+        cache.store(clip(16), forKey: keys[16])
+        XCTAssertNil(cache.clip(forKey: keys[0]), "the least recently used goes")
+        XCTAssertTrue(keys.dropFirst().allSatisfy { cache.clip(forKey: $0) != nil })
+    }
+
+    /// The clip playing, the platform's deepest look-ahead and the Forward 15
+    /// warm-ups past it still leave the cache room for clips behind the
+    /// playhead, where Back 15 lands.
+    func testTheCacheLeavesRoomBehindThePlayhead() {
+        XCTAssertEqual(AudioClipCache.defaultCapacity, 16)
+        let ahead = 1 + PlatformPlaybackTuning.lookAheadSentences.upperBound + PlaybackController.skipWarmUpLimit
+        XCTAssertGreaterThan(AudioClipCache.defaultCapacity, ahead,
+                             "\(ahead) clips at and past the playhead fill the whole cache")
+    }
 }

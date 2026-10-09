@@ -1156,9 +1156,18 @@ final class PlaybackController: ObservableObject {
         clearStop()
     }
 
+    /// The app came to the front. Paused, the cue is warmed again: a rest
+    /// that crossed the 5 or 30 minute mark in the background now rewinds
+    /// further than the warm-up made at the pause (clips still cached cost
+    /// nothing). Then a stop VoiceOver couldn't hear is announced.
+    func sceneDidBecomeActive() {
+        if content != nil, status == .paused { cuePrefetch() }
+        announceHeldBackStop()
+    }
+
     /// Announces a stop recorded while VoiceOver couldn't hear it, once, if
     /// it is still the current stop.
-    func sceneDidBecomeActive() {
+    private func announceHeldBackStop() {
         guard let pending = pendingStopAnnouncement else { return }
         pendingStopAnnouncement = nil
         guard stopped?.reason == pending else { return }
@@ -1613,6 +1622,55 @@ final class PlaybackController: ObservableObject {
                                                      range: range, strainedCap: strained)
     }
 
+    /// The most sentences past the look-ahead `warmSkipTargets` warms: with
+    /// the current sentence and an iPhone's six queued, a cache of
+    /// `AudioClipCache.defaultCapacity` still holds the clips behind the
+    /// playhead that Back 15 lands on.
+    nonisolated static let skipWarmUpLimit = 3
+
+    /// Forward 15 lands about 15 s past the playhead, beyond the look-ahead
+    /// on prose of short sentences, where every press would synthesize
+    /// cold. So once the look-ahead is full, the sentences past `horizon`
+    /// it can land on before the next sentence change are warmed in the
+    /// cache (`skipTarget` from the current sentence with all of it heard;
+    /// the top-up runs again at each change, so this follows the
+    /// playhead): at most `skipWarmUpLimit`, never past a sleep stop, an
+    /// audition's sentence or the end. Never onto the node: the
+    /// look-ahead's own requests go ahead of these and any `now` request
+    /// drops them, so the R5 splice and R11's cooling depth stay as they
+    /// are. The natural voice only (the System voice is quick), never
+    /// under strain, never with a handoff pending.
+    /// Known limit: a second press in a row (+30 s) still lands cold.
+    private func warmSkipTargets(after horizon: Int, in content: DocContent) async {
+        guard handoff == nil, !isUnderStrain(),
+              content.sentences.indices.contains(currentSentence) else { return }
+        let lastIndex = content.sentences.count - 1
+        let wordsPerMinute = LibraryDocument.spokenWordsPerMinute * rate
+        let wholeSentence = Double(content.sentences[currentSentence].wordCount) / wordsPerMinute * 60
+        let furthest = Self.skipTarget(from: currentSentence, seconds: Self.skipInterval,
+                                       elapsed: wholeSentence, sentenceCount: content.sentences.count,
+                                       wordsPerMinute: wordsPerMinute,
+                                       words: { content.sentences[$0].wordCount })
+        let last = min(furthest, horizon + Self.skipWarmUpLimit, lastIndex,
+                       audition?.stopAfter ?? lastIndex, sleepStopAfter ?? lastIndex)
+        guard horizon < last else { return }
+        // No handoff: every sentence is queued in the active voice.
+        let warmVoice = voiceForSentence(horizon + 1)
+        guard warmVoice.engine == .kokoro else { return }
+        let pace = nativePace(for: warmVoice)
+        var warmUps: [(text: String, key: String)] = []
+        for index in (horizon + 1)...last where !skippedSentences.contains(index) {
+            let spoken = synthesisText(at: index, voice: warmVoice)
+            guard !spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            warmUps.append((text: spoken, key: AudioClipCache.key(voice: warmVoice, skipBrackets: skipBrackets,
+                                                                  contentHash: content.contentHash,
+                                                                  nativeSpeed: pace, sentenceID: index)))
+        }
+        guard !warmUps.isEmpty else { return }
+        await scheduler.prefetch(warmUps, voice: AVSpeechEngine.voice(warmVoice, reading: systemVoiceLanguage),
+                                 speed: pace, replacingWarmUps: false)
+    }
+
     /// Keeps the player node loaded past the playhead (`lookAheadHorizon`).
     /// The current sentence rides the `now` lane; look-ahead uses `prefetch`.
     private func topUpSchedule(token: UInt64) async {
@@ -1623,7 +1681,10 @@ final class PlaybackController: ObservableObject {
             let horizon = min(lookAheadHorizon(in: content), lastIndex,
                               audition?.stopAfter ?? lastIndex,
                               max(sleepStopAfter ?? lastIndex, currentSentence))
-            guard lastScheduled < horizon else { return }
+            guard lastScheduled < horizon else {
+                await warmSkipTargets(after: horizon, in: content)
+                return
+            }
 
             let next = lastScheduled + 1
             let clipVoice = voiceForSentence(next)
@@ -2108,7 +2169,7 @@ final class PlaybackController: ObservableObject {
         if holdsAudioSession {
             resumeAfterInterruption = true
         } else if isAppActive() {
-            sceneDidBecomeActive()   // says the stop held back for an end
+            announceHeldBackStop()   // says the stop held back for an end
         }
     }
 
@@ -2270,7 +2331,10 @@ final class PlaybackController: ObservableObject {
         }
         pending.spliceAt = splice
         handoff = pending
-        cuePrefetch(from: splice, through: splice + 1, voice: pending.voice)
+        // The outgoing voice's Forward 15 warm-ups (`warmSkipTargets`) lie
+        // past the splice, so they will never play: dropped, they never
+        // hold up its first clips.
+        cuePrefetch(from: splice, through: splice + 1, voice: pending.voice, replacingWarmUps: true)
     }
 
     /// The incoming voice becomes the active one without a restart. Never
@@ -2433,11 +2497,16 @@ final class PlaybackController: ObservableObject {
         kokoro?.release()
     }
 
-    /// Warms the cache for the cued sentence and its successor (tap-while-paused cue).
+    /// Warms the cache for the sentence Play will start on and its successor
+    /// (tap-while-paused cue): the cue, or, with a resume rewind due after a
+    /// break, the sentence the rewind lands on (`resumeRewindTarget`), so a
+    /// morning resume never synthesizes its first sentence cold, nor waits
+    /// behind a warm-up of the cue it backs up from.
     /// `moved`: the cue left where it was, so the warm-ups still queued for
     /// there are dropped first and never hold up the new place.
     private func cuePrefetch(moved: Bool = false) {
-        cuePrefetch(from: currentSentence, through: currentSentence + 1, voice: voice, replacingWarmUps: moved)
+        let first = resumeRewindTarget() ?? currentSentence
+        cuePrefetch(from: first, through: first + 1, voice: voice, replacingWarmUps: moved)
     }
 
     /// Warms the cache for sentences `first...last` (clamped) in `voice`,
@@ -2920,7 +2989,7 @@ final class PlaybackController: ObservableObject {
             if resumeAfterInterruption && shouldResume {
                 play(userInitiated: false)
             } else if isAppActive() {
-                sceneDidBecomeActive()
+                announceHeldBackStop()
             }
             resumeAfterInterruption = false
         }

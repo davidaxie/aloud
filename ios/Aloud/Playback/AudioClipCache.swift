@@ -1,7 +1,9 @@
 import Foundation
 
 /// In-memory LRU of synthesized clips, keyed `docHash|voice|skip|pace|sentenceID`.
-/// Small by design: a dozen sentence clips cover the playback look-ahead.
+/// Small by design: `defaultCapacity` sentence clips cover the clip playing,
+/// the look-ahead, the Forward 15 warm-ups past it
+/// (`PlaybackController.skipWarmUpLimit`) and a few behind for Back 15.
 ///
 /// The key carries document identity (a content-hash prefix): sentence
 /// indices repeat across books, and a clip synthesized for Book A must never
@@ -13,7 +15,10 @@ final class AudioClipCache: @unchecked Sendable {
     private var recency: [String] = []   // last = most recently used
     private let capacity: Int
 
-    init(capacity: Int = 12) {
+    /// About 2 MB more than the dozen it was before the Forward 15 warm-ups.
+    static let defaultCapacity = 16
+
+    init(capacity: Int = AudioClipCache.defaultCapacity) {
         self.capacity = capacity
     }
 

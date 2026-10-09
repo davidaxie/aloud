@@ -281,6 +281,71 @@ final class BookshelfSearchTests: XCTestCase {
         XCTAssertEqual(BookshelfIndex.hyphenJoinedWords("Pride and Prejudice"), [])
     }
 
+    // MARK: - Search keys built after launch
+
+    /// Books whose keys exercise every part of a key: articles, diacritics,
+    /// curly apostrophes, initials, a header author's alias and a
+    /// hyphenated title.
+    private func keyedBooks() -> [BookshelfBook] {
+        var wells = book(35, "The Time Machine", "H. G. Wells", words: 32_000)
+        wells.headerAuthor = "Herbert George Wells"
+        var invisible = book(5230, "The Invisible Man", "H. G. Wells", words: 49_000)
+        invisible.headerTitle = "The Invisible Man: A Grotesque Romance"
+        return [
+            book(1342, "Pride and Prejudice", "Jane Austen", words: 127_359),
+            book(20, "The Pride of Jennico", "Charles Major", words: 40_000),
+            book(1260, "Jane Eyre", "Charlotte Brontë", words: 188_455),
+            book(19994, "Three Hundred Aesop\u{2019}s Fables", "Aesop", words: 5_000),
+            book(69700, "The Case-Book of Sherlock Holmes", "Arthur Conan Doyle", words: 90_000),
+            wells,
+            invisible,
+        ]
+    }
+
+    private let keyQueries = ["pride", "the pride", "jane", "bronte", "aesops", "herbert", "h. g. w",
+                              "hg wells", "casebook", "case book", "grotesque", "doyle", "zzz", "", "  "]
+
+    /// The index is made without its search keys; they are built off the
+    /// main thread (`prewarm`), and a search that comes first builds them
+    /// itself (the cold path). The same queries answer the same either way.
+    func testSearchAnswersTheSameBeforeAndAfterTheKeysArePrewarmed() async {
+        let books = keyedBooks()
+        let cold = BookshelfIndex(books: books, prewarmingSearch: false)
+        XCTAssertFalse(cold.hasSearchKeys, "making the index builds no search keys")
+        XCTAssertEqual(cold.shelves.flatMap(\.books).count, books.count, "the shelves are ready at once")
+        XCTAssertEqual(cold.book(gutenbergID: 35)?.title, "The Time Machine")
+        let coldAnswers = keyQueries.map { cold.search($0)?.map(\.gutenbergID) }
+        XCTAssertTrue(cold.hasSearchKeys, "the first search built them")
+
+        let warm = BookshelfIndex(books: books)
+        await warm.searchKeysPrewarmed()
+        XCTAssertTrue(warm.hasSearchKeys, "built off the main thread")
+        let warmAnswers = keyQueries.map { warm.search($0)?.map(\.gutenbergID) }
+        XCTAssertEqual(warmAnswers, coldAnswers)
+
+        // The answers themselves, so neither path is merely consistent.
+        XCTAssertEqual(warm.search("pride")?.map(\.gutenbergID), [1342, 20])
+        XCTAssertEqual(warm.search("herbert")?.map(\.gutenbergID), [35, 5230], "the alias reaches both books")
+        XCTAssertEqual(warm.search("casebook")?.map(\.gutenbergID), [69700])
+        XCTAssertEqual(warm.search("grotesque")?.map(\.gutenbergID), [5230])
+        XCTAssertNil(warm.search("  "))
+    }
+
+    /// A search straight after the index is made, racing its prewarm,
+    /// answers as the cold path does, and the keys are built once.
+    func testASearchRacingThePrewarmAnswersTheSame() async {
+        let books = keyedBooks()
+        let reference = BookshelfIndex(books: books, prewarmingSearch: false)
+        let expected = keyQueries.map { reference.search($0)?.map(\.gutenbergID) }
+
+        let racing = BookshelfIndex(books: books)
+        let answers = keyQueries.map { racing.search($0)?.map(\.gutenbergID) }
+        XCTAssertEqual(answers, expected)
+        await racing.searchKeysPrewarmed()
+        XCTAssertEqual(keyQueries.map { racing.search($0)?.map(\.gutenbergID) }, expected,
+                       "the prewarm finishing changes nothing")
+    }
+
     // MARK: - Shipped catalog
 
     func testShippedCatalog() throws {

@@ -434,4 +434,91 @@ final class ResumeRewindTests: XCTestCase {
         XCTAssertEqual(store.load()?.documentID, stopped.id,
                        "and the book it belongs to keeps it")
     }
+
+    // MARK: - Warming the sentence Play starts on
+
+    /// A silent rig whose book rested at `sentence` for `elapsed`, on disk,
+    /// as last night's launch (or a Continue card's book) left it.
+    private func restedRig(at sentence: Int, elapsed: TimeInterval) -> PlaybackTestRig {
+        let rig = PlaybackTestRig(sentences: 16)
+        rig.anchorStore.save(ResumeAnchor(documentID: rig.document.id,
+                                          sentenceIndex: sentence,
+                                          wallClock: Date(timeIntervalSinceNow: -elapsed),
+                                          monotonic: nil))
+        return rig
+    }
+
+    /// Opening the book after a long break warms the sentence the rewind
+    /// lands on, and the one after it, never the cue it backs up from.
+    func testALoadAfterALongBreakWarmsTheRewindTarget() async {
+        let rig = restedRig(at: 10, elapsed: 45 * 60)
+        rig.loadDefault(at: 10)
+        XCTAssertEqual(rig.controller.currentSentence, 10, "the cue stays where it was left")
+
+        let warmed = await rig.waitUntil(2) { rig.requestedSentences(rig.engineA).count >= 2 }
+        XCTAssertTrue(warmed)
+        try? await Task.sleep(nanoseconds: 100_000_000)   // nothing else follows
+        XCTAssertEqual(rig.requestedSentences(rig.engineA), [6, 7],
+                       "10 − 4 and its successor, the first warm-up the rewind target")
+    }
+
+    /// Play after that warm-up starts on a clip already made.
+    func testPlayAfterTheBreakNeedsNoNewSynthesisForTheRewindTarget() async throws {
+        let rig = restedRig(at: 10, elapsed: 45 * 60)
+        rig.loadDefault(at: 10)
+        let warmed = await rig.waitUntil(2) { rig.requestedSentences(rig.engineA).count >= 2 }
+        XCTAssertTrue(warmed)
+
+        let mark = rig.engineA.requests.count
+        rig.controller.play()
+        try await rig.waitUntilPlayingOrSkip()
+        XCTAssertEqual(rig.controller.notice, .backedUp(sentences: 4))
+        let afterPlay = rig.engineA.requestedTexts.dropFirst(mark)
+            .compactMap(PlaybackTestRig.sentenceIndex(ofRequest:))
+        XCTAssertFalse(afterPlay.contains(6), "Play spoke the clip the load warmed: \(afterPlay)")
+        rig.controller.pause()
+    }
+
+    /// The card and autoplay path: Play at once after the load. Its first
+    /// sentence joins the warm-up already running for it; the cue it backs
+    /// up from is never synthesized ahead of it.
+    func testPlayStraightAfterTheLoadNeverWaitsBehindTheCuesWarmUp() async throws {
+        let rig = restedRig(at: 10, elapsed: 45 * 60)
+        rig.loadDefault(at: 10)
+        rig.controller.play()
+        XCTAssertEqual(rig.controller.currentSentence, 6)
+
+        let started = await rig.waitUntil(2) { rig.requestedSentences(rig.engineA).contains(6) }
+        XCTAssertTrue(started)
+        let requested = rig.requestedSentences(rig.engineA)
+        XCTAssertEqual(requested.first, 6, "the rewind target first: \(requested)")
+        if let ten = requested.firstIndex(of: 10), let six = requested.firstIndex(of: 6) {
+            XCTAssertGreaterThan(ten, six, "10 only as look-ahead, after 6: \(requested)")
+        }
+        rig.controller.pause()
+    }
+
+    /// A pause whose rest crosses the 5 minute mark while the app is in the
+    /// background: coming back warms the 2-back target Play will now start
+    /// on.
+    func testComingBackAfterTheRestCrossedFiveMinutesWarmsTheNewTarget() async {
+        let rig = PlaybackTestRig(sentences: 16)
+        rig.loadDefault(at: 8)
+        let cued = await rig.waitUntil(2) { rig.requestedSentences(rig.engineA).count >= 2 }
+        XCTAssertTrue(cued)
+        XCTAssertEqual(rig.requestedSentences(rig.engineA), [8, 9], "no rest yet: the cue")
+
+        // The rest that began at the pause, now 6 minutes old.
+        rig.controller.resumeAnchor = ResumeAnchor(documentID: rig.document.id,
+                                                   sentenceIndex: 8,
+                                                   wallClock: Date(timeIntervalSinceNow: -6 * 60),
+                                                   monotonic: MonotonicClock.now - 6 * 60)
+        rig.controller.sceneDidBecomeActive()
+
+        let rewarmed = await rig.waitUntil(2) { rig.requestedSentences(rig.engineA).count >= 4 }
+        XCTAssertTrue(rewarmed)
+        XCTAssertEqual(Array(rig.requestedSentences(rig.engineA).dropFirst(2)), [6, 7],
+                       "8 − 2 and its successor")
+        XCTAssertEqual(rig.controller.status, .paused, "warming plays nothing")
+    }
 }
