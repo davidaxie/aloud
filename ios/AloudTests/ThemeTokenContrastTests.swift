@@ -314,4 +314,48 @@ final class ThemeTokenContrastTests: XCTestCase {
         }
         XCTAssertFalse(Self.textColors.contains { $0.name == "glyphDisabled" }, "never a text color")
     }
+
+    // MARK: Critique round 3
+
+    /// R3-15: Increase Contrast reaches the Play circle. Its `bg` glyph on
+    /// `accentFill` clears 4.5:1 with Increase Contrast on (5.50:1 light;
+    /// `accent` is 3.80:1 there), and the pressed `accentStrong` stays the
+    /// darker of the two.
+    func testIncreaseContrastTakesThePlayGlyphToAA() {
+        for appearance in Appearance.all where appearance.highContrast {
+            let ratio = contrast(Theme.bg, on: Theme.accentFill, appearance)
+            XCTAssertGreaterThanOrEqual(ratio, 4.5, "bg on accentFill, \(appearance): "
+                                        + String(format: "%.2f:1", ratio))
+            if !appearance.dark {
+                XCTAssertLessThan(resolve(Theme.accentStrong, appearance).luminance,
+                                  resolve(Theme.accentFill, appearance).luminance,
+                                  "the pressed fill stays darker, \(appearance)")
+            }
+        }
+    }
+
+    /// Without Increase Contrast the fill is `accent`, so the circle looks
+    /// as it did; the speed slider, covers and rules keep `accent` itself.
+    func testTheFillIsTheAccentWithoutIncreaseContrast() {
+        func hex(_ c: RGBA) -> UInt32 {
+            [c.red, c.green, c.blue].reduce(0) { $0 << 8 | UInt32(($1 * 255).rounded()) }
+        }
+        for appearance in Appearance.all where !appearance.highContrast {
+            XCTAssertEqual(hex(resolve(Theme.accentFill, appearance)), hex(resolve(Theme.accent, appearance)),
+                           "\(appearance)")
+        }
+        XCTAssertEqual(hex(resolve(Theme.accentFill, Appearance(dark: false, highContrast: true))), 0x8A5B22)
+        XCTAssertEqual(hex(resolve(Theme.accent, Appearance(dark: false, highContrast: true))), 0xA87434,
+                       "accent itself is unchanged")
+    }
+
+    /// The busy ring and the scrub's fill stay the 3:1 non-text minimum on
+    /// the scrub track in every appearance.
+    func testTheFillStaysThreeToOneOnTheScrubTrack() {
+        for appearance in Appearance.all {
+            let ratio = contrast(Theme.accentFill, on: Theme.scrubTrack, appearance)
+            XCTAssertGreaterThanOrEqual(ratio, 3, "accentFill on scrubTrack, \(appearance): "
+                                        + String(format: "%.2f:1", ratio))
+        }
+    }
 }

@@ -9,8 +9,8 @@ import SwiftUI
 /// semibold title and `.isSelected`, under the shared Part, Book and Act
 /// section headers (R17). A book without a chapter list (The Cask of
 /// Amontillado) shows search only. Typing replaces the list with results
-/// after the iPhone's 200 ms debounce, the hit in semibold: on the Mac
-/// accent is never text.
+/// after the iPhone's 200 ms debounce, each sentence in the reading serif
+/// with its hit tinted `accentStrong`, as on the iPhone (R3-13).
 ///
 /// The window picks the chrome (`MacContentsLayout`): docked beside the
 /// page from 780 pt wide, a floating card over it below that, which closes
@@ -26,7 +26,8 @@ import SwiftUI
 /// "Where you stopped" leads the list when the book has places, as on the
 /// iPhone (`PlaceHistoryStore`, from the environment): the newest three,
 /// then "Show N earlier stops", each its time and chapter over two lines of
-/// the sentence, the one at the playhead semibold with the bar. A click is
+/// the sentence in the reading serif, the one at the playhead with a
+/// semibold time and chapter and the bar. A click is
 /// the chapter row's jump. The keyboard walks places, the toggle and the
 /// chapters as one list (`MacContents.ListLayout`), entering on the newest
 /// place. The list opens on the current chapter unless the newest stop is
@@ -975,23 +976,21 @@ private struct MacContentsChapterLabel: View {
     }
 }
 
-/// A result: the sentence cut to start a few words before its hit
-/// (`ContentsSearch.snippet`), the hit in semibold, over its chapter or
-/// page: none in a book without chapters, where every hit would name the
-/// same one (`ReaderNavigation.searchLocation`).
-private struct MacContentsResultLabel: View {
+/// A result: the sentence in the reading serif (`Theme.excerpt`), cut to
+/// start a few words before its hit (`ContentsSearch.snippet`), the hit
+/// tinted `accentStrong` as on the iPhone (never a weight change), over its
+/// chapter or page in the sans: none in a book without chapters, where
+/// every hit would name the same one (`ReaderNavigation.searchLocation`).
+struct MacContentsResultLabel: View {
     let match: SentenceMatch
     let location: String?
     let scale: ChromeScale
 
     var body: some View {
         let snippet = ContentsSearch.snippet(for: match, leadLimit: MacContents.leadLimit)
-        let font = Theme.font(.body, scale: scale)
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-            (Text(snippet.lead).font(font)
-                + Text(snippet.hit).font(font.weight(.semibold))
-                + Text(snippet.tail).font(font))
-                .foregroundStyle(Theme.text)
+            Self.emphasized(snippet)
+                .font(Theme.excerpt(scale: scale))
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
                 // The cut is only visual: VoiceOver reads the whole sentence.
@@ -1004,6 +1003,14 @@ private struct MacContentsResultLabel: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    /// The hit in `accentStrong`, the rest in the reader's colour; one
+    /// weight throughout.
+    static func emphasized(_ snippet: ContentsSearch.Snippet) -> Text {
+        Text(snippet.lead).foregroundColor(Theme.text)
+            + Text(snippet.hit).foregroundColor(Theme.accentStrong)
+            + Text(snippet.tail).foregroundColor(Theme.text)
     }
 }
 

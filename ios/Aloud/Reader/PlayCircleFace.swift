@@ -122,12 +122,12 @@ private struct BusyRing: View {
         if busy == .pulse {
             // Under Reduce Motion: a full ring that breathes, never turns.
             circle
-                .stroke(Theme.accent, lineWidth: Theme.PlayCircle.arcWidth)
+                .stroke(Theme.accentFill, lineWidth: Theme.PlayCircle.arcWidth)
                 .opacity(PlayCircleFace.pulseOpacity(at: seconds))
         } else {
             circle
                 .trim(from: 0, to: Theme.PlayCircle.arcSweep)
-                .stroke(Theme.accent, style: StrokeStyle(lineWidth: Theme.PlayCircle.arcWidth, lineCap: .round))
+                .stroke(Theme.accentFill, style: StrokeStyle(lineWidth: Theme.PlayCircle.arcWidth, lineCap: .round))
                 .rotationEffect(.degrees(PlayCircleFace.arcDegrees(at: seconds)))
         }
     }

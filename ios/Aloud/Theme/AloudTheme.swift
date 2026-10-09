@@ -96,6 +96,14 @@ enum Theme {
     /// mark, rules and toggles. NEVER text, and never the ground behind a
     /// text label (3.80:1 light) — use `accentStrong` for those.
     static let accent = dynamic(light: 0xA87434, dark: 0xC99A5B)
+    /// Icon-bearing fills: the Play circle (`AccentCircleButtonStyle`), the
+    /// Continue card's echo of it and its busy ring. `accent` until Increase
+    /// Contrast is on, which deepens the light fill so its `bg` glyph clears
+    /// 4.5:1 (5.50:1; `accent` is 3.80:1). The pressed fill stays the darker
+    /// `accentStrong`. Never text; the scrub, covers, margin mark and rules
+    /// keep `accent`.
+    static let accentFill = dynamic(light: 0xA87434, dark: 0xC99A5B,
+                                    highContrast: (0x8A5B22, 0xC99A5B))
     /// Accent text and links, fills that carry a text label (a `bg` label on
     /// it is 5.50:1), and the word underline. Increase Contrast deepens it
     /// with the sentence fill, so the underline on the fill only gains.
@@ -210,6 +218,38 @@ enum Theme {
         let title = Font.custom(serifFamilyName, size: 17, relativeTo: .headline)
         return title.weight(boldText ? .bold : weight)
     }
+
+    /// A sentence quoted from the book (Contents' place snippets and search
+    /// results), set in the reading serif so it reads as the book's own
+    /// words, never in the sans of the chrome around it. Regular, and the
+    /// serif's bold face under Bold Text, as `rowTitle` does. On the iPhone
+    /// Iowan at 17 pt relative to .body, about the size of the 16 pt callout
+    /// beside it; the Mac sets it a point over its ramp's body, per band.
+    static func excerpt() -> Font {
+        excerpt(scale: .standard, boldText: BoldText.shared.isOn)
+    }
+
+    static func excerpt(boldText: Bool) -> Font {
+        excerpt(scale: .standard, boldText: boldText)
+    }
+
+    /// The excerpt in `scale`'s band: the Mac's reader chrome grows with the
+    /// reader's text size (`ChromeScale`); the iPhone follows Dynamic Type.
+    static func excerpt(scale: ChromeScale) -> Font {
+        excerpt(scale: scale, boldText: BoldText.shared.isOn)
+    }
+
+    static func excerpt(scale: ChromeScale, boldText: Bool) -> Font {
+        if PlatformTypeRamp.font(for: .body, scale: scale) != nil {
+            let size = PlatformTypeRamp.points(.body, scale: scale) + excerptMacLift
+            return Font.custom(serifFamilyName, fixedSize: size)
+        }
+        return serif(17, relativeTo: .body, boldText: boldText)
+    }
+
+    /// Points the Mac's excerpt sets over its ramp's sans body: Iowan reads
+    /// about a point smaller than SF at the same size.
+    static let excerptMacLift: CGFloat = 1
 
     /// The serif at `size`, scaling with `textStyle`; its bold face under
     /// Bold Text.
@@ -454,7 +494,7 @@ private struct AccentCircleFace<Label: View>: View {
         label
             .frame(width: diameter, height: diameter)
             .background(
-                Circle().fill(isPressed ? Theme.accentStrong : Theme.accent)
+                Circle().fill(isPressed ? Theme.accentStrong : Theme.accentFill)
             )
             .scaleEffect(AccentCircleButtonStyle.scale(isPressed: isPressed, reduceMotion: reduceMotion))
             .animation(.easeOut(duration: Theme.Motion.press), value: isPressed)

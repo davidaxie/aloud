@@ -184,13 +184,25 @@ final class ContentsResultLabelLayoutTests: XCTestCase {
                size: size)
     }
 
-    /// The lead and the hit measure one line, as tall as the hit alone.
+    /// R3-13: the book's own sentences (results, place snippets) are set in
+    /// the reading serif at 17 pt relative to .body, regular, and in its
+    /// bold face under Bold Text; never the sans callout of the chrome.
+    func testQuotesFromTheBookAreSetInTheReadingSerif() {
+        let serif = Font.custom(Theme.serifFamilyName, size: 17, relativeTo: .body)
+        XCTAssertEqual(Theme.excerpt(boldText: false), serif)
+        XCTAssertEqual(Theme.excerpt(boldText: true), serif.weight(.bold), "Bold Text takes the serif's bold face")
+        XCTAssertEqual(Theme.excerpt(scale: .largest, boldText: false), serif, "the iPhone follows Dynamic Type")
+        XCTAssertNotEqual(Theme.excerpt(boldText: false), Theme.font(.body), "not the sans callout")
+    }
+
+    /// The lead and the hit measure one line, as tall as the hit alone, in
+    /// the serif, which is wider than the sans it replaced.
     func testTheHitSitsOnTheFirstLineAtEverySize() throws {
         let match = try firstMatch(of: "Natasha", in: Self.longSentence)
         for size in Self.sizes {
             let snippet = ContentsSearch.snippet(for: match, leadLimit: ContentsSearch.leadLimit(for: size))
-            let oneLine = height(of: Text(snippet.hit).font(Theme.font(.body)), size: size)
-            let throughHit = height(of: Text(snippet.lead + snippet.hit).font(Theme.font(.body)), size: size)
+            let oneLine = height(of: Text(snippet.hit).font(Theme.excerpt()), size: size)
+            let throughHit = height(of: Text(snippet.lead + snippet.hit).font(Theme.excerpt()), size: size)
             XCTAssertEqual(throughHit, oneLine, accuracy: 0.5,
                            "\(size): \"\(snippet.lead + snippet.hit)\" should fit the first line")
         }
@@ -272,7 +284,7 @@ final class ContentsResultUnderlineTests: XCTestCase {
 
     private func pixels(underlined: Bool) throws -> RenderedPixels {
         let text = ContentsResultLabel.emphasized(try snippet(), underlined: underlined)
-            .font(Theme.font(.body))
+            .font(Theme.excerpt())
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color.white)
             .environment(\.colorScheme, .light)
@@ -289,7 +301,7 @@ final class ContentsResultUnderlineTests: XCTestCase {
         let snippet = try snippet()
         func fitted(_ underlined: Bool) -> CGSize {
             UIHostingController(rootView: ContentsResultLabel.emphasized(snippet, underlined: underlined)
-                .font(Theme.font(.body)))
+                .font(Theme.excerpt()))
                 .sizeThatFits(in: CGSize(width: Self.size.width, height: .greatestFiniteMagnitude))
         }
         XCTAssertEqual(fitted(true), fitted(false))

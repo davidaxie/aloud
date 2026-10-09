@@ -8,7 +8,8 @@ import SwiftUI
 /// .positionInputLabels`) and a long-press menu with Contents and the
 /// search. The error line, whose tap retries, keeps Contents in its
 /// long-press menu. The search asks the sheet to open with its field
-/// focused (`ContentsSearchMemory.requestSearchFocus`).
+/// focused (`ContentsSearchMemory.requestSearchFocus`); the menu's Contents
+/// asks for the list (`ContentsSearchMemory.requestList`).
 ///
 /// The menu stays off at the accessibility sizes. There the player bar caps
 /// the line's type, so a long press is the only way to read it whole, and
@@ -34,7 +35,7 @@ struct ChapterLineContentsEntry: ViewModifier {
             if Self.offersMenu(dynamicTypeSize: dynamicTypeSize) {
                 entered
                     .contextMenu {
-                        Button(ContentsSearch.title, systemImage: "list.bullet", action: onOpenContents)
+                        Button(ContentsSearch.title, systemImage: "list.bullet", action: openList)
                         Button(ContentsSearch.searchMenuItem, systemImage: "magnifyingglass", action: searchThisBook)
                     }
             } else {
@@ -53,6 +54,14 @@ struct ChapterLineContentsEntry: ViewModifier {
 
     private func searchThisBook() {
         ContentsSearchMemory.shared.requestSearchFocus()
+        onOpenContents()
+    }
+
+    /// The menu's Contents always opens on the chapters: it skips a
+    /// remembered search once and keeps it (R3-14). The plain tap on the
+    /// line still brings the search back while it is fresh.
+    private func openList() {
+        ContentsSearchMemory.shared.requestList()
         onOpenContents()
     }
 }

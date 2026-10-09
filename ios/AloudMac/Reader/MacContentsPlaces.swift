@@ -110,23 +110,22 @@ extension MacContents {
 
 /// A place: when and where, over two lines from the stop: its sentence and
 /// the ones after it, read on past its paragraph within its chapter
-/// (`PlaceRow.snippet`). On the Mac the
-/// place at the playhead is semibold, as the current chapter is (accent is
-/// never text); the panel adds its bar.
+/// (`PlaceRow.snippet`), in the reading serif (`Theme.excerpt`), as on the
+/// iPhone. The place at the playhead keeps the snippet as the reader set
+/// it; its detail line is semibold and the panel adds its bar.
 struct MacContentsPlaceLabel: View {
     let row: PlaceRow
     let scale: ChromeScale
 
     var body: some View {
-        let font = Theme.font(.body, scale: scale)
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Text(row.detail)
-                .font(Theme.font(.footnote, scale: scale))
+                .font(Theme.font(row.isCurrent ? .subhead : .footnote, scale: scale))
                 .foregroundStyle(Theme.textFaint)
                 .lineLimit(1)
 
             Text(row.snippet)
-                .font(row.isCurrent ? font.weight(.semibold) : font)
+                .font(Theme.excerpt(scale: scale))
                 .foregroundStyle(Theme.text)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)

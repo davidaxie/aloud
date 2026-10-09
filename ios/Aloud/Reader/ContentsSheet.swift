@@ -41,9 +41,9 @@ import SwiftUI
 /// lists its places instead of focusing the field.
 ///
 /// A picked result's search is remembered for the book
-/// (`ContentsSearchMemory`, P029): reopened, the sheet opens at full height
-/// on the same results with the pick marked, so the next hit is one tap
-/// away. The keyboard's Search key scans at once and drops the keyboard
+/// (`ContentsSearchMemory`, P029): reopened while the listener is still
+/// stepping through it (R3-14), the sheet opens at full height on the same
+/// results with the pick marked, so the next hit is one tap away. The keyboard's Search key scans at once and drops the keyboard
 /// (P030); Cancel beside the focused field backs out of a search, and the
 /// blank and no-match states scroll, so a drag drops the keyboard (P031).
 ///
@@ -156,10 +156,16 @@ struct ContentsSheet: View {
     // MARK: - Opening
 
     /// A remembered search for this book comes back at full height with its
-    /// results and the keyboard down; the chapter line's search action, or
-    /// a book with nothing to list, focuses the field instead.
+    /// results and the keyboard down while the listener is still stepping
+    /// through it (`ContentsSearchMemory.restore`, R3-14); the chapter
+    /// line's search action, or a book with nothing to list, focuses the
+    /// field instead. The chapter line's Contents item asks for the list,
+    /// which skips the restore once and keeps the search.
     private func opened() {
-        let restored = searchMemory.restore(for: playback.document?.id)
+        let listAsked = searchMemory.consumeListRequest()
+        let restored = listAsked ? nil : searchMemory.restore(for: playback.document?.id,
+                                                              playhead: playback.currentSentence,
+                                                              navigation: navigation, now: Date())
         let searchAsked = searchMemory.consumeSearchFocus()
         if let restored {
             pickedSentence = restored.pickedSentence
@@ -388,6 +394,8 @@ struct ContentsSheet: View {
             wordsPerMinute: LibraryDocument.spokenWordsPerMinute * playback.rate)
 
         return Button {
+            // Moving on another way: the search is done with (R3-14).
+            searchMemory.forget()
             pick(chapter.startSentence, origin: .chapter)
         } label: {
             ContentsChapterLabel(title: title,
@@ -490,6 +498,7 @@ struct ContentsSheet: View {
     /// The chapter row's pick: plays from the place, Undo jump offered.
     private func placeRow(_ row: PlaceRow) -> some View {
         Button {
+            searchMemory.forget()
             pick(row.sentence, origin: .chapter)
         } label: {
             ContentsPlaceLabel(row: row, compact: detent == .medium)
@@ -748,7 +757,8 @@ struct ContentsChapterLabel: View {
 
 // MARK: - Place label
 
-/// A place row's text: when and where, over its snippet (`PlaceRow.snippet`).
+/// A place row's text: when and where, over its snippet (`PlaceRow.snippet`)
+/// in the reading serif (`Theme.excerpt`), the details in the sans.
 /// The snippet keeps the reader's color and weight on the current row too;
 /// the bar and a semibold detail line mark it. At half height (`compact`)
 /// it takes one line, two at full height, four at the accessibility sizes.
@@ -768,8 +778,9 @@ private struct ContentsPlaceLabel: View {
                 .lineLimit(isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
 
+            // The book's own words, in the reading serif (R3-13).
             Text(row.snippet)
-                .font(Theme.font(.body))
+                .font(Theme.excerpt())
                 .foregroundStyle(Theme.text)
                 .lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))
                 .multilineTextAlignment(.leading)
@@ -779,9 +790,9 @@ private struct ContentsPlaceLabel: View {
 
 // MARK: - Result label
 
-/// A search result's text: the sentence, cut to start a few words before its
-/// hit so the hit always sits on the first line, over the hit's chapter or
-/// page. Its own view so a layout test can host it without a controller.
+/// A search result's text: the sentence in the reading serif
+/// (`Theme.excerpt`), cut to start a few words before its hit so the hit
+/// always sits on the first line, over the hit's chapter or page in the sans. Its own view so a layout test can host it without a controller.
 struct ContentsResultLabel: View {
 
     let match: SentenceMatch
@@ -797,7 +808,7 @@ struct ContentsResultLabel: View {
                                              leadLimit: ContentsSearch.leadLimit(for: dynamicTypeSize))
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Self.emphasized(snippet, underlined: differentiateWithoutColor)
-                .font(Theme.font(.body))
+                .font(Theme.excerpt())
                 // Three lines held ~35 characters at AX5: two more keep some
                 // of the sentence after the hit.
                 .lineLimit(isAccessibilitySize ? 5 : 3)

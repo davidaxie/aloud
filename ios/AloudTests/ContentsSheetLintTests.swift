@@ -85,6 +85,8 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertTrue(label.contains(".lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))"), label)
         XCTAssertTrue(label.contains(".font(Theme.font(row.isCurrent ? .subhead : .footnote))"),
                       "the current place's detail line is semibold: \(label)")
+        XCTAssertTrue(label.contains("Text(row.snippet) .font(Theme.excerpt())"),
+                      "the snippet is the book's words, in the reading serif (R3-13): \(label)")
     }
 
     // MARK: - P025: picks play
@@ -152,10 +154,16 @@ final class ContentsSheetLintTests: XCTestCase {
             XCTAssertTrue(result.contains(needle), "a result row should contain '\(needle)'")
         }
         let opened = try region(of: sheet, from: "private func opened()", to: "private func queryChanged(")
-        for needle in ["searchMemory.restore(for: playback.document?.id)", "searchMemory.consumeSearchFocus()",
+        for needle in ["let listAsked = searchMemory.consumeListRequest()",
+                       "listAsked ? nil : searchMemory.restore(for: playback.document?.id, "
+                       + "playhead: playback.currentSentence, navigation: navigation, now: Date())",
+                       "searchMemory.consumeSearchFocus()",
                        "detent = .large", "startSearch(now: restored.query)", "fieldFocused = true"] {
             XCTAssertTrue(opened.contains(needle), "opening should contain '\(needle)': \(opened)")
         }
+        XCTAssertFalse(opened.contains("searchMemory.restore(for: playback.document?.id)"),
+                       "the restore reads the playhead and the clock (R3-14): \(opened)")
+        XCTAssertFalse(opened.contains("searchMemory.forget()"), "asking for the list keeps the search: \(opened)")
         let changed = try region(of: sheet, from: "private func queryChanged(", to: "private func cancelSearch()")
         // Any edit forgets the remembered search, so a reopening never
         // brings back a query the field no longer holds.
@@ -165,6 +173,19 @@ final class ContentsSheetLintTests: XCTestCase {
         // argument (a Swift 6 error).
         XCTAssertTrue(sheet.contains("private var searchMemory: ContentsSearchMemory { .shared }"))
         XCTAssertFalse(sheet.contains("searchMemory: ContentsSearchMemory = .shared"))
+    }
+
+    /// R3-14: picking a chapter or a place is moving on another way, so it
+    /// forgets the search before the jump; a result's pick remembers it.
+    func testAChapterOrPlacePickForgetsTheSearch() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let chapter = try region(of: sheet, from: "private func chapterRow(", to: "} label: {")
+        XCTAssertTrue(chapter.contains("searchMemory.forget() pick(chapter.startSentence, origin: .chapter)"), chapter)
+        let place = try region(of: sheet, from: "private func placeRow(", to: "} label: {")
+        XCTAssertTrue(place.contains("searchMemory.forget() pick(row.sentence, origin: .chapter)"), place)
+        let result = try region(of: sheet, from: "private func resultRow(", to: "} label: {")
+        XCTAssertFalse(result.contains("forget()"), "a result's pick remembers: \(result)")
     }
 
     // MARK: - P032
@@ -199,7 +220,7 @@ final class ContentsSheetLintTests: XCTestCase {
         let entry = try region(of: entrySource, from: "struct ChapterLineContentsEntry: ViewModifier",
                                to: "private func searchThisBook()")
         for needle in ["if PlatformContentsEntry.chapterLineOffersSearch {", ".contextMenu {",
-                       "Button(ContentsSearch.title, systemImage: \"list.bullet\", action: onOpenContents)",
+                       "Button(ContentsSearch.title, systemImage: \"list.bullet\", action: openList)",
                        "Button(ContentsSearch.searchMenuItem, systemImage: \"magnifyingglass\", action: searchThisBook)",
                        ".accessibilityActions {", "@Environment(\\.dynamicTypeSize) private var dynamicTypeSize",
                        "if Self.offersMenu(dynamicTypeSize: dynamicTypeSize) {",
@@ -215,6 +236,10 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertLessThan(sizeCheck.lowerBound, menu.lowerBound, entry)
         let search = try region(of: entrySource, from: "private func searchThisBook()", to: "onOpenContents()")
         XCTAssertTrue(search.contains("ContentsSearchMemory.shared.requestSearchFocus()"))
+        // R3-14: the menu's Contents opens on the chapters, keeping the search.
+        let list = try region(of: entrySource, from: "private func openList()", to: "onOpenContents()")
+        XCTAssertTrue(list.contains("ContentsSearchMemory.shared.requestList()"), list)
+        XCTAssertFalse(list.contains("forget()"), list)
         // The protected Voice Control names stay, the visible title first.
         let labels = try region(of: line, from: "static func positionInputLabels(", to: "/// The title, and Back 5 min")
         XCTAssertTrue(labels.contains("[Text(title), Text(\"Contents\")]"), labels)
@@ -258,6 +283,30 @@ final class ContentsSheetLintTests: XCTestCase {
         XCTAssertFalse(label.contains("Text(row.text)"), label)
         XCTAssertTrue(label.contains(".lineLimit(isAccessibilitySize ? 4 : (compact ? 1 : 2))"), "P024's line limits stay")
         XCTAssertTrue(sheet.contains(".accessibilityLabel(row.accessibilityLabel)"))
+        // R3-13: the snippet in the reading serif and the reader's colour;
+        // the detail line stays in the sans footnote, faint.
+        XCTAssertTrue(label.contains("Text(row.snippet) .font(Theme.excerpt()) .foregroundStyle(Theme.text)"), label)
+        XCTAssertEqual(occurrences(of: "Theme.font(.body)", in: label), 0, "no sans quote: \(label)")
+        XCTAssertTrue(label.contains(".foregroundStyle(Theme.textFaint)"), label)
+    }
+
+    /// R3-13: a result's sentence is set in the reading serif, its hit still
+    /// tinted (underlined without colour, never bolded), its chapter in the
+    /// sans footnote. The AX-aware line limits and the lead stay.
+    func testAResultQuotesTheBookInTheReadingSerif() throws {
+        let s = try SourceTree.sources(only: [Self.sheetPath])
+        let sheet = try XCTUnwrap(s[Self.sheetPath])
+        let label = try region(of: sheet, from: "struct ContentsResultLabel: View", to: "static func emphasized(")
+        for needle in ["Self.emphasized(snippet, underlined: differentiateWithoutColor) .font(Theme.excerpt())",
+                       ".lineLimit(isAccessibilitySize ? 5 : 3)",
+                       "leadLimit: ContentsSearch.leadLimit(for: dynamicTypeSize)",
+                       "Text(location) .font(Theme.font(.footnote)) .foregroundStyle(Theme.textFaint)"] {
+            XCTAssertTrue(label.contains(needle), "the result label should contain '\(needle)': \(label)")
+        }
+        XCTAssertEqual(occurrences(of: "Theme.font(.body)", in: label), 0, "no sans quote: \(label)")
+        let emphasis = try region(of: sheet, from: "static func emphasized(", to: "\n}")
+        XCTAssertTrue(emphasis.contains("foregroundColor(Theme.accentStrong)"), emphasis)
+        XCTAssertFalse(emphasis.contains("weight") || emphasis.contains("bold"), "never a weight change: \(emphasis)")
     }
 
     /// R2-17: Contents closes from its header at any height, and in a

@@ -360,4 +360,56 @@ final class ReaderLintTests: XCTestCase {
         XCTAssertTrue(code.contains(".buttonStyle(MacTextStepButtonStyle())"))
         XCTAssertFalse(code.contains(".buttonStyle(MacGlyphButtonStyle())"))
     }
+
+    // MARK: - Critique round 3
+
+    /// R3-13 on the Mac: the panel's place snippets and results are set in
+    /// the reading serif (`Theme.excerpt(scale:)`), as on the iPhone. The
+    /// current place keeps its snippet as set and marks its detail line
+    /// semibold; a hit is tinted `accentStrong`, never semibold. The fonts
+    /// are measured in MacContentsPanelTests. Here because Mac-hosted tests
+    /// can't read the checkout.
+    func testTheMacContentsQuotesTheBookInTheReadingSerif() throws {
+        let placesPath = "Reader/MacContentsPlaces.swift"
+        let panelPath = "Reader/MacContentsPanel.swift"
+        let s = try SourceTree.sources(in: SourceTree.macRoot, only: [placesPath, panelPath])
+        let places = codeLines(try XCTUnwrap(s[placesPath])).joined(separator: "\n")
+        let panel = codeLines(try XCTUnwrap(s[panelPath])).joined(separator: "\n")
+
+        let place = try XCTUnwrap(places.range(of: "struct MacContentsPlaceLabel: View {"))
+        let placeBody = places[place.upperBound...].prefix(900)
+        XCTAssertTrue(placeBody.contains(".font(Theme.font(row.isCurrent ? .subhead : .footnote, scale: scale))"),
+                      String(placeBody))
+        XCTAssertTrue(placeBody.contains(".font(Theme.excerpt(scale: scale))"), String(placeBody))
+        XCTAssertFalse(placeBody.contains(".semibold"), "the snippet keeps one weight: \(String(placeBody))")
+
+        let result = try XCTUnwrap(panel.range(of: "struct MacContentsResultLabel: View {"))
+        let resultBody = panel[result.upperBound...].prefix(1_050)
+        XCTAssertTrue(resultBody.contains(".font(Theme.excerpt(scale: scale))"), String(resultBody))
+        XCTAssertTrue(resultBody.contains("Text(snippet.hit).foregroundColor(Theme.accentStrong)"), String(resultBody))
+        XCTAssertFalse(resultBody.contains(".semibold"), "the hit is tinted, not bolded: \(String(resultBody))")
+        XCTAssertFalse(resultBody.contains("Theme.font(.body"), "no sans quote: \(String(resultBody))")
+    }
+
+    /// R3-15: the Play circle, its busy ring and the Continue card's echo
+    /// of it fill with `accentFill`, which Increase Contrast deepens; the
+    /// pressed circle keeps `accentStrong`. The contrast is measured in
+    /// ThemeTokenContrastTests.
+    func testThePlayCirclesFillWithAccentFill() throws {
+        let theme = "Theme/AloudTheme.swift"
+        let face = "Reader/PlayCircleFace.swift"
+        let card = "Library/ContinueListeningCard.swift"
+        let s = try SourceTree.sources(only: [theme, face, card])
+        let themeCode = codeLines(try XCTUnwrap(s[theme])).joined(separator: "\n")
+        let faceCode = codeLines(try XCTUnwrap(s[face])).joined(separator: "\n")
+        let cardCode = codeLines(try XCTUnwrap(s[card])).joined(separator: "\n")
+        XCTAssertTrue(themeCode.contains("Circle().fill(isPressed ? Theme.accentStrong : Theme.accentFill)"))
+        let ring = try XCTUnwrap(faceCode.range(of: "private struct BusyRing: View {"))
+        let ringBody = faceCode[ring.upperBound...].prefix(1_500)
+        XCTAssertEqual(ringBody.components(separatedBy: ".stroke(Theme.accentFill").count - 1, 2,
+                       "both rings match their circle: \(String(ringBody))")
+        XCTAssertFalse(ringBody.contains(".stroke(Theme.accent,"), String(ringBody))
+        let glyph = try XCTUnwrap(cardCode.range(of: "struct PlayCircleGlyph: View {"))
+        XCTAssertTrue(cardCode[glyph.upperBound...].prefix(200).contains(".fill(Theme.accentFill)"))
+    }
 }

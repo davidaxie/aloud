@@ -357,11 +357,13 @@ struct ShelfHeroCard<Cover: View, Accessory: View>: View {
 // MARK: - Play glyph
 
 /// Decorative echo of AccentCircleButtonStyle for the featured classic: the
-/// card around it is the button, so this stays a plain 44pt accent circle.
+/// card around it is the button, so this stays a plain 44pt accent circle,
+/// on the Play circle's own fill (`accentFill`, deeper under Increase
+/// Contrast so its glyph clears 4.5:1).
 struct PlayCircleGlyph: View {
     var body: some View {
         Circle()
-            .fill(Theme.accent)
+            .fill(Theme.accentFill)
             .frame(width: 44, height: 44)
             .overlay(
                 Image(systemName: "play.fill")

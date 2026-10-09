@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import Aloud
 
@@ -98,6 +99,41 @@ final class MacContentsPanelTests: XCTestCase {
         let snippet = ContentsSearch.snippet(for: match, leadLimit: MacContents.leadLimit)
         XCTAssertEqual(snippet.hit, "Amontillado")
         XCTAssertLessThanOrEqual(snippet.lead.count, MacContents.leadLimit + 1, "the hit is on the first line")
+    }
+
+    /// R3-13: quotes from the book (place snippets, results) are set in the
+    /// reading serif a point over the ramp's sans body in every band, the
+    /// details staying in the sans footnote.
+    func testQuotesFromTheBookAreSetInTheReadingSerif() {
+        for scale in ChromeScale.allCases {
+            let size = PlatformTypeRamp.points(.body, scale: scale) + 1
+            XCTAssertEqual(Theme.excerpt(scale: scale), .custom(Theme.serifFamilyName, fixedSize: size), "\(scale)")
+            XCTAssertEqual(Theme.excerpt(scale: scale, boldText: true), Theme.excerpt(scale: scale),
+                           "the Mac has no Bold Text")
+            XCTAssertNotEqual(Theme.excerpt(scale: scale), Theme.font(.body, scale: scale), "not the sans body")
+        }
+        XCTAssertEqual(Theme.excerpt(), Theme.excerpt(scale: .standard))
+    }
+
+    /// The serif is wider than the sans: a result's lead and hit still fit
+    /// the row's first line in every band (the panel's 300 pt less the
+    /// row's insets).
+    func testTheHitStaysOnTheFirstLineInTheSerif() throws {
+        let content = Self.chaptered()
+        let match = try XCTUnwrap(content.matches(of: "amontillado").first)
+        let snippet = ContentsSearch.snippet(for: match, leadLimit: MacContents.leadLimit)
+        XCTAssertFalse(snippet.lead.isEmpty, "the fixture keeps a lead")
+        let width = MacContentsLayout.panelWidth - 2 * (Theme.Space.xs + Theme.Space.sm)
+        func height(_ text: String, _ scale: ChromeScale) -> CGFloat {
+            NSHostingView(rootView: Text(text).font(Theme.excerpt(scale: scale))
+                .frame(width: width, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true))
+                .fittingSize.height
+        }
+        for scale in ChromeScale.allCases {
+            XCTAssertEqual(height(snippet.lead + snippet.hit, scale), height(snippet.hit, scale), accuracy: 0.5,
+                           "\(scale): \"\(snippet.lead + snippet.hit)\" should fit the first line")
+        }
     }
 
     /// In a book without chapters every hit would name the same derived
